@@ -175,9 +175,25 @@ INSERT INTO milestone (id, subject, status, body, created_at, implemented_at, qu
 ## Done when
 - From a clean checkout an agent can start the game, fly a burn that raises the orbit, and deorbit into Earth, with screenshots of each.
 - Tests pass; `AGENTS.md` and `docs/` match what was built.', '2026-10-14T16:06:59Z', NULL, 1);
+INSERT INTO milestone (id, subject, status, body, created_at, implemented_at, queue_index) VALUES (3, 'Cockpit and autopilot: the DIY cockpit, orbits and Earth-orbit presets', 'open', 'The cockpit and the autopilot: piloting becomes the heart of the game. The design in `docs/` is the specification; this milestone implements what `docs/design.md` assigns to it.
+
+## Outcome
+- The DIY cockpit as designed: instruments that look improvised but readable (e.g. luv''s in-world text and terminal screens), switches and readouts; the player can fly from the cockpit alone.
+- The autopilot: from the current orbit into a target orbit (circularise, raise, lower, change plane), with burns the player can watch and interrupt; it must not fly into Earth.
+- Points of interest in Earth orbit as designed (stations, depots, debris, asteroids being towed, …), each an autopilot preset: rendezvous and stop nearby.
+- Close-range manoeuvring and docking or grappling, if `docs/design.md` assigns it here.
+
+## Constraints
+- As in `AGENTS.md`: no changes to `../luv`; own choices recorded, not asked.
+- The autopilot uses the same physics and the same fuel as the player: no teleporting.
+
+## Done when
+- From a low Earth orbit, every Earth-orbit preset is reached by autopilot in a headless test, and once in the running game with screenshots.
+- Tests pass; `AGENTS.md` and `docs/` match what was built.', '2026-10-14T16:07:00Z', NULL, 2);
 
 INSERT INTO plan (id, milestone_id, subject, priority, body, created_at, created_by_task) VALUES (1, 1, 'masterplan', 1000, 'tbd.', '2026-10-14T16:06:30Z', NULL);
 INSERT INTO plan (id, milestone_id, subject, priority, body, created_at, created_by_task) VALUES (2, 2, 'masterplan', 1000, 'tbd.', '2026-10-14T16:06:59Z', NULL);
+INSERT INTO plan (id, milestone_id, subject, priority, body, created_at, created_by_task) VALUES (3, 3, 'masterplan', 1000, 'tbd.', '2026-10-14T16:07:00Z', NULL);
 
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (1, 1, 'write the masterplan of milestone 1: Scope and design: what luv can carry, what the game is', 'masterplan', 'open', NULL, NULL, 'Write `plan 1: masterplan`, the masterplan of `milestone 1: Scope and design: what luv can carry, what the game is`: expand on everything that needs to be done to achieve it,
 divided into parts. State in the masterplan that its own tasks are not implementation work: each of them writes the
@@ -185,3 +201,6 @@ plan for one part.', '2026-10-14T16:06:30Z', NULL, NULL);
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (2, 2, 'write the masterplan of milestone 2: Flight core: Newtonian flight in near-Earth orbit', 'masterplan', 'open', NULL, NULL, 'Write `plan 2: masterplan`, the masterplan of `milestone 2: Flight core: Newtonian flight in near-Earth orbit`: expand on everything that needs to be done to achieve it,
 divided into parts. State in the masterplan that its own tasks are not implementation work: each of them writes the
 plan for one part.', '2026-10-14T16:06:59Z', NULL, NULL);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (3, 3, 'write the masterplan of milestone 3: Cockpit and autopilot: the DIY cockpit, orbits and Earth-orbit presets', 'masterplan', 'open', NULL, NULL, 'Write `plan 3: masterplan`, the masterplan of `milestone 3: Cockpit and autopilot: the DIY cockpit, orbits and Earth-orbit presets`: expand on everything that needs to be done to achieve it,
+divided into parts. State in the masterplan that its own tasks are not implementation work: each of them writes the
+plan for one part.', '2026-10-14T16:07:00Z', NULL, NULL);

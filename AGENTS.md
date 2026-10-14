@@ -43,6 +43,13 @@ Luv in Space is a showcase for [luv](https://github.com/mbrock/luv), Mikael Broc
   - Shaders are live: a `define-shader` re-evaluated with `./sly eval '(define-frame-shader earth-fragment …)' --package LUV-IN-SPACE.SHADERS` shows on the next frame (luv live shader pipelines, refreshed in `draw`). A source that fails to parse is rejected by the eval; one that fails to build keeps the last good pipeline, and `./sly status` names it with its error (`Live artifact earth FAILED …`) until a fix rebuilds it; in Lisp `(luv-in-space:report-failed-live-artifacts)`.
 
 ## Layout
-- `luv-in-space.asd`: systems `luv-in-space` (`src/`) and `luv-in-space/tests` (`tests/`).
+- `flake.nix`: luv as a pinned input, the package (`nix build`), `apps.default` (`nix run`), the dev shell, the check (`nix flake check`).
+- `luv-in-space.asd`: systems `luv-in-space` (`src/`), `luv-in-space/program` (the executable) and `luv-in-space/tests` (`tests/`).
+- `src/`: so far the walking skeleton, `PLACEHOLDER(23)` (a lit Earth placeholder, stars, a label); `docs/architecture.md` "Files in load order" lists the files that replace it, milestone by milestone.
 - `scripts/`: `test`, `screenshot`, the build entry (`build.lisp`) and the `./sly` client; `./sly` and `sly-server.lisp` at the root.
-- `docs/`: scope, design, story, architecture; the source of truth for features after `milestone 1`.
+- `docs/`: the source of truth for features after `milestone 1`; cite their sections when implementing.
+  - `luv-capabilities.md`: what luv offers, measured, and the gaps with their workarounds here.
+  - `luv-wishlist.md`: what this repo builds that would better live in luv.
+  - `architecture.md`: the dependency on luv, module layout, units and frames, integrator and time warp, tests and flight scripts.
+  - `design.md`: the game for implementers; "Scope" → "Feature list" assigns every feature to `milestone 2` to `milestone 6` or cuts it.
+  - `story.md`: setting, characters, the quest line, every radio text; "Names and terms" is the one list of names.

@@ -1,26 +1,175 @@
 {
   # luv-in-space
-  #   nix develop / direnv allow   the dev shell, incl. `pm`
-  description = "luv-in-space";
+  #   nix develop / direnv allow   the dev shell: luv's environment, `pm`, git
+  #   nix build                    the game: a dumped SBCL image and a launcher
+  #   nix run                      start the game
+  description = "Luv in Space: a hard sci-fi spaceflight game on luv";
+
+  nixConfig = {
+    extra-substituters = [ "https://luv.swa.sh/nix-cache?priority=30" ];
+    extra-trusted-public-keys = [
+      "luv.swa.sh-1:PpD45iCBkJ38ZkvlyZcLiGdIz6yVehXn3fm1JvG18Bw="
+    ];
+  };
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    # Pinned in flake.lock (decision 1: How the game consumes luv).
+    luv.url = "github:mbrock/luv/6abc9d10ec8991c2cfe92888b84946372d6030b9";
+    # luv keeps its own nixpkgs, so its binary cache matches; ours follows it.
+    nixpkgs.follows = "luv/nixpkgs";
     # `pm`, the project manager CLI, in the dev shell only.
     pm = {
       url = "github:rubenmoor/project-manager";
-      inputs.nixpkgs.follows = "nixpkgs";  # one nixpkgs for both
+      inputs.nixpkgs.follows = "nixpkgs";
     };
   };
 
-  outputs = { self, nixpkgs, pm }:
+  outputs = { self, nixpkgs, luv, pm }:
     let
-      systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
-      forAll = f: nixpkgs.lib.genAttrs systems (system: f system nixpkgs.legacyPackages.${system});
+      # decision 6: Target platforms
+      systems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
+      forAll = f: nixpkgs.lib.genAttrs systems (system: f system (luv.lib.environmentFor system));
+
+      # Our sources only, so docs and tasks.sql don't rebuild the game.
+      gameSource = nixpkgs.lib.fileset.toSource {
+        root = ./.;
+        fileset = nixpkgs.lib.fileset.unions [
+          ./luv-in-space.asd
+          ./src
+          ./scripts/build.lisp
+        ];
+      };
+
+      # luv's root systems (luv, luv/test-support, …) from the input.
+      luvRegistry = "${luv}/";
+
+      # A copy of luv's `applicationPackage` (luv flake.nix, a `let` binding,
+      # not exported; docs/luv-wishlist.md), adapted: our source, luv's
+      # sources from the input, no fonts or Luvcraft extras, no inherited
+      # LD_LIBRARY_PATH.
+      applicationPackage = system: environment:
+        let
+          inherit (environment) pkgs;
+          inherit (pkgs) lib;
+          name = "luv-in-space";
+          output = builtins.placeholder "out";
+          runtimeEnvironment = lib.filterAttrs
+            (variable: _value: builtins.elem variable [
+              "LUV_ASDF_CACHE_KEY"
+              "LUV_BASH"
+              "LUV_FFMPEG_LIBDIR"
+              "LUV_NATIVE_LIBRARY_PATH"
+              "VK_DRIVER_FILES"
+            ])
+            environment.applicationEnvironment;
+          exportRuntimeEnvironment = lib.concatStringsSep "\n"
+            (lib.mapAttrsToList
+              (variable: value:
+                "export ${variable}=${lib.escapeShellArg (toString value)}")
+              runtimeEnvironment);
+          runtimePath = lib.makeBinPath [
+            pkgs.bashInteractive
+            pkgs.coreutils
+            environment.ffmpeg
+          ];
+        in
+        pkgs.stdenv.mkDerivation (environment.applicationEnvironment // {
+          pname = name;
+          version = "0-unstable";
+          src = gameSource;
+
+          CL_SOURCE_REGISTRY =
+            "${luvRegistry}:${environment.applicationEnvironment.CL_SOURCE_REGISTRY}";
+          nativeBuildInputs = environment.applicationPackages;
+          dontConfigure = true;
+          dontPatchELF = true;
+          dontStrip = true;
+
+          buildPhase = ''
+            runHook preBuild
+            mkdir -p "$out/share"
+            cp -R . "$out/share/${name}"
+            chmod -R u+w "$out/share/${name}"
+            cd "$out/share/${name}"
+
+            export HOME="$TMPDIR/home"
+            export LUV_PROJECT_ROOT="$PWD"
+            mkdir -p "$HOME"
+            unset LD_LIBRARY_PATH
+            ${environment.developmentEnvironmentHook}
+            luv_activate_native_environment
+
+            sbcl --script scripts/build.lisp
+            runHook postBuild
+          '';
+
+          installPhase = ''
+            runHook preInstall
+            cd "$out/share/${name}"
+            mkdir -p "$out/bin" "$out/lib/fasl" "$out/libexec"
+            mv "build/${name}" "$out/libexec/${name}"
+            # CFFI restores foreign libraries from the FASLs at start.
+            cp -R "$HOME/.cache/common-lisp/luv/$LUV_ASDF_CACHE_KEY/." "$out/lib/fasl/"
+            find "$out/lib/fasl" -type f \( -name '*__grovel' \
+              -o -name '*__grovel.c' -o -name '*__grovel.o' \) -delete
+            cd "$out"
+            rm -rf "$out/share/${name}"
+
+            cat > "$out/bin/${name}" <<'LUV_LAUNCHER'
+            #!${pkgs.runtimeShell}
+            set -eu
+            # A host LD_LIBRARY_PATH breaks luv's SDL3 (docs/luv-capabilities.md, Packaging).
+            unset LD_LIBRARY_PATH
+            ${exportRuntimeEnvironment}
+            export PATH=${lib.escapeShellArg runtimePath}:"''${PATH:-}"
+            asdf_output_translations="''${ASDF_OUTPUT_TRANSLATIONS:-}"
+            ${environment.developmentEnvironmentHook}
+            luv_activate_native_environment
+            export ASDF_OUTPUT_TRANSLATIONS="''${asdf_output_translations:-${lib.escapeShellArg "/:${output}/lib/fasl//"}}"
+            unset asdf_output_translations
+            exec ${lib.escapeShellArg "${output}/libexec/${name}"} "$@"
+            LUV_LAUNCHER
+            chmod 0555 "$out/bin/${name}"
+            runHook postInstall
+          '';
+
+          meta = {
+            description = "Luv in Space";
+            mainProgram = name;
+            platforms = systems;
+          };
+        });
     in {
-      devShells = forAll (system: pkgs: {
-        default = pkgs.mkShell {
-          packages = [ pm.packages.${system}.default pkgs.git ];
+      packages = forAll (system: environment: rec {
+        luv-in-space = applicationPackage system environment;
+        default = luv-in-space;
+      });
+
+      apps = forAll (system: _environment: {
+        default = {
+          type = "app";
+          program = "${self.packages.${system}.luv-in-space}/bin/luv-in-space";
+          meta.description = "Start Luv in Space";
         };
+      });
+
+      # luv's default dev shell (its environment, packages and hook), with
+      # this repo and luv's sources on CL_SOURCE_REGISTRY, plus pm and git.
+      devShells = forAll (system: environment: {
+        default = environment.pkgs.mkShell (environment.developmentEnvironment // {
+          LUV_DEV_ENVIRONMENT_MODE = "nix-develop";
+          LUV_DEV_SHELL = "default";
+          packages = environment.developmentPackages ++ [
+            pm.packages.${system}.default
+            environment.pkgs.git
+          ];
+          shellHook = ''
+            export CL_SOURCE_REGISTRY="$PWD/:${luvRegistry}:${environment.developmentEnvironment.CL_SOURCE_REGISTRY}"
+            unset LD_LIBRARY_PATH
+          '' + environment.developmentEnvironmentHook + ''
+            luv_activate_native_environment
+          '';
+        });
       });
     };
 }

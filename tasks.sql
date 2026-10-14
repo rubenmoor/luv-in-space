@@ -238,16 +238,73 @@ INSERT INTO milestone (id, subject, status, body, created_at, implemented_at, qu
 - The README''s screenshots show the current game.
 - Tests pass; `AGENTS.md` and `docs/` match what was built.', '2026-10-14T16:07:32Z', NULL, 5);
 
-INSERT INTO plan (id, milestone_id, subject, priority, body, created_at, created_by_task) VALUES (1, 1, 'masterplan', 1000, 'tbd.', '2026-10-14T16:06:30Z', NULL);
+INSERT INTO plan (id, milestone_id, subject, priority, body, created_at, created_by_task) VALUES (1, 1, 'masterplan', 1000, 'The masterplan of `milestone 1: Scope and design: what luv can carry, what the game is`. It divides the milestone into six parts, in the order they should run: first find out what luv really does (by building and running it), then prove the build path with a walking skeleton, then write the architecture, the game design and the story on that ground, and finally check that everything agrees.
+
+**The tasks of this masterplan are not implementation work: each of them writes the plan for one part** (`pm plan add 1 "<part subject>" --priority N`), and that plan is then split into the tasks that do the work.
+
+## Ground rules for every part
+- `../luv` is read-only reference; the game builds against luv pinned as a flake input in `flake.nix` (`AGENTS.md`).
+- Whatever luv lacks is built in this repo and listed in `docs/luv-wishlist.md` (create it in part 1).
+- No human decisions: creative and technical choices are recorded with `pm decision record`; `pm decision add` only for accounts, money, licences, publishing or a contradiction in the milestone.
+- Docs follow the `.md` style in `AGENTS.md`: intro paragraph, then concise bullets.
+- Every game window opened is closed again; no process left running.
+- Out of scope: game features beyond the skeleton.
+
+## Part 1: luv capabilities (priority 900)
+Find out what luv can carry for a solar-system flight game, by building luv and running its programs and tests, not only reading.
+- Read `../luv/AGENTS.md`, `README.md`, `wiki/` (e.g. `gpu-architecture.org`, `physics-and-simd.org`, `sky-and-light.org`, `mathematical-shaders.org`, `world-terminal.org`, `quantities-and-measurement.org`, `sb-simd.org`, `frame-performance.org`, `technical-debt.org`) and the code.
+- Build luv via its flake (`nix build`, `nix run github:mbrock/luv`, `#luft`), run Luvcraft and Luft, run its test suite, take screenshots the way luv does; try the live image (`./sly`).
+- Cover: rendering (meshes, Lisp shaders, lighting, sky, in-world text, terminal screens), windowing and input (keyboard, mouse, gamepad?), live image, screenshots and headless runs, physics and SIMD, quantities/units, packaging (`nix run`), platforms (Linux x86-64/ARM64, macOS Metal).
+- Gaps for this game, each with a workaround in this repo: depth range at 10^12 m (reversed-Z, logarithmic depth, or layered passes), double-precision positions, spheres and planet surfaces (Earth texture/shader), starfield, Sun glare, orbit lines, HUD/2D overlay, audio, save files.
+- Deliverables: `docs/luv-capabilities.md`, `docs/luv-wishlist.md`; recorded decisions for anything chosen (e.g. which luv systems to depend on).
+
+## Part 2: walking skeleton (priority 800)
+An ASDF system in this repo, built against luv pinned as a flake input, that opens a window and draws something, with a test and a screenshot command that work for an agent. Depends on part 1''s findings on how a luv program is built, started and screenshotted.
+- `flake.nix`: add luv as an input (pinned in `flake.lock`), a package and `apps.default` that start the game, a dev shell with SBCL/luv and `pm`.
+- An ASDF system (e.g. `luv-in-space.asd`, sources under `src/`), a window drawing something recognisable (e.g. a lit sphere for Earth and a starfield or a placeholder, marked `PLACEHOLDER(<task id>)` where it shows).
+- A test system run headless (e.g. `nix flake check` or a `make test`-like command), and a screenshot command that writes a PNG an agent can read.
+- The dev loop with a live image, if luv''s `./sly` setup can be reused here.
+- Fill in `AGENTS.md` "Commands": dev shell, build, run, test, screenshot, live image; verified from a clean checkout (`git clone` into a temp dir).
+
+## Part 3: architecture (priority 700)
+`docs/architecture.md`, grounded in parts 1 and 2.
+- How luv-in-space depends on luv: flake input, the ASDF systems it loads, the dev loop with a live image.
+- Module layout: physics/orbits, ship, bodies and ephemerides, rendering (camera-relative), cockpit/instruments, autopilot, story/quests, save/load, tests.
+- Units and coordinates: SI units, double-precision world positions across 10^12 m, frames (heliocentric, planet-centred, ship-local), camera-relative single-precision rendering, depth strategy.
+- Time and integration: fixed physics step, the integrator (e.g. symplectic for coasting, patched conics or n-body as decided), time warp levels and when they are allowed (no thrust under high warp?), on-rails bodies.
+- Testing: headless physics tests (energy and angular-momentum drift bounds, as `milestone 2: Flight core: Newtonian flight in near-Earth orbit` requires), scripted runs, screenshots.
+- Record the lasting technical choices as decisions (unit of length, coordinate frames, integrator, depth strategy).
+
+## Part 4: game design (priority 600)
+`docs/design.md`, written for implementers, within what parts 1 and 3 say luv and the architecture can carry.
+- The ship(s): bare steel frame, life-support module, tanks, engines and RCS thrusters, realistic propulsion (chemical, maybe electric), masses, Isp, delta-v budget; damage; how they look (built from simple meshes).
+- Flight: controls (keys/mouse/gamepad), views (cockpit, outside, map/orbit view), instruments, the autopilot and its presets, time warp, dying (crash into Earth or the Moon, Sun heat) and what follows (restart, checkpoint).
+- The cockpit: its DIY look (welded panels, taped labels, mismatched screens) and how each instrument is drawn (luv terminal screens, in-world text, needles).
+- The places: Earth-orbit points of interest (stations, depots, debris, towed asteroids), the Moon, near-Earth asteroids and the belt, planets in scope, the Sun; real orbital data where it matters (sources named).
+- Scope: a prioritised feature list; every feature assigned to milestone 2 (flight core), 3 (cockpit and autopilot), 4 (the solar system), 5 (story and quests), 6 (release), or cut with the reason (luv can''t carry it, or it costs far more than it shows).
+- Record lasting design choices as decisions (ship propulsion, how death works, which planets are in scope).
+
+## Part 5: story (priority 500)
+`docs/story.md`, using the ship, places and features of `docs/design.md`.
+- Setting (near future, early commercial spaceflight, the ship''s owner/pilot''s situation), characters, the prelude''s premise.
+- A linear quest line of 5 to 10 quests that teaches piloting step by step (orbit raising, rendezvous, docking or grappling, moving an asteroid, a lunar transfer, a trip out and a close call with the Sun, …) and uses the ship''s work; each quest with goal, place, skills taught, milestone that makes it playable, completion condition.
+- How quests are told: radio, messages, the cockpit''s screens; low-tech weapons only if the story needs them.
+- Record the lasting story choices (names, premise) as decisions.
+
+## Part 6: consistency check and sign-off (priority 400)
+Last: make the milestone''s "Done when" true.
+- The four documents agree with each other and with the skeleton (units, names, features, milestone assignments); every feature in `docs/design.md` is assigned to milestones 2 to 6 or cut; the story uses only features in scope by milestone 5.
+- The skeleton builds and runs from a clean checkout with the `AGENTS.md` commands, its test passes, the screenshot command works.
+- Add follow-up tasks for anything the later milestones need from these documents that is still missing.', '2026-10-14T16:06:30Z', NULL);
 INSERT INTO plan (id, milestone_id, subject, priority, body, created_at, created_by_task) VALUES (2, 2, 'masterplan', 1000, 'tbd.', '2026-10-14T16:06:59Z', NULL);
 INSERT INTO plan (id, milestone_id, subject, priority, body, created_at, created_by_task) VALUES (3, 3, 'masterplan', 1000, 'tbd.', '2026-10-14T16:07:00Z', NULL);
 INSERT INTO plan (id, milestone_id, subject, priority, body, created_at, created_by_task) VALUES (4, 4, 'masterplan', 1000, 'tbd.', '2026-10-14T16:07:01Z', NULL);
 INSERT INTO plan (id, milestone_id, subject, priority, body, created_at, created_by_task) VALUES (5, 5, 'masterplan', 1000, 'tbd.', '2026-10-14T16:07:15Z', NULL);
 INSERT INTO plan (id, milestone_id, subject, priority, body, created_at, created_by_task) VALUES (6, 6, 'masterplan', 1000, 'tbd.', '2026-10-14T16:07:32Z', NULL);
 
-INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (1, 1, 'write the masterplan of milestone 1: Scope and design: what luv can carry, what the game is', 'masterplan', 'open', NULL, NULL, 'Write `plan 1: masterplan`, the masterplan of `milestone 1: Scope and design: what luv can carry, what the game is`: expand on everything that needs to be done to achieve it,
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (1, 1, 'write the masterplan of milestone 1: Scope and design: what luv can carry, what the game is', 'masterplan', 'done', NULL, '2026-10-14, plan 1 body (tasks.sql)', 'Write `plan 1: masterplan`, the masterplan of `milestone 1: Scope and design: what luv can carry, what the game is`: expand on everything that needs to be done to achieve it,
 divided into parts. State in the masterplan that its own tasks are not implementation work: each of them writes the
-plan for one part.', '2026-10-14T16:06:30Z', NULL, NULL);
+plan for one part.', '2026-10-14T16:06:30Z', '2026-10-14T16:11:05Z', NULL);
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (2, 2, 'write the masterplan of milestone 2: Flight core: Newtonian flight in near-Earth orbit', 'masterplan', 'open', NULL, NULL, 'Write `plan 2: masterplan`, the masterplan of `milestone 2: Flight core: Newtonian flight in near-Earth orbit`: expand on everything that needs to be done to achieve it,
 divided into parts. State in the masterplan that its own tasks are not implementation work: each of them writes the
 plan for one part.', '2026-10-14T16:06:59Z', NULL, NULL);
@@ -263,3 +320,9 @@ plan for one part.', '2026-10-14T16:07:15Z', NULL, NULL);
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (6, 6, 'write the masterplan of milestone 6: Release: one command to play, a README for people', 'masterplan', 'open', NULL, NULL, 'Write `plan 6: masterplan`, the masterplan of `milestone 6: Release: one command to play, a README for people`: expand on everything that needs to be done to achieve it,
 divided into parts. State in the masterplan that its own tasks are not implementation work: each of them writes the
 plan for one part.', '2026-10-14T16:07:32Z', NULL, NULL);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (7, 1, 'create tasks for plan 1: masterplan', 'split', 'open', 1000, NULL, 'Split `plan 1: masterplan` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
+done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
+tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-14T16:11:02Z', NULL, 1);
+
+
+INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (1, 1, '2026-10-14T16:10:25Z', '2026-10-14T16:11:12Z', 'done', NULL, 0, 'dbb0732a624bc26e8981cc36772e27859e6c5ea6', 'claude-opus-5-5[1m]', '332e5758-5e41-45e9-975c-f9674f9ae310', 5, 10, 4524, 144844, 45557, 0.4839448, 2177276);

@@ -2340,9 +2340,9 @@ tasks for what the plan asks beyond them. A task that writes a plan gets `--kind
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (88, 19, 'create tasks for plan 19: Input and the outside view', 'split', 'done', 1000, '2026-10-14, tasks 119-121, decision 88: Warp keys while paused', 'Split `plan 19: Input and the outside view` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
 done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
 tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-14T22:38:44Z', '2026-10-14T23:01:49Z', 78, 0);
-INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (89, 20, 'create tasks for plan 20: The basic map', 'split', 'open', 1000, NULL, 'Split `plan 20: The basic map` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (89, 20, 'create tasks for plan 20: The basic map', 'split', 'done', 1000, '2026-10-14, tasks 122-127', 'Split `plan 20: The basic map` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
 done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
-tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-14T22:45:13Z', NULL, 79, 0);
+tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-14T22:45:13Z', '2026-10-14T23:03:21Z', 79, 0);
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (90, 21, 'create tasks for plan 21: Minimal readout, messages and the LOST panel', 'split', 'open', 1000, NULL, 'Split `plan 21: Minimal readout, messages and the LOST panel` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
 done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
 tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-14T22:48:59Z', NULL, 80, 0);
@@ -2655,6 +2655,133 @@ INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, crea
 ## Done when
 - `scripts/test` passes; `scripts/screenshot` unchanged (the default pose).
 - With `./sly play`: screenshots after `./sly eval` of a synthetic C press with the ship turned, of 10 wheel notches out and of a Home press show the expected views (looked at, then deleted); `./sly status` healthy; image stopped, no process left.', '2026-10-14T23:01:46Z', NULL, 88, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (122, 20, 'camera.lisp: the map view and map camera, framing, focus, zoom, drag and Home', 'work', 'open', NULL, NULL, 'Piece 1, first half, of `plan 20: The basic map`: the pure map camera. Runs after the tasks of `plan 19: Input and the outside view` (`camera.lisp`''s outside view, `game-view`, `input-frame!`''s drag and wheel deltas). Binding: `decision 83: Map camera: framing on opening, focus, zoom, drag and exposure`, `decision 82: Outside view camera: angles in a frame, toggles that keep the picture, distance and easing` (drag signs, log easing), `decision 30: Views and cameras`, `decision 5: Precision of positions`, `decision 68: Orbit elements: one struct for every conic`.
+
+## What
+- `src/camera.lisp`: `map-view` struct: focus `:earth` / `:ship`, basis e1, e2, n (double vec3s), azimuth, elevation, distance, target distance; lives in a `game` slot `map-view` with an `:initform` (not in the sim, not in checkpoints; kept across a restart).
+- `(map-view-open! view render-state)`: n = unit r × v, e1 = unit r, e2 = n × e1 (n = ICRF z when |r × v| < 1e-9 |r||v|); focus `:earth`, az −45°, el 30°, distance = target = 2.5 × max(apoapsis radius, |r|) (`|r|` on a hyperbola; `state->orbit` with μ⊕), clamped. Home calls it again.
+- `(map-view-cycle-focus! view)`: `:earth` ↔ `:ship`, keeping basis, az, el, distance, clamped to `(map-min-distance focus)` (50 m ship, 1.2 R⊕ Earth) and `*map-max-distance*` 1.5×10^13 m.
+- `(map-view-zoom! view factor)`: target × factor, clamped (wheel 1.2^(−notches), Page-up 1/10, Page-down 10).
+- `(map-view-drag! view dx dy)`: az −= 0.25° dx, el −= 0.25° dy, el clamped ±85°.
+- `(map-camera-update! camera view render-state elapsed)`: log easing of the distance, τ `*map-zoom-tau*` 0.15 s (snap when elapsed is nil); anchor `:earth` or `:ship`; offset = distance × (cos el cos az e1 + cos el sin az e2 + sin el n); looks at the focus with n''s projection as up; vertical FOV `*map-fov*` 50°. Conses nothing.
+- Tunables `defparameter`s citing `decision 83`.
+
+## Tests `tests/camera.lisp` (CPU; render states from `orbit-state` of the start orbit and a 400 × 2,000 km test orbit)
+- Opening: looks at Earth''s centre within 1e-12 rad; eye''s angle above the orbit plane 30° within 1e-12 rad, eye · n > 0; distance 2.5 Q within 1e-9 relative; the ship''s point not behind Earth (eye-to-ship segment misses the sphere) at u = 0°, 90°, 180°, 270° of the start orbit; a hyperbola (e = 1.5) opens at 2.5 |r|.
+- Frame stays: render states over a quarter orbit after opening leave the eye offset unchanged bit for bit.
+- Tab: `:ship` keeps az, el, distance and looks at the ship within 1e-12 rad; Tab again `:earth`; from a 20 m target the switch to Earth clamps to 1.2 R⊕.
+- Zoom: one notch up from 10,000 km → 8,333.3 km; Page-up from 10,000 km → 1,000 km, clamped to 7,654 km with Earth focus; 200 notches down stop at 1.5×10^13 m; ship focus 100 notches up stop at 50 m; after τ 1 − 1/e of the way in log within 1e-12; nil elapsed snaps; the ~80 notches from 1.2 R⊕ to 1.5×10^13 m (log(1.5e13 / 7.654e6) / log 1.2 ≈ 79.5).
+- Drag: dx 40 px → az −10°; dy −400 px → el 85°; Home restores az −45°, el 30° and the opening distance.
+- Precision: at 1.5×10^13 m from Earth the eye-relative single of Earth''s centre equals the double difference within 1e-6 relative; at ship focus 50 m the ship''s eye-relative single within 1e-4 m of the double one.
+- `map-camera-update!` over 1,000 frames conses nothing.
+
+## Docs
+- `docs/design.md` "Views" → Map: opening focus Earth (resolving "the ship (default when the map opens)"), az −45°, 50° FOV, Tab keeps the angles, Home re-frames (`decision 83`).
+- `docs/architecture.md` "Frames" → camera: the map camera as angles in a basis fixed at opening, anchored on Earth or the ship; "Files in load order": `camera.lisp` holds the map view.
+
+## Done when
+- `scripts/test` and `scripts/screenshot` pass (the outside view unchanged).', '2026-10-14T23:03:07Z', NULL, 89, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (123, 20, 'The map view wired in: M, Tab, Page keys, wheel, drag, Home, the map exposure and capture-state :view :map', 'work', 'open', NULL, NULL, 'Piece 1, second half, of `plan 20: The basic map`; after the task "camera.lisp: the map view and map camera, framing, focus, zoom, drag and Home". Binding: `decision 83: Map camera: framing on opening, focus, zoom, drag and exposure`, `decision 81: Input in milestone 2: held keys per frame, taps, gating and the shared key map`, `decision 76: Frame passes, radiance scale and exposure`, `decision 77: The frame in main.lisp: render state, capture of a given sim, part 4''s placeholders and first asset`, `decision 78: Sky in numbers: stars, Sun, Moon and Earth''s look` (the star radiance L(m)).
+
+## What
+- `src/input.lisp`: `:map` toggles `game-view` `:outside` ↔ `:map` (opening calls `map-view-open!`; leaving keeps the outside view as it was); `:map-focus` (Tab), `:map-zoom-in` / `:map-zoom-out` (Page-up / Page-down) act in `:map` only; Home in `:map` calls `map-view-open!`; C does nothing in `:map`; `input-frame!` sends drag deltas and wheel notches to the map view in `:map`; all act while paused, above ×4 and lost; remove `PLACEHOLDER(79)` from the handlers. A `view-changed` flag set on the toggle, read by the frame.
+- `src/post.lisp`: `*exposure-map*` 4.0 (`decision 83`); `exposure-target` takes the view and in `:map` returns `*exposure-map*` whatever the camera sees; the exposure snaps to the map''s on entering and to the outside target on leaving (the `view-changed` flag).
+- `src/main.lisp`: `draw` calls `map-camera-update!` in `:map`, `outside-camera-update!` in `:outside`, passes the view to `exposure-target` and `encode-frame`.
+- `src/capture.lisp`: `capture-state` takes `:view` (`:outside` default, `:map`), opening the map view on the captured state (snapped); `camera-fn` still overrides the pose (for `plan 22: Flight scripts and the Done when`''s map screenshots).
+
+## Tests
+- `tests/input.lisp`: M from `:outside` → `:map`, M again → `:outside` with the outside view unchanged bit for bit; Tab, Page keys and a drag act in `:map` and not in `:outside` (Page keys), a drag in `:map` leaves the outside view; wheel 2 notches in `:map`: target / 1.44; C in `:map` changes nothing; M, Tab, Page keys act while paused and lost.
+- `tests/post.lisp`: `exposure-target` in `:map` is `*exposure-map*`; entering snaps to 4.0, leaving snaps to the outside target; through `tone-map-srgb` at `*exposure-map*`: a magnitude 2.0 star''s peak radiance ≥ 30 of 255, a radiance-0.3 surface ≤ 240 of 255.
+- `tests/render.lisp` (GPU, the shared `with-capture-game`, 320×200, `:view :map` on the start state): Earth''s disc in the centre (centre pixel above background by a margin), corners at background, frame neither black nor white-out; `report-failed-live-artifacts` 0.
+
+## Docs
+- `docs/design.md` "Views" → Map: C ignored, the exposure 4.0 snapped; "Controls": Home in the map.
+- `AGENTS.md` "Commands" → Run: M opens the map.
+
+## Done when
+- `scripts/test` and `scripts/screenshot` pass.
+- `./sly start`, `./sly play`, `./sly eval` of a synthetic M press, `./sly screenshot /tmp/map.png`: Earth whole at the centre, stars around; Tab plus 30 wheel notches up show the ship close; Page-down ×6 shows Earth as a small disc. Screenshots looked at, then deleted; `./sly stop-playing`, `./sly stop`, no process left.', '2026-10-14T23:03:07Z', NULL, 89, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (124, 20, 'ribbons.lisp: osculating orbit points with adaptive splitting and the per-segment instances', 'work', 'open', NULL, NULL, 'Piece 2, CPU half, of `plan 20: The basic map`; after the map camera tasks of this plan. Binding: `decision 84: Map ribbons and markers: osculating orbit, adaptive segments, overlay markers and visibility`, `decision 68: Orbit elements: one struct for every conic`, `decision 5: Precision of positions`, `decision 34: How death works` (crash radius R⊕ + 100 km in `bodies.lisp`), `decision 12: Module layout and package split`.
+
+## What
+- `src/ribbons.lisp` (new; after `meshes.lisp`, before `post.lisp`; add to both systems in `luv-in-space.asd`).
+- `(orbit-ribbon-points! buffer orbit eye-rel-body focal-px)`: orbit from `state->orbit` of the render state''s r, v with μ⊕. Ellipse: 256 segments uniform in eccentric anomaly, points from (a (cos E − e), b sin E) rotated by the orbit''s angles in double, relative to Earth''s centre. Each segment split into 2^k pieces (k ≤ 8) so sagitta (chord² / (8 ρ), ρ the local radius of curvature) / eye distance to the segment × focal px ≤ `*ribbon-max-error-px*` 0.25; total ≤ `*ribbon-max-segments*` 8,192, lowering k from the farthest segments first. Hyperbola: H from −H_s to +H_s, H_s where r reaches Earth''s Laplace sphere radius (`bodies.lisp`), same splitting. Each point keeps its radius. Preallocated double buffer; conses nothing.
+- Instances: per segment both endpoints as (point + Earth − eye) in double, then single (`eye-relative-single`), and a linear colour: cyan #40D0FF, red #FF3030 where the segment''s midpoint radius is below the crash radius. Filled into a preallocated buffer (the GPU upload is the next task).
+- Tunables `defparameter`s citing `decision 84`.
+
+## Tests `tests/ribbons.lisp` (new, after `tests/meshes.lisp`, before `tests/post.lisp`)
+- On the conic: start orbit, e = 0.5, e = 0.9 and a hyperbola (e = 1.5): every point''s distance from Earth''s centre equals the conic''s radius at its anomaly within 1e-6 m.
+- Splitting: map camera at ship focus 50 m (start orbit, 1280×800): every segment whose midpoint is in front of the eye has its chord midpoint within 0.5 px of the true ellipse point at the mid-anomaly, projected through `camera-clip-rows!`; Earth focus at the opening distance: 256 segments; ship focus 50 m: below 8,192 (counts in the test''s comment).
+- Colour: 400 × 50 km orbit red exactly where the midpoint radius < R⊕ + 100 km, cyan elsewhere; the start orbit all cyan.
+- Precision: at ship focus 50 m the eye-relative single of the point nearest the ship within 1e-3 m of the double difference, while `(- (coerce p ''single-float) (coerce eye ''single-float))` is not.
+- 1,000 frames of points and instances cons nothing.
+
+## Docs
+- `docs/architecture.md` "Files in load order" (`ribbons.lisp`, `tests/ribbons.lisp` as built), "Floating-origin pitfalls" (orbit lines recomputed each frame in double relative to their body, split by pixel error, `decision 84`).
+- `docs/luv-capabilities.md` "Orbit lines and markers": the adaptive split with its measured segment counts replacing "assumed".
+
+## Done when
+- `scripts/test` and `scripts/screenshot` pass.', '2026-10-14T23:03:07Z', NULL, 89, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (125, 20, 'The ribbon pipeline: screen-space orbit line drawn in the map''s scene pass', 'work', 'open', NULL, NULL, 'Piece 2, GPU half, of `plan 20: The basic map`; after the task "ribbons.lisp: osculating orbit points with adaptive splitting and the per-segment instances". Binding: `decision 84: Map ribbons and markers: osculating orbit, adaptive segments, overlay markers and visibility`, `decision 4: Depth strategy`, `decision 11: Render pipelines are luv live shader pipelines`, `decision 76: Frame passes, radiance scale and exposure`. Reference: `docs/luv-capabilities.md` "Orbit lines and markers" (the ribbon of run 32 in the gap-probe appendix: one instance per segment, a 6-vertex quad expanded in the vertex shader) and "Rendering" (bind groups after each `set-pipeline`, `canvas-frame-resource-cache`).
+
+## What
+- `src/shaders.lisp`: a live ribbon pipeline, role `:ribbon`: the 6-vertex quad expanded to `*ribbon-width-px*` 2.0 px through `camera-clip-rows!`''s rows; endpoints behind the eye clipped to w = near; depth compare `:greater`, no depth write, additive; radiance = colour × `*ribbon-radiance*` 1.0 / the current exposure (a uniform).
+- The instance buffer per frame through `canvas-frame-resource-cache`.
+- `src/render.lisp`: in `:map` the ribbon draw after the meshes in the scene pass (`docs/architecture.md` "Rendering precision" step 4); nothing in `:outside`.
+
+## Tests `tests/render.lisp` (GPU, `:view :map` on the start state)
+- At least N pixels where blue and green exceed red by ≥ 60 lie on an annulus around Earth''s disc (N = first measured frame × 0.5, written in the test''s comment); the same frame with the ribbon draw disabled has none.
+- Eye in the orbit plane (el 0°): the ring''s pixels on Earth''s far side are absent (hidden by depth).
+- `report-failed-live-artifacts` 0.
+
+## Docs
+- `docs/luv-capabilities.md` "Orbit lines and markers": the ribbon as built, ran.
+- `docs/luv-wishlist.md`: a screen-space line or ribbon primitive in luv; workaround `ribbons.lisp` and its size in lines.
+- `docs/design.md` "Views" → Map: the red arc below the crash radius.
+
+## Done when
+- `scripts/test` and `scripts/screenshot` pass.
+- In `./sly play` with the map open, a `./sly screenshot` shows the cyan ring around Earth; after `./sly eval` of a 60 s retrograde burn through the controls (or a deorbit state via `capture-state`), the arc below 100 km is red. Frame rate in the map with ship focus at 50 m noted in the done note (not a gate). Screenshots looked at, then deleted; image stopped.', '2026-10-14T23:03:07Z', NULL, 89, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (126, 20, 'overlay.lisp: full glyph table, marker shapes and label-at!', 'work', 'open', NULL, NULL, 'Piece 3, first half, of `plan 20: The basic map`. Binding: `decision 7: Placeholder labels: dot-matrix overlay quads`, `decision 84: Map ribbons and markers: osculating orbit, adaptive segments, overlay markers and visibility`, `decision 85: Minimal readout: layout, formats, colours and alarms` (the readout of `plan 21: Minimal readout, messages and the LOST panel` shares this glyph table and `label-at!`: build them so it can reuse them; if its task already extended the table, complete it, don''t duplicate).
+
+## What
+- `src/overlay.lisp`: glyph table completed to A–Z, 0–9, space, `-`, `.`, `:` (5×7).
+- `(marker-vertices! out kind x y colour)`: screen-space triangles in the overlay pipeline (exact colours, after the tone map): `:ring` (16-segment outline, 2 px thick), `:diamond`, `:cross` (two 2 px bars), `:dot` (12-gon); size argument per kind as `decision 84` gives (ring 12 px, diamond 9 px, cross 12 px, dot 7 px).
+- `(label-at! out string x y colour)`: glyphs at a pixel position.
+- Preallocated vertex buffers; conses nothing per frame.
+
+## Tests (`tests/overlay.lisp`, new if none exists; in load order)
+- Every character of A–Z, 0–9, space, `-`, `.`, `:` has a glyph; every one except space has a lit cell.
+- Each marker kind''s triangles lie within its size''s box around (x, y); the ring has a hole at its centre, the dot covers it.
+- `label-at!` places the first glyph''s left edge at x and centres vertically on y as the caller passes it.
+- 1,000 frames of markers and labels cons nothing.
+
+## Done when
+- `scripts/test` and `scripts/screenshot` pass.', '2026-10-14T23:03:07Z', NULL, 89, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (127, 20, 'Map markers: ship, apsides, impact and small bodies with labels and visibility', 'work', 'open', NULL, NULL, 'Piece 3, second half, of `plan 20: The basic map`; after the ribbon tasks and "overlay.lisp: full glyph table, marker shapes and label-at!". Binding: `decision 84: Map ribbons and markers: osculating orbit, adaptive segments, overlay markers and visibility`, `decision 49: Story: names, call signs and ships` ("M-07"), `decision 34: How death works` (crash radius), `decision 68: Orbit elements: one struct for every conic`.
+
+## What
+- `src/ribbons.lisp`: `(map-markers render-state camera extent)` → the frame''s markers (kind, pixel position, colour, label or nil) from a preallocated list:
+  - Ship: `:ring` 12 px cyan at the interpolated r, always (even behind Earth), label "M-07".
+  - Apoapsis / periapsis: `:diamond` 9 px cyan at the apsides, "AP <n> KM" / "PE <n> KM", n the altitude above R⊕ rounded to whole km (`units.lisp`); no AP on a hyperbola.
+  - Impact: `:cross` 12 px red at the next inbound crossing of R⊕ + 100 km after t_r (`orbit-radius-crossings`, position from `orbit-state`), "IMPACT"; none when the orbit misses.
+  - Bodies: Earth, the Moon (`body-state` at t_r), the Sun, when H tan(asin(R/d)) / tan(fov/2) < `*marker-body-px*` 6: `:dot` 7 px grey #8A8A80, "EARTH", "MOON", "SUN"; impostors still draw.
+  - Visibility: a marker other than the ship''s (and its label) dropped when behind the eye or the eye-to-point segment meets Earth''s or the Moon''s sphere (double; Earth''s own marker tests only the Moon and vice versa).
+  - Labels paper white #E8E4D8, 8 px right of the marker''s centre, vertically centred.
+- `src/render.lisp`: in `:map` the markers and labels in the overlay pass, before the readout of `plan 21: Minimal readout, messages and the LOST panel`.
+
+## Tests
+- `tests/ribbons.lisp` (CPU): 400 × 2,000 km orbit at the opening frame: AP and PE markers at the `camera-clip-rows!` pixels of the apsides within 0.5 px, labels "AP 2000 KM" and "PE 400 KM"; the hyperbola PE only. Impact: 400 × 50 km orbit gives a marker at the inbound crossing (radius R⊕ + 100 km within 1e-3 m, time after t_r); the start orbit none. Visibility: eye in the orbit plane, periapsis on Earth''s far side → no PE; the ship''s marker stays behind Earth. Bodies: opening frame, no Earth marker; the Moon checked against the formula; at 1.5×10^13 m Earth and Sun markers, labelled. Labels: every label character has a glyph. `map-markers` over 1,000 frames conses nothing.
+- `tests/render.lisp` (GPU, `:view :map` on the 400 × 2,000 km orbit): the AP marker''s centre pixel exactly #40D0FF, a pixel of its label exactly #E8E4D8; `report-failed-live-artifacts` 0; whole `scripts/test` under ~15 s (measured, in the done note).
+
+## Docs
+- `docs/design.md` "Views" → Map: marker shapes, sizes, labels, visibility (`decision 84`).
+- `docs/architecture.md` "Rendering precision" → draw order: markers and labels in the overlay pass.
+- `AGENTS.md` "Layout": `src/` has `ribbons.lisp`, the map.
+
+## Done when
+- `scripts/test` and `scripts/screenshot` pass.
+- `./sly play`, M and a screenshot: the ring, AP and PE with labels, the ship''s ring; after a retrograde burn lowering periapsis under 100 km, the red arc and IMPACT; Page-down to 100 AU: labelled EARTH and SUN. Screenshots looked at, then deleted; image stopped, no process left.', '2026-10-14T23:03:07Z', NULL, 89, 0);
 
 INSERT INTO decision (id, subject, status, options, body, answer, reason, created_at, closed_at, created_by_task, signoff, kind, decided_by_task, consequences) VALUES (1, 'How the game consumes luv', 'answered', '[]', 'Findings of `task 17: Build and run luv''s programs and test suite; record the runs` (docs/luv-capabilities.md, Packaging and Runs).
 - luv''s flake exports apps, devShells, packages and lib; lib has only environmentFor, which returns everything the packaging needs (pkgs, lisp, applicationEnvironment/Packages, developmentEnvironmentHook, slynkSource, swashPackage, …). No overlays.
@@ -2845,6 +2972,7 @@ INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, b
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (84, 86, '2026-10-14T22:58:42Z', '2026-10-14T22:59:48Z', 'done', NULL, 0, '7077bb6e0548a19070d05326590c40a02c5eadfa', 'claude-opus-5-5[1m]', '64715707-cef4-4f43-9def-d2f8b6c98b45', 9, 18, 6642, 357314, 39775, 0.5225748, 2373073);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (85, 87, '2026-10-14T22:59:48Z', '2026-10-14T23:00:43Z', 'done', NULL, 0, 'ee05876b5f81e730a7f20b77e3a247ae81f085e8', 'claude-opus-5-5[1m]', '6b011c1c-b59b-41f1-9f96-ac3f5e3d60ee', 8, 16, 5849, 330743, 42277, 0.5214086, 2373073);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (86, 88, '2026-10-14T23:00:43Z', '2026-10-14T23:01:55Z', 'done', NULL, 0, 'dd0aa2ce4475361498fb9fb6dfdc80c62fccb3ed', 'claude-opus-5-5[1m]', 'b4cef350-1cec-48dc-9243-128e842ff8a1', 7, 14, 7724, 255774, 37593, 0.5064348, 2373073);
+INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (87, 89, '2026-10-14T23:01:55Z', '2026-10-14T23:03:27Z', 'done', NULL, 0, 'a1e88ab89a94bf5f2b99789c289ae0be252e31d8', 'claude-opus-5-5[1m]', '8982431f-3a18-4fbf-a74f-6c2011f50543', 9, 18, 10528, 384927, 52109, 0.7044894, 2373073);
 
 INSERT INTO task_decision (task_id, decision_id) VALUES (44, 28);
 INSERT INTO task_decision (task_id, decision_id) VALUES (44, 45);

@@ -192,7 +192,7 @@ Built from the tug's parts so they read as the same technology, and all on Keple
 
 ## Flight
 
-How the ship is flown: controls, control modes, views, instruments, time warp, the autopilot, grappling and towing, dying, saving and sound.
+How the ship is flown: controls, control modes, views, instruments, time warp, the autopilot, grappling and towing, dying, saving, sound, and the title screen and menus around the flight.
 
 ### Controls
 Keyboard and mouse through luv's canvas events (`docs/luv-capabilities.md` "Windowing and input"); the lasting choice is `decision 29: Control scheme: key map, control modes, gamepad`. Code: `input.lisp` turns events into `controls` (`controls.lisp`), which the autopilot and flight scripts also write.
@@ -347,7 +347,8 @@ The flight computer's planner: it plans burns from the current state to a goal, 
   - Capture: at the periapsis of the current body, into a circular orbit or one with a set apoapsis (LOI; Earth capture on return); captures planned as part of a rendezvous take the phasing in them at no extra Δv.
   - Rendezvous with a place in another sphere of influence (Peary Depot from Earth orbit, Highport or Skua Yard from the Moon) as one chain, and with a target on a hyperbola ("Rendezvous: 2040 BQ7"), by the searches of "Rendezvous: search, phasing and the approach".
   - Return: TEI from lunar orbit to an Earth periapsis of 400 km, then capture.
-  - Transfer to an asteroid or planet in scope ("The places"): a Lambert search over departure dates in the next 2 years and flight times up to 1.5 × the Hohmann time, for the least total Δv; departure burn from Earth orbit; mid-course corrections at 10 %, 50 % and 90 % of the coast (each typically under 10 m/s, from the ephemeris and integration difference); arrival as a rendezvous (asteroid, stop at 1 km then as in `milestone 3`) or a capture (planet).
+  - Mid-course corrections at 10 %, 50 % and 90 % of a coast between bodies (each typically under 10 m/s, from the ephemeris and integration difference).
+  - Transfers to an asteroid or a planet: cut (`decision 62: Scope: must rows for each milestone's Outcome`, partly superseding `decision 32`): none is a destination ("The places"); 2040 BQ7 is met inside Earth's sphere by "Rendezvous: 2040 BQ7".
 - Not planned: landings (none exist), aerobraking (no atmosphere model, `decision 17`), gravity assists and low-thrust spirals (cost far more than they show; pillar "small and finished").
 - Picking a preset: O opens the autopilot screen (a cockpit screen from `milestone 3`, "The cockpit"; in the outside and map views a panel of the overlay): the list of manoeuvres, then their goals (altitudes, inclinations, the selected target or a place). Up/Down move, Left/Right change a value (altitude in 10 km steps, inclination in 0.5° steps, held keys accelerate ×10 after 1 s; a place from the list), Return plans. Places of `places.lisp` appear as one-line presets ("Rendezvous: <place>").
 - Showing the plan, before and while it runs:
@@ -544,6 +545,15 @@ Only what travels through the hull and the cab's air: there is no sound in vacuu
 - Key: U toggles sound on and off (from the free keys of "Controls"); the state is kept in the resume file.
 - No audio device (headless agents, `nix flake check`): the game runs silent; tests never open the sink.
 
+### Title screen and menus
+`milestone 6` (its Outcome: "a title screen, a short introduction, the controls in game"); `decision 42: Scope: what each milestone builds`. Code: `title.lisp`, drawn by the overlay pass with Slug text (`docs/architecture.md` "Files in load order"). Before `milestone 6` the game starts straight into the flight and the window title lists the main keys ("Controls").
+- Title screen: the game's name over the scene of the start (the ship in its orbit, slowly turning outside view, paused simulation); entries Continue (only with a `resume.sexp`, "Saving"), New game (with a confirmation if saves exist), Controls, Credits, Quit; Up/Down and Return, or a click.
+- Introduction: shown once before the first flight of a new game, the text of `docs/story.md` "Introduction"; Return or a click starts the flight.
+- Controls help (F1, and Controls on the title screen and in the Escape menu): the key map of "Controls" by group, with the layout's characters; F1 pauses the flight while it shows.
+- Escape menu: pauses; Resume, Controls, Credits, Quit (Quit writes `resume.sexp`, "Saving").
+- Credits: `CREDITS.md` (`decision 13: Asset storage and attribution`) as scrolling text, luv and Mikael Brockman first.
+- What it is for: a smooth first minute for a new player (`milestone 6`); the menus never change the simulation's state.
+
 ### Not in "Flight"
 - Cut, with the reason (pillar "small and finished" unless named): docking ports and crew transfer (`decision 24`), EVA, landing on any body (the tug has no legs; pillar "the ship is a tool"), aerobraking and drag (`decision 17: Gravity model`), automatic warp by the autopilot, a debris or explosion simulation, per-part damage (`decision 25: Damage model`), recorded radio voices, manual save slots.
 
@@ -733,7 +743,7 @@ The ship's work with asteroids is near Earth, where its Δv and 180 person-days 
   - Rails: the rock is on heliocentric elements outside Earth's sphere of influence and on a geocentric hyperbola inside it; a rails object switches bodies at the sphere's boundary (`docs/architecture.md` "Hyperbolic rails" and "Rails across spheres of influence", `decision 46: Rails across spheres, hyperbolas and re-entry`).
   - BAGGER 3, the probe that netted it (`docs/story.md` "Other ships"): on the rock's own rails, shifted in time: its state at t is the rock's at t + Δt, Δt = 1 km / v(400,000 km), v = √(v∞² + 2μ⊕/r): 0.668 s at v∞ 0.5 km/s, 0.626 s at 0.75, 0.578 s at 1.0. So it rides 1 km ahead of the rock at 400,000 km, 1.09 km where the tug meets it (325,700 km at v∞ 0.75), 0.3–0.6 km ahead far out, ~6–7 km ahead at perigee. It stays on those rails when the rock is grappled: it passes perigee and leaves Earth on the rock's outbound hyperbola, out of view.
   - The rock's fixture axis (+x) is held inertially against the rock's velocity at 400,000 km inbound (the bagger left it so): the autopilot's aim point, 1 km behind the rock, lies on the fixture axis, and BAGGER 3 is ~1 km on the far side of the rock, ~2 km from the aim point and ~1 km from the approach; by the meeting near 325,000 km the path has turned only 0.6°. Over the last 1.5 days' fall to perigee the path turns, the axis does not; the grapple comes early in it.
-- Real asteroids on the map (`milestone 4`, "should", raised from "could" by `decision 42: Scope: what each milestone builds` so the belt is in the sky): markers with labels and their orbits as 1 px lines, on Kepler rails around the Sun from JPL Small-Body Database elements; no meshes (none is reached):
+- Real asteroids on the map (`milestone 4`, "must", raised from "could" by `decision 42: Scope: what each milestone builds` and to "must" by `decision 62: Scope: must rows for each milestone's Outcome`, so the belt is in the sky as `milestone 4`'s Outcome asks): markers with labels and their orbits as 1 px lines, on Kepler rails around the Sun from JPL Small-Body Database elements; no meshes (none is reached):
   - (469219) Kamoʻoalewa, Earth's quasi-satellite, 40–100 m (H 24.3), possibly lunar ejecta (Sharkey et al. 2021, Communications Earth & Environment), China's Tianwen-2 target (launched 2025-05-28 UTC); by the elements below it stays 0.04–0.45 AU from Earth over 2040–2049.
   - The belt's four largest, (1) Ceres, (4) Vesta, (2) Pallas, (10) Hygiea.
   - Elements from the JPL Small-Body Database API (read 2026-10-14), heliocentric, ecliptic and equinox J2000 (rotated to ICRF by the obliquity, as Standish's, `decision 18`), osculating at epoch JD 2461200.5 TDB (2026-06-09); `places.lisp` takes them to the nearest 10⁻⁶ AU and 10⁻⁴°. Propagated as two-body Kepler orbits from 2026 into the 2040s they drift from the truth by planetary perturbations (largest for Kamoʻoalewa near Earth), invisible on a map line; no object is reached. 2008 EV5 is listed for the Δv scan only, not drawn.
@@ -854,7 +864,7 @@ Real data and assets of this section, each with the URL and the date it was read
 
 ## Scope
 
-The prioritised feature list is the specification of `milestone 2: Flight core: Newtonian flight in near-Earth orbit` to `milestone 6: Release: one command to play, a README for people`: each milestone builds the rows assigned to it, "must" first, then "should", then "could" as time allows; a row assigned to a milestone may be extended by later ones, as the sections above say. Cut rows give the reason, usually a pillar ("The game in one page"). The lasting choices are `decision 41: Weapons: cut` and `decision 42: Scope: what each milestone builds`. The section ends with each milestone checked against its Outcome and Done when, and with what `docs/story.md` may use.
+The prioritised feature list is the specification of `milestone 2: Flight core: Newtonian flight in near-Earth orbit` to `milestone 6: Release: one command to play, a README for people`: each milestone builds the rows assigned to it, "must" first, then "should", then "could" as time allows; a row assigned to a milestone may be extended by later ones, as the sections above say. Cut rows give the reason, usually a pillar ("The game in one page"). The lasting choices are `decision 41: Weapons: cut`, `decision 42: Scope: what each milestone builds` and `decision 62: Scope: must rows for each milestone's Outcome`. The section ends with each milestone checked against its Outcome and Done when, and with what `docs/story.md` may use.
 
 ### Feature list
 Priority: **must** (the milestone's Outcome or Done when needs it, or the game breaks without it), **should** (plainly worth its cost; dropped only with a recorded reason), **could** (only if time is left; a later milestone may pick it up).
@@ -877,14 +887,14 @@ Priority: **must** (the milestone's Outcome or Done when needs it, or the game b
 | Earth: Blue Marble impostor (January), atmosphere rim and halo | must | 2 | `milestone 2` Outcome; "Earth", `decision 40` |
 | Stars (HYG ≤ 6.5 mag), the Sun's disc and glare, bloom and exposure | must | 2 | `milestone 2` Outcome; "The Sun", `decision 13` |
 | The Moon as a body in the sky, untextured (flat grey Lambert sphere) | must | 2 | it pulls and is seen; the texture is 4's |
-| The Mule's meshes, materials and lights | must | 2 | `milestone 2` Outcome; "How they look" |
+| The Mule's meshes, materials and lights; the registration M-07 stencilled on the cab | must | 2 | `milestone 2` Outcome; "How they look", `decision 49` |
 | Engine glow; navigation lights and strobe | should | 2 | "How they look" |
-| Crash into Earth (100 km sphere), exact impact time | must | 2 | the developer's idea; "Dying and what follows", `decision 34` |
+| Crash into Earth (100 km sphere) or the Moon (its surface), exact impact time | must | 2 | the developer's idea; "Dying and what follows", `decision 34` |
 | LOST panel, restart from the start state (in memory) | must | 2 | `milestone 2` Outcome; "What follows" |
 | Flight scripts `burn`, `raise-orbit`, `deorbit` with screenshots | must | 2 | `milestone 2` Done when; `decision 21` |
 | Physics drift tests | must | 2 | `milestone 2` Constraints; `decision 21` |
 | Window title listing the main keys | must | 2 | the controls help comes in 6 |
-| The DIY cockpit: cab interior, rack, cables, tape labels, window, portholes | must | 3 | the developer's idea; `milestone 3` Outcome; "The DIY look", `decision 36` |
+| The DIY cockpit: cab interior, rack, cables, tape labels, window, portholes, the name plate "M-07  PATIENCE" | must | 3 | the developer's idea; `milestone 3` Outcome; "The DIY look", `decision 36` |
 | Cockpit view: eye point, head look, zoom; V toggles views | must | 3 | "Views", `decision 30` |
 | Cockpit screens (ORBIT, ATTITUDE, TARGET, AUTOPILOT, SHIP, COMMS) in Slug text and ribbons | must | 3 | flying from the cockpit alone; "Instruments and how each is drawn" |
 | Dot-matrix strip, lamps, needle gauges, throttle lever | must | 3 | "Instruments and how each is drawn" |
@@ -904,37 +914,37 @@ Priority: **must** (the milestone's Outcome or Done when needs it, or the game b
 | Contact with objects: bounce ≤ 1.0 m/s, death above | must | 3 | "Grappling and berthing", `decision 33` |
 | Released objects re-enter (the derelict burns up) | must | 3 | the derelict's job; `decision 46` |
 | Deliveries: a load released still within 100 m of Highport's plant fixture (Peary Depot's berth in 4) is taken in after 600 s | must | 3 | the yard's rocks go somewhere; "Towing", `docs/story.md` |
-| Other ships as scenery at the places (capsule at Tern, tanker at Fulmar, Mules at Highport, rock mover at Skua Yard), on rails | should | 3 | the places' life; "Other ships", `decision 27` |
+| Other ships as scenery at the places (capsule at Tern, tanker at Fulmar, Mules at Highport, rock mover at Skua Yard), on rails | must | 3 | the places' life, and `milestone 5`'s "other ships at their work"; part of the places' shapes; "Other ships", `decision 27`, `decision 62` |
 | SHIP messages on the strip and COMMS; Y acknowledges | must | 3 | "Messages and radio", `decision 37` |
+| Overlay in the outside and map views: the latest message line, the autopilot panel | must | 3 | "Interaction", "The autopilot" |
 | Checkpoints in memory after a completed plan and on berthing | must | 3 | "What follows", `decision 34` |
 | Earth's night lights (Black Marble 2016) | should | 3 | half of every orbit is night; "Earth" |
 | Earth's static cloud layer | should | 3 | Earth reads as a planet; "Earth" |
-| Autopilot headless test per Earth-orbit preset; a cockpit rendezvous and capture with screenshots | must | 3 | `milestone 3` Done when |
+| Autopilot headless test per Earth-orbit preset, the rendezvous and approach scripts; each preset once in the game, and a cockpit rendezvous and capture, with screenshots | must | 3 | `milestone 3` Done when; "Scripted runs" |
 | Moon: LROC colour mosaic and LOLA normal map, Peary Depot (100 km polar) | must | 4 | the developer's idea; `milestone 4` Outcome; "The Moon" |
 | Autopilot across SOIs: TLI, capture, TEI and Earth capture; "Rendezvous: Peary Depot" as one chain; the intercept of a target on a hyperbola (with the passing rock, "should") | must | 4 | `milestone 4` Outcome; "The autopilot", "Rendezvous: search, phasing and the approach", `decision 54` |
-| Re-centring between Earth, Moon and Sun frames; SOI on the map and ORBIT screen | must | 4 | `decision 15`; "Views" |
-| Planets: all eight on rails, gravity in the Sun frame, point sprites, map impostors and orbits | must | 4 | `milestone 4` Outcome (planets shown, none a destination); "Planets" |
+| Re-centring between Earth, Moon and Sun frames; SOI on the map and ORBIT screen; the Moon's orbit and map focus on the Moon and the Sun | must | 4 | `decision 15`; "Views" |
+| Planets: all eight on rails, gravity in the Sun frame, point sprites, map impostors and orbits, crash spheres | must | 4 | `milestone 4` Outcome (planets shown, none a destination); "Planets" |
 | The Sun's heat: hull temperature, TEMP lamp, hull gauge, danger circles on the map, window tint | must | 4 | the developer's idea; `milestone 4` Outcome; "The Sun", `decision 34` |
 | Sun death flight script | must | 4 | `milestone 4` Done when |
 | Life support: consumables, alarms, death at zero | must | 4 | transfers last weeks; "Dying and what follows" |
 | Asteroid meshes (displaced icospheres, nets, fixtures) | must | 4 | Skua Yard's rocks use them; drawn as spheres in 3 until then; "Asteroids" |
 | The passing rock: an invented 50 t NEA captured into Highport's orbit, with its bagger probe on its rails | should | 4 | asteroid work beyond Earth orbit; needs hyperbolic and SOI-crossing rails (`decision 46`); "Asteroids" |
-| Real asteroids on the map: Kamoʻoalewa, Ceres, Vesta, Pallas, Hygiea | should | 4 | the belt in the sky as `milestone 4` asks, for five markers and lines (raised from "could", `decision 42`); "Asteroids" |
+| Real asteroids on the map: Kamoʻoalewa, Ceres, Vesta, Pallas, Hygiea | must | 4 | the belt in the sky as `milestone 4`'s Outcome asks, for five markers and lines (raised from "could", `decision 42`; to "must", `decision 62`); "Asteroids" |
 | The belt's extent as a faint band in the map | could | 4 | "Asteroids" |
 | Moon textures at 16k through a pinned Nix fetch | could | 4 | the committed 4k is enough; `decision 13` |
-| Autopilot headless test per destination (Peary Depot, the passing rock) | must | 4 | `milestone 4` Done when |
+| Autopilot headless test per destination (Peary Depot and the return, the passing rock), each once in the game with screenshots | must | 4 | `milestone 4` Done when; "Scripted runs" |
 | Quest line (`quests.lisp`): steps given, tracked, completed, its checkpoints | must | 5 | the developer's idea; `milestone 5` Outcome; `docs/story.md` |
 | RADIO and JOB channels on COMMS, MSG lamp, light-time delay | must | 5 | "Messages and radio", `decision 37` |
-| Static texts: the ship's name above the window, tape notes | must | 5 | "Messages and radio" |
-| The story's start date, ship name and place names | must | 5 | `docs/story.md`; "The start" |
+| Static texts: the three tape notes on the console (the name plate comes with the cockpit in 3) | must | 5 | "Messages and radio", `docs/story.md` "Static texts" |
 | Story ships moving between places (element changes beyond 200 km): THRIFT and TANKER 3, parked ahead of Highport between trips, THRIFT then half a turn ahead of Peary Depot, TANKER 3 2 km ahead of Fulmar Depot | should | 5 | "Other ships at their work"; `decision 27`; `decision 58`; "Earth-orbit points of interest", "The Moon" |
 | Saves: `checkpoint.sexp`, `resume.sexp` | must | 5 | `milestone 5` Outcome; "Saving", `decision 35` |
 | Checkpoint floors per quest step; the stranded offer (CAIRN OPS, Y restores the last checkpoint) | must | 5 | no dead end in the quest line; "Saving", "Dying and what follows", `docs/story.md` |
 | POD 14 in Skua Yard, the yard's layout | must | 5 | `docs/story.md` quest 7; "Earth-orbit points of interest" |
-| Headless play-through of the whole quest line | must | 5 | `milestone 5` Done when |
-| Title screen (Continue, New game, Controls, Credits, Quit) | must | 6 | `milestone 6` Outcome; `title.lisp` |
-| Short introduction before the first flight | must | 6 | `milestone 6` Outcome; text from `docs/story.md` |
-| Controls help (F1), Escape menu | must | 6 | `milestone 6` Outcome; "Controls" |
+| Headless play-through of the whole quest line; each quest flown once in the game with screenshots | must | 5 | `milestone 5` Done when; `docs/architecture.md` "The quest play-through" |
+| Title screen (Continue, New game, Controls, Credits, Quit) | must | 6 | `milestone 6` Outcome; "Title screen and menus" |
+| Short introduction before the first flight | must | 6 | `milestone 6` Outcome; "Title screen and menus", text from `docs/story.md` |
+| Controls help (F1), Escape menu | must | 6 | `milestone 6` Outcome; "Controls", "Title screen and menus" |
 | Credits screen from `CREDITS.md` | must | 6 | `decision 13` |
 | `README.md`: what it is, what it shows of luv, screenshots, a short recording, how to run, credits | must | 6 | `milestone 6` Outcome |
 | `nix run github:rubenmoor/luv-in-space` on x86-64 Linux | must | 6 | `milestone 6` Done when; `decision 6` |
@@ -952,7 +962,7 @@ Priority: **must** (the milestone's Outcome or Done when needs it, or the game b
 | Electric drive; storable hypergolic engine | — | cut | not flyable under the ×1,000 thrust limit; less Δv; "Propulsion" |
 | Power, boil-off, ullage, slosh, stack flexing simulated | — | cut | pillar "small and finished"; "Parts", "Towing" |
 | Other playable ships; other ships thrusting in view | — | cut | one ship done well; rails only, `decision 27` |
-| Automatic warp by the autopilot; gravity assists; low-thrust spirals | — | cut | "The autopilot" |
+| Automatic warp by the autopilot; gravity assists; low-thrust spirals; transfers to asteroids and planets | — | cut | "The autopilot"; no asteroid or planet is a destination, `decision 62` |
 | Destinations: GEO, Lagrange points and NRHO, Venus, Mars, outer planets, Kamoʻoalewa, the main belt | — | cut | no work there, three-body motion, or beyond Δv and 180 person-days; "The places", "Δv checked against the ship" |
 | Dense asteroid field, constellations as traffic | — | cut | the real belt is empty to the eye; dots nobody works with |
 | Planet textures; Earth's seasonal textures, aurorae, weather, relief; earthlight in the cab | — | cut | below a pixel or seen by few, for an asset or a light each |
@@ -976,9 +986,10 @@ Priority: **must** (the milestone's Outcome or Done when needs it, or the game b
 ### Each milestone against its Outcome and Done when
 - `milestone 2`: start in LEO, integrated orbits with Earth, Moon and Sun, the rigid ship with RCS and propellant flown by hand, Earth, space, Sun and stars, the outside view, crash into Earth and a restart, the minimal readout; the Done when's raise and deorbit are the flight scripts. The Moon is drawn untextured until 4.
 - `milestone 3`: the cockpit, the autopilot within Earth's sphere, five Earth-orbit presets, grappling. Its "terminal screens" are an example, not a requirement: the COMMS screen gives the look without Ghostty (`decision 36`). "Asteroids being towed" are Skua Yard's rocks. The derelict's push to re-entry is flown by hand, since the autopilot's 150 km floor forbids it; its rendezvous is a preset like the others, so every preset is reached by autopilot.
-- `milestone 4`: the design wins inside the milestone's intent: the Moon is a destination (Peary Depot); the planets are "in scope" as bodies on real orbits, rendered from point sprites to map impostors, but none is a destination; the asteroid belt is in the sky and on the map (five real asteroids, "should"), not a destination, since its Δv and travel time are beyond the ship ("Δv checked against the ship"). Asteroid work is Skua Yard's rocks (from 3) and the passing rock ("should"); the Sun kills, tested by a flight script. "Every destination in scope" is Peary Depot and, if built, the passing rock.
-- `milestone 5`: quests, the story's characters and ships, other ships at their work on rails, saves. Its "low-tech weapons if the story uses them" is settled: none (`decision 41`).
+- `milestone 4`: the design wins inside the milestone's intent: the Moon is a destination (Peary Depot); the planets are "in scope" as bodies on real orbits, rendered from point sprites to map impostors, but none is a destination; the asteroid belt is in the sky and on the map (five real asteroids, "must", `decision 62`), not a destination, since its Δv and travel time are beyond the ship ("Δv checked against the ship"). Asteroid work is Skua Yard's rocks (from 3) and the passing rock ("should"); the Sun kills, tested by a flight script. "Every destination in scope" is Peary Depot and, if built, the passing rock.
+- `milestone 5`: quests, the story's characters and ships, saves; "other ships at their work" are the scenery ships at the places ("must" from 3, `decision 62`), joined by THRIFT's and TANKER 3's trips ("should"). Its "low-tech weapons if the story uses them" is settled: none (`decision 41`).
 - `milestone 6`: `nix run`, title screen, introduction, controls in game, performance, README; credits and sound join it here.
+- A milestone's Outcome may be met by a "must" row of an earlier milestone that it keeps (`decision 62`): Skua Yard's rocks (3) for 4's asteroid work, the scenery ships (3) for 5.
 - No real contradiction with a milestone remains, so no human decision is needed.
 
 ### What the story may use
@@ -997,6 +1008,6 @@ Priority: **must** (the milestone's Outcome or Done when needs it, or the game b
   - The passing rock (if built, "should"): 2040 BQ7, a 50 t NEA captured into Highport's orbit, perigee 2040-03-12 (`decision 50`).
   - The planets and the belt's large asteroids in the sky and on the map, never visited; the Sun's heat and death (warning at 0.551 AU); life support of 180 person-days.
 - `milestone 5`:
-  - Messages: RADIO (sender, text, light-time delay, no reply choices), JOB (the job card), static texts (the ship's name, up to three tape notes) (`decision 37`).
+  - Messages: RADIO (sender, text, light-time delay, no reply choices), JOB (the job card), static texts (up to three tape notes; the registration is on the hull from 2, the name plate in the cockpit from 3) (`decision 37`).
   - Story ships that depart and arrive on rails, out of view (`decision 27`); checkpoints at quest steps, vetoed below a step's Δv floor; the stranded offer; POD 14 in Skua Yard; quest steps may require an acknowledgement (Y).
   - No weapons, no fights, no landing, no money, no EVA.

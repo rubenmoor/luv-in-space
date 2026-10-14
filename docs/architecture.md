@@ -89,26 +89,26 @@ In brackets: the milestone that first creates the file; later milestones extend 
 - `clock.lisp` (milestone 2; 3: checkpoints after plans and berthing): simulation clock, fixed steps, time warp levels and their rules, rails switching; the simulation state as one copyable object, and checkpoints as in-memory snapshots of it ("Checkpoints"); needs physics, controls; asks `prediction.lisp`, loaded later, for the next event (a call at run time, not a load dependency).
 - `hazards.lisp` (milestone 2: crash; 3: contact; 4: Sun, life support): crash detection against bodies for the ship and promoted objects (an object's crash removes it), contact with objects (capture, bounce, death), the hull temperature, consumables, death and its cause; needs physics, bodies, ship.
 - `prediction.lisp` (milestone 2: events for warp drop-outs and flight scripts; 3: trajectories for orbit lines, instruments and the autopilot): trajectory prediction; needs orbits, clock, hazards.
-- `autopilot.lisp` (milestone 3): orbit targeting, burns, presets; writes `controls`; needs prediction, controls.
-- `places.lisp` (milestone 3: Earth orbit; 4: Moon, belt): points of interest in Earth orbit, asteroids, destinations of presets; from `milestone 5` the story ships' schedules ("Story ships' schedules"); needs bodies, orbits.
+- `autopilot.lisp` (milestone 3; 4: across spheres of influence, hyperbolic targets): orbit targeting, burns, presets; writes `controls`; needs prediction, controls.
+- `places.lisp` (milestone 3: Earth orbit, the scenery ships; 4: Moon, the passing rock, real asteroids; 5: POD 14): points of interest in Earth orbit, asteroids, destinations of presets; from `milestone 5` the story ships' schedules ("Story ships' schedules"); needs bodies, orbits.
 - `quests.lisp` (milestone 5): the quest line: state, triggers, messages; needs places, autopilot.
 - `saves.lisp` (milestone 5): versioned s-expression save files, atomic writes, under `$XDG_DATA_HOME/luv-in-space/`; writes the clock's snapshots as `checkpoint.sexp` and `resume.sexp` (`decision 35: Saving and audio`); needs quests, ship, clock.
 - `flights.lisp` (milestone 2; 3: pilot actions, stated starts; 5: quests, chained starts): flight scripts: read a script, write its actions to `controls` per step, the terminal approach, start states, run it headless or in the live game ("Scripted runs"); the last simulation file, so new simulation files go before it; needs controls, clock, prediction, and from their milestones autopilot, places, quests, saves.
 - `shaders.lisp` (skeleton): all `define-shader`s and `shader-specification-for` methods (package `luv-in-space.shaders`); split into `shaders-<pass>.lisp` after it when it grows; needs package.
 - `assets.lisp` (milestone 2): locating and loading assets: textures through `sdl3-image`, the star table; needs package.
 - `gpu.lisp` (milestone 2): HAL helpers: buffers, live pipelines, views and size-cached targets (from the skeleton's `scene.lisp`); needs shaders.
-- `camera.lisp` (milestone 2): camera state, the one projection function (reversed-Z, infinite far, clip-y flip), camera-relative conversion; needs math, gpu.
+- `camera.lisp` (milestone 2; 3: cockpit view): camera state, the one projection function (reversed-Z, infinite far, clip-y flip), camera-relative conversion; needs math, gpu.
 - `stars.lisp` (milestone 2): star table to instanced quads at infinity; needs assets, camera.
-- `impostors.lisp` (milestone 2): sphere impostors for the Sun, planets and moons; Earth's texture; needs bodies, assets, camera.
-- `meshes.lisp` (milestone 2: ship; 4: asteroids): generated meshes (ship frame, modules, asteroids) and their instanced draws; needs ship, camera.
-- `ribbons.lisp` (milestone 2: the current orbit; 3: predicted trajectories): screen-space ribbons and markers: orbit lines, trajectories, targets; needs orbits, camera, later prediction.
+- `impostors.lisp` (milestone 2; 3: Earth's night lights and clouds; 4: the Moon's textures, planets): sphere impostors for the Sun, planets and moons; Earth's texture; needs bodies, assets, camera.
+- `meshes.lisp` (milestone 2: ship; 3: places and other ships; 4: asteroids): generated meshes (ship frame, modules, stations, depots, other ships, asteroids) and their instanced draws; needs ship, camera.
+- `ribbons.lisp` (milestone 2: the current orbit; 3: predicted trajectories; 4: bodies' orbits, the Sun's danger circles): screen-space ribbons and markers: orbit lines, trajectories, targets; needs orbits, camera, later prediction.
 - `post.lisp` (milestone 2): HDR target, bloom, tone map, exposure; needs gpu.
-- `overlay.lisp` (milestone 2): screen-space 2D pass: dot-matrix labels (`decision 7`) and the minimal flight readout; needs gpu.
+- `overlay.lisp` (milestone 2; 3: the message line and the autopilot panel): screen-space 2D pass: dot-matrix labels (`decision 7`) and the minimal flight readout; needs gpu.
 - `text.lisp` (milestone 3): Slug text runs (adapted copy of Luvcraft's `text.lisp`, attributed in its header); needs gpu.
-- `cockpit.lisp` (milestone 3): the DIY cockpit: geometry, screens (Slug text on their planes), the grapple camera's render target, dot-matrix strip, gauges, lamps, buttons and picking, messages; needs text, ship, prediction.
+- `cockpit.lisp` (milestone 3; 4: Sun and life-support instruments; 5: RADIO, JOB and tape notes): the DIY cockpit: geometry, screens (Slug text on their planes), the grapple camera's render target, dot-matrix strip, gauges, lamps, buttons and picking, messages; needs text, ship, prediction.
 - `render.lisp` (milestone 2): the frame: passes in order, encoding everything above into the canvas or a capture; needs all rendering files.
-- `input.lisp` (milestone 2): canvas events to `controls`; key map; gamepad polling later; needs controls.
-- `audio.lisp` (milestone 6 by default; earlier if `docs/design.md` says so): `audio-sink`, the Lisp mixer, synthesised voices; silent when no device; needs ship, controls.
+- `input.lisp` (milestone 2; 6: gamepad polling, a "could"): canvas events to `controls`; key map; needs controls.
+- `audio.lisp` (milestone 6, a "should" in `docs/design.md` "Feature list"): `audio-sink`, the Lisp mixer, synthesised voices; silent when no device; needs ship, controls.
 - `title.lisp` (milestone 6): title screen, introduction, in-game controls help, the Escape menu and the credits screen (`decision 13: Asset storage and attribution`, `decision 42: Scope: what each milestone builds`); needs overlay, text.
 - `main.lisp` (skeleton): the `game` object, start/stop, the frame function, `main`; needs everything.
 - `capture.lisp` (skeleton): screenshots and `capture-scene`; needs main.

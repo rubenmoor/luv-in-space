@@ -7,6 +7,7 @@
   :pathname "src/"
   :components ((:file "package")
                (:file "math")
+               (:file "units")
                (:file "shaders")
                (:file "scene")
                (:file "main")
@@ -26,6 +27,7 @@
   :pathname "tests/"
   :components ((:file "package")
                (:file "math")
+               (:file "units")
                (:file "scene")
                (:file "capture"))
   :perform (test-op (operation component)

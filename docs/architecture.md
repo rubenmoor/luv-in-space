@@ -80,7 +80,7 @@ In brackets: the milestone that first creates the file; later milestones extend 
 
 - `package.lisp` (skeleton): the packages.
 - `math.lisp` (milestone 2): `double-float` vec3 `(simple-array double-float (3))`, quaternion `(simple-array double-float (4))` as (w x y z), unit, body → inertial, and mat3 `(simple-array double-float (9))` row-major on the CPU; plain functions return fresh arrays, hot ones have in-place `!` twins with the destination first (`vec3-add! out a b`); `relative-single` the one conversion to `single-float` arrays at the GPU boundary (`decision 65: Vectors and quaternions in math.lisp`); needs package.
-- `units.lisp` (milestone 2): SI constants: G·M and radii of bodies, epoch, conversions for display (km, km/s) with their source; needs math.
+- `units.lisp` (milestone 2): SI constants with their sources (μ, radii, J2, g₀, obliquity, AU, TT − UTC, `+fine-step+`), the UTC calendar on the 1/64 s grid, `*start-date*` and `(start-t)`, display conversions (km, km/s, degrees, duration fields, `format-utc`); needs math.
 - `bodies.lisp` (milestone 2: Sun, Earth, Moon; 4: planets): bodies (Sun, Earth, Moon, planets): μ, radius, rotation, ephemeris function of time; needs units.
 - `orbits.lisp` (milestone 2; 4: hyperbolas): orbital elements ↔ state vectors for ellipses and hyperbolas, Kepler propagation, apsides, periods, crossing times of a radius; needs math, bodies.
 - `physics.lisp` (milestone 2; 3: objects): state vectors (position, velocity, attitude, angular velocity), gravity, the integrator with forces and torques as arguments, frames of integration; from `milestone 3` the object type that `clock.lisp`, `hazards.lisp` and `places.lisp` share (rails segments or promoted state, removal, mass, inertia tensor, attitude mode, collision shapes, fixtures; "Rails"), the rails segment builder and the swept-sphere test that it and `hazards.lisp` share; needs orbits.
@@ -152,7 +152,11 @@ Every quantity in the simulation is SI in `double-float`; time is TDB seconds si
 - Resolution: one ulp of `t` is ~1.2e-7 s at 30 years after J2000 (9.5×10^8 s) and ~2.4e-7 s at 60 years: far below any step.
 - Steps are power-of-two fractions of a second (e.g. 1/16 s) or whole seconds, so `t + dt` is exact and the clock neither drifts nor depends on the frame rate (determinism; the step itself is "Time and integration"'s).
 - Time scales: TDB − TT (< 2 ms) is ignored; UT1 = UTC = TT − 69.184 s (37 leap seconds as of 2017; no future leap seconds). UTC is for display and Earth's rotation angle.
-- Calendar: `units.lisp` converts a Gregorian UTC date to `t` (Julian date by the Fliegel–Van Flandern algorithm, then `(JD_TT − 2451545.0) × 86400`) and back for display.
+- Calendar: `units.lisp` converts a Gregorian UTC date to `t` exactly (`utc->t`: the Julian Day Number by Fliegel–Van Flandern, then `(JDN − 2451545) × 86400 + seconds of day − 43200 + 69.184` with integer days and seconds summed as rationals) and back (`t->utc`, seconds as a double; display truncates them) (`decision 66: Calendar dates on the 1/64 s grid`).
+  - The fixed TT − UTC holds for past dates too, so J2000.0 is 11:58:50.816 in the game's UTC (11:58:55.816 in real UTC).
+  - Every game time made from a date (the start, schedules, flight-script `:date`, story dates) goes through `utc->grid-t`, which rounds to the nearest multiple of 1/64 s (`+fine-step+`), so it lands on a step boundary.
+  - `(start-t)` is `*start-date*` on the grid: 2040-01-01 00:00:00.0035 UTC, shown as 00:00:00.
+  - `t->ut1-days` (JD_UT1 − 2451545.0) feeds Earth's rotation, `t->julian-centuries` the ephemeris series.
 - The game's start date: a calendar constant `*start-date*` in `units.lisp`, 2040-01-01 00:00 UTC, kept by `docs/story.md` "Start date" (`decision 50: Story: start date and the passing rock's date`). A new game sets `t` from it; a save stores `t` itself.
 - No absolute time on the GPU: a float32 of `t` resolves only ~64 s. Shader animation gets phases computed in double and reduced (`mod` period) on the CPU.
 
@@ -466,7 +470,7 @@ The ship is never on rails (`decision 17: Gravity model`, `decision 19: Time-war
   - A handful of JPL Horizons vectors committed as constants in the test file, each with its query in a comment (target, centre, ICRF axes, TDB, the date fetched): the Earth–Moon barycentre, Mars and Jupiter heliocentric, and the Moon geocentric, at three dates within the game's range (e.g. 2026-01-01, 2040-01-01 and 2049-06-01 TDB).
   - Bounds from the models' stated accuracy: planet and barycentre directions within 1′ (Mercury to Mars, the barycentre) or 15′ (Jupiter, Saturn), distances within 1e-4 relative; the Moon's direction within 1′, its distance within 50 km.
   - The cache: Hermite-interpolated positions match the series within 2 cm (Moon), and a node is the same bit for bit whether computed first or after others ("Ephemerides"); the start date lies inside 1800–2050.
-- Units (`tests/units.lisp`): the calendar round trip (UTC date → `t` → date) for J2000.0, the default start date and a leap-year day; `t` at J2000.0 is 0.
+- Units (`tests/units.lisp`): the calendar round trip (UTC date → `t` → date) for J2000.0, the start date and a leap-year day; `t` at J2000.0 (11:58:50.816 in the game's UTC, "Time") is 0; `(start-t)` on the 1/64 s grid.
 
 ### Warp, events and collisions
 - Warp transitions without jumps (`tests/clock.lisp`): switching warp at a step boundary leaves the state bit for bit unchanged; the next step uses the new step size; switching ×1 → ×1,000 → ×1 over one orbit stays within the coarse position bound of a run that never left ×1.

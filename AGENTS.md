@@ -10,7 +10,7 @@ Luv in Space is a showcase for [luv](https://github.com/mbrock/luv), Mikael Broc
   - `pm decision add` only for what no agent can decide or find out: accounts, money, licences, publishing, or a contradiction in a milestone.
   - Creative choices (story, names, look, features) and technical choices are the agents' own: record them.
 - Follow-up work: `pm task add`.
-- Cite milestones, plans, tasks, decisions by id and subject, in backticks: `decision 3: Unit of length`.
+- Cite milestones, plans, tasks, decisions by id and subject, in backticks: `decision 14: Units and time epoch`.
 
 ## Outside pm workers
 - Skip this section if `PM_TASK` is set (you are a pm worker).

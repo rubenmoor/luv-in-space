@@ -25,7 +25,7 @@ Luv in Space is a hard sci-fi flight game about one pilot and one rugged tug in 
 - An agent can build, fly, test and screenshot it headless (`AGENTS.md` "Commands", flight scripts in `docs/architecture.md` "Scripted runs").
 
 ### Pillars
-Later sections cite these to keep or cut a feature.
+Later sections cite these to keep or cut a feature (`decision 60: Design pillars`).
 - **The ship is a tool.** Every part has a visible job; nothing is on the ship that a working tug would not carry, and its function reads from its silhouette.
 - **Newton is the game.** All motion of the ship is integrated (`decision 17: Gravity model`); no teleporting, no autopilot shortcuts, no rails for the player; propellant is the limit.
 - **The cockpit is home-made.** Instruments are bolted-on screens, gauges and lamps in a welded frame; the player can fly from it alone.
@@ -723,7 +723,7 @@ Five places, all invented (no real object of the early 2040s is known: the ISS p
   - THRIFT's arrival waits while the player's ship is within 200 km of the slot; at 06:00 in quest 7 the ship is in the phasing orbit or closing on the depot, which only a pass under 200 km of the slot defers.
 - Δv ("Δv for the standard legs"): TLI 3,082 m/s, and LOI into 100 km 901 m/s from the polar plane: the Moon crosses that plane at right angles, so v∞ = √(v_Moon² + v_t²) = √(1.0245² + 0.1976²) = 1.04 km/s at 384,400 km (0.99–1.10 over the Moon's distances, LOI 880–925 m/s), not the coplanar 0.83 km/s and 823 m/s of the standard legs (`decision 55: Meeting 2040 BQ7 and the lunar arrival from the polar plane`, "Rendezvous: search, phasing and the approach"). So LEO → Peary Depot 3,983 m/s (6,613 kg left); from Highport's perigee in the January window TLI 376 + LOI 897 (a 4.9° plane change included) = 1,273 m/s (9,017 kg; 18,983 kg left), corrected from the coplanar 370 + 823 = 1,193. Return: TEI and capture into 400 km 3,983 m/s, or into Highport's orbit ~1,273 m/s, its phasing at Highport free. Transfer time ~5–6 days (the half ellipse to 384,400 km takes 4.99 days, to 405,900 km 5.41).
 - Round trips: LEO → Peary Depot (refuel) → LEO, each leg 4.0 km/s; or LEO → Highport (refuel) → Peary Depot (refuel) → Highport. A round trip without a lunar refuel fails: 3.98 + 3.98 = 7.97 km/s > 6.65.
-- Landing: cut (`decision 34`, "Not in 'Flight'"): the Mule has no legs, the RL10 at TWR 0.3–1.3 against 1.62 m/s² would need a lander's guidance and the surface a terrain model; pillar "the ship is a tool".
+- Landing: cut (`decision 39: Places in scope`, "Not in 'Flight'"): the Mule has no legs, the RL10 at TWR 0.3–1.3 against 1.62 m/s² would need a lander's guidance and the surface a terrain model; pillar "the ship is a tool".
 - Other lunar orbits: none as places; the autopilot captures into any circular lunar orbit or one with a set apoapsis ("The autopilot").
 
 ### Asteroids

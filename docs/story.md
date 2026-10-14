@@ -134,7 +134,7 @@ Nine quests in a fixed order, each a job a little farther out and a little heavi
 | 4 | Topping off | CAIRN OPS | Fulmar Depot | rendezvous alone, berthing beside a tanker, propellant transfer (B) | 3 | 126 | ≤ 2 days |
 | 5 | The long climb | CAIRN OPS | Highport | a multi-burn plan, the Burn instrument, a long coast at warp, an eccentric orbit | 3 | 2,799 | ≤ 3 days |
 | 6 | Rock three | HIGHPORT | Skua Yard, Highport | towing 50 t, a heavy stack's turns and trim, delivering a load, a refused load | 3 | 50 | ≤ 2.5 days |
-| 7 | The January window | CAIRN OPS | Skua Yard, the Moon, Peary Depot, Highport | TLI, SOI change, capture, light time, life support, a delivery in lunar orbit, return | 4 | 1,378 + 1,353 | ~23 days, ≤ 7 away from stores per leg |
+| 7 | The January window | CAIRN OPS | Skua Yard, the Moon, Peary Depot, Highport | TLI, SOI change, capture, light time, life support, a delivery in lunar orbit, return | 4 | 25 + 1,353 out, 1,353 back | ~23 days, ≤ 12 away from stores out, ≤ 7 back |
 | 8 | The big one | HIGHPORT | Skua Yard, Highport | the rated 100 t load | 3 | 50 | ≤ 2.5 days |
 | 9 | BQ7 | CAIRN OPS | Highport, 325,000 km out, Skua Yard | an intercept far out, grappling a spinning rock, a loaded capture at perigee | 4 ("should") | 2,065 empty + 565 loaded | ~11 days, ~10 away from stores |
 
@@ -243,7 +243,7 @@ How `quests.lisp` runs the line; per-quest sections only add what differs.
 ### 4. Topping off
 - Giver: CAIRN OPS (TERN controls Fulmar Depot's berths). Goal: berth at Fulmar Depot's free fixture A and fill the tanks. Place: Fulmar Depot, 500 km, u₀ 180°; TANKER 2 berthed at fixture B.
 - Skills: a rendezvous chosen and flown without help; berthing beside a berthed tanker (fixture A faces +z, the tanker's B −z); propellant transfer (B), the XFER line and the PROP gauge; warp while berthed.
-- Milestone: 3. Propellant: 56 m/s (`docs/design.md` "Earth-orbit points of interest", 400 → 500 km), phasing ≤ 50 m/s (the ship gains 7.9° per orbit on Fulmar from 400 km, a full turn in 2.9 days; inside 48 h by waiting, else a drift orbit at ≤ 33 m/s and ≤ 1 m/s for a final transfer that passes the depot clear, `docs/design.md` "Rendezvous: search, phasing and the approach"), terminal 20: 126 m/s, 869 kg. Time: ≤ 2 days and 47 min of transfer. Expected state at start: 22,870 kg, 400 km circular.
+- Milestone: 3. Propellant: 56 m/s (`docs/design.md` "Earth-orbit points of interest", 400 → 500 km), phasing ≤ 50 m/s (the ship gains 7.8° per orbit on Fulmar from 400 km, a full turn in 2.96 days; inside 48 h by waiting, else a drift orbit at ≤ 33 m/s and ≤ 1 m/s for a final transfer that passes the depot clear, `docs/design.md` "Rendezvous: search, phasing and the approach"), terminal 20: 126 m/s, 869 kg. Time: ≤ 2 days and 47 min of transfer. Expected state at start: 22,870 kg, 400 km circular.
 
 | Step | JOB card | Y | Completion |
 |---|---|---|---|
@@ -426,7 +426,7 @@ Propellant and stores carried from quest to quest, on the nominal path (Δv budg
 | 9 | 28,000 | 22,132 | 5,868 | (Highport after the end) | 565 with 50 t vs 996 | 10 days |
 
 - Every leg fits with margin; the tightest is quest 9's loaded part, 565 of 996 m/s (911 leaving on the last day, 2040-03-06).
-- Time: quests 1–6 take at most ~11 days by the bounds above (to ~2040-01-12), before the January TLI near 2040-01-21; a slower pilot takes the February window (TLI ~2040-02-17, back ~2040-03-01), skips quest 8 and still leaves for BQ7 by 2040-03-05.
+- Time: quests 1–6 take at most ~11 days by the bounds above (to ~2040-01-12), before the January TLI at 2040-01-20 06:01; a slower pilot takes the February window (TLI ~2040-02-17, back ~2040-03-01), skips quest 8 and still leaves for BQ7 by 2040-03-05.
 - Stores: no leg is away from a restock for more than 12 days of 180; life support never decides a quest, it teaches the LIFE line.
 
 ### The Sun

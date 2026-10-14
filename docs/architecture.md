@@ -692,7 +692,7 @@ Each action is what a key (or a click) does in play (`docs/design.md` "Controls"
  (:wait :quest-step "4.1")
  (:expect :periapsis-above 395e3)
  (:expect :apoapsis-below 405e3)
- (:expect :propellant-above 22333))
+ (:expect :propellant-above 22310))
 ```
 
 - The others, as their action sequences (`wait n.m` is `(:wait :quest-step "n.m")`; `coast` is `(:warp :coast)`, `leave` is `(:release) (:translate :aft :dv 0.2) (:after 300)`; `close-in` is `(:wait :autopilot-done) (:autopilot :off) (:translate :fwd :dv 0.05) (:after 200) (:translate :aft :dv 0.05)`, 10 m nearer, the load's CoM ≤ 93 m from the pin and still within 0.05 m/s; `let-go` is `(:wait :rate-below 0.1) (:release) (:translate :aft :dv 0.1)`):

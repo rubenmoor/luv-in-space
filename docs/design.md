@@ -122,11 +122,11 @@ What one tank reaches from the start orbit (6,650 m/s):
 | Wet | 35,961 | (10.34, 0, −0.22) | 8.79×10⁴ | 4.48×10⁵ | 4.21×10⁵ | 2.0×10⁴ | 3.4° |
 | Half | 21,961 | (9.46, 0, −0.36) | 7.06×10⁴ | 3.35×10⁵ | 3.09×10⁵ | 2.7×10⁴ | 6.3° |
 | Dry | 7,961 | (9.46, 0, −0.99) | 4.95×10⁴ | 1.99×10⁵ | 1.78×10⁵ | 2.7×10⁴ | 11.3° |
-| Wet + 50 t | 85,961 | (15.04, 0, −0.09) | 1.55×10⁵ | 1.88×10⁶ | 1.85×10⁶ | −1.7×10⁴ | 0.6° |
-| Dry + 50 t | 57,961 | (17.18, 0, −0.14) | 1.22×10⁵ | 8.22×10⁵ | 7.95×10⁵ | −3.4×10⁴ | 2.9° |
-| Wet + 100 t | 135,961 | (16.63, 0, −0.06) | 2.98×10⁵ | 2.59×10⁶ | 2.56×10⁶ | −2.9×10⁴ | 0.8° |
+| Wet + 50 t | 85,961 | (15.21, 0, −0.09) | 1.55×10⁵ | 1.98×10⁶ | 1.95×10⁶ | −1.9×10⁴ | 0.6° |
+| Dry + 50 t | 57,961 | (17.44, 0, −0.14) | 1.22×10⁵ | 8.60×10⁵ | 8.32×10⁵ | −3.6×10⁴ | 2.9° |
+| Wet + 100 t | 135,961 | (16.85, 0, −0.06) | 2.98×10⁵ | 2.73×10⁶ | 2.70×10⁶ | −3.1×10⁴ | 0.8° |
 
-- The load in these rows: a sphere of rock at 2,000 kg/m³ (radius (3m / 4πρ)^(1/3): 1.81 m for 50 t, 2.29 m for 100 t) touching the grapple at x = 16.6 m.
+- The load in these rows: a sphere of rock at 2,000 kg/m³ (radius (3m / 4πρ)^(1/3): 1.81 m for 50 t, 2.29 m for 100 t) with its fixture plate at the grapple's tip, x = 16.6 m, standing 0.3 m proud of the rock ("The places", "Rigid bodies: attitude, mass, shapes and fixtures"): centre at 16.9 m + r.
 
 ### RCS forces, torques and accelerations
 - Layout: eight blocks at the truss corners, x = 0.5 m (aft) and 14.5 m (front), y = ±1.8 m, z = ±1.8 m; each block has three nozzles pointing outward: one along x (aft blocks push +x, front blocks push −x), one along y and one along z (each pushing towards the axis).
@@ -134,9 +134,9 @@ What one tank reaches from the start orbit (6,650 m/s):
 - Capabilities (wet; dry; wet with 50 t):
   - Translation along ±x: 4 × 445 = 1,780 N: 0.050; 0.224; 0.021 m/s².
   - Translation along ±y or ±z without torque: front and rear forces balanced about the CoM, F_rear = F_front × arm_front / arm_rear, plus the axial nozzles' ±1.8 m arms when the CoM lies ahead of the front blocks: 1,266 N (0.035 m/s²); 1,391 N (0.175 m/s²); ~1,077 N (0.013 m/s²).
-  - Pitch and yaw: a couple of two front and two rear lateral nozzles, τ = 2 × 445 × (14.5 − 0.5) = 12,460 N m, independent of the CoM: pitch 0.028 rad/s² (1.6°/s²); 0.063 (3.6°/s²); 0.0066 (0.38°/s²); yaw about the same (I_zz ≈ I_yy).
+  - Pitch and yaw: a couple of two front and two rear lateral nozzles, τ = 2 × 445 × (14.5 − 0.5) = 12,460 N m, independent of the CoM: pitch 0.028 rad/s² (1.6°/s²); 0.063 (3.6°/s²); 0.0063 (0.36°/s²); yaw about the same (I_zz ≈ I_yy).
   - Roll: four lateral nozzles at 1.8 m, τ = 4 × 445 × 1.8 = 3,204 N m: 0.036 rad/s² (2.1°/s²); 0.065 (3.7°/s²); 0.021 (1.2°/s²).
-- What it feels like: a 90° turn, accelerating half way and braking half way, takes 2 √(θ/α) = 15 s wet, 10 s dry, 31 s with 50 t; a 1 m/s change of closing speed takes 20–30 s wet, 5 s dry, 77 s with 50 t. Stopping a rotation of 0.01 rad/s (the limit for warp above ×4, `decision 19: Time-warp rules`) takes under 0.4 s wet. The ship feels heavy, more so loaded, which is the point of a tug; key map, rate damping and holds are "Flight"'s.
+- What it feels like: a 90° turn, accelerating half way and braking half way, takes 2 √(θ/α) = 15 s wet, 10 s dry, 32 s with 50 t; a 1 m/s change of closing speed takes 20–30 s wet, 5 s dry, 77 s with 50 t. Stopping a rotation of 0.01 rad/s (the limit for warp above ×4, `decision 19: Time-warp rules`) takes under 0.4 s wet. The ship feels heavy, more so loaded, which is the point of a tug; key map, rate damping and holds are "Flight"'s.
 
 ### Grapple and towing
 - One mechanism (`decision 24: Grapple, not docking; towing in`): the nose grapple, a capture cone Ø 1.6 m with three claws, latches onto a standard grapple fixture, a plate with a central pin and three alignment guides. Fixtures are on depots, stations, cargo pods and the nets of bagged asteroids, always facing outward at a known point of the object.
@@ -244,10 +244,10 @@ The flight computer in `controls.lisp` turns keys, holds and autopilot commands 
 
 | | Wet | Dry | Wet + 50 t |
 |---|---|---|---|
-| Pitch acceleration | 1.6°/s² | 3.6°/s² | 0.38°/s² |
-| Time to the 5°/s rate (rate damping) | 3.1 s | 1.4 s | 13 s |
-| 90° turn at 5°/s, full torque | 21 s | 19 s | 31 s |
-| Shortest direct tap, ×1 / ×4 | 0.027 / 0.11°/s | 0.060 / 0.24°/s | 0.006 / 0.025°/s |
+| Pitch acceleration | 1.6°/s² | 3.6°/s² | 0.36°/s² |
+| Time to the 5°/s rate (rate damping) | 3.1 s | 1.4 s | 14 s |
+| 90° turn at 5°/s, full torque | 21 s | 19 s | 32 s |
+| Shortest direct tap, ×1 / ×4 | 0.027 / 0.11°/s | 0.060 / 0.24°/s | 0.006 / 0.024°/s |
 | Shortest translation tap along x, ×1 / ×4 | 0.8 / 3.3 mm/s | 3.7 / 15 mm/s | 0.35 / 1.4 mm/s |
 
 - ×1: everything at the speed it happens; the tug is slow to turn, more so loaded, and a 1 m/s closing speed takes 20–30 s of RCS to change. Close work (grappling, holding station) is flown here, in fine control.
@@ -370,7 +370,7 @@ The nose grapple is the ship's only way to hold on to something (`decision 24: G
 ### Towing
 - Grappled to a towable load, the ship and the load are one rigid stack (`decision 24`): its mass, CoM and full inertia tensor recomputed per step from the propellant and the load's mass properties (a sphere, box or the fixture's stated tensor), as in "Inertia"; the load's collision shape joins the ship's.
 - Thrust: the main engine's gimbal trims through the stack's CoM (1.2° to 1.6° with 50 t, inside ±4°, "Propulsion"), so a burn pushes the stack without torque; the RCS mixer uses lever arms from the stack's CoM. A load is pushed, never pulled: there is no cable.
-- What the pilot gets: 1.74 km/s and 0.12 g₀ wet with 50 t, a 90° turn in 31 s (rate damping), "Mass budget and Δv" and "Control modes"; the autopilot plans with the stack's mass, and its Δv and burn times show it.
+- What the pilot gets: 1.74 km/s and 0.12 g₀ wet with 50 t, a 90° turn in 32 s (rate damping), "Mass budget and Δv" and "Control modes"; the autopilot plans with the stack's mass, and its Δv and burn times show it.
 - Not modelled (pillar "small and finished"): flexing of the stack, the claws' load limits under thrust (1.18 m/s² on 50 t is 59 kN, inside any grapple worth its name), slosh in the load.
 
 ### Dying and what follows
@@ -576,8 +576,8 @@ Five places, all invented (no real object of the early 2040s is known: the ISS p
 | Highport | high depot and water plant: rocks become LH2/LOX; berth, refuel, restock | 1,000 × 70,000 km (a = 41,878.1 km, e = 0.82382), ω = 336°, M₀ = 180° (at apogee); period 23.7 h | 3 berth | 300 t dry | 2,762 m/s |
 | Skua Yard | rock yard beside Highport: bagged rocks waiting for processing, the rock mover parked | Highport's orbit, M₀ = 179.87° (30 km behind it) | 1 towable per rock | rocks 20–100 t, one 150 t | 2,762 m/s (+ < 5 m/s from Highport) |
 
-- Tern Station: three pressurised modules Ø 4.2 × 8 m in a line along the orbit (white, stencilled), a node at the front with a crew capsule berthed (`decision 27`), a truss across with two solar wings 8 × 25 m and two radiators 4 × 10 m; the berth fixture on the zenith face of the last module. Collision shape: four boxes (the module line, the truss, the two wings). Lights: red/green at the wing tips, a strobe, the berth fixture lit white. Its 420 km is 20 km above the start, so the first rendezvous is the smallest lesson.
-- Fulmar Depot: four tanks on a 30 m truss (two LH2 Ø 6 × 14 m, two LOX Ø 4.5 × 6 m, foil-wrapped), a gold-foil sunshade disc Ø 12 m at the sunward end (it turns once a year), cryocooler radiators, two berth fixtures on short arms (one for the player, one with an uncrewed tanker berthed, `decision 27`). Its propellant is unlimited (no economy, `decision 26: Refuelling and economy`).
+- Tern Station: three pressurised modules Ø 4.2 × 8 m in a line along the orbit (white, stencilled), a node at the front with a crew capsule berthed (`decision 27`), a truss across with two solar wings 8 × 25 m and two radiators 4 × 10 m; the berth fixture on the zenith face of the last module. Collision shape: four boxes (the module line with node and capsule, the truss with the radiators, the two wings), "Rigid bodies: attitude, mass, shapes and fixtures". Lights: red/green at the wing tips, a strobe, the berth fixture lit white. Its 420 km is 20 km above the start, so the first rendezvous is the smallest lesson.
+- Fulmar Depot: four tanks on a 30 m truss (two LH2 Ø 6 × 14 m, two LOX Ø 4.5 × 6 m, foil-wrapped), a gold-foil sunshade disc Ø 16 m at the sunward end (Sun-pointing: it turns once a year), cryocooler radiators, two berth fixtures on short arms (one for the player, one with an uncrewed tanker berthed, `decision 27`). Its propellant is unlimited (no economy, `decision 26: Refuelling and economy`).
 - Derelict K-17: a Centaur-class stage, cylinder Ø 3.05 × 12.7 m with one engine bell, grey and scorched, its insulation peeling (normal noise); on the payload adapter ring at the front, a grapple fixture bolted on by an earlier uncrewed servicer of the debris company (the fixture is new and bright on an old stage). The 0.3°/s spin about the axis keeps the fixture's axis still, so a capture needs no matched rotation, but the stage visibly turns. Collision shape: one box.
 - The derelict's re-entry: the job is to push the stage from 800 km to a perigee of 90 km, release it at apogee, and raise the tug's own perigee. A released object on rails whose orbit meets Earth's crash sphere is removed at that point ("burned up"), integrated or on rails (`docs/architecture.md` "Re-entry of objects", `decision 46: Rails across spheres, hyperbolas and re-entry`): 2,603 s after the release at apogee. The autopilot refuses the push (its floor is 150 km, "The autopilot"): this job is flown by hand with the PERI alarm on, the game's lesson in reading the periapsis. Δv: push 196 m/s with the 36.7 t stack (1.6 t of propellant), then 89 m/s to raise the tug's perigee back to 400 km and 109 m/s to circularise there.
 - Highport: a 60 m truss frame carrying the water plant (electrolysis, a box 6 × 6 × 10 m with radiators 6 × 20 m), four large tanks, two solar wings 20 × 40 m, three berth fixtures on arms (other Mule tugs berthed at two of them). It is high so that rocks arrive cheaply: a rock captured from a passing orbit needs ~0.5 km/s to stay here, but 2.8 km/s more to reach LEO, which no loaded tug has ("Mass budget and Δv": 1.74 km/s with 50 t). Its apogee points to right ascension ~90°, declination ~+24°, where the Moon crosses the polar plane once a month, so a TLI from its perigee costs 370 m/s in the best month's window ("The Moon").
@@ -631,6 +631,50 @@ The ship's work with asteroids is near Earth, where its Δv and 180 person-days 
 - Look: an impostor disc with linear limb darkening (I/I₀ = 1 − 0.6 (1 − cos θ)), a radiance far above the scene's, so the bloom chain makes its glare (`docs/luv-capabilities.md` "Sun glare and brightness"); 0.53° wide at 1 AU, growing as 1/d. The exposure follows it: looking near the Sun the stars fade. `milestone 2` (it lights everything).
 - The danger zone, from the hull-temperature rule (`decision 34: How death works`; "Dying and what follows"): warning 350 K at 0.551 AU, danger 400 K at 0.415 AU, death 450 K at 0.326 AU. Mercury's orbit (0.307–0.467 AU) lies inside it; Venus's (0.718–0.728 AU) does not. On the map, from `milestone 4`, three circles around the Sun in the ecliptic: amber at 0.551 AU, red at 0.415 AU and 0.326 AU (hatched inside), labelled "350 K", "400 K", "450 K"; the cockpit's TEMP lamp, hull gauge and SUN line ("The cockpit") give the warnings in flight; inside 0.551 AU a warm tint grows on the cab's window glass with the hull temperature.
 - Reachable, on purpose: a Hohmann-like dive from Earth to a perihelion of 0.551 AU needs v∞ 4.68 km/s (4,143 m/s from LEO, 1,473 from Highport's perigee; 125 days to perihelion); to the deadly 0.326 AU v∞ 8.90 km/s (6,360 m/s from LEO on full tanks, 3,758 from Highport; 99 days). So a determined pilot can fly into the Sun by hand, and `milestone 4`'s test of death by heat is a flight script with that burn. The autopilot plans nothing inside 0.551 AU (`decision 32`).
+
+### Rigid bodies: attitude, mass, shapes and fixtures
+What `places.lisp` gives each object for `physics.lisp`'s rigid-body type and `hazards.lisp`'s contact test (`docs/architecture.md` "Rails" and "Collisions and the Sun", `decision 44: Contact, capture and berthing in the simulation`). Figures from the parts below by a throwaway script, not committed; the lasting choice is `decision 47: Rigid bodies of the places`.
+- Body axes per object: origin at its centre of mass (CoM), x forward, y right, z down as for the ship (`decision 15: Coordinate frames`); positions in m from the CoM; a box is centre and size (x × y × z), a sphere centre and radius.
+- Inertia: the full symmetric tensor about the CoM in body axes, from the parts by the parallel-axis rule as in "Inertia": solid cylinder ½ m r² (axis), m (3r² + L²)/12 (across); thin-walled cylinder m r², m (6r² + L²)/12; thin ring m r², ½ m r²; box m (b² + c²)/12 per axis; sphere (2/5) m r². Off-diagonal entries are tensor elements (I_xy = −Σ m x y). Berth objects never use theirs (immovable, kinematic attitude); it is listed for completeness and a later change of rule.
+- Attitude modes of berth objects (kinematic, `docs/architecture.md` "Rails"), with ω from the mode's closed form for a berthed ship's velocity:
+  - LVLH: x along the local horizontal in the direction of motion, z to the body's centre (nadir), y = z × x (orbit anti-normal); ω = h / r² about −y (0.065°/s at 420 km).
+  - Sun-pointing: x towards the Sun, z the ecliptic south pole's direction made perpendicular to x, y = z × x; turns ~1° a day.
+  - Inertial: a fixed quaternion in `places.lisp`, the object's LVLH attitude at the epoch.
+- Towable objects spin about their fixture axis (+x, a principal axis), at most 0.4°/s: the pin and the fixture's axis stand still, so a capture needs no matched motion, and the spin stays inside the 0.5°/s of `decision 33: Grapple tolerances, contact and berthing` without the pilot rolling with it. The bagger probe that netted a rock leaves it so; K-17's spin happens to be about its axis.
+- Fixtures: a point (the pin, on the plate) and an outward axis in body axes. Every plate stands 0.3 m proud of the object's shapes: at the 10° capture limit the front corners of the ship's grapple box (half-diagonal 1.13 m) reach 1.13 sin 10° = 0.20 m ahead of the tip, and would touch a flush face before the tip touched the plate; on a sphere the 0.3 m also covers the 0.30 m lateral offset ((r + 0.1)² + 0.83² > r² for every r).
+- Shapes: one to five per object (cost in `docs/architecture.md` "Collisions and the Sun"); thin parts the pilot never flies near (solar wings of berthed or scenery ships, booms, antennas) are left out, as the ship's own wings are. Ships berthed at a place as scenery (`decision 27: Other ships`) are part of its shapes and mesh, not objects of their own. The bounding radius covers the shapes and every pin plus 0.8 m.
+
+| Object | Kind, attitude | Mass (t) | Inertia about the CoM (kg m²) | Shapes (centre; size or radius, m) | Fixtures (pin; outward axis) | Bound (m) |
+|---|---|---|---|---|---|---|
+| Tern Station | berth, LVLH | 85 | diag(3.59, 6.46, 9.88)×10⁶ | module line (1.33, 0, 0) 32.5 × 4.2 × 4.2; truss and radiators (−2.92, 0, 0) 4.0 × 28.0 × 1.5; wings (−2.92, ±26.5, 0) 8.0 × 25.0 × 0.5 | berth (−10.92, 0, −2.40), −z (zenith) | 39.8 |
+| Fulmar Depot | berth, Sun-pointing | 60 (dry) | diag(0.793, 4.65, 5.12)×10⁶ | sunshade (14.22, 0, 0) 0.3 × 16.0 × 16.0; tanks (2.77, 0, 0) 21.5 × 13.8 × 6.5; aft spine and arms (−11.98, 0, 0) 8.0 × 1.5 × 8.0; berthed tanker (−13.98, 0, −16.30) 3.6 × 3.6 × 24.0 | A (−13.98, 0, 4.30), +z, free; B (−13.98, 0, −4.30), −z, the tanker's | 33.7 |
+| Highport | berth, Sun-pointing | 300 (dry) | I_xx 1.21×10⁸, I_yy 1.60×10⁷, I_zz 1.07×10⁸, I_xz 2.4×10⁴ | truss and tanks (0.02, 0, −4.84) 6.5 × 60.0 × 6.5; water plant and radiators (0.02, 0, 13.41) 6.0 × 6.0 × 30.0; wings (0.02, ±50.0, −4.84) 0.5 × 40.0 × 20.0; arms and two berthed Mules (0.02, 0, −20.84) 10.0 × 44.0 × 19.5 | plant (−3.28, 0, 3.41), −x, free (refuelling, rock delivery); arms (0.02, ±20.0, −11.39), −z, Mules' | 72.6 |
+| Peary Depot | berth, Sun-pointing | 42 (dry) | I_xx 4.43×10⁵, I_yy 3.53×10⁶, I_zz 3.74×10⁶, I_xy −4.28×10⁵, I_xz 3.1×10⁴, I_yz 1.6×10³ | sunshade (15.16, −0.65, −0.06) 0.3 × 16.0 × 16.0; tanks (3.71, −0.65, −0.06) 21.5 × 13.8 × 6.5; aft spine and arm (−11.04, −0.65, 1.94) 8.0 × 1.5 × 4.0 | berth (−13.04, −0.65, 4.24), +z | 26.5 |
+| Rock mover | fixed (as berth, immovable), inertial | 1,087 | I_xx 1.07×10⁷, I_yy 2.18×10⁷, I_zz 2.19×10⁷, I_xz −7.9×10⁴ | trusses, engines, grapples (−16.61, 0, 0.01) 23.8 × 7.2 × 3.6; cab (−8.56, 0, −3.49) 4.5 × 3.0 × 3.0; rock sphere (0.59, 0, 0.01) r 5.0 | none (its rock's fixture holds its own grapples) | 29.2 |
+| Derelict K-17 | towable, 0.3°/s about +x | 2.5 | diag(4.89×10³, 5.65×10⁴, 5.65×10⁴) | stage and bell (−1.05, 0, 0) 14.2 × 3.05 × 3.05 | (6.35, 0, 0), +x | 8.5 |
+| Cargo pod (standard) | towable, no spin | 12 | diag(1.25, 2.22, 2.22)×10⁴ | (0, 0, 0) 4.0 × 2.5 × 2.5 | (2.30, 0, 0), +x | 3.1 |
+
+- Tern Station, parts (reference: the middle module's centre; the CoM is 2.92 m ahead of it): three modules 20 t each, solid cylinders Ø 4.2 × 8 at x = −8, 0, 8; node 6 t, Ø 4.2 × 4 at x 14; crew capsule 9 t, Ø 3.9 × 4.5 at x 18.25; truss 4 t, 1.5 × 28 × 1.5 across at the middle module; radiators 2 × 1 t, 4 × 10 m on the truss at y ±8; wings 2 × 2 t, 8 × 25 m at y ±26.5. The berth fixture sits on the zenith face of the aft module: the approach comes down the radius vector (an R-bar approach, as to the ISS), and a berthed Mule stands 19 m tall above the station.
+- Fulmar Depot, parts (reference: the 30 m spine's centre, x to the Sun): spine 8 t, 30 × 1.5 × 1.5; LH2 tanks 2 × 12 t, Ø 6 × 14 from x 0.5 to 14.5 at y ±3.9; LOX tanks 2 × 5 t, Ø 4.5 × 6 at x −4, y ±3.9; sunshade 3 t, a disc Ø 16 at x 15.2, wide enough to shade the tanks' outer edges at 6.9 m; cryocooler radiators 2 × 3 t, fins 6 × 2.5 at x −4, z ±2; berth arms 2 × 1 t along ±z at x −13; avionics and power 7 t at the aft end. The tanker berthed at B (`decision 27`) is drawn and collides as part of the depot; its mass is not counted.
+- Peary Depot: Fulmar Depot with one LH2 tank (+y), one LOX tank (−y) and one berth arm (+z), 42 t; built for four tanks, the tanks' box covers the two empty cradles.
+- Highport, parts (reference: the truss centre; x to the Sun, the wings face it): truss frame 40 t, 6.5 × 60 × 6.5 along y; four tanks 4 × 12.5 t, Ø 6 × 12 along y inside the frame at y ±7 and ±21; water plant 120 t, 6 × 6 × 10 below the truss (+z); its radiators 2 × 10 t, 6 × 20 m fins hanging below the plant, edge-on to the Sun; wings 2 × 15 t, 40 × 20 m at y ±50; berth arms 3 × 2 t; power, avionics and rock handling 34 t at the centre. The free fixture is on the water plant's anti-sun face: tugs berth there to refuel and bring rocks, in the plant's shadow, lit by their own floodlight. The two arms on the −z side hold the berthed Mules.
+- Rock mover, parts (reference: the trusses' aft end): two trusses 2 × 2,842 kg (20 m of the Mule's truss each, side by side at y ±1.8); two engines 2 × 190 kg; a Mule cab 2,466 kg on top at x 15.5–20; tanks with half propellant 2 × 15 t, solid cylinders Ø 3.04 × 17; two grapples 900 kg; the bagged rock Ø 10 m at 2,000 kg/m³, 1,047 t, its centre at 21.6 + 0.3 + 5.0 m. Parked in Skua Yard, holding its attitude: the pilot can bump it but never grapple it.
+- Derelict K-17, parts (reference: the tank cylinder's centre): tank shell 1,750 kg, thin-walled Ø 3.05 × 12.7; engine and thrust structure 300 kg, Ø 1.0 × 2.2 at x −6.75 (the bell 1.5 m out of the aft end); payload adapter ring and avionics 400 kg, ring r 1.4 at x 6.1; fixture and stand-off 50 kg. Its spin axis is the axis of least inertia, steady in torque-free motion. Captured by a wet Mule, its angular momentum (26 N m s) gives the stack 0.02°/s of roll.
+- Cargo pod: a standard 12 t box (food, parts, equipment) with one fixture on an end; no place carries one in `milestone 3` or `4`; `docs/story.md` may place pods (`milestone 5`), with the same definition.
+- Rocks: spheres of radius r = (3m / 4πρ)^(1/3) (ρ 2,000 kg/m³; the passing rock 1,500), tensor (2/5) m r² 𝟙, one fixture at (r + 0.3, 0, 0), +x, on the net's frame; net and fixture are inside the stated mass and left out of the tensor (< 0.5 % of it). Spin about +x:
+
+| Rock | Mass (t) | r (m) | I (kg m²) | Fixture pin (m) | Spin (°/s) | Bound (m) |
+|---|---|---|---|---|---|---|
+| Skua Yard 1 | 20 | 1.34 | 1.43×10⁴ | 1.64 | 0.10 | 2.44 |
+| Skua Yard 2 | 35 | 1.61 | 3.63×10⁴ | 1.91 | 0.20 | 2.71 |
+| Skua Yard 3 | 50 | 1.81 | 6.58×10⁴ | 2.11 | 0.15 | 2.91 |
+| Skua Yard 4 | 80 | 2.12 | 1.44×10⁵ | 2.42 | 0.25 | 3.22 |
+| Skua Yard 5 | 100 | 2.29 | 2.09×10⁵ | 2.59 | 0.05 | 3.39 |
+| Skua Yard 6 (refused) | 150 | 2.62 | 4.11×10⁵ | 2.92 | 0.30 | 3.72 |
+| The passing rock | 50 | 2.00 | 7.97×10⁴ | 2.30 | 0.40 | 3.10 |
+
+- Checked against `decision 33`: every spin is about the fixture axis and ≤ 0.4°/s (≤ 0.5°/s); every free fixture's axis leads out into open space, clear of the place's other shapes for the Mule's 18.8 m from grapple tip to nozzle; berth objects turn at most 0.065°/s (Tern's LVLH). Against `decision 39: Places in scope`: the same places and objects, nothing added but the standard cargo pod's definition.
+- The Mule's loaded rows in "Inertia" put the load's centre at 16.6 + 0.3 + r, its fixture plate at the grapple's tip.
 
 ### Δv checked against the ship
 Every destination in scope against the 6,650 m/s of full tanks (and 1,738 m/s with 50 t), from "Δv for the standard legs" and the sections above; "left" is propellant after the leg from full tanks.

@@ -1,19 +1,26 @@
 (in-package #:luv-in-space)
 
-(defparameter *background* '(0.01 0.01 0.02)
-  "Linear RGB the frame is cleared to.")
-
 (defclass game ()
   ((canvas :initarg :canvas :reader game-canvas)
    (device :initarg :device :reader game-device)
    (context :initarg :context :reader game-context)
+   (scene :initarg :scene :reader game-scene)
    (quit-requested-p :initform nil :accessor game-quit-requested-p)))
 
 (defvar *game* nil)
 
 (defun draw (game)
-  (destructuring-bind (red green blue) *background*
-    (luv:render-canvas-color (game-context game) red green blue)))
+  (let ((context (game-context game)))
+    (luv:present-canvas-frame
+     context
+     (lambda (texture encoder time)
+       (declare (ignore time))
+       (encode-scene (game-scene game) encoder texture (luv:canvas-extent context))))))
+
+(defmethod luv:capture-canvas ((game game)) (game-canvas game))
+(defmethod luv:encode-capture-frame ((game game) capture encoder target extent)
+  (declare (ignore capture))
+  (encode-scene (game-scene game) encoder target extent))
 
 ;; Runs on the canvas thread: only flag the quit; STOP runs on the caller's.
 (defun handle-event (game event)
@@ -30,8 +37,11 @@
          (device (luv:request-gpu-device luv:*gpu-provider*
                                          (luv:make-device-descriptor :label "luv-in-space")))
          (context (luv:make-canvas-context canvas luv:*gpu-provider*
-                                           (luv:make-canvas-configuration :device device)))
-         (game (make-instance 'game :canvas canvas :device device :context context)))
+                                           (luv:make-canvas-configuration
+                                            :device device
+                                            :usage '(:render-attachment :copy-dst))))
+         (game (make-instance 'game :canvas canvas :device device :context context
+                                    :scene (make-scene device (luv:canvas-format context)))))
     (declare (ignore _))
     (setf (luv:canvas-event-handler canvas)
           (lambda (canvas event) (declare (ignore canvas)) (handle-event game event)))
@@ -55,6 +65,7 @@
         (setf (luv:canvas-clock canvas) (luv:make-demand-clock)
               (luv:canvas-event-handler canvas) nil))
       (luv:close-canvas canvas)
+      (destroy-scene (game-scene game))
       (luv:destroy (game-device game)))
     (when (eq game *game*)
       (setf *game* nil)))

@@ -6,6 +6,8 @@
   :serial t
   :pathname "src/"
   :components ((:file "package")
+               (:file "shaders")
+               (:file "scene")
                (:file "main")))
 
 (defsystem "luv-in-space/program"

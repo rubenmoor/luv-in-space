@@ -152,7 +152,7 @@ Every quantity in the simulation is SI in `double-float`; time is TDB seconds si
 - Steps are power-of-two fractions of a second (e.g. 1/16 s) or whole seconds, so `t + dt` is exact and the clock neither drifts nor depends on the frame rate (determinism; the step itself is "Time and integration"'s).
 - Time scales: TDB − TT (< 2 ms) is ignored; UT1 = UTC = TT − 69.184 s (37 leap seconds as of 2017; no future leap seconds). UTC is for display and Earth's rotation angle.
 - Calendar: `units.lisp` converts a Gregorian UTC date to `t` (Julian date by the Fliegel–Van Flandern algorithm, then `(JD_TT − 2451545.0) × 86400`) and back for display.
-- The game's start date: a calendar constant `*start-date*` in `units.lisp`, chosen by `docs/story.md`; default 2040-01-01 00:00 UTC until then. A new game sets `t` from it; a save stores `t` itself.
+- The game's start date: a calendar constant `*start-date*` in `units.lisp`, 2040-01-01 00:00 UTC, kept by `docs/story.md` "Start date" (`decision 50: Story: start date and the passing rock's date`). A new game sets `t` from it; a save stores `t` itself.
 - No absolute time on the GPU: a float32 of `t` resolves only ~64 s. Shader animation gets phases computed in double and reduced (`mod` period) on the CPU.
 
 ### Frames
@@ -305,7 +305,7 @@ A throwaway SBCL script (not committed) integrated two-body Earth orbits (μ = 3
   - meeting the central body's crash sphere ("Re-entry of objects").
 - Fast path: a conic that cannot reach a child's sphere (apoapsis below the child's least distance minus its sphere) and stays inside its body's sphere is one segment with no search; every Earth-orbit place is (Highport's apogee radius 76,378 km against the Moon's ≥ 356,000 km minus 66,000 km).
 - At most 16 segments per object; past that the last segment runs to the horizon and the log warns. The passing rock has three (heliocentric, a geocentric hyperbola, heliocentric), built at load in well under 1 ms.
-- The passing rock, defined by its geocentric hyperbola (perigee time from `docs/story.md`): it enters Earth's sphere 7.2 days before perigee at v∞ 0.5 km/s (6.0 days at 1.0 km/s; the hyperbolic Kepler equation from r = 9.25×10^8 m), passes perigee at 10,407–10,443 m/s (√(v∞² + 2μ/q)) and leaves symmetrically. Grappled, it leaves the rails for the stack ("Rails").
+- The passing rock, 2040 BQ7, defined by its geocentric hyperbola (perigee 2040-03-12 12:00 UTC, `docs/story.md`): it enters Earth's sphere 7.2 days before perigee at v∞ 0.5 km/s (6.0 days at 1.0 km/s; the hyperbolic Kepler equation from r = 9.25×10^8 m), passes perigee at 10,407–10,443 m/s (√(v∞² + 2μ/q)) and leaves symmetrically. Grappled, it leaves the rails for the stack ("Rails").
 - Promotion takes the state from the segment at t, as before; demotion builds a new list from the osculating elements at t, around the object's dominant body by the ship's rule without hysteresis, forward only. A changed list is part of the simulation state ("Checkpoints"); an object's definition is not, as it rebuilds bit for bit.
 - J2's secular rates only in Earth-centred elliptic segments; heliocentric, lunar and hyperbolic segments are pure two-body.
 - Display (`ribbons.lisp`): the map draws the current segment's conic over its time span, around its body; the next segment from its own body.

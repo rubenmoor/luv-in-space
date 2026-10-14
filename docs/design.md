@@ -184,7 +184,137 @@ Built from the tug's parts so they read as the same technology, and all on Keple
 
 How the ship is flown: controls, control modes, views, instruments, time warp, the autopilot, grappling and towing, dying, saving and sound.
 
-PLACEHOLDER(39): controls, control modes, views, instruments and time warp: `task 39: Design: flight controls, control modes, views, instruments and time warp`.
+### Controls
+Keyboard and mouse through luv's canvas events (`docs/luv-capabilities.md` "Windowing and input"); the lasting choice is `decision 29: Control scheme: key map, control modes, gamepad`. Code: `input.lisp` turns events into `controls` (`controls.lisp`), which the autopilot and flight scripts also write.
+- Keys are luv's physical key names (SDL scancodes: `:w`, `:shift-left`, `:|.|` …), so the map keeps its positions on any keyboard layout; help texts show the layout's character (`canvas-key-event-character`). Letters below are QWERTY positions.
+- Held keys act from press to release; key-repeat events are ignored; losing window focus releases all keys.
+- Rates of held keys (throttle ramp, head look by keys) run in real time, not game time, so they feel the same at every warp level.
+
+| Function | Keys | From milestone |
+|---|---|---|
+| Pitch nose down / up (−/+ pitch) | W / S | 2 |
+| Yaw left / right (−/+ yaw) | A / D | 2 |
+| Roll left / right (−/+ roll) | Q / E | 2 |
+| Translate forward / back (+x / −x) | H / N | 2 |
+| Translate up / down (−z / +z) | I / K | 2 |
+| Translate left / right (−y / +y) | J / L | 2 |
+| Fine control on/off (10 % torque and force, 0.5°/s rate limit) | F | 2 |
+| Throttle up / down (50 %/s; from off, the first press gives 10 %; below 10 % is off) | Shift-left / Control-left | 2 |
+| Throttle full / cut | Z / X | 2 |
+| Rate damping on/off; releases an active hold to rate damping | T | 2 |
+| Inertial hold: keep the current attitude | R | 2 |
+| Hold prograde / retrograde | 1 / 2 | 2 |
+| Hold normal / anti-normal | 3 / 4 | 2 |
+| Hold radial out / radial in | 5 / 6 | 2 |
+| Hold target / anti-target (nose at or away from the target) | 7 / 8 | 3 |
+| Hold relative prograde / relative retrograde (along ± the velocity relative to the target) | 9 / 0 | 3 |
+| Warp up / down / back to ×1 | . / , / slash | 2 |
+| Pause on/off | P | 2 |
+| View: outside ↔ cockpit | V | 3 (outside only in 2) |
+| Map on/off | M | 2 |
+| Outside camera: orbital frame ↔ locked to the ship | C | 2 |
+| Reset camera or head look | Home | 2 |
+| Map focus: next (ship, current body, target, other bodies) | Tab | 2 (ship, Earth); 3 targets; 4 bodies |
+| Map zoom ×10 in / out | Page-up / Page-down | 2 |
+| Target next / previous / clear | ] / [ / \ | 3 |
+| Autopilot: open the preset list; choose; engage; disengage | O; Up/Down; Return; Backspace | 3 |
+| Grapple (arm, latch, release; behaviour in task 40's part) | G | 3 |
+| Controls help | F1 | 6 (before: the window title lists the main keys, as luv's games do) |
+| Quit | Escape, Control+Q | 2; from 6 Escape pauses and opens the menu (resume, controls, credits, quit) |
+
+- Pressing the key of the active hold again releases it to rate damping; pitch or yaw keys release any hold; roll keys during a hold turn the ship about the hold's axis and the hold keeps the new roll.
+- Free keys kept for later parts: Space, B, U, Y, F2–F12; saving keys, if any, come from task 40's "Saving" and use these.
+- Mouse:
+  - Right button held: look (cockpit: head look; outside and map: orbit the camera); luv's relative pointer mode while held, so the pointer stays put.
+  - Wheel: cockpit field of view; outside camera distance; map zoom (×1.2 per notch).
+  - Left click: cockpit switches and screen buttons (`milestone 3`, "The cockpit"); in the map, a marker becomes the target, a double click makes it the focus.
+- Gamepad: `milestone 6` as a "could": SDL's gamepad subsystem polled on the canvas thread through cl-sdl3, left stick pitch/yaw, triggers roll, right stick translation (`docs/luv-capabilities.md` "Gamepad and joystick", ~80 lines). Not earlier: the keyboard covers every function, and there is no gamepad here to test with.
+
+### Control modes
+The flight computer in `controls.lisp` turns keys, holds and autopilot commands into a commanded body torque and force; the RCS mixer ("RCS forces, torques and accelerations") turns those into thruster duty cycles. Translation is always direct; rotation has three modes.
+- Direct RCS (rate damping off): a held rotation key commands the full couple about its axis (12,460 N m pitch and yaw, 3,204 N m roll); release leaves the ship turning. For the expert and for showing Newton.
+- Rate damping (the default; the start holds prograde, "The start"): a held key commands an angular rate of 5°/s (0.087 rad/s) about its axis, 0.5°/s in fine control; no key commands zero. The loop fires the RCS with the torque I (ω_c − ω) / 0.5 s, clamped to the available couple, so the ship stops turning when keys are released.
+- Holds: the computer turns the ship to the hold's attitude by a rate-limited slew (bang-bang at 80 % of the available torque, at most 5°/s), then holds it within 0.1° and 0.02°/s, and reports "settled". The nose (+x) points along the hold direction; the roll is the one at engagement, or by default the cab (−z) away from the body (radial out) for prograde, retrograde, normal and anti-normal holds, towards normal for the radial holds.
+  - Directions from the orbital frame (`docs/architecture.md` "Frames"): prograde along v, normal along r × v, radial out completing the triple, in the dominant body's frame. Target holds point at the target's position; relative holds along ± the velocity relative to the target (braking on approach).
+  - Inertial hold keeps the attitude of the moment it is set; it is also what the attitude becomes when warp rises above ×4 without another hold.
+- Translation: H/N, I/K, J/L command the full torque-free force on their axis while held, 10 % in fine control; the mixer keeps rotation commands exact and fits as much force as it can.
+- What the player feels, from the ship's accelerations ("RCS forces, torques and accelerations"); one 60 Hz frame is the shortest key tap:
+
+| | Wet | Dry | Wet + 50 t |
+|---|---|---|---|
+| Pitch acceleration | 1.6°/s² | 3.6°/s² | 0.38°/s² |
+| Time to the 5°/s rate (rate damping) | 3.1 s | 1.4 s | 13 s |
+| 90° turn at 5°/s, full torque | 21 s | 19 s | 31 s |
+| Shortest direct tap, ×1 / ×4 | 0.027 / 0.11°/s | 0.060 / 0.24°/s | 0.006 / 0.025°/s |
+| Shortest translation tap along x, ×1 / ×4 | 0.8 / 3.3 mm/s | 3.7 / 15 mm/s | 0.35 / 1.4 mm/s |
+
+- ×1: everything at the speed it happens; the tug is slow to turn, more so loaded, and a 1 m/s closing speed takes 20–30 s of RCS to change. Close work (grappling, holding station) is flown here, in fine control.
+- ×4: the same fine 1/64 s step and full rotational dynamics (`decision 19: Time-warp rules`), so all controls work; a 90° turn wet takes 5 s of real time and a direct tap is four times coarser, so ×4 is for turns, settling holds and short burns, with rate damping on.
+- Above ×4: attitude is kinematic and manual RCS is off (`decision 19`); rotation and translation keys are ignored with the message "RCS OFF ABOVE ×4"; holds still work, so burns under warp fly in a hold ("Time warp").
+
+### Views
+Three views of one scene, drawn by one renderer (reversed-Z, `decision 4: Depth strategy`; camera-relative doubles, `decision 5: Precision of positions`); the lasting choice is `decision 30: Views and cameras`. Code: `camera.lisp`; the camera position is kept relative to the ship or the focus body, so re-centring (`decision 15: Coordinate frames`) never moves the picture. All views are available at every warp level, paused and during the autopilot; switching changes nothing in the simulation.
+
+- Outside (`milestone 2`): the default view until the cockpit exists.
+  - An orbit camera around the stack's CoM: distance from 1.2 × the stack's bounding radius (12 m for the empty Mule, more with a load) to 5 km, wheel ×1.2 per notch, default 40 m; vertical field of view 50° (73° horizontal at 1280×800).
+  - Its axes in the orbital frame, so Earth stays below as the ship goes round (default), or locked to the ship's body axes (a chase camera; C toggles).
+  - Shows the ship, its engine glow and lights, the target and other objects in range, Earth, Moon, Sun and stars, and the minimal readout ("Instruments").
+- Cockpit (`milestone 3`): the pilot's seat in the cab.
+  - Eye point (14.1, 0, −3.6) m from R in FRD: in the cab (cylinder Ø 3.0 × 4.5, x 10.5–15.0, axis at z = −3.5), 0.9 m behind the flat front wall, 0.1 m above the cab's axis, facing +x. The 1.2 × 0.6 m window centred at (15.0, 0, −3.6) spans ±34° horizontally and ±18° vertically from it. "The cockpit" (task 41) may move the eye point with its panel layout and says so.
+  - Field of view 70° vertical (96° horizontal) by default, so the window and the panels around it are both in view; the wheel zooms between 20° and 90°.
+  - Head look by mouse: yaw ±150°, pitch −60° to +80°, no translation (the pilot is strapped in); Home recentres.
+  - The grapple's tip sits 55° below the line of sight (atan(3.6 / 2.5)), outside the window: close work uses the grapple camera on a cockpit screen (task 40's and task 41's parts).
+- Map (`milestone 2` basic, completed by 3 and 4): the same scene from a far camera at true scale, not a separate chart.
+  - Focus: the ship (default when the map opens), the dominant body, the target, or another body; Tab cycles. The camera orbits the focus (right drag) at a distance from 50 m (ship focus) or 1.2 × the body's radius to 1.5×10^13 m (100 AU), ×1.2 per wheel notch and ×10 per Page key, about 80 notches from Earth's surface to the edge; the zoom eases exponentially over 0.15 s.
+  - Opening the map frames the ship's orbit: focus the dominant body, distance 2.5 × the apoapsis radius (or the body's radius, if larger), viewed 30° above the orbit plane from the normal side.
+  - Bodies are drawn as their impostors at true size; below 6 px they become a marker with a label, so the Moon and the planets stay findable. The ship and targets are markers at every zoom.
+  - Lines, as screen-space ribbons (`docs/luv-capabilities.md` "Orbit lines and markers"; `ribbons.lisp`): `milestone 2` the ship's osculating orbit (2 px) with apoapsis and periapsis markers and an impact marker where the orbit meets the crash sphere; `milestone 3` the predicted trajectory (`decision 20: Trajectory prediction on the frame thread`, two periods in the map) in place of the osculating orbit, the target's orbit, closest approach, relative ascending and descending nodes, and the planned burns (task 40's autopilot); `milestone 4` the Moon's and planets' orbits (1 px), SOI changes on the trajectory, focus on the Moon, the Sun and the planets.
+  - Colours: the ship's line cyan, the target's orange, bodies' orbits grey, the part of a trajectory after a planned burn dashed, impacts red; labels as the readout's text.
+  - The exposure is fixed in the map, so stars stay visible next to a lit Earth.
+
+### Instruments
+What the pilot reads, and from which milestone; how each is drawn and where it sits is "The cockpit" (task 41). In `milestone 2` the minimal readout is a screen-space panel of the overlay pass (`overlay.lisp`, `docs/architecture.md` "Files in load order") in the outside and map views; from `milestone 3` the cockpit screens carry the full set and the outside view keeps the minimal readout. Values come in display units through `units.lisp` (`decision 14: Units and time epoch`); orbital values are those of the dominant body.
+
+| Instrument | Shows | Milestone |
+|---|---|---|
+| Altitude | above the dominant body's sphere (km) | 2 |
+| Speed | orbital speed in the dominant body's inertial frame (m/s, km/s) | 2 |
+| Apoapsis and periapsis | altitudes (km), with time to each | 2 (altitudes); 3 (times) |
+| Throttle | lever position and engine on/off | 2 |
+| Propellant | kg and % of the 28 t load | 2 |
+| Attitude mode | direct, rate damping, the hold's name and "settled", fine control | 2 |
+| Warp | nominal level and, below 90 %, the actual rate; "PAUSED" | 2 |
+| Clock and date | game time as UTC date and time | 2 |
+| Alarms and messages | periapsis below the crash radius, impact time; warp refused or dropped and why | 2 |
+| Inclination, eccentricity, period | of the osculating orbit (degrees against the body's equator, minutes or days) | 3 |
+| Vertical speed | rate of altitude change (m/s) | 3 |
+| Attitude indicator | the nose against the orbital frame (prograde, normal, radial markers), the hold's target direction, angular rates per axis | 3 |
+| Δv remaining | by the rocket equation at the current mass, load included (m/s) | 3 |
+| Mass and thrust-to-weight | stack mass (t) and acceleration at full throttle (m/s²) | 3 |
+| Burn | planned Δv, Δv left, time to start, burn duration (task 40's autopilot) | 3 |
+| Target | name, distance, closing speed, relative velocity in body axes, time and distance of closest approach | 3 |
+| Grapple range and alignment | from the grapple's range finder (task 40's part) | 3 |
+| More alarms | low propellant (below the Δv of the planned burns, or 5 %), rotation above the warp limit, autopilot aborts | 3 |
+| Body and SOI | the dominant body's name, time to the next SOI change | 4 |
+| Sun | distance (AU), flux, hull temperature with warning and danger marks (task 40's Sun rule) | 4 |
+| Radio and messages | the quest line's messages (task 41's channel, `milestone 5`'s quests) | 5 |
+
+### Time warp
+Within `decision 19: Time-warp rules` and `docs/architecture.md` "Time warp"; the design's choices are `decision 31: Warp choices within the time-warp rules`. Code: `clock.lisp`, events from `prediction.lisp`.
+- Levels: all eight, ×1, ×4, ×10, ×100, ×1,000, ×10,000, ×100,000, ×1,000,000; none greyed out. Where the 4,096-step cap holds the sim back (×1,000,000 runs at about ×490,000 in LEO), the readout shows the actual rate.
+- Thrust under warp, below the ×1,000 limit of `decision 19`:
+  - Manual throttle: up to ×10. One 60 Hz frame at ×100 is 1.67 s of thrust, 4.7 m/s wet and 21 m/s dry, too coarse for a cut by key; at ×10 it is 0.5–2 m/s.
+  - Burns with a scheduled cut-off (the autopilot's burns, flight scripts' `:after-dv`): up to ×100; the cut lands on the 1/64 s grid at any warp, and the longest burn (all 28 t, 1,213 s) takes 12 s of real time.
+  - Above ×4 a burn always flies in a hold (`decision 19`); throttling up at a higher warp lowers the warp to the limit at once instead of refusing the throttle.
+- Drop-outs, from the prediction's events (warp lowered so the event is ≥ 3 s of real time away, ×1 at the event):
+  - impact, or a periapsis below the crash radius (radii in task 40's "Dying");
+  - SOI change: stop (×1 at the change), the architecture's default; the pilot checks the new body's periapsis before warping on;
+  - a scheduled burn, at its start minus the lead time: 60 s or the estimated slew to the burn attitude plus 10 s, whichever is longer. The slew rule ("Control modes") turns 180° in 40 s wet and 59 s with 100 t, so 60 s covers almost every case;
+  - entering a Sun hazard zone (the rule is task 40's).
+- Refusals (`decision 19`): warp up is refused while thrusting above the limit, while rotating faster than 0.01 rad/s without a hold, or with an event under 3 s of real time away at the new level.
+- Shown: the readout's warp field (nominal level; actual rate in amber when below 90 % of nominal; "PAUSED"); a refusal or drop-out writes a message with its reason for 3 s, e.g. "WARP REFUSED: ENGINE ON, LIMIT ×10", "WARP REFUSED: ROTATING, SET A HOLD", "WARP ×1: PERIAPSIS BELOW 100 KM IN 3 S". From `milestone 3` the cockpit's warp lamp flashes with it ("The cockpit"); from `milestone 6` a short tone (task 40's "Sound").
+- Pause (P) is apart from warp: no steps run, every view, the camera and the map still work, flight inputs are ignored; resuming restores the warp level.
+- Warp is allowed while grappled and coasting, e.g. while refuelling (`decision 26: Refuelling and economy`), under the same rules.
 
 PLACEHOLDER(40): the autopilot, grappling and towing, dying, saving and sound: `task 40: Design: autopilot, docking and towing, dying, saving and sound`.
 

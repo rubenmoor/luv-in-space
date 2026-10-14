@@ -140,12 +140,8 @@ Earth relative to the eye, the sun, and clip units per pixel."
    (bind-group :initarg :bind-group :reader scene-bind-group)
    (earth-pipeline :initarg :earth-pipeline :reader scene-earth-pipeline)
    (overlay-pipeline :initarg :overlay-pipeline :reader scene-overlay-pipeline)
-   (modules :initarg :modules :reader scene-modules)
    (depth-target :initform nil :accessor scene-depth-target)
    (color-views :initform (make-hash-table :test #'eq) :reader scene-color-views)))
-
-(defun shader-module (device code)
-  (luv:create device (luv:make-shader-module-descriptor :language :mathematical :code code)))
 
 (defun vertex-buffer (device data label)
   (let ((buffer (luv:create device (luv:make-buffer-descriptor
@@ -154,19 +150,22 @@ Earth relative to the eye, the sun, and clip units per pixel."
     (luv:write-buffer buffer data)
     buffer))
 
+(defun live-pipeline (role device layout format vertex-buffers depth-stencil)
+  "A luv live shader pipeline for ROLE: rebuilt when its shaders are
+redefined, the last good one kept when a rebuild fails."
+  (luv:make-live-shader-pipeline
+   :role role :vertex-role role :label (string-downcase role)
+   :device device :layout layout :vertex-buffers vertex-buffers
+   :target-format format :primitive '(:topology :triangle-list)
+   :depth-stencil depth-stencil))
+
 (defun make-scene (device format)
   "The scene's buffers and pipelines on DEVICE, drawing into FORMAT."
   (let* ((earth (uv-sphere))
          (layout (luv:create device (luv:make-bind-group-layout-descriptor
                                      :entries '((:binding 0 :type :uniform-buffer)))))
          (uniforms (luv:create device (luv:make-buffer-descriptor
-                                       :label "frame" :size (* 4 28) :usage '(:uniform))))
-         (targets `((:format ,format)))
-         (modules (mapcar (lambda (code) (shader-module device code))
-                          (list (luv-in-space.shaders::earth-vertex)
-                                (luv-in-space.shaders::earth-fragment)
-                                (luv-in-space.shaders::overlay-vertex)
-                                (luv-in-space.shaders::overlay-fragment)))))
+                                       :label "frame" :size (* 4 28) :usage '(:uniform)))))
     (multiple-value-bind (overlay star-count label-count) (overlay-vertices)
       (make-instance
        'scene
@@ -175,45 +174,32 @@ Earth relative to the eye, the sun, and clip units per pixel."
        :earth-count (/ (length earth) 3)
        :overlay-vertices (vertex-buffer device overlay "overlay")
        :star-count star-count :label-count label-count
-       :uniforms uniforms :modules modules
+       :uniforms uniforms
        :bind-group (luv:create device (luv:make-bind-group-descriptor
                                        :layout layout
                                        :entries `((:binding 0 :resource ,uniforms))))
        :earth-pipeline
-       (luv:create device
-                   (luv:make-render-pipeline-descriptor
-                    :label "earth" :layout layout
-                    :vertex `(:module ,(nth 0 modules)
-                              :buffers ((:array-stride 12
-                                         :attributes ((:shader-location 0 :offset 0
-                                                       :format :float32x3)))))
-                    :fragment `(:module ,(nth 1 modules)
-                                :targets ,targets)
-                    :primitive '(:topology :triangle-list)
-                    ;; decision 4: Depth strategy
-                    :depth-stencil '(:format :depth32-float :depth-write-enabled t
-                                     :depth-compare :greater)))
+       (live-pipeline :earth device layout format
+                      '((:array-stride 12
+                         :attributes ((:shader-location 0 :offset 0 :format :float32x3))))
+                      ;; decision 4: Depth strategy
+                      '(:format :depth32-float :depth-write-enabled t
+                        :depth-compare :greater))
        :overlay-pipeline
-       (luv:create device
-                   (luv:make-render-pipeline-descriptor
-                    :label "overlay" :layout layout
-                    :vertex `(:module ,(nth 2 modules)
-                              :buffers ((:array-stride 28
-                                         :attributes ((:shader-location 0 :offset 0
-                                                       :format :float32x2)
-                                                      (:shader-location 1 :offset 8
-                                                       :format :float32x2)
-                                                      (:shader-location 2 :offset 16
-                                                       :format :float32x3)))))
-                    :fragment `(:module ,(nth 3 modules)
-                                :targets ,targets)
-                    :primitive '(:topology :triangle-list)
-                    :depth-stencil '(:format :depth32-float :depth-write-enabled nil
-                                     :depth-compare :always)))))))
+       (live-pipeline :overlay device layout format
+                      '((:array-stride 28
+                         :attributes ((:shader-location 0 :offset 0 :format :float32x2)
+                                      (:shader-location 1 :offset 8 :format :float32x2)
+                                      (:shader-location 2 :offset 16 :format :float32x3))))
+                      '(:format :depth32-float :depth-write-enabled nil
+                        :depth-compare :always))))))
+
+(defun scene-live-artifacts (scene)
+  (list (scene-earth-pipeline scene) (scene-overlay-pipeline scene)))
 
 (defun destroy-scene (scene)
-  "Destroy what the device would otherwise reclaim only by garbage collection."
-  (mapc #'luv:destroy (scene-modules scene)))
+  "Release what the device would otherwise reclaim only by garbage collection."
+  (mapc #'luv:release-live-artifact (scene-live-artifacts scene)))
 
 (defun depth-view (scene extent)
   "A depth32-float view of EXTENT, remade when the size changes."
@@ -252,12 +238,14 @@ Earth relative to the eye, the sun, and clip units per pixel."
                   :depth-load-op :clear :depth-store-op :store
                   :depth-clear-value 0.0)))))
     (flet ((overlay (first count)
-             (luv:set-pipeline pass (scene-overlay-pipeline scene))
+             (luv:set-pipeline pass (luv:live-shader-pipeline-native-pipeline
+                                     (scene-overlay-pipeline scene)))
              (luv:set-bind-group pass 0 (scene-bind-group scene))
              (luv:set-vertex-buffer pass 0 (scene-overlay-vertices scene))
              (luv:draw pass count 1 first)))
       (overlay 0 (scene-star-count scene))
-      (luv:set-pipeline pass (scene-earth-pipeline scene))
+      (luv:set-pipeline pass (luv:live-shader-pipeline-native-pipeline
+                                   (scene-earth-pipeline scene)))
       (luv:set-bind-group pass 0 (scene-bind-group scene))
       (luv:set-vertex-buffer pass 0 (scene-earth-vertices scene))
       (luv:draw pass (scene-earth-count scene))

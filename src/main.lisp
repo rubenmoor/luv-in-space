@@ -10,9 +10,14 @@
 
 (defvar *game* nil)
 
+(defmethod luv:application-live-artifacts ((game game))
+  (scene-live-artifacts (game-scene game)))
+
 (defun draw (game)
   (let ((context (game-context game)))
     (incf (game-frame-count game))
+    ;; Rebuild pipelines whose shaders were redefined, before this frame uses them.
+    (luv:refresh-application-live-artifacts game)
     (luv:present-canvas-frame
      context
      (lambda (texture encoder time)

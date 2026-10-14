@@ -63,3 +63,15 @@
      :inputs ((shade :vec3 :location 0))
      :outputs ((color :vec4 :location 0)))
   (set-output color (vec4 shade 1.0)))
+
+;; Roles for luv's live shader pipelines.  Each method returns the current
+;; definition; a re-evaluated DEFINE-SHADER bumps luv's source revision, so
+;; the scene's pipelines rebuild at the next frame.
+(defmethod shader-specification-for ((role (eql :earth)) (stage (eql :vertex)))
+  (earth-vertex))
+(defmethod shader-specification-for ((role (eql :earth)) (stage (eql :fragment)))
+  (earth-fragment))
+(defmethod shader-specification-for ((role (eql :overlay)) (stage (eql :vertex)))
+  (overlay-vertex))
+(defmethod shader-specification-for ((role (eql :overlay)) (stage (eql :fragment)))
+  (overlay-fragment))

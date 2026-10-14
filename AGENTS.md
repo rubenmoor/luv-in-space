@@ -39,7 +39,7 @@ Luv in Space is a showcase for [luv](https://github.com/mbrock/luv), Mikael Broc
 - Screenshot: `scripts/screenshot out.png [--frames N]`: a 1280x800 PNG of the scene from a hidden canvas, headless too; ~3 s.
 - Live image: `./sly start` (a Slynk image with `luv-in-space` loaded; ~8 s cold), `./sly play`, `./sly status`, `./sly screenshot /tmp/x.png`, `./sly eval '(defun …)' --package LUV-IN-SPACE` (redefine while playing), `./sly failures`, `./sly resume`, `./sly stop-playing`, `./sly stop`; `./sly --help` lists all. Enters the dev shell itself; options go after the code.
   - `./sly` is luv's client from the flake input with `play`, `screenshot`, `stop-playing` and status redefined for this game (`scripts/sly-client.lisp`); `sly-server.lisp` boots the image. State in `build/` (~410 MB, git-ignored).
-  - Shader redefinitions don't reach the running scene yet (`task 30: Live shader pipelines for the scene`); redefine Lisp functions, or `./sly stop-playing` and `./sly play` after reloading shaders.
+  - Shaders are live: a `define-shader` re-evaluated with `./sly eval '(define-frame-shader earth-fragment …)' --package LUV-IN-SPACE.SHADERS` shows on the next frame (luv live shader pipelines, refreshed in `draw`). A source that fails to parse is rejected by the eval; one that fails to build keeps the last good pipeline (status in `luv:application-live-artifacts` of `luv-in-space:*game*`).
 
 ## Layout
 - `luv-in-space.asd`: systems `luv-in-space` (`src/`) and `luv-in-space/tests` (`tests/`).

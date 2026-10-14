@@ -557,6 +557,56 @@ INSERT INTO plan (id, milestone_id, subject, priority, body, created_at, created
 - The cockpit: layout, instruments and how each is drawn, messages.
 - The places: Earth, points of interest, Moon, asteroids, planets, Sun, with data and sources and Δv checked against the ship; decisions recorded.
 - Scope table and read-through against `docs/luv-capabilities.md`, `docs/architecture.md` and the milestones; the list for the story.', '2026-10-14T17:57:23Z', 11);
+INSERT INTO plan (id, milestone_id, subject, priority, body, created_at, created_by_task) VALUES (11, 1, 'story', 500, 'Part 5 of `plan 1: masterplan`: write `docs/story.md`, the setting, characters, premise and linear quest line of the prelude. It runs after `plan 10: game design` and builds on what `docs/design.md` "Scope", "What the story may use" puts in milestones 2 to 5. `milestone 5: Story and quests: the playable prelude` implements the document (`quests.lisp`, RADIO/JOB, static texts, saves, a headless play-through), and `milestone 6: Release: one command to play, a README for people` takes its short introduction from it, so it must be specific enough to implement and to test from.
+
+## Ground rules
+- Read first: `docs/design.md` (all of it, above all "The game in one page", "The places", "Messages and radio", "Dying and what follows", "Scope"), `docs/architecture.md` ("Files in load order": `quests.lisp`, `saves.lisp`; "Scripted runs"; "Rails"; "Re-entry of objects"), `AGENTS.md`, `pm milestone show 5` and `pm decision list --answered`.
+- Binding, cited, not reopened: `decision 22: The player''s ship and its propulsion`, `decision 24: Grapple, not docking; towing in`, `decision 25: Damage model`, `decision 26: Refuelling and economy`, `decision 27: Other ships`, `decision 33: Grapple tolerances, contact and berthing`, `decision 34: How death works`, `decision 35: Saving and audio`, `decision 37: Message channels the story may use`, `decision 38: Start orbit: polar`, `decision 39: Places in scope`, `decision 41: Weapons: cut`, `decision 42: Scope: what each milestone builds`.
+- Only features `docs/design.md` assigns to milestones 2 to 5; nothing cut (weapons, fights, landing, money, EVA, docking ports, voices, faces, reply choices, destinations beyond the Moon and the passing rock). A quest built on a "should" (the passing rock, story ships moving) says so and names what the quest line does if it is dropped (the quest is skipped or replaced, the line stays complete).
+- Hard sci-fi, early 2040s, all technology known: no aliens, no conspiracy tech, no secret drives. Danger comes from the trade (a spinning derelict, a heavy load, a long transfer, the Sun) and people''s conflicts told by RADIO (`docs/design.md` "Weapons").
+- Every quest flyable by the Mule: its Δv within the propellant the pilot can have at that point (6.65 km/s empty, 1.74 km/s with 50 t, 1.02 km/s with 100 t; refuelling only berthed at Fulmar Depot, Highport, Peary Depot), its duration within 180 person-days with restocking at Tern Station, Highport or Peary Depot; take the figures from `docs/design.md` "Δv for the standard legs", "The places", "Δv checked against the ship", don''t recompute them unless a quest needs a leg not listed (then state the formula).
+- Names: the story may rename the places (working names, `decision 39`); if it does, the same task updates `docs/design.md` (and `docs/architecture.md` where named) in step and records the renaming.
+- The document is the story and the quest specification; no game code. Style per `AGENTS.md`: intro paragraph under each top-level heading, then concise bullets; a table for the quest line.
+
+## docs/story.md: contents
+### Setting
+- The world of the early 2040s as the game shows it: who works in near-Earth space (the polar-plane economy of `docs/design.md` "The places": Tern Station, Fulmar Depot, Highport and its water plant, Skua Yard, Peary Depot), who owns what, what a tug pilot''s life is like; plausible, small, sober.
+- The start date (`*start-date*`, `decision 14: Units and time epoch`; default 2040-01-01 00:00 UTC, before 2050-01-01 by `decision 18: Ephemerides`): chosen so the quest line''s windows work (the Moon''s best month from Highport''s perigee, `docs/design.md` "The Moon"; the passing rock''s perigee date and designation, "Asteroids"); the start orbit''s phase if the story changes it (`docs/design.md` "The start").
+### Characters
+- The pilot (the player; no gender or face needed, nothing shown but text addressed to them), the ship''s name and its previous owner if any, the employer(s), the people at the places who speak by RADIO (each with a call sign, a role, a voice in text, where they are, so the light-time delay is right).
+- Other ships the story names (from `decision 27`: Mule tugs in other liveries, the tanker, the crew capsule, the rock mover), which are scenery and which move between places on rails (milestone 5 "should").
+- Static texts: the ship''s name above the window and up to three tape notes (exact wording, `decision 37`).
+### Premise
+- Why the pilot is in this orbit with this tug, what they want, what goes on around them, and where the prelude ends: an ending that opens the longer adventure (a hook, not a resolution) without needing anything cut.
+- The short introduction for `milestone 6` (a few sentences, exact text, shown before the first flight).
+### The quest line
+- 5 to 10 quests in a fixed order that teach piloting one step at a time, from manual attitude and a small burn in the start orbit, through rendezvous, grapple, berthing and refuelling, the derelict K-17 pushed to re-entry by hand (`docs/design.md` "The derelict''s re-entry"), towing a Skua Yard rock, the trip to Highport, a lunar transfer to Peary Depot, to the passing rock if built and a close call with the Sun''s warning zone only if it fits the Δv and life support (otherwise the Sun stays a danger told about, not a destination).
+- Per quest: title, giver (RADIO sender), goal, place(s), skills taught (which controls, holds, autopilot presets, instruments), the milestone that makes it playable (2 to 5), the propellant and time it needs from the expected state at its start, its steps (each a JOB card: title and up to three lines; which steps need Y), the RADIO messages with their exact text, sent at which trigger, and the completion condition per step.
+- Completion conditions machine-checkable from the simulation state (`docs/architecture.md`: berthed at a fixture, grappled object id, orbit elements within tolerances, an object removed with its cause, a body''s sphere entered, time elapsed), so `quests.lisp` and the headless play-through of `milestone 5` can test them; no condition on what the player reads or looks at, except Y acknowledgements.
+- Failure: death never fails a quest; its step is flown again from the last checkpoint (`decision 34`); say where each quest takes a checkpoint (at quest steps, `decision 35`). A step that can be made impossible (e.g. a rock pushed away, propellant spent far from a depot) says how the game recovers (the step''s objects reset on restart from its checkpoint, a tanker or the employer''s offer by RADIO), without new mechanics.
+- No quest needs a feature cut or not yet built at its milestone; the autopilot never flies what `docs/design.md` says it refuses (the derelict''s push below 150 km is by hand).
+### How the story is told
+- Which channel carries what (RADIO, JOB, SHIP stays the game''s, static texts), the tone of the radio (terse, working people, numbers where pilots would say them), what the COMMS screen shows between quests, how light time shows at the Moon.
+- What the player sees of other ships at their work (scenery at places, departures and arrivals on rails out of view).
+### Names and terms
+- One list of every name the story fixes (characters, call signs, ship, company, places, the passing rock''s designation), so code (`places.lisp`, `quests.lisp`) and the other docs use them consistently.
+
+## Decisions to record (`pm decision record`)
+- Setting and premise (the pilot''s situation, the employer, where the prelude ends).
+- Names: the ship, the characters and call signs, the companies, the places (renamed or kept), the passing rock''s designation.
+- The start date (and the start orbit''s phase if changed).
+- The quest line: its quests in order, each with its milestone; what happens if a "should" it relies on is dropped.
+
+## Done when
+- `docs/story.md` has the sections above, 5 to 10 quests each with every per-quest item, and uses only features `docs/design.md` assigns to milestones 2 to 5.
+- Every quest''s Δv and duration checked against the ship''s propellant, refuelling and 180 person-days, citing `docs/design.md`.
+- `docs/design.md` and `docs/architecture.md` agree with the names and the start date the story fixes; the decisions above are recorded.
+- Follow-ups the story reveals (e.g. a Δv leg the design lacks, a place detail, a flight script `milestone 5` needs) added as tasks in the plan they belong to.
+
+## Suggested split
+- Setting, characters, premise, the start date and the names; decisions recorded; `docs/design.md` and `docs/architecture.md` updated for renamings and the date.
+- The quest line: quests, steps, completion conditions, Δv and time checks, checkpoints; decision recorded.
+- How the story is told: every RADIO message and JOB card in exact text, the tape notes, the introduction; a read-through of `docs/story.md` against `docs/design.md` "What the story may use".', '2026-10-14T19:33:18Z', 12);
 
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (1, 1, 'write the masterplan of milestone 1: Scope and design: what luv can carry, what the game is', 'masterplan', 'done', NULL, '2026-10-14, plan 1 body (tasks.sql)', 'Write `plan 1: masterplan`, the masterplan of `milestone 1: Scope and design: what luv can carry, what the game is`: expand on everything that needs to be done to achieve it,
 divided into parts. State in the masterplan that its own tasks are not implementation work: each of them writes the
@@ -609,14 +659,14 @@ INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, crea
 - Follow the answered decisions of the earlier parts (`pm decision list --answered`).
 
 Done when: the plan exists with priority 600 and its "create tasks" task is queued.', '2026-10-14T16:11:45Z', '2026-10-14T17:57:25Z', 7);
-INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (12, 1, 'write plan: story', 'plan', 'open', 590, NULL, 'Write the plan for part 5 of `plan 1: masterplan`: "story" (`docs/story.md`).
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (12, 1, 'write plan: story', 'plan', 'done', 590, '2026-10-14, plan 11: story (tasks.sql)', 'Write the plan for part 5 of `plan 1: masterplan`: "story" (`docs/story.md`).
 
 - Priority 590 on this task: it runs after the work of the plan "game design" (600), so the plan uses the ship, places and features of `docs/design.md`. Read it first.
 - `pm plan list`, then `pm plan add 1 "story" --priority 500` with the full body.
 - Body: the part''s bullets in `plan 1: masterplan` (setting, characters, premise; a linear quest line of 5 to 10 quests, each with goal, place, skills taught, the milestone that makes it playable, completion condition; how quests are told), and the decisions to record (names, premise).
 - The story uses only features `docs/design.md` puts in milestones 2 to 5.
 
-Done when: the plan exists with priority 500 and its "create tasks" task is queued.', '2026-10-14T16:11:45Z', NULL, 7);
+Done when: the plan exists with priority 500 and its "create tasks" task is queued.', '2026-10-14T16:11:45Z', '2026-10-14T19:33:20Z', 7);
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (13, 1, 'write plan: consistency check and sign-off', 'plan', 'open', 490, NULL, 'Write the plan for part 6 of `plan 1: masterplan`: "consistency check and sign-off".
 
 - Priority 490 on this task: it runs after the work of the plan "story" (500), when all four documents and the skeleton exist. Read them first.
@@ -1100,6 +1150,9 @@ INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, crea
 - For each place and object of "Earth-orbit points of interest", "The Moon" (Peary Depot) and "Asteroids" (Skua Yard''s rocks, the rock mover, the passing rock): attitude mode (berth objects) or spin axis and rate (towable ones; K-17 0.3°/s about its long axis is given; rocks: state one, e.g. none or a slow tumble within the 0.5°/s capture tolerance), mass and inertia tensor about the CoM (sphere 2/5 m r², cylinder, or boxes; formula stated), collision shapes as spheres or boxes with dimensions and positions in the object''s body axes (Tern Station''s four boxes and K-17''s one box are given; Fulmar Depot, Highport, Peary Depot, the rock mover, cargo pods are not), and each fixture''s position and outward axis in those axes.
 - Keep the shapes few (one to five per object), as the contact test''s cost in `docs/architecture.md` assumes.
 - Check against `decision 33: Grapple tolerances, contact and berthing` (a towable fixture''s spin must allow capture) and `decision 39: Places in scope`.', '2026-10-14T18:50:52Z', '2026-10-14T19:32:14Z', 46);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (50, 11, 'create tasks for plan 11: story', 'split', 'open', 1000, NULL, 'Split `plan 11: story` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
+done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
+tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-14T19:33:18Z', NULL, 12);
 
 INSERT INTO decision (id, subject, status, options, body, answer, reason, created_at, closed_at, created_by_task, signoff, kind, decided_by_task, consequences) VALUES (1, 'How the game consumes luv', 'answered', '[]', 'Findings of `task 17: Build and run luv''s programs and test suite; record the runs` (docs/luv-capabilities.md, Packaging and Runs).
 - luv''s flake exports apps, devShells, packages and lib; lib has only environmentFor, which returns everything the packaging needs (pkgs, lisp, applicationEnvironment/Packages, developmentEnvironmentHook, slynkSource, swashPackage, …). No overlays.
@@ -1200,6 +1253,7 @@ INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, b
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (41, 47, '2026-10-14T18:51:43Z', '2026-10-14T19:20:01Z', 'done', NULL, 0, '9c294b7086cdd67593bb133f5974af368fb523a3', 'claude-opus-5-5[1m]', 'a3fd705c-30e2-444c-8ced-95cb322358af', 75, 130, 36007, 5983026, 120941, 2.8847932000000003, 2286516);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (42, 48, '2026-10-14T19:20:01Z', '2026-10-14T19:24:29Z', 'done', NULL, 0, 'c145a9ed70458bac72c95ee4aa2b66b00a645bdd', 'claude-opus-5-5[1m]', 'a519ddf8-4fe4-4e4e-8e99-d948ef5afa1d', 20, 30, 25152, 1166913, 97823, 1.5191266, 2286516);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (43, 49, '2026-10-14T19:24:29Z', '2026-10-14T19:32:29Z', 'done', NULL, 0, 'e069911fdff4318e253045a369676d0a4f56aaf3', 'claude-opus-5-5[1m]', '391517be-f693-4d59-bce6-2b84d46ef8f7', 21, 36, 46383, 1642918, 116428, 2.1878116, 2286516);
+INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (44, 12, '2026-10-14T19:32:29Z', '2026-10-14T19:33:28Z', 'done', NULL, 0, 'a57a3c6f5352e782994483dc33088a74b586a527', 'claude-opus-5-5[1m]', '460d12db-9bb9-411a-abe2-d5594bcd1dbd', 10, 16, 5374, 394626, 63121, 0.6914372, 2286516);
 
 INSERT INTO task_decision (task_id, decision_id) VALUES (44, 28);
 INSERT INTO task_decision (task_id, decision_id) VALUES (44, 45);

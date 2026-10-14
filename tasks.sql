@@ -320,9 +320,56 @@ plan for one part.', '2026-10-14T16:07:15Z', NULL, NULL);
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (6, 6, 'write the masterplan of milestone 6: Release: one command to play, a README for people', 'masterplan', 'open', NULL, NULL, 'Write `plan 6: masterplan`, the masterplan of `milestone 6: Release: one command to play, a README for people`: expand on everything that needs to be done to achieve it,
 divided into parts. State in the masterplan that its own tasks are not implementation work: each of them writes the
 plan for one part.', '2026-10-14T16:07:32Z', NULL, NULL);
-INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (7, 1, 'create tasks for plan 1: masterplan', 'split', 'open', 1000, NULL, 'Split `plan 1: masterplan` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (7, 1, 'create tasks for plan 1: masterplan', 'split', 'done', 1000, '2026-10-14, tasks 8-13', 'Split `plan 1: masterplan` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
 done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
-tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-14T16:11:02Z', NULL, 1);
+tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-14T16:11:02Z', '2026-10-14T16:11:47Z', 1);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (8, 1, 'write plan: luv capabilities', 'plan', 'open', 1000, NULL, 'Write the plan for part 1 of `plan 1: masterplan`: "luv capabilities".
+
+- `pm plan list` first, then `pm plan add 1 "luv capabilities" --priority 900` with the full body.
+- Body: the part''s bullets in `plan 1: masterplan`, made concrete: which `../luv` docs and code to read, which luv programs, tests and screenshot paths to build and run (via luv''s flake), which gaps to assess, each with a workaround in this repo.
+- Deliverables of the plan: `docs/luv-capabilities.md`, `docs/luv-wishlist.md`, recorded decisions (e.g. which luv systems to depend on).
+- Respect the ground rules of `plan 1: masterplan` (read-only `../luv`, docs style from `AGENTS.md`, close every window).
+
+Done when: the plan exists with priority 900 and its "create tasks" task is queued.', '2026-10-14T16:11:45Z', NULL, 7);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (9, 1, 'write plan: walking skeleton', 'plan', 'open', 1000, NULL, 'Write the plan for part 2 of `plan 1: masterplan`: "walking skeleton".
+
+- `pm plan list` first, then `pm plan add 1 "walking skeleton" --priority 800`; it runs after the plan "luv capabilities" (priority 900) and depends on its findings on how a luv program is built, started and screenshotted; refer to it by id.
+- Body: the part''s bullets made concrete: `flake.nix` with luv as a pinned input, package and `apps.default`, dev shell with SBCL/luv and `pm`; an ASDF system under `src/` drawing something recognisable with `PLACEHOLDER(<task id>)` where it shows; a headless test command; a screenshot command writing a PNG; the live-image dev loop if luv''s `./sly` can be reused; `AGENTS.md` "Commands" filled in and verified from a clean `git clone`.
+
+Done when: the plan exists with priority 800 and its "create tasks" task is queued.', '2026-10-14T16:11:45Z', NULL, 7);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (10, 1, 'write plan: architecture', 'plan', 'open', 790, NULL, 'Write the plan for part 3 of `plan 1: masterplan`: "architecture" (`docs/architecture.md`).
+
+- Priority 790 on this task: it runs after the work of the plans "luv capabilities" (900) and "walking skeleton" (800), so the plan is grounded in `docs/luv-capabilities.md` and the skeleton. Read them first.
+- `pm plan list`, then `pm plan add 1 "architecture" --priority 700` with the full body.
+- Body: the part''s bullets in `plan 1: masterplan` (dependency on luv, module layout, units and coordinates, depth strategy, time and integration, time warp, testing incl. the energy/angular-momentum drift tests that `milestone 2: Flight core: Newtonian flight in near-Earth orbit` requires), and the decisions to record (unit of length, coordinate frames, integrator, depth strategy).
+- Check `pm decision list --answered` for decisions the earlier parts recorded and follow them.
+
+Done when: the plan exists with priority 700 and its "create tasks" task is queued.', '2026-10-14T16:11:45Z', NULL, 7);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (11, 1, 'write plan: game design', 'plan', 'open', 690, NULL, 'Write the plan for part 4 of `plan 1: masterplan`: "game design" (`docs/design.md`).
+
+- Priority 690 on this task: it runs after the work of the plan "architecture" (700), so the plan is grounded in `docs/luv-capabilities.md` and `docs/architecture.md`. Read them first.
+- `pm plan list`, then `pm plan add 1 "game design" --priority 600` with the full body.
+- Body: the part''s bullets in `plan 1: masterplan` (ships, flight, cockpit, places with real orbital data and sources, the prioritised scope list assigning every feature to milestones 2 to 6 or cutting it with the reason; read those milestones with `pm milestone show`), and the decisions to record (propulsion, how death works, planets in scope).
+- Follow the answered decisions of the earlier parts (`pm decision list --answered`).
+
+Done when: the plan exists with priority 600 and its "create tasks" task is queued.', '2026-10-14T16:11:45Z', NULL, 7);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (12, 1, 'write plan: story', 'plan', 'open', 590, NULL, 'Write the plan for part 5 of `plan 1: masterplan`: "story" (`docs/story.md`).
+
+- Priority 590 on this task: it runs after the work of the plan "game design" (600), so the plan uses the ship, places and features of `docs/design.md`. Read it first.
+- `pm plan list`, then `pm plan add 1 "story" --priority 500` with the full body.
+- Body: the part''s bullets in `plan 1: masterplan` (setting, characters, premise; a linear quest line of 5 to 10 quests, each with goal, place, skills taught, the milestone that makes it playable, completion condition; how quests are told), and the decisions to record (names, premise).
+- The story uses only features `docs/design.md` puts in milestones 2 to 5.
+
+Done when: the plan exists with priority 500 and its "create tasks" task is queued.', '2026-10-14T16:11:45Z', NULL, 7);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (13, 1, 'write plan: consistency check and sign-off', 'plan', 'open', 490, NULL, 'Write the plan for part 6 of `plan 1: masterplan`: "consistency check and sign-off".
+
+- Priority 490 on this task: it runs after the work of the plan "story" (500), when all four documents and the skeleton exist. Read them first.
+- `pm plan list`, then `pm plan add 1 "consistency check and sign-off" --priority 400` with the full body.
+- Body: the part''s bullets in `plan 1: masterplan`: the four documents agree with each other and with the skeleton (units, names, features, milestone assignments); every feature in `docs/design.md` is assigned to milestones 2 to 6 or cut; the story uses only features in scope by milestone 5; the skeleton builds, runs, tests and screenshots from a clean checkout with the `AGENTS.md` commands; follow-up tasks for what later milestones still need. Name the concrete checks you find needed after reading the documents.
+- The milestone''s "Done when" in `milestone 1: Scope and design: what luv can carry, what the game is` is the target.
+
+Done when: the plan exists with priority 400 and its "create tasks" task is queued.', '2026-10-14T16:11:45Z', NULL, 7);
 
 
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (1, 1, '2026-10-14T16:10:25Z', '2026-10-14T16:11:12Z', 'done', NULL, 0, 'dbb0732a624bc26e8981cc36772e27859e6c5ea6', 'claude-opus-5-5[1m]', '332e5758-5e41-45e9-975c-f9674f9ae310', 5, 10, 4524, 144844, 45557, 0.4839448, 2177276);
+INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (2, 7, '2026-10-14T16:11:12Z', '2026-10-14T16:11:52Z', 'done', NULL, 0, '413343ae3d6bf69e5b19c1f2946215ec59767499', 'claude-opus-5-5[1m]', 'ef09344d-70e2-4295-94e9-29228b85f2ab', 5, 10, 4111, 147758, 29261, 0.3458996, 2177276);

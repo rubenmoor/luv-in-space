@@ -65,7 +65,11 @@ The HAL is a small explicit GPU API: devices, buffers, textures, samplers, bind 
 - Fonts shipped in `../luv/fonts`: Iosevka Aile, Monaspace Neon (licences included); `cl-dejavu` provides DejaVu (read).
 - Terminal screens: Ghostty (`luv/ghostty`) is a VT engine without a shell of its own; `write-terminal` feeds it bytes, so a game can drive a terminal with generated text and VT escape codes (instrument panels) without a PTY (`../luv/ghostty/terminal.lisp`) (read; not tried). The renderer that draws a terminal grid in the world (terminal wall) is Luvcraft code (`../luv/luvcraft/terminal-wall.lisp`) (read).
 - McCLIM can draw panes onto GPU surfaces (`luv/mcclim`), used for Luvcraft/Luft developer UIs (read).
-- Image loading: luv has no image decoder for textures; it only writes PNGs (`zpng`). Luvcraft's block atlas is procedural. SDL3_image is on luv's native library path and cl-sdl3 binds it; FFmpeg (`luv/libav`) also decodes images (read; texture loading unproven).
+- Image loading: luv has no image decoder of its own; it only writes PNGs (`zpng`), and Luvcraft's block atlas is procedural. The `sdl3` system that `luv` loads includes cl-sdl3's SDL_image binding (`sdl3-image:img-load`), and SDL3_image is on luv's native library path: a 5400×2700 JPEG decoded, converted to `:abgr8888` and was uploaded as an `:rgba8-unorm-srgb` texture (ran: run 32). `write-texture` takes a rank-2 `(unsigned-byte 32)` array of rows × columns, not a flat vector (ran: run 32; `check-vulkan-texture-write`). FFmpeg (`luv/libav`) also decodes images (read).
+- Instancing: `draw` and `draw-indexed` take an instance count, and a vertex buffer layout with `:step-mode :instance` advances per instance (Luvcraft's text, terminal wall, bodies) (ran: run 32, 4,000 star quads and 256 orbit segments in two draws).
+- Fragment depth and discard: `:frag-depth` output and `(discard)` work, so a fragment shader can ray-trace a sphere and write its true depth (ran: run 32).
+- Shader language limits met in run 32: only `let*` binds at statement level (`let` is rejected); no implicit scalar–vector broadcasting for `-` (`(- 0.0 ray)` fails; `*` and `/` with a scalar work); no `atan`, `asin`, `acos` or `tan` operators (the list in `../luv/hal/shader/language.lisp` has `sin`, `cos`, `exp`, `log`, `expt`, `sqrt`), so angles come from a polynomial `atan2` written as a `define-shader-function` (ran).
+- Bind groups: a render pass needs `set-bind-group` after each `set-pipeline`; binding before the first pipeline fails with `:NO-PIPELINE` (ran: run 32).
 
 ## Windowing and input
 
@@ -176,6 +180,87 @@ The wiki measures CPU frame time with luv's trace zones and Tracy; there are no 
 - Tools: `with-cpu-trace-zone`, Tracy (`nix develop .#tracy`) (read).
 - What this means for us: a few hundred draws and an orbital integrator fit easily in a 16 ms frame on the developer's hardware (assumed); lavapipe on agents will be slow (assumed).
 
+## Gaps and workarounds
+
+What a solar-system flight game needs that luv lacks, each gap with a workaround in this repo. The rendering gaps come from `task 20: Assess luv's rendering gaps for solar-system scale, each with a workaround`, checked against luv's code and the gap probe (runs 32–33, "Appendix: gap probe"); the rest are assessed by `task 21: Remaining gaps, luv wishlist, summary and decisions of the luv findings`. Costs are rough sizes of the code this repo writes.
+
+### Depth range across 10^12 m
+
+- luv has: one depth format, `:depth32-float`; every compare op; a depth clear value in [0, 1]; `:frag-depth` output; no depth clamp; no projection helper, so the game builds its own clip rows (read: `../luv/hal/gpu.lisp`, `../luv/hal/vulkan/native.lisp`; ran: runs 29–32).
+- Gap: a standard projection loses the far side of Earth to depth precision from orbit and draws nothing at the Moon's distance (ran: run 30). Nothing in luv is wrong; a game must choose its depth mapping.
+- Options weighed:
+  - Reversed-Z with float depth and an infinite far plane (`depth = near / z`, compare `:greater`, clear 0.0): one pass, works from 0.1 m to 3.8×10^8 m (ran: runs 30–32). Float32's relative precision is about 10^-7 at every distance, so separation stays good from cockpit to Neptune (assumed from the format; not tried beyond the Moon).
+  - Logarithmic depth written by `:frag-depth`: also works in luv, but disables early depth testing for every surface and needs care with interpolation; no gain over reversed float depth (read; not tried).
+  - Layered passes (far bodies, near bodies, cockpit), each with its own near/far and a depth clear between: works with any mapping but costs a pass per layer and sorting of bodies into layers (assumed).
+- Workaround here: reversed-Z with an infinite far plane for every pass. Things at infinity (stars) write depth 0 and draw first with compare `:always` and depth writes off. The cockpit is drawn in the same pass (near 0.1 m keeps a 0.5 m panel well resolved); a separate cockpit pass with its own depth clear is the fallback if the hull ever needs to clip into the world (assumed).
+- Cost: small; a projection function and a pipeline convention, both already in the probes.
+- Recorded as `decision 4: Depth strategy`.
+
+### Double-precision positions
+
+- luv has: no `double-float` on the GPU (shader floats are 32-bit; `write-buffer` takes `single-float` arrays); no camera or world-position type in base `luv`; `luv.arithmetic`'s `vec3` stores any `real`, so it is precision-neutral but generic (read: `../luv/arithmetic/lisp/vec3.lisp`). Luvcraft's camera and text placement coerce to `single-float` (read: `../luv/luvcraft/text.lisp`); nothing the game loads assumes single floats on the CPU.
+- Gap: world positions span 10^12 m; single floats give about 0.5 m resolution at Earth's radius and 60 km at 1 AU, so positions cannot go to the GPU as they are (assumed from float32 arithmetic).
+- Workaround here: physics state in `double-float` (heliocentric or per-body frames, see `docs/architecture.md`); each frame the CPU subtracts the camera's double position and converts the difference to `single-float`; the GPU sees only camera-relative positions and directions. Values that cancel badly in single float are computed on the CPU in double: the probe passes `|c|^2 - r^2` for the ray–sphere test as `h (2r + h)` with `h` the altitude, since `|c|^2` alone is ~5×10^13 and its float error ~3×10^6 m² (ran: runs 30–32; the probe's camera math is in double).
+- Cost: small per object (one subtraction per draw); the discipline matters more than the code: no world-space matrices on the GPU.
+- Recorded as `decision 5: Precision of positions`.
+
+### Spheres and planet surfaces
+
+- luv has: no mesh generators and no sphere; triangle lists and strips; textures, samplers, cube textures, `:frag-depth`, `discard`; image decoding through `sdl3-image` (ran: run 32).
+- Gap: a UV sphere mesh shows a polygonal limb from low orbit (64 slices, ran: run 30) and needs view-dependent tessellation to stay round, and without back-face culling its far side relies on depth alone.
+- Workaround here: draw planets and moons as ray-traced impostors: a full-screen triangle (or a screen-space quad around the body's disc), a fragment shader that intersects the view ray with the sphere, discards misses and writes the hit's reversed-Z depth. The limb is exactly round at every distance, there is no mesh, and other geometry (orbit lines, ships) depth-tests against it (ran: run 32, both scenes). Bodies below a few pixels become point sprites (assumed). Cost: about 60 lines of shader per body type.
+- Earth's surface: NASA's Blue Marble Next Generation, an equirectangular colour texture, sampled by latitude and longitude from a polynomial `atan2` (the shader language has no `atan`/`asin`); the 5400×2700 JPEG (1.8 MB) looked good from 629 km and 34 Mm (ran: run 32). Larger versions exist for close views: 21600×10800 for the whole Earth (~2 km per pixel) and 8 tiles of 21600×21600 (~0.5 km per pixel) (read: the download page's links). A cube map built from it at load time would avoid the polynomial and the poles' pinch (assumed).
+- Clouds, night lights, atmosphere: an additive rim term on the lit surface shows the idea (ran: run 32); a halo past the limb needs a second, slightly larger impostor with additive blending, and night lights a second texture (NASA "Black Marble") (assumed). Procedural continents are cut in favour of the texture: real Earth is recognisable, procedural would cost more and look less real (recommendation for `docs/design.md`).
+- Moon and planets: the same impostor with their own textures (NASA/USGS maps; licences checked when chosen) or flat albedo colours where a body is only seen from afar (assumed).
+- Licence of NASA imagery: "NASA content – images, audio, video, and media files used in the rendition of 3-dimensional models, such as texture maps and polygon data in any format – generally are not subject to copyright in the United States. You may use this material for educational or informational purposes, including photo collections, textbooks, public exhibits, computer graphical simulations and Internet Web pages." and "NASA should be acknowledged as the source of the material." (NASA, "Guidelines for using images and media", `https://www.nasa.gov/nasa-brand-center/images-and-media/`, fetched 2026-10-14). The NASA logo and any implied endorsement are off limits under the same guidelines. The Blue Marble pages credit "NASA Earth Observatory" (read). So: ship or download the texture, credit "NASA Earth Observatory (Blue Marble Next Generation)" in the credits and the repo, no NASA logos.
+- Cost: impostor shader and texture loading ~150 lines; textures add a download or a Nix fetch of a few MB.
+
+### Starfield
+
+- luv has: Luvcraft's stars are hashed points in a procedural night sky (`star-light` in `../luv/luvcraft/shaders.lisp`), not real positions; Luft's "stars" are cubical-topology figures, not astronomy (`../luv/wiki/luft-star-figures.org`) (read). No catalogue, no point topology (read).
+- Gap: real constellations matter for a navigation game (the player orients by them) and luv has none.
+- Workaround here: a star catalogue converted at build time to a vector of (direction, brightness, colour) and drawn as instanced additive quads at infinity, sized in pixels, brightness from magnitude (ran: run 32 with 4,000 random stars standing in for the catalogue, one instanced draw; not timed).
+- Catalogues: HYG (Hipparcos, Yale BSC, Gliese; ~120,000 stars) is under Creative Commons Attribution-ShareAlike 4.0 ("This work is licensed under a Creative Commons Attribution-ShareAlike 4.0 International License", `LICENSE` of `github.com/astronexus/HYG-Database`, which now points to `codeberg.org/astronexus/hyg`; read 2026-10-14). ShareAlike applies to the derived star table we ship, not to the game's code (assumed; to be confirmed when the asset is added). The Yale Bright Star Catalogue (~9,100 stars to magnitude 6.5) would suffice for naked-eye stars; its licence was not checked here.
+- Recommendation: HYG filtered to magnitude ≤ 6.5 (~8,900 stars), with attribution and the derived table under CC BY-SA 4.0 in its own directory; the Yale BSC is the fallback if ShareAlike is unwanted.
+- Cost: a converter script, one buffer, two small shaders (~80 lines).
+
+### Sun glare and brightness
+
+- luv has: nothing in base `luv`; Luvcraft has an HDR `:rgba16-float` scene, an exposure knob, ACES filmic tone mapping (`aces-filmic`), a quarter-resolution bloom chain with threshold and gain, sun shafts, and a sky shader with a sun disc and Henyey-Greenstein glow (read: `../luv/luvcraft/render.lisp`, `shaders.lisp`, `../luv/wiki/sky-and-light.org`). None of it loads without `luvcraft/core`.
+- Gap: space has no sky; the Sun's disc is about 10^5 to 10^6 times brighter than sunlit Earth, sunlit Earth far brighter than stars; a game needs HDR, a tone curve, glare and an exposure rule.
+- Workaround here: an HDR `:rgba16-float` scene target, a tone-map pass to the canvas (ACES or similar, written here after Luvcraft's), a small bloom chain (threshold, downsample, blur, add), and the Sun drawn as an impostor disc with a large radiance so bloom makes the glare. Exposure follows the scene: a fixed "sunlit" exposure when the Sun or a lit body fills part of the view, so stars fade out as they do in real photographs, and a deep-space exposure otherwise, blended over a second or two (assumed; not tried here). Cost: ~250 lines (render targets, three or four passes).
+- The "too close to the Sun" danger is a game rule, not rendering; glare and a heat tint on the cockpit only show it (assumed).
+
+### Orbit lines and markers
+
+- luv has: triangle lists and strips only; no line or point topology in the Vulkan and Metal backends (read); premultiplied-alpha blending, which with alpha 0 adds colour (ran: run 32).
+- Gap: orbit lines, trajectories and markers need lines of constant pixel width.
+- Workaround here: screen-space ribbons: one instance per segment with both endpoints (camera-relative, from double on the CPU), a 6-vertex quad expanded in the vertex shader to a fixed pixel width, endpoints behind the camera clipped to a near `w`, additive blending, depth test against bodies without writing (ran: run 32, a 256-segment orbit 3 px wide, hidden behind Earth where it should be). Markers are the same quads around a point, with a shape in the fragment shader (assumed). Cost: ~100 lines; long orbits need adaptive segment counts near the camera (assumed).
+
+### HUD and instruments
+
+- luv has: Slug glyph rendering from TrueType outlines, HarfBuzz shaping and an outline cache in base `luv` (`../luv/hal/shader/slug*.lisp`, ~1,700 lines) (read); the instanced text run that turns them into quads with an atlas (`make-world-text-run`, ~390 lines) is Luvcraft code (`../luv/luvcraft/text.lisp`) (read). Ghostty (`luv/ghostty`) emulates a terminal fed with bytes, no shell needed (`make-terminal`, `write-terminal` in `../luv/ghostty/terminal.lisp`), but drawing its grid is Luvcraft's terminal wall (~2,150 lines) (read). McCLIM panes on GPU surfaces (`luv/mcclim`) are developer UI (read). No screen-space 2D layer in base `luv` (read).
+- Gap: no ready text or 2D layer a game can load without `luvcraft/core`.
+- Workaround here: instruments drawn on in-world cockpit screens (fits the DIY-cockpit design): each screen is a textured quad in the cockpit; its contents (text, gauges, a small orbit plot) render into an offscreen texture with this repo's own 2D pass (quads, ribbons, and Slug text through an adapted copy of Luvcraft's `text.lisp`). The same 2D pass can draw straight to the screen for a minimal outside-view HUD (assumed; not tried). Ghostty as a "terminal" screen is attractive for the DIY look, but its renderer would be a second copy of Luvcraft code; it is left to `docs/design.md` to keep or cut (recommendation: Slug text first, Ghostty later if the design wants a real terminal).
+- Cost: the text copy ~400 lines plus the screen texture pass ~200 lines; this is the largest rendering workaround.
+
+### Instancing many objects
+
+- luv has: instanced `draw`/`draw-indexed` and per-instance vertex buffers (`:step-mode :instance`); storage buffers read by `:instance-index` (`../luv/hal/shaderc/examples/textured-instances.lisp`) (ran: run 32; read).
+- Gap: none in the HAL; no ready instanced mesh renderer.
+- Workaround here: asteroids as one or a few rock meshes (generated in Lisp, displaced icospheres) drawn with per-instance position, scale and rotation, camera-relative in single float; distant asteroids as sprites or not at all (the real belt is empty to the eye) (assumed). Markers and stars as instanced quads (ran). Cost: ~100 lines per instanced kind.
+
+### Other gaps, for `task 21: Remaining gaps, luv wishlist, summary and decisions of the luv findings`
+
+- Audio: `audio-sink` in base `luv` (`../luv/hal/sdl/audio.lisp`) plays pushed float frames through SDL3; no mixer or sound loading (read).
+- Saves: Luvcraft writes s-expressions under `$XDG_DATA_HOME/luvcraft` (`../luv/luvcraft/play.lisp`, `persistence.lisp`) (read).
+- Gamepad: not in the canvas protocol (read).
+- Back-face culling not available (read); with a broken depth range the far hemisphere of a sphere shows through (ran: run 30). Planet impostors and reversed-Z sidestep it for bodies (ran: run 32); closed ship meshes rely on depth alone.
+
+## What this means for luv-in-space
+
+Filled in by `task 21: Remaining gaps, luv wishlist, summary and decisions of the luv findings`, the summary that the walking skeleton, architecture and design build on.
+
 ## Runs
 
 Filled in by `task 17: Build and run luv's programs and test suite; record the runs`, `task 18: Try luv's live image, screenshots and headless rendering; record the findings` and `task 19: Probe program: a lit sphere in a luv window plus a screenshot`: each run with command, time and outcome. Runs 1–14 are from 2026-10-14 at luv `6abc9d1`; `R` stands for that revision. Program runs used `env -u LD_LIBRARY_PATH` from run 6 on (see Packaging); build links went to `/tmp/t17/`, deleted afterwards.
@@ -224,6 +309,14 @@ Runs 29–31 are from 2026-10-14 at R, by `task 19: Probe program: a lit sphere 
   - `moon-standard`: all black. `moon-reversed`: a lit disc a few pixels wide in the centre (1,737 km radius at 384,400 km).
 - Run 31: the same with `env -u DISPLAY -u WAYLAND_DISPLAY` and hidden canvases (`OUT nil`): the hook chose `SDL_VIDEODRIVER=offscreen` and lavapipe; 10 s wall; five 640×400 PNGs matching run 30 (each scene 1.5–1.6 s).
 - Afterwards: no `sbcl` process left; `git -C ../luv status` shows only the old `result`; the temp dir deleted.
+
+Runs 32–33 are from 2026-10-14 at R, by `task 20: Assess luv's rendering gaps for solar-system scale, each with a workaround`, with the gap probe of "Appendix: gap probe" in a `mktemp -d` directory, loaded the same way as runs 29–31; the Earth texture was NASA's Blue Marble Next Generation, April, 5400×2700 JPEG (`world.200404.3x5400x2700.jpg` from `assets.science.nasa.gov`, 1.8 MB).
+
+- Run 32: `env -u LD_LIBRARY_PATH LUV_PROJECT_ROOT=../luv nix develop path:../luv -c sbcl --script run.lisp OUT nil earth.jpg`, hidden canvases on the desktop's GPU: texture decoded and copied in 0.2 s; each of two scenes 1.6 s (open, 1 s of frames, capture, close). Three attempts failed first: a `let` in a shader, `(- 0.0 ray)` on a `vec3`, and a flat vector for `write-texture`; one more failed at `set-bind-group` before `set-pipeline`.
+  - `leo` (629 km altitude, looking up at the limb): textured Earth with a smooth, round limb and a pale blue rim; stars above it; the 2,000 km orbit as a 3-pixel orange line across the top.
+  - `far` (34 Mm from Earth): the whole Earth, North America and the Caribbean the right way round, snow on Canada, the night side dark; the inclined orbit ring passes in front of Earth and its far half is hidden behind it (depth test against the impostor's written depth); a field of stars of varying brightness.
+- Run 33: the same with `env -u DISPLAY -u WAYLAND_DISPLAY` (hook chose `SDL_VIDEODRIVER=offscreen` and lavapipe): the same two pictures; first scene 9.1 s (lavapipe compiling pipelines and taking the 58 MB texture), second 1.5 s.
+- Afterwards: no `sbcl` process left; `git -C ../luv status` shows only the old `result`; the temp dir with texture and screenshots deleted.
 
 ## Appendix: screenshot probe
 
@@ -567,21 +660,415 @@ The probe of runs 29–31, by `task 19: Probe program: a lit sphere in a luv win
 (uiop:quit 0)
 ```
 
-## Gaps and workarounds
+## Appendix: gap probe
 
-Filled in by `task 20: Assess luv's rendering gaps for solar-system scale, each with a workaround` and `task 21: Remaining gaps, luv wishlist, summary and decisions of the luv findings`. Gaps already visible from reading, for those tasks to assess:
+The probe of runs 32–33, by `task 20: Assess luv's rendering gaps for solar-system scale, each with a workaround`: an ASDF system `gap-probe` (`:depends-on ("luv")`, two files) that draws, in one reversed-Z pass, 4,000 instanced star quads at infinity, Earth as a ray-traced impostor textured with the Blue Marble (loaded through `sdl3-image`), and a 256-segment orbit as instanced screen-space ribbons, then takes an offscreen screenshot. It seeds the planet, star and orbit-line rendering of later milestones. Run as the sphere probe, with the JPEG path as a third argument.
 
-- Depth range across 10^12 m: only `:depth32-float`, but `:greater` and clear 0.0 allow reversed-Z; an infinite reversed-Z projection with near 0.1 m drew Earth from orbit and the Moon from Earth's distance, where the standard projection failed (ran: runs 30, 31).
-- Double-precision positions: no f64 on the GPU; camera-relative single-float positions needed (read).
-- Spheres and planet surfaces: no mesh generators; no texture loading (read). A 64-slice UV sphere generated in Lisp shows a polygonal limb from low orbit (ran: run 30); planets need finer or view-dependent tessellation, or a per-pixel ray–sphere fragment shader.
-- Starfield: Luvcraft's stars are procedural hashes; luft's "stars" are cubical-topology neighbourhoods, not astronomy (`../luv/wiki/luft-star-figures.org`) (read).
-- Orbit lines and markers: no line or point topology (read).
-- HUD/2D overlay: Slug text and McCLIM exist; no simple screen-space 2D layer in core (read).
-- Audio: `audio-sink` in base `luv` (`../luv/hal/sdl/audio.lisp`) plays pushed float frames through SDL3; no mixer or sound loading (read).
-- Saves: Luvcraft writes s-expressions under `$XDG_DATA_HOME/luvcraft` (`../luv/luvcraft/play.lisp`, `persistence.lisp`) (read).
-- Gamepad: not in the canvas protocol (read).
-- Back-face culling not available (read); with a broken depth range the far hemisphere of a sphere shows through (ran: run 30).
+`gap-probe.asd`:
 
-## What this means for luv-in-space
+```lisp
+(defsystem "gap-probe"
+  :depends-on ("luv")
+  :serial t
+  :components ((:file "shaders") (:file "probe")))
+```
 
-Filled in by `task 21: Remaining gaps, luv wishlist, summary and decisions of the luv findings`, the summary that the walking skeleton, architecture and design build on.
+`shaders.lisp`:
+
+```lisp
+(defpackage #:gap-probe.shaders
+  (:use #:cl #:luv.shader)
+  (:shadowing-import-from #:luv.shader #:step))
+(in-package #:gap-probe.shaders)
+
+(defmacro frame-block ()
+  ''(frame :uniform-block :binding 0
+     :members ((clip-x :vec4) (clip-y :vec4) (clip-z :vec4) (clip-w :vec4)
+               (right :vec4) (up :vec4) (forward :vec4)
+               (body :vec4) (extra :vec4) (sun :vec4))))
+
+;; Abramowitz-Stegun 4.4.49 on [0, 1]; the language has no atan or asin.
+(define-shader-function atan-unit (x)
+  (let* ((x2 (* x x)))
+    (* x (+ 0.999866 (* x2 (+ -0.3302995 (* x2 (+ 0.180141 (* x2 (+ -0.085133 (* x2 0.0208351)))))))))))
+
+(define-shader-function atan2 (y x)
+  (let* ((ax (abs x)) (ay (abs y))
+         (a (atan-unit (/ (min ax ay) (max (max ax ay) 1e-20))))
+         (b (if (> ay ax) (- 1.5707964 a) a))
+         (c (if (< x 0.0) (- 3.1415927 b) b)))
+    (if (< y 0.0) (- 0.0 c) c)))
+
+;;; Stars: one quad per instance, at infinity, additive.
+(define-shader star-vertex
+    (:stage :vertex
+     :inputs ((corner :vec2 :location 0)
+              (star :vec4 :location 1))
+     :outputs ((clip-position :vec4 :built-in :position)
+               (local :vec2 :location 0)
+               (brightness :float :location 1))
+     :resources (#.(frame-block)))
+  (let* ((point (vec4 (swizzle star :xyz) 0.0))
+         (clip (vec4 (dot clip-x point) (dot clip-y point)
+                     (dot clip-z point) (dot clip-w point)))
+         (offset (* corner (/ (vec2 6.0 6.0) (swizzle extra :yz)) (swizzle clip :w))))
+    (set-output clip-position (vec4 (+ (swizzle clip :xy) offset) (swizzle clip :zw)))
+    (set-output local corner)
+    (set-output brightness (swizzle star :w))))
+
+(define-shader star-fragment
+    (:stage :fragment
+     :inputs ((local :vec2 :location 0)
+              (brightness :float :location 1))
+     :outputs ((color :vec4 :location 0)))
+  (let* ((glow (* brightness (exp (* -6.0 (dot local local))))))
+    (set-output color (vec4 (* (vec3 0.9 0.95 1.0) glow) 0.0))))
+
+;;; Earth: a ray-sphere impostor over a full-screen triangle.
+(define-shader earth-vertex
+    (:stage :vertex
+     :inputs ((corner :vec2 :location 0))
+     :outputs ((clip-position :vec4 :built-in :position)))
+  (set-output clip-position (vec4 corner 0.5 1.0)))
+
+(define-shader earth-fragment
+    (:stage :fragment
+     :inputs ((pixel :vec4 :built-in :frag-coord))
+     :outputs ((color :vec4 :location 0)
+               (depth :float :built-in :frag-depth))
+     :resources (#.(frame-block)
+                 (earth :texture-2d :binding 1)
+                 (linear :sampler :binding 2)))
+  (let* ((ndc (vec2 (- (* 2.0 (/ (swizzle pixel :x) (swizzle extra :y))) 1.0)
+                    (- 1.0 (* 2.0 (/ (swizzle pixel :y) (swizzle extra :z))))))
+         (ray (normalize (+ (swizzle forward :xyz)
+                            (* (swizzle right :xyz) (swizzle ndc :x))
+                            (* (swizzle up :xyz) (swizzle ndc :y)))))
+         (center (swizzle body :xyz))
+         (b (dot ray center))
+         ;; |c|^2 - r^2, computed in double on the CPU
+         (disc (- (* b b) (swizzle extra :x)))
+         (tt (- b (sqrt (max disc 0.0))))
+         (n (/ (- (* ray tt) center) (swizzle body :w)))
+         (lon (atan2 (- 0.0 (swizzle n :z)) (swizzle n :x)))
+         (lat (atan2 (swizzle n :y) (sqrt (max (- 1.0 (* (swizzle n :y) (swizzle n :y))) 0.0))))
+         (uv (vec2 (+ 0.5 (/ lon 6.2831855)) (- 0.5 (/ lat 3.1415927))))
+         (albedo (swizzle (sample earth linear uv) :rgb))
+         (light (clamp (dot n (swizzle sun :xyz)) 0.0 1.0))
+         (rim (expt (- 1.0 (clamp (- 0.0 (dot n ray)) 0.0 1.0)) 4.0))
+         (air (* (vec3 0.3 0.55 1.0) rim (clamp (+ (dot n (swizzle sun :xyz)) 0.2) 0.0 1.0))))
+    (when (or (< disc 0.0) (< tt 0.0))
+      (discard))
+    (set-output color (vec4 (+ (* albedo (+ light 0.01)) air) 1.0))
+    (set-output depth (/ (swizzle forward :w) (* tt (dot ray (swizzle forward :xyz)))))))
+
+;;; Orbit: one screen-space ribbon segment per instance.
+(define-shader orbit-vertex
+    (:stage :vertex
+     :inputs ((corner :vec2 :location 0)
+              (from :vec4 :location 1)
+              (to :vec4 :location 2))
+     :outputs ((clip-position :vec4 :built-in :position)
+               (across :float :location 0))
+     :resources (#.(frame-block)))
+  (let* ((a0 (vec4 (dot clip-x from) (dot clip-y from) (dot clip-z from) (dot clip-w from)))
+         (b0 (vec4 (dot clip-x to) (dot clip-y to) (dot clip-z to) (dot clip-w to)))
+         (limit 1.0)
+         (wa (swizzle a0 :w)) (wb (swizzle b0 :w))
+         (a (if (< wa limit) (mix a0 b0 (/ (- limit wa) (- wb wa))) a0))
+         (b (if (< wb limit) (mix b0 a0 (/ (- limit wb) (- wa wb))) b0))
+         (size (swizzle extra :yz))
+         (sa (* (/ (swizzle a :xy) (swizzle a :w)) size))
+         (sb (* (/ (swizzle b :xy) (swizzle b :w)) size))
+         (along (normalize (+ (- sb sa) (vec2 1e-6 0.0))))
+         (normal (vec2 (- 0.0 (swizzle along :y)) (swizzle along :x)))
+         (p (mix a b (swizzle corner :x)))
+         (offset (* normal (swizzle corner :y) (/ (vec2 3.0 3.0) size) (swizzle p :w)))
+         (visible (if (and (< wa limit) (< wb limit)) 0.0 1.0)))
+    (set-output clip-position (* (vec4 (+ (swizzle p :xy) offset) (swizzle p :zw)) visible))
+    (set-output across (swizzle corner :y))))
+
+(define-shader orbit-fragment
+    (:stage :fragment
+     :inputs ((across :float :location 0))
+     :outputs ((color :vec4 :location 0)))
+  (let* ((edge (- 1.0 (abs across))))
+    (set-output color (vec4 (* (vec3 1.0 0.7 0.2) (clamp (* edge 2.0) 0.0 1.0)) 0.0))))
+```
+
+`probe.lisp`:
+
+```lisp
+(defpackage #:gap-probe
+  (:use #:cl)
+  (:export #:start #:stop #:screenshot #:*app* #:load-earth))
+(in-package #:gap-probe)
+
+(defparameter *scenes*
+  '(:leo (:eye (0d0 0d0 7d6) :target (0d0 0.9397d6 6.658d6))
+    :far (:eye (0d0 1.2d7 3.2d7) :target (0d0 0d0 0d0))))
+
+(defun v- (a b) (mapcar #'- a b))
+(defun v+ (a b) (mapcar #'+ a b))
+(defun v* (a s) (mapcar (lambda (x) (* x s)) a))
+(defun dot3 (a b) (reduce #'+ (mapcar #'* a b)))
+(defun cross (a b)
+  (destructuring-bind ((ax ay az) (bx by bz)) (list a b)
+    (list (- (* ay bz) (* az by)) (- (* az bx) (* ax bz)) (- (* ax by) (* ay bx)))))
+(defun unit (a) (v* a (/ (sqrt (dot3 a a)))))
+
+(defconstant +radius+ 6.371d6)
+(defconstant +near+ 0.1d0)
+
+(defun floats (list)
+  (map '(simple-array single-float (*)) (lambda (x) (coerce x 'single-float)) list))
+
+(defun uniform-data (scene width height)
+  (destructuring-bind (&key eye target) scene
+    (let* ((forward (unit (v- target eye)))
+           (right (unit (cross forward '(0d0 1d0 0d0))))
+           (up (cross right forward))
+           (focal (/ (tan (/ (* 50 (/ pi 180)) 2))))
+           (aspect (/ width height))
+           (center (v- '(0d0 0d0 0d0) eye)))
+      (floats
+       (append (append (v* right (/ focal aspect)) '(0))
+               (append (v* up (- focal)) '(0))
+               (list 0 0 0 +near+)
+               (append forward '(0))
+               (append (v* right (/ aspect focal)) '(0))
+               (append (v* up (/ focal)) '(0))
+               (append forward (list +near+))
+               (append center (list +radius+))
+               ;; |c|^2 - r^2 = h (2r + h), exact in double
+               (let ((h (- (sqrt (dot3 center center)) +radius+)))
+                 (list (* h (+ (* 2 +radius+) h)) width height 0))
+               (append (unit '(-1d0 0.4d0 0.8d0)) '(0)))))))
+
+(defun star-data (count)
+  (let ((state (sb-ext:seed-random-state 7)))
+    (floats
+     (loop repeat count
+           append (let* ((z (- (random 2d0 state) 1))
+                         (phi (random (* 2 pi) state))
+                         (s (sqrt (- 1 (* z z)))))
+                    (list (* s (cos phi)) z (* s (sin phi))
+                          (expt (random 1d0 state) 6)))))))
+
+(defun orbit-data (eye segments)
+  "Segment endpoints relative to EYE: a 2,000 km orbit inclined 30 degrees."
+  (let ((r (+ +radius+ 2d6)) (inc (* 30 (/ pi 180))))
+    (flet ((point (k)
+             (let ((a (* 2 pi (/ k segments))))
+               (v- (list (* r (cos a)) (* r (sin a) (sin inc)) (* r (sin a) (cos inc))) eye))))
+      (floats
+       (loop for k below segments
+             append (append (point k) '(1) (point (1+ k)) '(1)))))))
+
+(defun load-earth (path)
+  "Pixels of PATH as RGBA8 words, through SDL3_image."
+  (let* ((loaded (sdl3-image:img-load (namestring path)))
+         (surface (sdl3:convert-surface loaded :abgr8888)))
+    (sdl3:destroy-surface loaded)
+    (let* ((w (cffi:mem-ref surface :int 8))
+           (h (cffi:mem-ref surface :int 12))
+           (pitch (cffi:mem-ref surface :int 16))
+           (pixels (cffi:mem-ref surface :pointer 24))
+           (words (make-array (list h w) :element-type '(unsigned-byte 32))))
+      (dotimes (y h)
+        (dotimes (x w)
+          (setf (aref words y x) (cffi:mem-aref pixels :uint32 (+ x (* y (/ pitch 4)))))))
+      (sdl3:destroy-surface surface)
+      (values words w h))))
+
+(defclass app ()
+  ((canvas :initarg :canvas :reader app-canvas)
+   (device :initarg :device :reader app-device)
+   (context :initarg :context :reader app-context)
+   (scene :initarg :scene :reader app-scene)
+   (parts :initarg :parts :reader app-parts)
+   (depth-target :initform nil :accessor app-depth-target)
+   (color-views :initform (make-hash-table :test #'eq) :reader app-color-views)))
+
+(defvar *app* nil)
+(defun part (app name) (getf (app-parts app) name))
+
+(defun depth-view (app extent)
+  (let ((cached (app-depth-target app)))
+    (if (and cached (equal (first cached) extent))
+        (second cached)
+        (let* ((device (app-device app))
+               (texture (luv:create device (luv:make-texture-descriptor
+                                            :label "depth" :size extent :dimensions :2d
+                                            :format :depth32-float :usage '(:render-attachment))))
+               (view (luv:create device (luv:make-texture-view-descriptor :texture texture))))
+          (setf (app-depth-target app) (list extent view))
+          view))))
+
+(defun color-view (app texture)
+  (or (gethash texture (app-color-views app))
+      (setf (gethash texture (app-color-views app))
+            (luv:create (app-device app) (luv:make-texture-view-descriptor :texture texture)))))
+
+(defun encode-scene (app encoder target extent)
+  (luv:write-buffer (part app :uniforms)
+                    (uniform-data (getf *scenes* (app-scene app)) (first extent) (second extent)))
+  (let ((pass (luv:begin-render-pass
+               encoder
+               (luv:make-render-pass-descriptor
+                :color-attachments `((:view ,(color-view app target) :load-op :clear
+                                      :store-op :store :clear-value #(0.0 0.0 0.0 1.0)))
+                :depth-stencil-attachment
+                `(:view ,(depth-view app extent) :depth-load-op :clear :depth-store-op :store
+                  :depth-clear-value 0.0)))))
+    (luv:set-pipeline pass (part app :star-pipeline))
+    (luv:set-bind-group pass 0 (part app :bind-group))
+    (luv:set-vertex-buffer pass 0 (part app :quad))
+    (luv:set-vertex-buffer pass 1 (part app :stars))
+    (luv:draw pass 6 (part app :star-count))
+    (luv:set-pipeline pass (part app :earth-pipeline))
+    (luv:set-bind-group pass 0 (part app :bind-group))
+    (luv:set-vertex-buffer pass 0 (part app :triangle))
+    (luv:draw pass 3)
+    (luv:set-pipeline pass (part app :orbit-pipeline))
+    (luv:set-bind-group pass 0 (part app :bind-group))
+    (luv:set-vertex-buffer pass 0 (part app :ribbon))
+    (luv:set-vertex-buffer pass 1 (part app :orbit))
+    (luv:draw pass 6 (part app :orbit-count))
+    (luv:end-pass pass)))
+
+(defmethod luv:capture-canvas ((app app)) (app-canvas app))
+(defmethod luv:encode-capture-frame ((app app) capture encoder target extent)
+  (declare (ignore capture))
+  (encode-scene app encoder target extent))
+
+(defun draw (app)
+  (let ((context (app-context app)))
+    (luv:present-canvas-frame
+     context
+     (lambda (texture encoder time)
+       (declare (ignore time))
+       (encode-scene app encoder texture (luv:canvas-extent context))))))
+
+(defun buffer (device data usage)
+  (let ((b (luv:create device (luv:make-buffer-descriptor
+                               :size (* 4 (length data)) :usage (list usage :copy-dst)))))
+    (luv:write-buffer b data)
+    b))
+
+(defun module (device code)
+  (luv:create device (luv:make-shader-module-descriptor :language :mathematical :code code)))
+
+(defun start (earth-pixels &key (visible t) (scene :leo) (width 640) (height 400))
+  (destructuring-bind (words tw th) earth-pixels
+    (let* ((canvas (luv:make-sdl-canvas :title "gap probe" :width width :height height
+                                        :visible-p visible))
+           (_ (luv:open-canvas canvas))
+           (device (luv:request-gpu-device luv:*gpu-provider*
+                                           (luv:make-device-descriptor :label "gap")))
+           (context (luv:make-canvas-context canvas luv:*gpu-provider*
+                                             (luv:make-canvas-configuration
+                                              :device device
+                                              :usage '(:render-attachment :copy-dst))))
+           (format (luv:canvas-format context))
+           (texture (luv:create device (luv:make-texture-descriptor
+                                        :label "earth" :size (list tw th) :dimensions :2d
+                                        :format :rgba8-unorm-srgb
+                                        :usage '(:copy-dst :texture-binding))))
+           (sampler (luv:create device (luv:make-sampler-descriptor :address-mode-u :repeat)))
+           (uniforms (luv:create device (luv:make-buffer-descriptor
+                                         :size (* 4 40) :usage '(:uniform))))
+           (layout (luv:create device (luv:make-bind-group-layout-descriptor
+                                       :entries '((:binding 0 :type :uniform-buffer)
+                                                  (:binding 1 :type :texture)
+                                                  (:binding 2 :type :sampler)))))
+           (bind-group (luv:create device (luv:make-bind-group-descriptor
+                                           :layout layout
+                                           :entries `((:binding 0 :resource ,uniforms)
+                                                      (:binding 1 :resource
+                                                       ,(luv:create device (luv:make-texture-view-descriptor :texture texture)))
+                                                      (:binding 2 :resource ,sampler)))))
+           (eye (getf (getf *scenes* scene) :eye))
+           (stars 4000) (segments 256))
+      (declare (ignore _))
+      (luv:write-texture (luv:device-queue device) (luv:make-texture-copy :texture texture)
+                         words (luv:make-texture-data-layout :bytes-per-row (* tw 4)
+                                                             :rows-per-image th)
+                         (list tw th))
+      (flet ((pipeline (vs fs buffers compare write blend)
+               (luv:create device
+                           (luv:make-render-pipeline-descriptor
+                            :layout layout
+                            :vertex `(:module ,(module device vs) :buffers ,buffers)
+                            :fragment `(:module ,(module device fs)
+                                        :targets ((:format ,format ,@(when blend '(:blend :premultiplied-alpha)))))
+                            :primitive '(:topology :triangle-list)
+                            :depth-stencil `(:format :depth32-float :depth-write-enabled ,write
+                                             :depth-compare ,compare)))))
+        (let* ((corner '(:array-stride 8 :attributes ((:shader-location 0 :offset 0 :format :float32x2))))
+               (parts
+                 (list :uniforms uniforms :bind-group bind-group
+                       :quad (buffer device (floats '(-1 -1 1 -1 1 1 -1 -1 1 1 -1 1)) :vertex)
+                       :triangle (buffer device (floats '(-1 -1 3 -1 -1 3)) :vertex)
+                       :ribbon (buffer device (floats '(0 -1 1 -1 1 1 0 -1 1 1 0 1)) :vertex)
+                       :stars (buffer device (star-data stars) :vertex) :star-count stars
+                       :orbit (buffer device (orbit-data eye segments) :vertex) :orbit-count segments
+                       :star-pipeline
+                       (pipeline (gap-probe.shaders::star-vertex) (gap-probe.shaders::star-fragment)
+                                 `(,corner (:array-stride 16 :step-mode :instance
+                                            :attributes ((:shader-location 1 :offset 0 :format :float32x4))))
+                                 :always nil t)
+                       :earth-pipeline
+                       (pipeline (gap-probe.shaders::earth-vertex) (gap-probe.shaders::earth-fragment)
+                                 (list corner) :greater t nil)
+                       :orbit-pipeline
+                       (pipeline (gap-probe.shaders::orbit-vertex) (gap-probe.shaders::orbit-fragment)
+                                 `(,corner (:array-stride 32 :step-mode :instance
+                                            :attributes ((:shader-location 1 :offset 0 :format :float32x4)
+                                                         (:shader-location 2 :offset 16 :format :float32x4))))
+                                 :greater nil t)))
+               (app (make-instance 'app :canvas canvas :device device :context context
+                                        :scene scene :parts parts)))
+          (setf (luv:canvas-clock canvas)
+                (luv:make-cadence-clock (lambda (native ts) (declare (ignore native ts)) (draw app))
+                                        :frames-per-second 30))
+          (setf *app* app))))))
+
+(defun screenshot (path) (luv:capture-application-screenshot *app* path))
+
+(defun stop (&optional (app *app*))
+  (let ((canvas (app-canvas app)))
+    (when (eq :open (luv:canvas-state canvas))
+      (setf (luv:canvas-clock canvas) (luv:make-demand-clock)))
+    (luv:close-canvas canvas)
+    (luv:destroy (app-device app))
+    (setf *app* nil)
+    (values)))
+```
+
+`run.lisp`:
+
+```lisp
+;; sbcl --script run.lisp OUT-DIR VISIBLE(t|nil) EARTH-JPG
+(require :asdf)
+(asdf:load-asd (merge-pathnames "probe/gap-probe.asd" *load-truename*))
+(asdf:load-system "gap-probe")
+(let* ((out (second sb-ext:*posix-argv*))
+       (visible (string= "t" (third sb-ext:*posix-argv*)))
+       (start (get-internal-real-time))
+       (earth (multiple-value-list (gap-probe:load-earth (fourth sb-ext:*posix-argv*)))))
+  (format t "~&texture ~Ax~A loaded in ~,1F s~%" (second earth) (third earth)
+          (/ (- (get-internal-real-time) start) internal-time-units-per-second))
+  (luv:call-with-sdl-main-thread
+   (lambda ()
+     (dolist (scene '(:leo :far))
+       (let ((start (get-internal-real-time))
+             (name (format nil "~A/~(~A~).png" out scene)))
+         (gap-probe:start earth :visible visible :scene scene)
+         (sleep 1)
+         (gap-probe:screenshot name)
+         (gap-probe:stop)
+         (format t "~&~A in ~,1F s~%" name
+                 (/ (- (get-internal-real-time) start) internal-time-units-per-second)))))))
+(uiop:quit 0)
+```

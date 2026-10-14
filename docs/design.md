@@ -13,9 +13,9 @@ Luv in Space is a hard sci-fi flight game about one pilot and one rugged tug in 
 
 ### The start
 - The ship: the player's Mule-class tug (see "The ship(s)"), tanks full, no load, attitude held prograde.
-- The orbit (`decision 23: Start orbit`): 400 km circular (a = R⊕ + 400 km = 6,778,136.6 m), inclination 51.6°, right ascension of the ascending node 0°, argument of latitude 0° at the start date; period 2π √(a³/μ⊕) = 92.6 min, speed √(μ⊕/a) = 7,669 m/s. RAAN and phase are invented; `docs/story.md` or "The places" may change them.
+- The orbit (`decision 38: Start orbit: polar`): 400 km circular (a = R⊕ + 400 km = 6,778,136.6 m), inclination 90° (polar), right ascension of the ascending node 270°, argument of latitude 0° at the start date; period 2π √(a³/μ⊕) = 92.6 min, speed √(μ⊕/a) = 7,669 m/s. Polar so that every Earth-orbit place stays in its plane under J2 (superseding the 51.6° of `decision 23: Start orbit`; "The places"). RAAN and phase are invented; `docs/story.md` may change the phase.
 - The date: `*start-date*` in `units.lisp`, chosen by `docs/story.md`; default 2040-01-01 00:00 UTC (`decision 14: Units and time epoch`). Game time stays before 2050-01-01 (`decision 18: Ephemerides`).
-- Sunlit at the start: on 1 January the Sun is near right ascension 281°, declination −23°, so the ship at the ascending node (ICRF +x) is ~80° from the Sun; Earth's shadow at 400 km begins 180° − asin(R⊕/a) = 110° from the Sun.
+- Sunlit at the start: on 1 January the Sun is near right ascension 281°, declination −23°, so the ship at the ascending node (ICRF −y) is 25° from the Sun and the Sun is 10° from the orbit plane (β = −10°); Earth's shadow at 400 km begins 180° − asin(R⊕/a) = 110° from the Sun, 22 min after the start.
 - The ship's orbit is the reference for every Δv in this document ("Δv for the standard legs").
 
 ### What makes it a luv showcase
@@ -88,7 +88,7 @@ Computed from the start orbit (400 km circular) with μ and radii of `decision 1
 | Raise 400 → 500 km circular | 56 | 453 | 20 s | 27,547 |
 | Raise 400 → 2,000 km circular | 769 | 5,753 | 4.2 min | 22,247 |
 | Deorbit: periapsis 400 → 100 km | 87 | 705 | 31 s | 27,295 |
-| GEO from 51.6° (plane change at apogee) | 4,825 | 23,919 | 17.3 min | 4,081 |
+| GEO from the polar start (90° plane change at apogee) | 5,872 | 26,464 | 19.1 min | 1,536 |
 | GEO from an equatorial LEO | 3,854 | 20,954 | 15.1 min | 7,046 |
 | TLI (apogee at 384,400 km) | 3,082 | 18,083 | 13.1 min | 9,917 |
 | LOI into 100 km circular lunar orbit (v∞ 0.83 km/s) | 823 | — | 4.4 min (full) | — |
@@ -105,7 +105,7 @@ Computed from the start orbit (400 km circular) with μ and radii of `decision 1
 | … circularise at 2.77 AU (v∞ 4.86 km/s) | 4,859 | — | — | — |
 
 What one tank reaches from the start orbit (6,650 m/s):
-- Anywhere in LEO, high Earth orbit, GEO (with 1.8 km/s left from 51.6°).
+- Anywhere in LEO's polar plane and high Earth orbit; GEO with 0.8 km/s left.
 - Low lunar orbit (3.9 km/s), with 2.75 km/s left: not enough to return to LEO (3.9 km/s); a round trip needs a refuelling, e.g. at a depot in high Earth or lunar orbit ("The places").
 - A planetary departure (escape, NEA, Venus, Mars) with 3.1–3.5 km/s left: a NEA rendezvous of the example kind, or a Mars capture (2.07 km/s), but no return without a depot; transfer times of 146–472 days exceed the cab's 180 person-days for anything but Venus. "The places" decides which of these are in scope (flyby, map only, or cut).
 - The main belt: no (9.7 km/s for departure and circularisation); only with refuelling far from Earth or not at all.
@@ -146,7 +146,7 @@ What one tank reaches from the start orbit (6,650 m/s):
 - How it is flown, the tolerances (closing speed, alignment) and what happens on contact: "Flight", "Grappling and berthing".
 
 ### Refuelling and resupply
-- Where: depots only; which depots and their orbits are "The places"' (task 42).
+- Where: depots only: Fulmar Depot (LEO), Highport (high Earth orbit) and Peary Depot (lunar orbit), "The places"; Tern Station restocks consumables only.
 - How (`decision 26: Refuelling and economy`): grappled to the depot's fixture, the pilot sets a cockpit switch; LH2 and LOX flow at 10 kg/s total in the mixture ratio until full or switched off (28 t in ~47 min game time; time warp allowed while grappled and coasting); consumables are topped up at the same time.
 - No economy: no money, no prices; propellant is free and the story's employer pays. A linear quest line needs no market, and an economy costs a UI and balancing (pillar "small and finished").
 
@@ -487,7 +487,7 @@ Five kinds of device, drawn in the scene's pass (the grapple camera's image in i
 |---|---|---|---|
 | Altitude, speed, vertical speed | ORBIT lines 2–4 | screen text: "ALT  400.00 km", "SPD 7.669 km/s", "VS  +0.0 m/s" | 3 |
 | Apoapsis and periapsis, times | ORBIT lines 5–6 | "AP 400.0 km T-45:12"; red, inverted, when below the crash radius | 3 |
-| Inclination, eccentricity, period | ORBIT lines 7–8 | "INC 51.60° ECC 0.0001", "PER 92.6 min" | 3 |
+| Inclination, eccentricity, period | ORBIT lines 7–8 | "INC 90.00° ECC 0.0001", "PER 92.6 min" | 3 |
 | Body and SOI | ORBIT line 1 | "EARTH  SOI --:--" (the time to the next SOI change) | 3 (body); 4 (SOI) |
 | Attitude indicator | ATTITUDE | a plot of the whole sky in body axes, centred on the nose (+x), −z up, azimuthal equidistant (the rim is the tail, 180°): prograde ○ with a tick, retrograde ⊗, normal and anti-normal ▲ ▼, radial out and in ■ □, the target ◆, the hold's direction as a cyan cross; the dominant body as a filled disc of angular radius asin(R / r) about the nadir, so its limb is a curve; 10° rings faint | 3 |
 | Angular rates | ATTITUDE right edge | three bars (pitch, yaw, roll), full scale ±5°/s, green within the warp limit (0.01 rad/s) | 3 |
@@ -548,9 +548,110 @@ How the world talks to the pilot; `docs/story.md` uses these channels by name (`
 
 ## The places
 
-Earth, the points of interest in Earth orbit, the Moon, asteroids, planets and the Sun, with real data and Δv checked against "Δv for the standard legs".
+Where the ship can go and what it sees on the way: Earth, five points of interest in Earth orbit, the Moon with a propellant depot, small asteroids near Earth, the planets and the Sun. Each place has its orbit, its purpose, its look and the Δv to reach it, checked against the ship's 6.65 km/s ("Δv for the standard legs"); what the ship cannot reach, or not come back from, is shown in the sky and on the map but is not a destination. The near-Earth economy of the early 2040s is invented but plausible: crew and propellant in a polar low orbit, a high depot that turns captured rock into hydrogen and oxygen, and a depot in lunar orbit fed by polar ice. The lasting choices are `decision 38: Start orbit: polar` (superseding `decision 23: Start orbit`), `decision 39: Places in scope` and `decision 40: Earth's look and drag`. Code: `places.lisp` (definitions, rails elements, fixtures, collision shapes), `bodies.lisp` (bodies), `impostors.lisp` (Earth, Moon, planets, Sun), `meshes.lisp` (stations, depots, rocks), per `docs/architecture.md` "Files in load order".
 
-PLACEHOLDER(42): `task 42: Design: the places, with real data and Δv checked against the ship`.
+### One plane for near-Earth space
+- Every Earth-orbit place and the start orbit are polar (i = 90°) with the same right ascension of the ascending node, Ω = 270° (`decision 38: Start orbit: polar`).
+- Why: Earth's J2 (`decision 17: Gravity model`) turns orbit planes at Ω̇ = −(3/2) n J2 (R⊕/p)² cos i. At 51.6° that is −5.00°/day at 400 km, −4.75°/day at 500 km and −4.09°/day at 800 km, so places at different altitudes drift apart by up to 0.9°/day, and a rendezvous a week later would cost a plane change of hundreds of m/s. At i = 90° cos i = 0: every polar orbit keeps its plane at every altitude, so the places stay coplanar for the whole game and their presets cost only altitude and phasing. In the game's world this is the reason the economy settled in one polar plane; launches come from high-latitude sites, as polar launches do today.
+- What the player sees: a polar orbit passes over both poles and every latitude; with the Sun near the plane (β = −10° at the start) each orbit has a day and a night side. The Sun's angle to the plane (β) changes by up to 1° per day through the year, so in some weeks the orbit stays sunlit (|β| above ~70° at 400 km) and in others it crosses the shadow every orbit: the seasons of a polar orbit.
+- Rails (`decision 19: Time-warp rules`): the places move on Kepler elements with J2's secular rates; at i = 90° only ω and M drift. The Moon's and Sun's pull is ignored on rails (it tilts Highport's high orbit by a fraction of a degree per month); a promoted place is integrated with the ship's force model, as the architecture says.
+- Epoch of every element below: the start date (default 2040-01-01 00:00 UTC, `decision 14: Units and time epoch`); Earth orbits against Earth's equator (= the ICRF xy-plane), lunar orbits against the Moon's equator (`docs/architecture.md` "Frames"). u₀ is the argument of latitude at the epoch, M₀ the mean anomaly.
+
+### Earth
+- Surface: the Blue Marble Next Generation 5400×2700 (`decision 13: Asset storage and attribution`) as a ray-traced impostor (`docs/luv-capabilities.md` "Spheres and planet surfaces"); the month of the start date (January: the `200401` image, snow and ice of a northern winter). One month for the whole game; seasonal swaps are cut (the game spans months, the textures would cost 1.8 MB each for a change few notice). `milestone 2`.
+- Atmosphere: an additive rim on the lit limb (as in `docs/luv-capabilities.md` run 32) and a halo past the limb from a second impostor of radius R⊕ + 100 km (the crash sphere's radius, so the visible air and the deadly height agree), blue on the day side, reddened along the terminator by the light's path length; no scattering model. `milestone 2`.
+- Night side: city lights from NASA's Black Marble 2016 (NASA Earth Observatory, "Earth at Night"), the largest equirectangular colour version ≤ 5 MB (`decision 13`), added on the night side only, faded across the terminator; in, `milestone 3`, "should". Why: half of every orbit is night, and a black disc tells the pilot nothing; the lights show where the ground is and how fast it moves.
+- Clouds: a static cloud layer, NASA Visible Earth "Blue Marble: Clouds" (Reto Stöckli, NASA Goddard, 2002), the largest version ≤ 5 MB, mixed over the surface in the same impostor shader (white, a slight offset shadow on the ground); fixed to the ground, not animated; in, `milestone 3`, "should". Why: Earth without clouds looks like a map from orbit; one texture and a few shader lines make it look like a planet. Animated weather is cut (no data, no model).
+- Cut, with the reason (pillar "small and finished"): ocean glint (needs a land/water mask and a specular term; a "could" for `milestone 6`), aurorae, lightning, terrain relief (a 400 km view shows none worth its data).
+- Drag: cut, as `decision 17` has it (`decision 40: Earth's look and drag`). At 400 km the air's density is about 2.8×10⁻¹² kg/m³ (U.S. Standard Atmosphere 1976); with C_d = 2.2, the Mule broadside (54 m²) and 36 t, drag is ½ ρ v² C_d A / m = 2.7×10⁻⁷ m/s², 0.023 m/s per day, a 42 m drop in altitude per day (Δa = 2 a Δv / v): invisible in the game's weeks. Drag matters only below ~200 km, where Earth's crash sphere at 100 km already ends the flight and the autopilot's floor is 150 km ("The autopilot"). Without drag no orbit decays on its own; objects released below the crash radius re-enter by the rule in "The derelict's re-entry" below.
+
+### Earth-orbit points of interest
+Five places, all invented (no real object of the early 2040s is known: the ISS is to be deorbited around 2030, and no real station or depot sits in this plane), built from the tug's parts and the other ships' (`decision 27: Other ships`). Each is a `milestone 3` autopilot preset, "Rendezvous: <place>" (`decision 32: Autopilot scope and safety rules`); the names are working names, `docs/story.md` may rename them. Δv from the start orbit by Hohmann transfers (no plane change: one plane); phasing (the target's position along the orbit) adds a few m/s in the autopilot's 48 h search, or waiting.
+
+| Place | Purpose | Orbit (i 90°, Ω 270°, epoch the start) | Fixtures | Mass | Δv from the start |
+|---|---|---|---|---|---|
+| Tern Station | crew station, the pilot's home port: berth, restock consumables, crew capsules arrive | 420 km circular, u₀ = 20° (2,370 km ahead) | 1 berth | 85 t | 11 m/s (+ phasing) |
+| Fulmar Depot | LEO propellant depot, filled by tankers from Highport: berth, refuel | 500 km circular, u₀ = 180° | 2 berth | 60 t dry | 56 m/s |
+| Derelict K-17 | a dead upper stage, the debris company's job: grapple, push to re-entry | 800 km circular, u₀ = 270°; spinning 0.3°/s about its long axis | 1 towable, on the axis | 2.5 t | 217 m/s |
+| Highport | high depot and water plant: rocks become LH2/LOX; berth, refuel, restock | 1,000 × 70,000 km (a = 41,878.1 km, e = 0.82382), ω = 336°, M₀ = 180° (at apogee); period 23.7 h | 3 berth | 300 t dry | 2,762 m/s |
+| Skua Yard | rock yard beside Highport: bagged rocks waiting for processing, the rock mover parked | Highport's orbit, M₀ = 179.87° (30 km behind it) | 1 towable per rock | rocks 20–100 t, one 150 t | 2,762 m/s (+ < 5 m/s from Highport) |
+
+- Tern Station: three pressurised modules Ø 4.2 × 8 m in a line along the orbit (white, stencilled), a node at the front with a crew capsule berthed (`decision 27`), a truss across with two solar wings 8 × 25 m and two radiators 4 × 10 m; the berth fixture on the zenith face of the last module. Collision shape: four boxes (the module line, the truss, the two wings). Lights: red/green at the wing tips, a strobe, the berth fixture lit white. Its 420 km is 20 km above the start, so the first rendezvous is the smallest lesson.
+- Fulmar Depot: four tanks on a 30 m truss (two LH2 Ø 6 × 14 m, two LOX Ø 4.5 × 6 m, foil-wrapped), a gold-foil sunshade disc Ø 12 m at the sunward end (it turns once a year), cryocooler radiators, two berth fixtures on short arms (one for the player, one with an uncrewed tanker berthed, `decision 27`). Its propellant is unlimited (no economy, `decision 26: Refuelling and economy`).
+- Derelict K-17: a Centaur-class stage, cylinder Ø 3.05 × 12.7 m with one engine bell, grey and scorched, its insulation peeling (normal noise); on the payload adapter ring at the front, a grapple fixture bolted on by an earlier uncrewed servicer of the debris company (the fixture is new and bright on an old stage). The 0.3°/s spin about the axis keeps the fixture's axis still, so a capture needs no matched rotation, but the stage visibly turns. Collision shape: one box.
+- The derelict's re-entry: the job is to push the stage from 800 km to a perigee of 90 km, release it at apogee, and raise the tug's own perigee. A released object on rails whose orbit meets Earth's crash sphere is removed at that point ("burned up"), a rule `docs/architecture.md` "Rails" lacks (`task 48: Architecture: rails across spheres of influence, hyperbolic rails and re-entry of released objects`). The autopilot refuses the push (its floor is 150 km, "The autopilot"): this job is flown by hand with the PERI alarm on, the game's lesson in reading the periapsis. Δv: push 196 m/s with the 36.7 t stack (1.6 t of propellant), then 89 m/s to raise the tug's perigee back to 400 km and 109 m/s to circularise there.
+- Highport: a 60 m truss frame carrying the water plant (electrolysis, a box 6 × 6 × 10 m with radiators 6 × 20 m), four large tanks, two solar wings 20 × 40 m, three berth fixtures on arms (other Mule tugs berthed at two of them). It is high so that rocks arrive cheaply: a rock captured from a passing orbit needs ~0.5 km/s to stay here, but 2.8 km/s more to reach LEO, which no loaded tug has ("Mass budget and Δv": 1.74 km/s with 50 t). Its apogee points to right ascension ~90°, declination ~+24°, where the Moon crosses the polar plane once a month, so a TLI from its perigee costs 370 m/s in the best month's window ("The Moon").
+- Skua Yard: five bagged rocks in nets (spheres at 2,000 kg/m³: 20 t Ø 2.7 m, 35 t Ø 3.2 m, 50 t Ø 3.6 m, 80 t Ø 4.2 m, 100 t Ø 4.6 m, and one of 150 t, Ø 5.2 m, which the grapple refuses: `decision 33: Grapple tolerances, contact and berthing`), spaced 300–800 m apart, each with a towable fixture on its net; the rock mover (`decision 27`) parked 2 km away with a bagged rock Ø 10 m. Moving a rock to Highport's water plant fixture is a hop of 30 km in a 23.7 h orbit: one phasing orbit at < 0.1 m/s, then the approach on RCS, a few m/s in total.
+- Not places: GEO (5,872 m/s from the polar start orbit with the 90° plane change at apogee, 1.5 t left; no work there in the story), Earth–Moon Lagrange points and a near-rectilinear halo orbit (they need three-body motion, and places move on Kepler rails, `decision 19`), satellite constellations as traffic (thousands of objects for dots nobody can work with).
+
+### The Moon
+- Body: the Moon from Meeus's ELP-2000/82 series (`decision 18: Ephemerides`), μ and mean radius 1,737.4 km per `decision 14: Units and time epoch`, a sphere with its IAU rotation (the near side faces Earth, `decision 15: Coordinate frames`); crash sphere at R + 0 (`decision 34: How death works`). `milestone 2` puts it in the sky and in the force model; `milestone 4` makes it a destination.
+- Surface: the colour mosaic of NASA's Scientific Visualization Studio "CGI Moon Kit" (2019, from the LRO Camera's Wide Angle Camera mosaic), the 4096×2048 version committed (≤ 5 MB as JPEG, `decision 13`), credited "NASA's Scientific Visualization Studio (CGI Moon Kit; LRO LROC WAC)", no NASA logo; its LOLA elevation map (`ldem_4`, 1440×720) for a normal map, so the terminator shows craters' relief. NASA's media guidelines apply as for the Blue Marble (`docs/luv-capabilities.md`); the kit's licence, file sizes and URLs are checked by `task 47: Verify the sourced figures and asset licences of docs/design.md "The places"` before the asset is added. The 16k colour and finer elevation maps through a pinned Nix fetch, the committed versions as fallback (`decision 13`), are a "could". `milestone 4`.
+- What is seen: from LEO the Moon is 0.52° wide, 6 pixels at the 70° field of view (21 at 20°); from 100 km above it the surface fills the view and the 4k map's 2.7 km per pixel looks soft at nadir, sharp towards the horizon.
+- Peary Depot (`milestone 4`, invented): a propellant depot fed by water from the polar craters' ice (the landers that bring it are not shown); berth, refuel, restock. Orbit: Moon-centred, 100 km circular (r = 1,837.4 km), i = 90° against the Moon's equator, Ω = 0°, u₀ = 0°; period 117.8 min, speed 1,634 m/s. Looks like Fulmar Depot with two tanks and one berth fixture. A real 100 km lunar orbit needs station-keeping against the Moon's mascons; the game's Moon is a point mass (`decision 17: Gravity model`), so it needs none.
+- Δv ("Δv for the standard legs"): TLI 3,082 m/s, LOI into 100 km 823 m/s (v∞ 0.83 km/s), so LEO → Peary Depot 3,905 m/s (6,874 kg left); from Highport's perigee in the best window 370 + 823 = 1,193 m/s (8,523 kg; 19,477 kg left). Return: TEI and capture into 400 km 3,905 m/s, or into Highport's orbit 1,193 m/s. Transfer time ~5 days (half a TLI ellipse to 384,400 km).
+- Round trips: LEO → Peary Depot (refuel) → LEO, each leg 3.9 km/s; or LEO → Highport (refuel) → Peary Depot (refuel) → Highport. A round trip without a lunar refuel fails: 3.9 + 3.9 = 7.8 km/s > 6.65.
+- Landing: cut (`decision 34`, "Not in 'Flight'"): the Mule has no legs, the RL10 at TWR 0.3–1.3 against 1.62 m/s² would need a lander's guidance and the surface a terrain model; pillar "the ship is a tool".
+- Other lunar orbits: none as places; the autopilot captures into any circular lunar orbit or one with a set apoapsis ("The autopilot").
+
+### Asteroids
+The ship's work with asteroids is near Earth, where its Δv and 180 person-days reach: rocks already brought in (Skua Yard) and one small rock captured as it passes Earth. Real asteroids farther out are on the map, not destinations.
+- The passing rock (`milestone 4`, "should"; its date and quest are `docs/story.md`'s): an invented small near-Earth asteroid, Ø 4.0 m, 1,500 kg/m³ (a carbonaceous, water-bearing body), 50 t; its designation is chosen by the story in the Minor Planet Center's style (e.g. "2044 KB7"). Invented because rocks this small are mostly undiscovered today: a real one with a known 2040s flyby cannot be named. Bagged by the company's uncrewed bagger probe (scenery on rails), so it has a towable fixture. It passes Earth on a hyperbola with v∞ 0.5–1.0 km/s and perigee at 7,378 km (Highport's perigee radius), in the polar plane.
+  - The job: from Highport, a TLI-like burn to an apogee of 400,000 km (374 m/s, ~5.3 days), there match the rock's inbound velocity (1,485 m/s at v∞ 0.5 km/s, 1,719 m/s at 1.0 km/s; mostly radial), grapple, fall with it to perigee and capture the stack into Highport's orbit (480–516 m/s with 50 t), then rendezvous with Skua Yard. Check: after 2.1 km/s empty from full tanks, 14.4–15.6 t of propellant are left, which gives the 58 t stack 979–1,053 m/s: twice the capture's need. The autopilot does each leg (`milestone 3` rendezvous in Earth's frame, `milestone 4` capture); the grapple is the pilot's.
+  - Rails: the rock is on heliocentric elements outside Earth's sphere of influence and on a geocentric hyperbola inside it; switching a rails object between bodies is not yet in `docs/architecture.md` "Rails" (`task 48: Architecture: rails across spheres of influence, hyperbolic rails and re-entry of released objects`).
+- Real asteroids on the map (`milestone 4`, "could"): markers with labels and their orbits as 1 px lines, on Kepler rails around the Sun from JPL Small-Body Database elements; no meshes (none is reached):
+  - (469219) Kamoʻoalewa, Earth's quasi-satellite, 40–100 m, possibly lunar ejecta (Sharkey et al. 2021, Communications Earth & Environment), China's Tianwen-2 target (launched May 2025): a ≈ 1.001 AU, e ≈ 0.103, i ≈ 7.8°; it stays within ~0.1–0.3 AU of Earth all decade.
+  - The belt's four largest, (1) Ceres, (4) Vesta, (2) Pallas, (10) Hygiea: a ≈ 2.77, 2.36, 2.77, 3.14 AU; e ≈ 0.08, 0.09, 0.23, 0.11; i ≈ 10.6°, 7.1°, 34.8°, 3.8°.
+  - These figures are as the designer remembers them from JPL SBDB, not read online in this task (no web access, `decision 28: Web access for task 44: Verify the sourced figures of docs/design.md "The ship(s)"`); `task 47` reads every element set (a, e, i, Ω, ω, M at an epoch) with the date read before `places.lisp` uses them.
+  - The belt itself is not drawn as a field: its objects are kilometres to hundreds of kilometres apart, and the real belt is empty to the eye (`docs/luv-capabilities.md` "Instancing many objects"); the map may draw its extent (2.1–3.3 AU) as a faint band ("could").
+- Cut as destinations, with the reason (the Δv by Lambert transfers between Standish's Earth and the remembered elements, departures 2040–2048, a throwaway script):
+  - Kamoʻoalewa: out from Highport ≥ 1.9 km/s, but the cheapest round trip takes ~360 days (110 days out, 10 days there, 240 back; 5.0 km/s via Highport), and within 180 days it costs 9.0 km/s. The cab carries 180 person-days ("Parts"); a trip that kills the pilot halfway home is no destination.
+  - The main belt: 9.7 km/s for departure and circularisation at 2.77 AU and 472 days one way ("Δv for the standard legs"): beyond both limits.
+  - Other real near-Earth asteroids, e.g. 2008 EV5, the Asteroid Redirect Mission's boulder target: by the same scan 4.0 km/s one way from Highport (6.7 from LEO) and 6.8 km/s back: beyond one tank with a return.
+- The asteroid meshes (`meshes.lisp`, `milestone 4`): displaced icospheres, a few shapes at random scales and rotations, instanced (`docs/luv-capabilities.md` "Instancing many objects"); dark grey (albedo 0.05 for C-type rocks), the nets as a darker lattice, the fixture plate bright.
+
+### Planets
+- All eight planets on Standish's elements (`decision 18: Ephemerides`), with their system μ in the Sun frame's force model from `milestone 4` (`decision 17`). None is a destination.
+- Cut as destinations, with the reason: Venus needs 3,460 m/s to depart and 146 days one way, with no propellant to come back; Mars 3,569 m/s plus 2,070 m/s to capture (5.6 km/s of 6.65) and 259 days one way, beyond the 180 person-days; the outer planets more. A tug's planets are a sequel's (pillar "the ship is a tool"). The autopilot offers no planetary transfer; the crash radii of Venus and Mars (`decision 34`) stay for completeness, as a manual flight can still head there.
+- How they look: from anywhere the ship can be, each is below a pixel (Venus at its closest, 0.277 AU, is 60″ wide: 0.19 px at the 70° field of view; Jupiter 49″, Mars 25″), so in the views they are point sprites like the stars, with brightness from distance and phase (a Lambert sphere with each planet's geometric albedo) and a flat colour. In the map, zoomed in, they are impostors with a flat albedo colour and Lambert shading; Saturn's rings as a flat annulus are a "could" (`milestone 6`). Textures are cut: nobody sees them outside a map zoom, and each would be another asset to license.
+- `milestone 4`: rails, gravity, sprites, map focus, markers and orbits as 1 px lines ("Views").
+
+### The Sun
+- Body: fixed at the heliocentric origin (`decision 18`), radius 6.957×10⁵ km (IAU 2015 B3, `decision 14`), crash sphere R☉.
+- Look: an impostor disc with linear limb darkening (I/I₀ = 1 − 0.6 (1 − cos θ)), a radiance far above the scene's, so the bloom chain makes its glare (`docs/luv-capabilities.md` "Sun glare and brightness"); 0.53° wide at 1 AU, growing as 1/d. The exposure follows it: looking near the Sun the stars fade. `milestone 2` (it lights everything).
+- The danger zone, from the hull-temperature rule (`decision 34: How death works`; "Dying and what follows"): warning 350 K at 0.551 AU, danger 400 K at 0.415 AU, death 450 K at 0.326 AU. Mercury's orbit (0.307–0.467 AU) lies inside it; Venus's (0.718–0.728 AU) does not. On the map, from `milestone 4`, three circles around the Sun in the ecliptic: amber at 0.551 AU, red at 0.415 AU and 0.326 AU (hatched inside), labelled "350 K", "400 K", "450 K"; the cockpit's TEMP lamp, hull gauge and SUN line ("The cockpit") give the warnings in flight; inside 0.551 AU a warm tint grows on the cab's window glass with the hull temperature.
+- Reachable, on purpose: a Hohmann-like dive from Earth to a perihelion of 0.551 AU needs v∞ 4.68 km/s (4,143 m/s from LEO, 1,473 from Highport's perigee; 125 days to perihelion); to the deadly 0.326 AU v∞ 8.90 km/s (6,360 m/s from LEO on full tanks, 3,758 from Highport; 99 days). So a determined pilot can fly into the Sun by hand, and `milestone 4`'s test of death by heat is a flight script with that burn. The autopilot plans nothing inside 0.551 AU (`decision 32`).
+
+### Δv checked against the ship
+Every destination in scope against the 6,650 m/s of full tanks (and 1,738 m/s with 50 t), from "Δv for the standard legs" and the sections above; "left" is propellant after the leg from full tanks.
+
+| Trip | Δv (m/s) | Left (kg) | Reachable |
+|---|---|---|---|
+| Start → Tern Station | 11 (+ phasing) | ~27,900 | yes |
+| Start → Fulmar Depot | 56 | 27,547 | yes |
+| Start → Derelict K-17, push to re-entry (2.5 t), back to 400 km | 217 + 196 + 89 + 109 | ~23,200 | yes |
+| Start → Highport or Skua Yard | 2,762 | 11,265 | yes; refuel at Highport |
+| Highport → LEO | 2,762 | 11,265 | yes; a loaded tug cannot (1,738 m/s with 50 t), so rocks stay at Highport |
+| Skua Yard → Highport with 50–100 t | < 5 | — | yes |
+| LEO → Peary Depot (TLI + LOI) | 3,905 | 6,874 | yes; refuel there to return |
+| Highport → Peary Depot, best window | 1,193 | 19,477 | yes |
+| Peary Depot → LEO, or → Highport | 3,905, 1,193 | 6,874, 19,477 | yes, from a full depot refuel |
+| Highport → passing rock, capture with 50 t into Highport's orbit | 374 + 1,485–1,719 empty, 480–516 loaded | 14,411–15,630 after the empty legs | yes, with ~0.5 km/s to spare |
+| LEO → Sun warning zone (0.551 AU) / death (0.326 AU) | 4,143 / 6,360 | — | yes by hand, never by the autopilot |
+| GEO from the start | 5,872 | 1,536 | yes, but not a place |
+| Venus, Mars, Kamoʻoalewa, the main belt | see above | — | no (no return, or longer than 180 person-days): map only |
+
+### Sources
+Real data and assets of this section; "read" gives the date the designer read it, "named" a source not re-read online in this task (no web access, `decision 28`), to be checked by `task 47: Verify the sourced figures and asset licences of docs/design.md "The places"` with URLs and dates.
+- Body constants: `docs/architecture.md` "Units" (`decision 14`): JPL DE440 (Park et al. 2021), IAU 2015 B3, IAU WGCCRE 2015.
+- Planet and Earth–Moon barycentre elements: E. M. Standish, "Keplerian Elements for Approximate Positions of the Major Planets", JPL Solar System Dynamics, Table 1 (`decision 18`; as in `docs/architecture.md` "Ephemerides").
+- The Moon's position: J. Meeus, "Astronomical Algorithms", 2nd ed., Willmann-Bell 1998, ch. 47 (`decision 18`).
+- NASA media licence: "Guidelines for using images and media", `https://www.nasa.gov/nasa-brand-center/images-and-media/`, read 2026-10-14 (quoted in `docs/luv-capabilities.md`).
+- Earth: Blue Marble Next Generation, NASA Earth Observatory (`decision 13`); named: Black Marble 2016 ("Earth at Night"), NASA Earth Observatory; "Blue Marble: Clouds", NASA Visible Earth (R. Stöckli, NASA Goddard, 2002).
+- Atmospheric density at 400 km: named: U.S. Standard Atmosphere 1976 (NOAA/NASA/USAF), ~2.8×10⁻¹² kg/m³.
+- The Moon's surface: named: NASA Scientific Visualization Studio, "CGI Moon Kit" (E. Wright, 2019), LROC WAC colour mosaic and LOLA elevation (`ldem_4`).
+- Asteroids: named: JPL Small-Body Database for (469219) Kamoʻoalewa, (1) Ceres, (2) Pallas, (4) Vesta, (10) Hygiea, (341843) 2008 EV5; B. N. L. Sharkey et al., "Lunar-like silicate material forms the Earth quasi-satellite (469219) 2016 HO3 Kamoʻoalewa", Communications Earth & Environment 2, 231 (2021).
+- The ISS's planned end around 2030 (NASA's ISS transition plans and its US Deorbit Vehicle): named, the reason no real station is a place.
 
 ## Scope
 

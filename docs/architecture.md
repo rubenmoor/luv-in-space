@@ -85,9 +85,10 @@ In brackets: the milestone that first creates the file; later milestones extend 
 - `physics.lisp` (milestone 2): state vectors (position, velocity, attitude, angular velocity), gravity, the integrator with forces and torques as arguments, frames of integration; needs orbits.
 - `ship.lisp` (milestone 2): ship definition: frame, modules, mass, thrusters, propellant, rigid-body attitude; needs physics.
 - `controls.lisp` (milestone 2): the control state (throttle, RCS, attitude commands) that input, autopilot and test scripts all write; needs ship.
-- `clock.lisp` (milestone 2): simulation clock, fixed steps, time warp levels and their rules, rails switching; needs physics, controls.
+- `clock.lisp` (milestone 2): simulation clock, fixed steps, time warp levels and their rules, rails switching; needs physics, controls; asks `prediction.lisp`, loaded later, for the next event (a call at run time, not a load dependency).
 - `hazards.lisp` (milestone 2: crash; 4: Sun): crash detection against bodies, the Sun's heat, death; needs physics, bodies.
-- `prediction.lisp` (milestone 3): trajectory prediction for orbit lines, instruments and the autopilot; needs orbits, clock.
+- `prediction.lisp` (milestone 2: events for warp drop-outs and flight scripts; 3: trajectories for orbit lines, instruments and the autopilot): trajectory prediction; needs orbits, clock, hazards.
+- `flights.lisp` (milestone 2): flight scripts: read a script, write its actions to `controls` per step, run it headless or in the live game ("Scripted runs"); needs controls, clock, prediction.
 - `autopilot.lisp` (milestone 3): orbit targeting, burns, presets; writes `controls`; needs prediction, controls.
 - `places.lisp` (milestone 3: Earth orbit; 4: Moon, belt): points of interest in Earth orbit, asteroids, destinations of presets; needs bodies, orbits.
 - `quests.lisp` (milestone 5): the quest line: state, triggers, messages; needs places, autopilot.
@@ -250,7 +251,7 @@ A throwaway SBCL script (not committed) integrated two-body Earth orbits (μ = 3
 
 - At the 1/64 s fine step the error is roundoff, not truncation (~1e-12 after 3.5×10^7 steps).
 - With η = 1/256 one LEO orbit costs ~2,800 steps (~0.5 ms), and 1,000 orbits (two months) drift less than a metre; e = 0.9 orbits are rarer and still within 2 km per 1,000 orbits.
-- Coarse-step drift with third bodies and J2 is not a conservation test (energy is not conserved in a moving frame); `task 35: Architecture: testing section with drift bounds; read-through against the other documents` sets the test bounds on two-body runs from these numbers.
+- Coarse-step drift with third bodies and J2 is not a conservation test (energy is not conserved in a moving frame); the test bounds are set on two-body runs from these numbers ("Drift bounds").
 
 ### Gravity model
 - n-body against on-rails bodies, in the ship's dominant-body frame (`decision 17: Gravity model`; `decision 15: Coordinate frames`): the central body's point mass plus each third body's direct minus indirect term, μ_b ((d_b − r)/|d_b − r|³ − d_b/|d_b|³), d_b the body's position in the frame.
@@ -269,14 +270,14 @@ A throwaway SBCL script (not committed) integrated two-body Earth orbits (μ = 3
 - Earth: barycentre − μ_Moon / (μ_Earth + μ_Moon) × geocentric Moon, so Earth wobbles ~4,700 km monthly around the barycentre.
 - Cache: each body is read through cubic Hermite nodes (position and velocity) at fixed spacing, 4,096 s for Earth and Moon and 65,536 s for the planets; a node is a pure function of its index, computed on first use and kept in a small table in the `game` object. Interpolation error is below 2 cm for the Moon; the integrator asks four times per step and pays a lookup, not a series.
 - Time range: Table 1 ends at 2050-01-01. The default start date is 2040 ("Time"); the design keeps game time within the decade, or a task switches to Standish Table 2a/2b (3000 BC–3000 AD, coarser). A test asserts the start date is inside the range.
-- Spot checks against JPL Horizons are `task 35: Architecture: testing section with drift bounds; read-through against the other documents`'s.
+- Spot checks against JPL Horizons: "Rails, orbits and frames" under "Testing".
 
 ### Rails
 - The ship is never on rails: at every warp level it is integrated (`decision 17`). The step rule makes coasting at high warp cheap (2 s steps in LEO), so the switch and its jump are avoided rather than handled.
 - Bodies (Sun, planets, Moon) are always on rails from the ephemerides.
 - Other objects (stations, other ships, asteroids) are on Kepler rails around their body: elements at an epoch, propagated exactly for any t; around Earth with J2's secular rates (Ω̇, ω̇, Ṁ) so stations precess like the ship (`decision 19: Time-warp rules`).
 - Promotion: an object within 100 km of the ship becomes integrated with the ship's force model and step (elements → state at the current t, exact at that instant); beyond 200 km it is demoted (state → osculating elements, plus the secular rates). A station on rails ignoring the Moon and J2's short-period terms would drift metres per hour against a ship parked beside it.
-- Round trip state → elements → state reproduces the state to ~1e-9 relative (`task 35` tests it); near-circular and near-equatorial orbits use non-singular forms (argument of latitude, true longitude) inside `orbits.lisp`.
+- Round trip state → elements → state reproduces the state to ~1e-9 relative ("Rails, orbits and frames" tests it); near-circular and near-equatorial orbits use non-singular forms (argument of latitude, true longitude) inside `orbits.lisp`.
 
 ### Time warp
 Levels and rules are `decision 19: Time-warp rules`; where they touch play, the design picks within them.
@@ -312,9 +313,96 @@ Levels and rules are `decision 19: Time-warp rules`; where they touch play, the 
 ### Determinism
 - Same initial state and the same controls and warp level per step give the same trajectory bit for bit on one build and platform: fixed steps chosen from the state, no wall clock, frame rate or step cap in the simulation, ephemeris nodes as pure functions of their index, no hash-table iteration order or unseeded randomness in simulation code (random state, if any, in the `game` object with a seed).
 - SBCL does not contract multiply–add, so arithmetic is plain IEEE double; `sin`, `cos`, `atan2`, `exp` come from libm and may differ in the last bit between x86_64 and aarch64, so cross-platform comparisons use tolerances.
-- Replays and scripted runs record controls and warp keyed by step index (`t` on the 1/64 s grid), not by frame; `task 35` uses this for scripted burns.
+- Replays and scripted runs record controls and warp keyed by step index (`t` on the 1/64 s grid), not by frame; flight scripts use the same keying ("Scripted runs").
 - A function redefined in the live image changes the trajectory from that step on, as expected; tests run in a fresh image.
 
 ## Testing
 
-PLACEHOLDER(35): written by `task 35: Architecture: testing section with drift bounds; read-through against the other documents`.
+Physics is tested headless, in the same SBCL process as the rest of `scripts/test`, against bounds set from the drift measured above with a margin of ten or more; rendering is tested by one frame on a hidden canvas with image checks; flights are driven by scripts that end in screenshots, which is how an agent demonstrates a milestone. Simulation files never call the HAL or SDL (`decision 12: Module layout and package split`), so every test below except the GPU and flight-screenshot ones runs without a canvas. The bounds and the flight scripts are `decision 21: Physics test bounds and flight scripts`. How to build, run, test and screenshot is in `AGENTS.md` "Commands", not repeated here.
+
+### Rules for tests
+- One `tests/<module>.lisp` per file with logic, in `luv-in-space.tests`, listed in `luv-in-space/tests` in load order ("Files in load order").
+- Each test is created by the task that creates or changes the code it checks; the bounds below are the defaults, and a task that loosens one records why in the test's comment.
+- Time budget: the whole `scripts/test` stays under ~15 s on this machine (lavapipe frame included); physics tests together under ~5 s. Runs are sized to fit (step counts below assume ~50 ns per point-mass step, ~200 ns per full ship step, "Integrator").
+- Tests run in a fresh image, never read a wall clock, and compare simulation results bit for bit where determinism promises it ("Determinism"), with tolerances elsewhere.
+- Reference values come from closed forms (Kepler's equation, the rocket equation) or committed constants with their source; never from a previous run of the same code.
+
+### Drift bounds
+The ship is never on rails (`decision 17: Gravity model`, `decision 19: Time-warp rules`), so the drift tests cover the two step rules the ship flies with, the fine step (×1, ×4) and the coarse step (above ×4), rather than a rails mode. They run two-body: Earth as a point mass, no J2, no third bodies, since energy is not conserved in a moving frame with perturbations.
+
+- Setup: μ = 3.98600435507×10^14 m³/s² (`units.lisp`), periapsis radius 6,778 km, i = 51.6°, Ω = 30°, ω = 40°, starting at periapsis; no thrust, no torque, attitude integrated alongside (it must not disturb the orbit).
+- Measured: relative energy error |E − E₀| / |E₀| with E = v²/2 − μ/r, relative angular-momentum error |L − L₀| / |L₀| with L = r × v (vector norm of the difference), and position error against the exact Kepler solution at the same `t` (`orbits.lisp`), all in double; sampled at every whole period and the maximum kept.
+- Through the integrator directly (`physics.lisp`, step rule from `clock.lisp`):
+
+| Orbit | Step | Orbits | Steps | ΔE/E < | ΔL/L < | Position error < |
+|---|---|---|---|---|---|---|
+| circular | fine, 1/64 s | 10 | 3.6×10^6 | 1e-11 | 1e-11 | 0.05 m |
+| e = 0.5 | fine, 1/64 s | 2 | 2.0×10^6 | 1e-11 | 1e-11 | 0.05 m |
+| circular | coarse (η = 1/256, 2 s) | 1,000 | 2.8×10^6 | 1e-10 | 1e-10 | 5 m |
+| e = 0.5 | coarse | 1,000 | 2.5×10^6 | 1e-9 | 1e-9 | 100 m |
+| e = 0.9 | coarse | 200 | 8.7×10^5 | 1e-8 | 1e-9 | 5 km |
+
+- The bounds are ~10× the measured values of "Measured drift" (the fine-step rows from the 100-orbit run, which bounds a shorter one); e = 0.9 runs 200 orbits to stay in the time budget, against a 1,000-orbit measurement.
+- Through the clock at each warp level (`tests/clock.lisp`): the clock is fed simulated frames (elapsed 1/60 s), and the state at each step must equal, bit for bit, the direct integrator run above at the same `t`:
+  - ×1 and ×4: the fine step, over 600 s of simulated time (36,000 fine steps at ×1).
+  - ×10, ×100, ×1,000, ×10,000, ×100,000, ×1,000,000: the coarse step, over 10 circular orbits each; ×1,000,000 hits the 4,096-step cap every frame, and the test checks the cap holds and the trajectory is unchanged ("The clock").
+  - The same run with frames of 1/144 s and with irregular elapsed times (a fixed pseudo-random list in the test) gives the same states: the frame rate never changes a trajectory.
+- Rotation: a torque-free asymmetric body (I = diag(1, 2, 3)×10^4 kg m², |ω| = 0.1 rad/s) for 1,000 s at the fine step keeps rotational energy and |I ω| (in inertial axes) within 1e-9 relative and |q| within 1e-12 of 1.
+- Thrust (`tests/ship.lisp`): a constant-thrust burn in field-free space matches the rocket equation, Δv = I_sp g₀ ln(m₀/m₁), within 1e-9 relative; a burn that empties the tanks ends with m_p = 0 exactly and the ship's mass at its dry mass; a burn under the 1 s thrust cap above ×4 matches the same burn at the fine step within 1e-6 relative in Δv.
+
+### Rails, orbits and frames
+- Kepler round trip (`tests/orbits.lisp`): state → elements → state reproduces position and velocity within 1e-9 relative, for circular equatorial, circular polar, retrograde (i = 150°), e = 0.5, e = 0.9 and a hyperbola (e = 1.5), each at several anomalies; elements → state → elements likewise, through the non-singular forms where the classical angles are undefined.
+- Kepler propagation against the integrator: the same orbit propagated on rails and integrated (coarse step, two-body) for 10 orbits agrees within the coarse position bound above.
+- Rails with J2 (`tests/clock.lisp` or `tests/places.lisp`): an object on rails with J2 secular rates and the integrated ship with J2 alone, from the same state in a 400 km, 51.6° orbit, agree on the node Ω within 0.05° after one day (short-period terms averaged over the last orbit); Ω̇ matches the closed form −(3/2) n J2 (R/p)² cos i within 1e-9 relative.
+- Promotion and demotion (`decision 19`): promoting an object at `t` and demoting it in the next step moves it by less than 1 mm; an object promoted beside the ship stays within 1 m of a reference integration after 1 hour.
+- Frame transforms (`tests/physics.lisp`, `tests/bodies.lisp`):
+  - Re-centring Earth → Sun → Earth at a step boundary returns the LEO state within 1e-3 m and 1e-6 m/s (heliocentric resolution ~3e-5 m, "Units").
+  - Frame independence: a translunar coast integrated with re-centring (Earth → Moon → Earth) and one kept in Earth's frame throughout agree within 10 m at the Moon's sphere boundary; the hysteresis keeps a ship parked on the boundary from re-centring more than once.
+  - Earth Rotation Angle at J2000.0 (UT1) is 0.7790572732640 rev, and advances by 1.00273781191135448 rev per UT1 day; body-fixed x lands on the texture's centre column (u = 0.5, v = 0.5) and the north pole on v = 0 ("Frames").
+  - Quaternions and FRD: body → inertial → body round trips within 1e-15; a positive pitch rate turns the nose from +x towards −z (body); a positive yaw rate towards +y.
+  - Projection (`tests/camera.lisp`): a point straight ahead at distance d gets depth 0.1/d, a point to the right positive clip x, a point below positive clip y on Vulkan (`decision 4: Depth strategy`); `h (2r + h)` agrees with |c|² − r² computed in rationals within 1e-12 relative, and the single-float difference does not.
+- Ephemeris spot checks (`tests/bodies.lisp`, `decision 18: Ephemerides`):
+  - A handful of JPL Horizons vectors committed as constants in the test file, each with its query in a comment (target, centre, ICRF axes, TDB, the date fetched): the Earth–Moon barycentre, Mars and Jupiter heliocentric, and the Moon geocentric, at three dates within the game's range (e.g. 2026-01-01, 2040-01-01 and 2049-06-01 TDB).
+  - Bounds from the models' stated accuracy: planet and barycentre directions within 1′ (Mercury to Mars, the barycentre) or 15′ (Jupiter, Saturn), distances within 1e-4 relative; the Moon's direction within 1′, its distance within 50 km.
+  - The cache: Hermite-interpolated positions match the series within 2 cm (Moon), and a node is the same bit for bit whether computed first or after others ("Ephemerides"); the start date lies inside 1800–2050.
+- Units (`tests/units.lisp`): the calendar round trip (UTC date → `t` → date) for J2000.0, the default start date and a leap-year day; `t` at J2000.0 is 0.
+
+### Warp, events and collisions
+- Warp transitions without jumps (`tests/clock.lisp`): switching warp at a step boundary leaves the state bit for bit unchanged; the next step uses the new step size; switching ×1 → ×1,000 → ×1 over one orbit stays within the coarse position bound of a run that never left ×1.
+- Warp refusals and drop-outs ("Time warp"): warp up is refused while thrusting above the thrust limit, while rotating without a hold, and when an event is closer than 3 s real time at the new level; at ×1,000,000 towards a periapsis below the crash radius, the clock lowers the warp so that the impact arrives no sooner than 3 s real time, and is at ×1 at the impact; likewise before an SOI change and a scheduled burn's lead time.
+- Crash detection (`tests/hazards.lisp`):
+  - Radial free fall from 1,000 km: impact time within 1e-3 s of the closed form for radial Kepler motion, at the fine and at the coarse step.
+  - An orbit with periapsis 50 km below the crash radius, run at the coarse step and through the clock at ×1,000,000: the impact is found on the first pass, its time within 1e-2 s of the Kepler solution, its latitude and longitude within 0.01° of the closed-form point (body-fixed, "Frames").
+  - A grazing orbit with periapsis 1 m above the crash radius gives no impact; a fast hyperbolic pass through the Moon's crash sphere at the largest step allowed there is caught (no tunnelling).
+  - Sun: the flux at 1 AU is 1,361 W/m² within 0.1%, zero in Earth's shadow, and the plate temperature at 1 AU 331 K for α = ε ("Collisions and the Sun"); the hull-temperature update is exact for constant flux (one step of h equals 2^k steps of h/2^k within 1e-12).
+- Prediction (`tests/prediction.lisp`, `decision 20: Trajectory prediction on the frame thread`): while coasting, the predicted state after one orbit equals the flown one bit for bit; its events (apsides, an impact, an SOI change) match those the flight then meets; a prediction split over budgeted frames equals one computed at once.
+- Determinism: the same flight script ("Scripted runs") run twice gives bit-identical states at every checkpoint.
+
+### Saves
+- `tests/saves.lisp` with `XDG_DATA_HOME` pointing at a temporary directory (`docs/luv-capabilities.md` "Save files"):
+  - Round trip: save, load, and every double in the state (`t`, the ship's state, propellant, quest state) is equal bit for bit (doubles printed readably with `*read-default-float-format*` bound to `double-float`).
+  - Continuation: N steps after a load equal N steps without the save, bit for bit.
+  - Safety: a file with two forms, `#.` read-eval, or an unknown format version is rejected with a condition; a write interrupted before the rename leaves the old save intact.
+
+### GPU tests
+- As `decision 2: Screenshots and GPU test: offscreen capture on a hidden canvas, headless on lavapipe` and `decision 10: Test and screenshot commands`: one frame (or a few) on a hidden canvas through `capture-scene`, on the GPU with a display and on lavapipe without one, and in `nix flake check`'s sandbox; only in `tests/render.lisp` and `tests/capture.lisp`.
+- Image checks, never pixel-exact comparisons (lavapipe and hardware GPUs differ in the last bits, and assets or shaders change the picture): the PNG's size and signature; regions that must be lit or dark (Earth's disc at a known camera pose, the background); a range of mean luminance; no NaN-coloured or fully black frame; the count of bright pixels when only stars are in view; `report-failed-live-artifacts` returns 0 after the frame (`decision 11: Render pipelines are luv live shader pipelines`).
+- Scenes for GPU tests are set from a state (camera pose, `t`, ship state), not from flying there, so each check is one frame.
+- The skeleton's `tests/capture.lisp` (`offscreen-frame`) is the first of these; its centre-pixel check moves to `tests/render.lisp` with `scene.lisp` ("Files in load order").
+
+### Scripted runs
+A flight script drives the game the way a player would, through the `controls` that input and the autopilot also write ("Files in load order"), so a burn, an orbit raise and a deorbit can be flown headless, tested, and shown in screenshots by an agent. Scripts are data keyed by simulation time on the 1/64 s grid, so the runs are deterministic ("Determinism").
+
+- A script is a list of steps in a file `flights/<name>.sexp` (data, read safely as saves are), each step either an action at a time or a wait:
+  - `(:at 0 :warp 1)`, `(:after 10 :hold :prograde)`, `(:after 30 :throttle 1.0)`, `(:after-dv 25.0 :throttle 0)` (cut-off by Δv delivered), `(:wait :apoapsis)`, `(:wait :periapsis)`, `(:wait :impact)`, `(:wait :altitude-below 120e3)`, `(:screenshot "after-burn")`, `(:expect :periapsis-above 400e3)`.
+  - Times are relative to the previous step (`:after`) or absolute from the script's start (`:at`), rounded to the 1/64 s grid; waits use the prediction's events, so they are exact and cheap at any warp.
+  - The script sets warp itself; during waits it may run at ×1,000,000, and the clock's drop-outs bring it back to ×1 at events as in play.
+- `flights.lisp` (milestone 2, after `prediction.lisp` in the load order; simulation only): reads a script, applies its actions to `controls` at their step, and runs the simulation headless as fast as steps allow (`run-flight`), returning a record of checkpoints (`t`, altitude, apoapsis, periapsis, speed, propellant, crash state) at each `:screenshot` and `:expect`. The same function drives a live game frame by frame (`fly`), so `./sly eval '(fly "raise-orbit")' --package LUV-IN-SPACE` shows the flight in the window.
+- Screenshots: `capture.lisp` renders each `:screenshot` checkpoint's state in one frame on a hidden canvas (as `capture-scene`, with the state set rather than flown, "GPU tests"); a command `scripts/fly <name> <out-dir>` (milestone 2; added to `AGENTS.md` "Commands" by its task) runs a script, writes `<out-dir>/<n>-<label>.png` per checkpoint, prints one line per checkpoint and exits 1 if an `:expect` fails.
+- Scripts shipped with `milestone 2`:
+  - `burn`: a 10 s prograde burn from the start orbit; screenshots before and during the burn.
+  - `raise-orbit`: a Hohmann-like raise from the start orbit to a higher circular one, two burns at periapsis and apoapsis; expects both apsides raised by the planned amount within 1%.
+  - `deorbit`: a retrograde burn that lowers periapsis below the crash radius, then waits for the impact; expects a crash at the predicted time and shows the crash and what follows (`docs/design.md`).
+- Tests: `tests/flights.lisp` runs the three scripts headless (no screenshots) and checks their `:expect`s and determinism; screenshots are not part of `scripts/test`, which keeps one GPU frame.
+- Demonstrating `milestone 2: Flight core: Newtonian flight in near-Earth orbit`'s "Done when": from a clean clone, `nix build` and `nix run` (window opens; the agent stops it by PID), `scripts/test` passes, then `scripts/fly raise-orbit /tmp/m2` and `scripts/fly deorbit /tmp/m2` write the screenshots; the agent looks at each PNG (Earth, the ship, the readout's altitude, apoapsis and periapsis) and reports them with the checkpoint lines. Flying by hand is shown in the live image: `./sly play`, `./sly eval '(fly "raise-orbit")'`, `./sly screenshot`.
+- The same scripts serve later milestones: the autopilot's presets in `milestone 3` are checked by scripts that only engage a preset and wait.

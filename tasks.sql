@@ -1459,9 +1459,99 @@ INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, crea
 * delete code that isn''t actually used
 * check pending decisions if they are still relevant and really pending
 * check other milestones if their contents are up-to-date; raise a decision for each change they need', '2026-10-14T21:55:01Z', '2026-10-14T21:56:13Z', NULL, 0);
-INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (71, 2, 'create tasks for plan 2: masterplan', 'split', 'open', 1000, NULL, 'Split `plan 2: masterplan` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (71, 2, 'create tasks for plan 2: masterplan', 'split', 'done', 1000, '2026-10-14, tasks.sql: tasks 72-81 write the plans of parts 1-10', 'Split `plan 2: masterplan` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
 done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
-tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-14T21:58:10Z', NULL, 2, 0);
+tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-14T21:58:10Z', '2026-10-14T21:58:49Z', 2, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (72, 2, 'write plan: Simulation foundations: math, units, bodies, orbits', 'plan', 'open', 1000, NULL, 'Write the plan for part 1 of `plan 2: masterplan` ("1. Simulation foundations: math, units, bodies, orbits"): `pm plan add 2 "Simulation foundations: math, units, bodies, orbits" --priority 700 < body.md`.
+
+- Scope: the bullets of part 1 in `plan 2: masterplan` (`pm show p2`), and its "Rules for every part"; the specification is `docs/design.md` "Scope" → "Feature list" (the milestone-2 rows) and the sections the part names, built as `docs/architecture.md` sets out.
+- Before writing: `pm plans list` (don''t duplicate a plan; refer to an earlier part''s plan by id where this one depends on it), `pm decision list --answered --grep <word>` for the part''s subjects; cite decisions as `decision N: <subject>`.
+- The plan body names: the files it creates or extends (in the order of `docs/architecture.md` "Files in load order"), what each must do with the numbers and rules of the docs, its tests with their bounds (`docs/architecture.md` "Testing"), its `docs/` and `AGENTS.md` changes, and how a worker tells each piece is done.
+- Divide it into pieces a worker can finish in one task each (code with its tests), listed in the order they should run; the plan''s split task turns them into tasks.
+- A choice the docs leave open: decide it and record it (`pm decision record`), cite it in the plan.
+
+Done when: the plan exists with priority 700 and the body above.', '2026-10-14T21:58:46Z', NULL, 71, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (73, 2, 'write plan: Ship, integrator and flight computer', 'plan', 'open', 1000, NULL, 'Write the plan for part 2 of `plan 2: masterplan` ("2. Ship, integrator and flight computer"): `pm plan add 2 "Ship, integrator and flight computer" --priority 680 < body.md`.
+
+- Scope: the bullets of part 2 in `plan 2: masterplan` (`pm show p2`), and its "Rules for every part"; the specification is `docs/design.md` "Scope" → "Feature list" (the milestone-2 rows) and the sections the part names, built as `docs/architecture.md` sets out.
+- Before writing: `pm plans list` (don''t duplicate a plan; refer to an earlier part''s plan by id where this one depends on it), `pm decision list --answered --grep <word>` for the part''s subjects; cite decisions as `decision N: <subject>`.
+- The plan body names: the files it creates or extends (in the order of `docs/architecture.md` "Files in load order"), what each must do with the numbers and rules of the docs, its tests with their bounds (`docs/architecture.md` "Testing"), its `docs/` and `AGENTS.md` changes, and how a worker tells each piece is done.
+- Divide it into pieces a worker can finish in one task each (code with its tests), listed in the order they should run; the plan''s split task turns them into tasks.
+- A choice the docs leave open: decide it and record it (`pm decision record`), cite it in the plan.
+- Depends on part 1''s plan (math, units, bodies, orbits).
+Done when: the plan exists with priority 680 and the body above.', '2026-10-14T21:58:46Z', NULL, 71, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (74, 2, 'write plan: Clock, warp, hazards and events', 'plan', 'open', 1000, NULL, 'Write the plan for part 3 of `plan 2: masterplan` ("3. Clock, warp, hazards and events"): `pm plan add 2 "Clock, warp, hazards and events" --priority 660 < body.md`.
+
+- Scope: the bullets of part 3 in `plan 2: masterplan` (`pm show p2`), and its "Rules for every part"; the specification is `docs/design.md` "Scope" → "Feature list" (the milestone-2 rows) and the sections the part names, built as `docs/architecture.md` sets out.
+- Before writing: `pm plans list` (don''t duplicate a plan; refer to an earlier part''s plan by id where this one depends on it), `pm decision list --answered --grep <word>` for the part''s subjects; cite decisions as `decision N: <subject>`.
+- The plan body names: the files it creates or extends (in the order of `docs/architecture.md` "Files in load order"), what each must do with the numbers and rules of the docs, its tests with their bounds (`docs/architecture.md` "Testing"), its `docs/` and `AGENTS.md` changes, and how a worker tells each piece is done.
+- Divide it into pieces a worker can finish in one task each (code with its tests), listed in the order they should run; the plan''s split task turns them into tasks.
+- A choice the docs leave open: decide it and record it (`pm decision record`), cite it in the plan.
+- Depends on parts 1 and 2 (physics state, ship).
+Done when: the plan exists with priority 660 and the body above.', '2026-10-14T21:58:46Z', NULL, 71, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (75, 2, 'write plan: Rendering foundation and assets', 'plan', 'open', 1000, NULL, 'Write the plan for part 4 of `plan 2: masterplan` ("4. Rendering foundation and assets"): `pm plan add 2 "Rendering foundation and assets" --priority 500 < body.md`.
+
+- Scope: the bullets of part 4 in `plan 2: masterplan` (`pm show p2`), and its "Rules for every part"; the specification is `docs/design.md` "Scope" → "Feature list" (the milestone-2 rows) and the sections the part names, built as `docs/architecture.md` sets out.
+- Before writing: `pm plans list` (don''t duplicate a plan; refer to an earlier part''s plan by id where this one depends on it), `pm decision list --answered --grep <word>` for the part''s subjects; cite decisions as `decision N: <subject>`.
+- The plan body names: the files it creates or extends (in the order of `docs/architecture.md` "Files in load order"), what each must do with the numbers and rules of the docs, its tests with their bounds (`docs/architecture.md` "Testing"), its `docs/` and `AGENTS.md` changes, and how a worker tells each piece is done.
+- Divide it into pieces a worker can finish in one task each (code with its tests), listed in the order they should run; the plan''s split task turns them into tasks.
+- A choice the docs leave open: decide it and record it (`pm decision record`), cite it in the plan.
+- Replaces the walking skeleton (`PLACEHOLDER(23)`, `scene.lisp`, `tests/scene.lisp`); `main.lisp` runs part 3''s clock.
+Done when: the plan exists with priority 500 and the body above.', '2026-10-14T21:58:46Z', NULL, 71, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (76, 2, 'write plan: Earth, Moon, Sun and stars', 'plan', 'open', 1000, NULL, 'Write the plan for part 5 of `plan 2: masterplan` ("5. Earth, Moon, Sun and stars"): `pm plan add 2 "Earth, Moon, Sun and stars" --priority 480 < body.md`.
+
+- Scope: the bullets of part 5 in `plan 2: masterplan` (`pm show p2`), and its "Rules for every part"; the specification is `docs/design.md` "Scope" → "Feature list" (the milestone-2 rows) and the sections the part names, built as `docs/architecture.md` sets out.
+- Before writing: `pm plans list` (don''t duplicate a plan; refer to an earlier part''s plan by id where this one depends on it), `pm decision list --answered --grep <word>` for the part''s subjects; cite decisions as `decision N: <subject>`.
+- The plan body names: the files it creates or extends (in the order of `docs/architecture.md` "Files in load order"), what each must do with the numbers and rules of the docs, its tests with their bounds (`docs/architecture.md` "Testing"), its `docs/` and `AGENTS.md` changes, and how a worker tells each piece is done.
+- Divide it into pieces a worker can finish in one task each (code with its tests), listed in the order they should run; the plan''s split task turns them into tasks.
+- A choice the docs leave open: decide it and record it (`pm decision record`), cite it in the plan.
+- Builds on part 4''s passes and `post.lisp`; runs before the views and the map, which draw these bodies.
+Done when: the plan exists with priority 480 and the body above.', '2026-10-14T21:58:46Z', NULL, 71, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (77, 2, 'write plan: The Mule''s meshes', 'plan', 'open', 1000, NULL, 'Write the plan for part 6 of `plan 2: masterplan` ("6. The Mule''s meshes"): `pm plan add 2 "The Mule''s meshes" --priority 470 < body.md`.
+
+- Scope: the bullets of part 6 in `plan 2: masterplan` (`pm show p2`), and its "Rules for every part"; the specification is `docs/design.md` "Scope" → "Feature list" (the milestone-2 rows) and the sections the part names, built as `docs/architecture.md` sets out.
+- Before writing: `pm plans list` (don''t duplicate a plan; refer to an earlier part''s plan by id where this one depends on it), `pm decision list --answered --grep <word>` for the part''s subjects; cite decisions as `decision N: <subject>`.
+- The plan body names: the files it creates or extends (in the order of `docs/architecture.md` "Files in load order"), what each must do with the numbers and rules of the docs, its tests with their bounds (`docs/architecture.md` "Testing"), its `docs/` and `AGENTS.md` changes, and how a worker tells each piece is done.
+- Divide it into pieces a worker can finish in one task each (code with its tests), listed in the order they should run; the plan''s split task turns them into tasks.
+- A choice the docs leave open: decide it and record it (`pm decision record`), cite it in the plan.
+- Builds on part 4''s rendering and part 2''s ship parts (`docs/design.md` "How they look").
+Done when: the plan exists with priority 470 and the body above.', '2026-10-14T21:58:46Z', NULL, 71, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (78, 2, 'write plan: Input and the outside view', 'plan', 'open', 1000, NULL, 'Write the plan for part 7 of `plan 2: masterplan` ("7. Input and the outside view"): `pm plan add 2 "Input and the outside view" --priority 450 < body.md`.
+
+- Scope: the bullets of part 7 in `plan 2: masterplan` (`pm show p2`), and its "Rules for every part"; the specification is `docs/design.md` "Scope" → "Feature list" (the milestone-2 rows) and the sections the part names, built as `docs/architecture.md` sets out.
+- Before writing: `pm plans list` (don''t duplicate a plan; refer to an earlier part''s plan by id where this one depends on it), `pm decision list --answered --grep <word>` for the part''s subjects; cite decisions as `decision N: <subject>`.
+- The plan body names: the files it creates or extends (in the order of `docs/architecture.md` "Files in load order"), what each must do with the numbers and rules of the docs, its tests with their bounds (`docs/architecture.md` "Testing"), its `docs/` and `AGENTS.md` changes, and how a worker tells each piece is done.
+- Divide it into pieces a worker can finish in one task each (code with its tests), listed in the order they should run; the plan''s split task turns them into tasks.
+- A choice the docs leave open: decide it and record it (`pm decision record`), cite it in the plan.
+- Writes part 2''s `controls`; the camera of part 4.
+Done when: the plan exists with priority 450 and the body above.', '2026-10-14T21:58:47Z', NULL, 71, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (79, 2, 'write plan: The basic map', 'plan', 'open', 1000, NULL, 'Write the plan for part 8 of `plan 2: masterplan` ("8. The basic map"): `pm plan add 2 "The basic map" --priority 420 < body.md`.
+
+- Scope: the bullets of part 8 in `plan 2: masterplan` (`pm show p2`), and its "Rules for every part"; the specification is `docs/design.md` "Scope" → "Feature list" (the milestone-2 rows) and the sections the part names, built as `docs/architecture.md` sets out.
+- Before writing: `pm plans list` (don''t duplicate a plan; refer to an earlier part''s plan by id where this one depends on it), `pm decision list --answered --grep <word>` for the part''s subjects; cite decisions as `decision N: <subject>`.
+- The plan body names: the files it creates or extends (in the order of `docs/architecture.md` "Files in load order"), what each must do with the numbers and rules of the docs, its tests with their bounds (`docs/architecture.md` "Testing"), its `docs/` and `AGENTS.md` changes, and how a worker tells each piece is done.
+- Divide it into pieces a worker can finish in one task each (code with its tests), listed in the order they should run; the plan''s split task turns them into tasks.
+- A choice the docs leave open: decide it and record it (`pm decision record`), cite it in the plan.
+- Draws part 5''s bodies and part 1''s orbits (`ribbons.lisp`).
+Done when: the plan exists with priority 420 and the body above.', '2026-10-14T21:58:47Z', NULL, 71, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (80, 2, 'write plan: Minimal readout, messages and the LOST panel', 'plan', 'open', 1000, NULL, 'Write the plan for part 9 of `plan 2: masterplan` ("9. Minimal readout, messages and the LOST panel"): `pm plan add 2 "Minimal readout, messages and the LOST panel" --priority 400 < body.md`.
+
+- Scope: the bullets of part 9 in `plan 2: masterplan` (`pm show p2`), and its "Rules for every part"; the specification is `docs/design.md` "Scope" → "Feature list" (the milestone-2 rows) and the sections the part names, built as `docs/architecture.md` sets out.
+- Before writing: `pm plans list` (don''t duplicate a plan; refer to an earlier part''s plan by id where this one depends on it), `pm decision list --answered --grep <word>` for the part''s subjects; cite decisions as `decision N: <subject>`.
+- The plan body names: the files it creates or extends (in the order of `docs/architecture.md` "Files in load order"), what each must do with the numbers and rules of the docs, its tests with their bounds (`docs/architecture.md` "Testing"), its `docs/` and `AGENTS.md` changes, and how a worker tells each piece is done.
+- Divide it into pieces a worker can finish in one task each (code with its tests), listed in the order they should run; the plan''s split task turns them into tasks.
+- A choice the docs leave open: decide it and record it (`pm decision record`), cite it in the plan.
+- Reads part 3''s clock, hazards and checkpoint (restart from the start state).
+Done when: the plan exists with priority 400 and the body above.', '2026-10-14T21:58:47Z', NULL, 71, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (81, 2, 'write plan: Flight scripts and the Done when', 'plan', 'open', 1000, NULL, 'Write the plan for part 10 of `plan 2: masterplan` ("10. Flight scripts and the Done when"): `pm plan add 2 "Flight scripts and the Done when" --priority 250 < body.md`.
+
+- Scope: the bullets of part 10 in `plan 2: masterplan` (`pm show p2`), and its "Rules for every part"; the specification is `docs/design.md` "Scope" → "Feature list" (the milestone-2 rows) and the sections the part names, built as `docs/architecture.md` sets out.
+- Before writing: `pm plans list` (don''t duplicate a plan; refer to an earlier part''s plan by id where this one depends on it), `pm decision list --answered --grep <word>` for the part''s subjects; cite decisions as `decision N: <subject>`.
+- The plan body names: the files it creates or extends (in the order of `docs/architecture.md` "Files in load order"), what each must do with the numbers and rules of the docs, its tests with their bounds (`docs/architecture.md` "Testing"), its `docs/` and `AGENTS.md` changes, and how a worker tells each piece is done.
+- Divide it into pieces a worker can finish in one task each (code with its tests), listed in the order they should run; the plan''s split task turns them into tasks.
+- A choice the docs leave open: decide it and record it (`pm decision record`), cite it in the plan.
+- Runs after every other part; its last piece is the milestone''s "Done when" check from a clean checkout (scripts headless with screenshots, once live), and `AGENTS.md` and `docs/` against what was built.
+Done when: the plan exists with priority 250 and the body above.', '2026-10-14T21:58:47Z', NULL, 71, 0);
 
 INSERT INTO decision (id, subject, status, options, body, answer, reason, created_at, closed_at, created_by_task, signoff, kind, decided_by_task, consequences) VALUES (1, 'How the game consumes luv', 'answered', '[]', 'Findings of `task 17: Build and run luv''s programs and test suite; record the runs` (docs/luv-capabilities.md, Packaging and Runs).
 - luv''s flake exports apps, devShells, packages and lib; lib has only environmentFor, which returns everything the packaging needs (pkgs, lisp, applicationEnvironment/Packages, developmentEnvironmentHook, slynkSource, swashPackage, …). No overlays.
@@ -1610,6 +1700,7 @@ INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, b
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (66, 67, '2026-10-14T21:52:22Z', '2026-10-14T21:55:01Z', 'done', NULL, 0, 'f5dd0f3eb77f2524fa788e8786e5e7e689079789', 'claude-opus-5-5[1m]', '29694c89-a7a4-43df-b092-d0ea4ecf3d1d', 21, 40, 7025, 1004134, 63395, 0.84864679999999992, 2373073);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (67, 70, '2026-10-14T21:55:01Z', '2026-10-14T21:56:19Z', 'done', NULL, 0, '7bd32b1881e5dd2d0a3a3a16f117a1c430ebee9e', 'claude-opus-5-5[1m]', 'd21e905c-1a44-47d8-a9ee-79b0a49723e2', 17, 28, 7273, 835822, 73806, 0.9031844, 2373073);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (68, 2, '2026-10-14T21:56:19Z', '2026-10-14T21:58:26Z', 'done', NULL, 0, '192fbee7015f73c22a7b4b006e9b54615c48245c', 'claude-opus-5-5[1m]', '89e87a12-5b43-4334-a5af-52f78d115b05', 20, 34, 10739, 1362508, 149709, 1.6850896, 2373073);
+INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (69, 71, '2026-10-14T21:58:26Z', '2026-10-14T21:58:55Z', 'done', NULL, 0, '83d1eda25ab0aadf59a293388031d02382a018d2', 'claude-opus-5-5[1m]', '78a4d691-859b-4c6b-acc5-8e0363b1c110', 5, 10, 2591, 159019, 32812, 0.3461598, 2373073);
 
 INSERT INTO task_decision (task_id, decision_id) VALUES (44, 28);
 INSERT INTO task_decision (task_id, decision_id) VALUES (44, 45);

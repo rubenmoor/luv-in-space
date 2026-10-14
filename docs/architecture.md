@@ -132,7 +132,81 @@ In brackets: the milestone that first creates the file; later milestones extend 
 
 ## Units and coordinates
 
-PLACEHOLDER(33): written by `task 33: Architecture: units, coordinate frames, simulation time and rendering precision`.
+Every quantity in the simulation is SI in `double-float`; time is TDB seconds since J2000; the ship lives in an inertial frame centred on its dominant body, and all inertial frames share the same axes. The GPU sees only camera-relative single floats, projected by one function with reversed-Z and an infinite far plane. These rules rest on `decision 4: Depth strategy`, `decision 5: Precision of positions`, `decision 14: Units and time epoch` and `decision 15: Coordinate frames`; the code lives in `math.lisp`, `units.lisp`, `bodies.lisp` and `camera.lisp` (`decision 12: Module layout and package split`).
+
+### Units
+- SI throughout: m, kg, s, N, m/s, rad; `double-float` on the CPU, no unit suffixes in names (`decision 14: Units and time epoch`). Display units (km, km/s, degrees, minutes, UTC dates) exist only in instrument and label code, through conversion functions in `units.lisp`.
+- Why not km or AU: a double has the same 53-bit relative precision at every scale, so another unit only moves the exponent and adds conversions. Resolution (one ulp) is ~1e-9 m at LEO radius (6.8×10^6 m), ~6e-8 m at the Moon (3.8×10^8 m), ~3e-5 m at 1 AU (1.5×10^11 m), ~1e-3 m at Neptune (4.5×10^12 m): ample everywhere. SI also keeps rocket formulas plain (thrust N, mass flow kg/s, exhaust velocity m/s).
+- Gravity as μ = GM in m³/s², never G and M apart (G is known to ~1e-5, μ to ~1e-10).
+- Sources, cited in `units.lisp` next to each constant:
+  - μ: JPL DE440 (Park et al. 2021, "The JPL Planetary and Lunar Ephemerides DE440 and DE441", AJ 161:105), the ephemeris behind JPL Horizons, so spot checks agree: Sun 1.32712440041279419×10^20, Earth 3.98600435507×10^14, Moon 4.902800118×10^12 m³/s²; planets (milestone 4) from the same table (planet-system values). Verify each digit against the paper when `units.lisp` is written.
+  - Radii: IAU 2015 Resolution B3 for the Sun (6.957×10^8 m); IAU WGCCRE 2015 (Archinal et al. 2018) for Earth (equatorial 6,378,136.6 m), Moon (mean 1,737,400 m) and the planets.
+  - Bodies are spheres: Earth at its equatorial radius, so the altitude shown matches published orbit altitudes near the equator and errs by at most 21 km at the poles; oblateness of the shape is cut (J2 in the gravity field is for "Time and integration").
+- Angles in radians in code; degrees only on display. Angular rates in rad/s.
+- `luv/arithmetic` quantity types are not used in the simulation (plain `double-float` is the unit discipline); at boundaries see "ASDF systems".
+
+### Time
+- Simulation time `t`: a `double-float`, TDB seconds since J2000 = 2000-01-01 12:00:00 TT (JD 2451545.0) (`decision 14`). Horizons, DE440 and the IAU rotation models use the same epoch, so their values go in without shifting.
+- Resolution: one ulp of `t` is ~1.2e-7 s at 30 years after J2000 (9.5×10^8 s) and ~2.4e-7 s at 60 years: far below any step.
+- Steps are power-of-two fractions of a second (e.g. 1/16 s) or whole seconds, so `t + dt` is exact and the clock neither drifts nor depends on the frame rate (determinism; the step itself is "Time and integration"'s).
+- Time scales: TDB − TT (< 2 ms) is ignored; UT1 = UTC = TT − 69.184 s (37 leap seconds as of 2017; no future leap seconds). UTC is for display and Earth's rotation angle.
+- Calendar: `units.lisp` converts a Gregorian UTC date to `t` (Julian date by the Fliegel–Van Flandern algorithm, then `(JD_TT − 2451545.0) × 86400`) and back for display.
+- The game's start date: a calendar constant `*start-date*` in `units.lisp`, chosen by `docs/story.md`; default 2040-01-01 00:00 UTC until then. A new game sets `t` from it; a save stores `t` itself.
+- No absolute time on the GPU: a float32 of `t` resolves only ~64 s. Shader animation gets phases computed in double and reduced (`mod` period) on the CPU.
+
+### Frames
+All inertial frames share one set of axes, ICRF (EME2000: J2000 mean equator and equinox; x toward the vernal equinox, z toward the celestial north pole), so moving between them is a translation and an attitude is the same quaternion in all of them (`decision 15: Coordinate frames`). Precession and nutation are ignored: Earth's pole stays at ICRF z, ~0.15° off the true pole in 2026 and ~0.2° by the 2040s.
+
+- Heliocentric inertial frame: origin the Sun's centre. Positions of the planets (and, through Earth, the Moon) come from ephemerides in it ("Time and integration" chooses them); ephemerides given in ecliptic J2000 are rotated by the obliquity ε = 84381.448″ (23.4392911°) about x.
+- Body-centred inertial frames (Earth-, Moon-, planet-centred): heliocentric minus the body's position and velocity. The frame of integration is one of them:
+  - The ship is integrated in the frame of its dominant body: the innermost body whose Laplace sphere of influence, r = a (m/M)^(2/5) with `a` the body's semi-major axis about its primary, contains the ship; the Sun otherwise. Earth ~9.25×10^8 m, Moon ~6.6×10^7 m (in Earth's).
+  - Why not heliocentric: there the ship's coordinates are ~1.5×10^11 m and resolve ~3e-5 m, so roundoff over 10^6 steps reaches metres and blurs the drift tests; Earth-centred, LEO resolves ~1e-9 m. Orbital elements and most instruments also want the body-centred state directly.
+  - The frame accelerates with its body; the force model ("Time and integration") includes the frame's acceleration as the indirect term of each third body, so the trajectory does not depend on the frame chosen.
+  - Re-centring: at a step boundary, never inside a step; when the ship leaves the current body's sphere by 2% (r > 1.02 r_SOI) or enters a child's sphere by 2% (r < 0.98 r_SOI), state ← state + (r, v) of the old origin − (r, v) of the new one, computed in double from the ephemerides at `t`. The hysteresis keeps a ship on the boundary from flipping each step. The camera's position is stored relative to the ship (or to a body), so it moves with the re-centring and the picture does not jump.
+- Orbital elements and instruments: from the state in a body-centred frame. Earth orbits are reported against Earth's equator (= ICRF xy-plane, so no rotation); the Moon's and planets' orbiters against the body's equator (rotation from its IAU pole); heliocentric orbits against the ecliptic J2000 (rotation by ε). The elements' reference plane is a display choice; the state stays in ICRF axes.
+- Local frames for instruments and the autopilot, built from the body-centred state each time they are needed:
+  - Orbital frame: prograde (along v), normal (along r × v), radial out (completes the right-handed triple); burns and attitude holds are given in it.
+  - Local horizon frame: north, east, down at the ship's position over the rotating body; heading, flight-path angle, ground speed.
+- Body-fixed rotating frames: rotation models of IAU WGCCRE 2015 (Archinal et al. 2018): pole right ascension and declination and prime-meridian angle W(t); the leading terms only.
+  - Earth: z = ICRF z (pole fixed, as above); x through the prime meridian on the equator, y at 90° E; rotation about z by the Earth Rotation Angle θ = 2π (0.7790572732640 + 1.00273781191135448 D_U), D_U = JD_UT1 − 2451545.0 (IERS Conventions 2010), reduced mod 2π in double. Earth-fixed = R_z(−θ) · (Earth-centred inertial).
+  - Used for: latitude, longitude and ground track, the crash point, launch and landing sites if any, and the texture lookup.
+  - Texture longitude: the Blue Marble equirectangular map runs from 180° W at the left edge through Greenwich in the centre column to 180° E, 90° N at the top. A direction (x, y, z) in Earth-fixed axes samples u = 0.5 + atan2(y, x)/(2π), v = 0.5 − asin(z)/π; so body-fixed x lands on the centre column.
+  - Moon: its IAU model (pole, W(t)); its prime meridian faces mean Earth, so the near side stays toward Earth. Planets (milestone 4): their IAU models, or a fixed axis and period where only seen from afar.
+- Ship body frame (FRD): x forward (the main engine's thrust direction), y right, z down; right-handed. Positive pitch raises the nose, positive yaw turns it right, positive roll lowers the right side. Thrusters, modules, the cockpit's geometry and the pilot's eye point are given in it (metres from the ship's centre of mass or a fixed reference point, the design's choice). Attitude: a unit quaternion `q`, body → inertial, v_inertial = q v_body q*; angular velocity in body axes.
+- Camera frame: also FRD (x the view direction, y right, z down), a position and a quaternion. Cockpit view: ship position and attitude composed with the eye point and the head's look rotation; outside view: an orbit around the ship (or a body) with its own quaternion. `camera.lisp` turns it into clip rows.
+
+Where each frame is used:
+- Heliocentric: ephemerides, re-centring, the Sun's distance and direction (heat, lighting).
+- Body-centred inertial: integration, rails propagation, elements, prediction, autopilot, orbit lines.
+- Body-fixed: latitude/longitude, crash point, textures, ground track.
+- Orbital and local horizon: instruments, attitude holds, burn directions.
+- Ship body: thrust, torques, cockpit geometry, RCS layout.
+- Camera: rendering only.
+
+### Rendering precision
+- Camera-relative, then single (`decision 5: Precision of positions`): each frame, for every drawn thing, `(position − camera position)` in double, in the frame of integration (or through the heliocentric frame for bodies, see the pitfalls), then converted to `single-float`. The GPU gets offsets in ICRF axes and the clip rows; no world-space positions, no world matrices.
+- One projection function in `camera.lisp` (`decision 4: Depth strategy`): from the camera quaternion and the vertical field of view f = 1 / tan(fov/2), it returns four clip rows applied to a camera-relative point p (ICRF axes):
+  - clip x = (f / aspect) (p · right), clip y = s f (p · down), clip z = near, clip w = p · forward; near = 0.1 m, so depth = near / (p · forward): reversed-Z with an infinite far plane, `:depth32-float`, compare `:greater`, clear 0.0.
+  - s = +1 on Vulkan, where clip y points down (luv's Vulkan path; `docs/luv-capabilities.md` "Other findings"); s = −1 for a backend with y up. The sign is in this function only. The skeleton's `uniform-data` in `src/scene.lisp` is this function in its first form (right/up/forward, y flipped by negating `up`); `camera.lisp` replaces it in `milestone 2`.
+  - Clip rows go to the GPU as single floats; they hold only directions and the focal scale, so single precision is enough.
+- Draw order in one pass, reversed-Z throughout:
+  1. Stars at infinity: directions only (no translation), clip z = 0 so depth is 0, compare `:always`, no depth write, additive.
+  2. Sun, planets, moons as ray-traced impostors writing `:frag-depth`.
+  3. Ships, asteroids, the cockpit: meshes in their body frames, with a per-draw model rotation (single, from the quaternion) and a camera-relative translation (double, then single).
+  4. Orbit lines and markers: ribbons, depth-tested, no depth write, additive.
+  5. Screen-space overlay (labels, the flight readout) last, compare `:always`.
+- The cockpit is in the same pass: near 0.1 m resolves a panel at 0.5 m well; a separate cockpit pass with its own depth clear stays the fallback (`decision 4`). Cockpit geometry is in ship body axes and the camera sits inside the ship, so its translation is small and exact in single.
+- Impostors: the CPU sends the body's camera-relative centre c (single), its radius, `c·c − r²` as `h (2r + h)` with h = |c| − r computed in double, and the body-fixed rotation (a 3×3 matrix, single) for the texture lookup. The shader solves the ray–sphere hit with the stable root (t = (c·c − r²) / (b + √(b² − (c·c − r²))), b = d·c) so the near hit keeps its precision at low altitude.
+- Interpolation: when the step is long against the frame, rendering interpolates between the last two states in double before subtracting the camera; a re-centring between them is applied to both.
+
+### Floating-origin pitfalls
+- Subtract before converting: `(coerce (- p c) 'single-float)`, never `(- (coerce p …) (coerce c …))`; positions from different frames are brought into one frame in double first.
+- Body positions relative to the camera go through the frame of integration: (body − origin) from the ephemerides in double, minus (camera − origin). For the Moon seen from LEO that is 3.8×10^8 m minus 7×10^6 m, both exact to ~1e-7 m; never through two heliocentric 1.5×10^11 m values converted separately.
+- Cancelling terms in double on the CPU: `c·c − r²` as `h (2r + h)` (`|c|²` near Earth is ~5×10^13 m², its float error ~3×10^6 m²); altitude as `|r| − R` in double; small Δv and position differences between predicted and actual trajectories in double.
+- Orbit lines: vertices are generated in double relative to their body (cached until the orbit changes) and made camera-relative each frame: (vertex + body − camera) in double, then single. A cache of single vertices relative to the body would jitter by ~0.5 m near the ship in LEO.
+- Shaders never see absolute time or large angles: Earth's rotation, blinking lights and noise phases are reduced on the CPU.
+- Quaternions are renormalised in double after each integration step; matrices for the GPU are derived from them each frame, never accumulated in single.
+- Long-lived single-float caches of anything that moves with the simulation (positions, trajectories) are a bug; caches are double and body-relative.
 
 ## Time and integration
 

@@ -4,7 +4,7 @@ This document records what [luv](https://github.com/mbrock/luv) offers Luv in Sp
 
 - luv revision examined: `6abc9d10ec8991c2cfe92888b84946372d6030b9` (2026-10-13, "Rewrite the README for people; film a real terminal; Luvland overview").
 - Later tasks keep this revision unless they say why; `flake.lock` of the walking skeleton pins the same one.
-- Machine of this draft: x86-64 Linux with a desktop session (`DISPLAY` and `WAYLAND_DISPLAY` set); nothing was run yet.
+- Machine: x86-64 Linux (NixOS) with a desktop session (`DISPLAY=:1`, `WAYLAND_DISPLAY=wayland-1`); GPUs: Intel Iris Xe (ADL GT2, Mesa ANV) and NVIDIA GeForce RTX 4060 Laptop (proprietary 595.45), plus Mesa lavapipe (CPU). Runs are listed under "Runs".
 
 ## What luv is
 
@@ -53,7 +53,7 @@ The HAL is a small explicit GPU API: devices, buffers, textures, samplers, bind 
 - Depth: only `:depth32-float`; every compare op (`:less`, `:greater`, `:greater-or-equal`, …) and a depth clear value in [0, 1] are accepted, so reversed-Z is expressible; depth clamp is not exposed. Luvcraft uses `:less`, clear 1.0, near 0.1 m, far 180 m (`../luv/luvcraft/simulation.lisp`, `render.lisp`) (read).
 - Shader language (`../luv/hal/shader/language.lisp`, `../luv/wiki/mathematical-shaders.org`): vertex, fragment, compute, task and mesh stages; types `float`, `int`, `uint`, `uint64`, `bool`, `vec2..4`, `ivec`, `uvec`, `mat2..4` (column-major), structures; resources: uniform blocks (vec4 lanes, mat4), storage buffers, `texture-2d`, `texture-2d-array`, `texture-cube`, `texture-3d`, depth textures with comparison samplers, read-write textures; GLSL-style math (`mix`, `clamp`, `smoothstep`, `normalize`, `expt`, …), conditionals, bounded folds, no general loops (read).
 - No 64-bit floats in shaders: all float types are 32-bit (read).
-- Shaders are lowered to SPIR-V (assembled in Lisp; no external compiler), MSL, WGSL, HLSL; `luv-shaderc` does the same ahead of time (read).
+- Shaders are lowered to SPIR-V (assembled in Lisp; no external compiler), MSL, WGSL, HLSL; `luv-shaderc` does the same ahead of time (ran: run 10, SPIR-V passes `spirv-val`; at run time Luvcraft logs each SPIR-V module it prepares, run 6).
 - Live shaders: `define-shader-program` and shader methods are redefinable; `../luv/hal/live-artifact.lisp` rebuilds a pipeline on redefinition, keeps the last good one on error (read).
 - Lighting, shadows, sky, sun, bloom, fog: all in Luvcraft (`../luv/luvcraft/shaders.lisp`, `render.lisp`, `sky.lisp`), not in `luv`: HDR `:rgba16-float` scene, ACES tone map, quarter-resolution bloom, sun shafts, directional shadow map, procedural sky with Henyey-Greenstein sun glow, stars as hashed gaussians, depth-of-field (`../luv/wiki/sky-and-light.org`) (read). A game copies and adapts these ideas; it cannot load them without all of `luvcraft/core`.
 - TAA: Luft-only experiment (Halton jitter, motion vectors, Vulkan resolve shader, MetalFX on Metal); the HAL has a `temporal-scaler` command and multiple render targets (`../luv/wiki/temporal-antialiasing.org`) (read).
@@ -72,6 +72,8 @@ SDL3 opens windows and reads input; luv wraps it in a canvas protocol (`../luv/h
 - Events: pointer motion/enter/exit/buttons/wheel, key press/release, window resize, pixel-size change, focus, close request; dispatched to `handle-canvas-event` (read).
 - Relative mouse mode: `set-canvas-relative-pointer-mode` (read).
 - Gamepad and joystick: not exposed by the canvas protocol; SDL3 has them, cl-sdl3 may bind them (read; binding not checked).
+- On this machine Luvcraft and Luft open an SDL3 window on Wayland with Vulkan and close cleanly on `SIGTERM` ("canvas closing … canvas closed" in the log) (ran: runs 6, 8, 9).
+- Input as the programs announce it in their window titles: Luvcraft "1–9,0 select · e place · x mine · c pick · I inventory · F phone · shift sprint · arrows look · tab focus · ctrl-q quit"; Luft "click to play · WASD move · Space jump, twice to fly · L/R edit · 1–8 material · Tab terminal · F5 camera · Esc release" (ran; keys not pressed, the session had no human at the keyboard).
 - Minimal example of opening a window and drawing every frame: `start-clear-color-demo` in `../luv/hal/examples.lisp` (read).
 - Frame failures park drawing and keep the window responsive; a watchdog warns on stalls (read).
 
@@ -94,7 +96,8 @@ luv renders screenshots from the GPU, not from the desktop, and can render witho
 - Hidden canvases: Luvcraft's `capture-hidden-luvcraft-screenshot` opens a hidden SDL canvas (`:visible-p nil`), renders one frame and saves it (`../luv/luvcraft/capture.lisp`); smoke targets `make smoke` / `vulkan-smoke` do this for the built program (read).
 - No display: with neither `DISPLAY` nor `WAYLAND_DISPLAY`, luv sets `SDL_VIDEODRIVER=offscreen` (`kmsdrm` on a Linux console), and the dev shell then points Vulkan at Mesa's lavapipe software driver (`LUV_LAVAPIPE_ICD`) (`../luv/flake.nix`, `../luv/hal/sdl/canvas.lisp`) (read). So agents without a display should get software-rendered screenshots (not yet run).
 - Tests: Parachute via `luv/test-support`; `make test` runs a Parinfer check plus `scripts/test.lisp`, which discovers the `.asd` test systems and runs them in parallel workers; `make LUV_DEV_SHELL=slim test` runs only Luft's tests (`../luv/Makefile`) (read).
-- Tests and builds write into `../luv/build/` (logs, timings, dependency core) and the FASL cache under `~/.cache/common-lisp/luv/<closure>` (read).
+- `make test`, `make test-suite`, `make luft-test` pass at the examined revision on x86-64 Linux: 31 Parachute suites, 0 failures; Luft's 611,001 star checks pass (ran: runs 11–13).
+- Tests and builds write into `<checkout>/build/` (sly client, dependency core, logs) and the FASL cache under `~/.cache/common-lisp/luv/<closure>`; the targets take no output-directory option, so the runs here used a throwaway `git clone` of `../luv` in `/tmp` to keep `../luv` clean (ran).
 
 ## Physics and SIMD
 
@@ -110,14 +113,16 @@ luv has no orbital mechanics. Its physics is Luvcraft's: a fixed-step player con
 
 ## Packaging
 
-luv's flake builds each game as a dumped SBCL image with a launcher script, and serves prebuilt outputs from a binary cache. Its packaging function is not exported, so this repo cannot call it directly.
+luv's flake builds each game as a dumped SBCL image with a launcher script, and a binary cache serves the dependency closure. Its packaging function is not exported, so this repo calls `lib.environmentFor` and copies the packaging recipe.
 
-- Packages: `luvcraft` (default), `luft`, `luvland` (Linux), `luv-shaderc`, `sbcl`, `sbcl-2_6_8`, `lisp`, `environment`, `slim-environment`, `ffmpeg`, `libghostty-vt`, `swash`, `tracy`, `tracy-client`; apps `default`, `luvcraft`, `luft`, `luvland`, `luv-shaderc` (`../luv/flake.nix`) (read).
-- `applicationPackage` is a `let` binding inside `outputs`, built from `src = self` (luv's own tree) with a fixed set of build scripts; it is not an output (read).
-- `lib.environmentFor system` is exported: it returns `pkgs`, `lisp` (SBCL with the Lisp library closure), the development/slim/application package lists and environments, `developmentEnvironmentHook`, `clSdl3WithoutMixer`, `slynkSource`, `swashPackage`, `libghosttyVt`, and more. This repo can build its own dev shell and its own `applicationPackage`-like derivation from it, copying luv's ~120-line recipe (read; not tried).
-- No overlays are exported (read).
-- Lisp sources of luv itself are not a package: a dependent repo must put the luv flake input's source tree on `CL_SOURCE_REGISTRY` (read; approach assumed).
-- Binary cache: `https://luv.swa.sh/nix-cache` with key `luv.swa.sh-1:PpD45iCBkJ38ZkvlyZcLiGdIz6yVehXn3fm1JvG18Bw=` in `nixConfig`; `--accept-flake-config` enables it (read). It caches luv's own outputs; whether derivations built from `lib.environmentFor` hit it depends on identical nixpkgs pins (assumed).
+- Packages: `luvcraft` (default), `luft`, `luvland` (Linux), `luv-shaderc`, `sbcl` (2.6.7), `sbcl-2_6_8`, `lisp`, `environment`, `slim-environment`, `ffmpeg`, `libghostty-vt`, `swash`, `tracy`, `tracy-client`, `wpewebkit`; apps `default`, `luvcraft`, `luft`, `luvland` (Linux), `luv-shaderc`; dev shells `default`, `slim`, `mixer`, `tracy`, `annex` (ran: run 1).
+- Top-level outputs: `apps`, `devShells`, `lib`, `packages`; no `overlays`, no `checks` (ran: run 1).
+- `applicationPackage` is a `let` binding inside `outputs` (`../luv/flake.nix:637`), built from `src = self` (luv's own tree): copy the tree, run the dev hook, `sbcl --script <build script>`, ship the dumped image under `libexec/`, the FASL cache under `lib/fasl/`, `fonts/`, and a launcher in `bin/`; it is not an output (read).
+- `lib` has one attribute, `environmentFor`; `lib.environmentFor "x86_64-linux"` returns `applicationClosure`, `applicationEnvironment`, `applicationPackages`, `clSdl3WithoutMixer`, `developmentClosure`, `developmentEnvironment`, `developmentEnvironmentHook`, `developmentPackages`, `ffmpeg`, `ffmpegLibraryDirectory`, `libghosttyVt`, `libghosttyVtLibrary`, `lisp`, `mesaLibraryPath`, `mupdf`, `mupdfLibraryDirectory`, `nativeLibraryPath`, `pkgs`, `sbcl`, `sbcl268`, `slimDevelopment*`, `slyRoot`, `slynkSource`, `swashPackage`, `tracy*`, `wpePkgs` (ran: run 14). Everything `applicationPackage` uses is among them, so a ~120-line copy here with `src` = this repo works (read; the copy is built by `task 22: Flake: luv input, dev shell, package and nix run opening an empty window`).
+- Lisp sources of luv itself are not a package: a dependent repo puts the luv flake input's source tree (`${luv}`) on `CL_SOURCE_REGISTRY` (read; approach assumed).
+- Binary cache: `https://luv.swa.sh/nix-cache` (priority 30) with key `luv.swa.sh-1:PpD45iCBkJ38ZkvlyZcLiGdIz6yVehXn3fm1JvG18Bw=` in `nixConfig`; `--accept-flake-config` enables it (read). It serves the dependency closure (Mesa, Vulkan tools, ffmpeg, typst, deno, zig, clang, …: the dev shell's first entry copied them from it), but none of the luv outputs at this revision for x86_64-linux (`luvcraft`, `luft`, `luv-shaderc`, `lisp` narinfos: HTTP 404) (ran: runs 4, 11). So this repo's derivations get their dependencies from the cache as long as they use luv's `pkgs`, and build only the Lisp parts locally (about 40 s per game image).
+- `nix build path:../luv#…` and `github:mbrock/luv/<rev>#…` give different store paths (the source hash differs), so builds from a local checkout never reuse the pinned ones (ran: runs 2, 3).
+- Launcher pitfall: the launcher prepends luv's library path to an inherited `LD_LIBRARY_PATH`; this session's `LD_LIBRARY_PATH` held a host `alsa-lib` built against glibc 2.43, which `libSDL3.so` then loaded against luv's glibc 2.42 and the program died before its first frame (ran: run 5). Workaround: our launcher and scripts unset `LD_LIBRARY_PATH` before starting (`env -u LD_LIBRARY_PATH`), or replace it instead of prepending.
 - Audio libraries: `sdl3-mixer` only in the `mixer` dev shell; plain SDL3 audio is in every shell (read).
 
 ## Platforms
@@ -128,7 +133,9 @@ The flake supports three systems; luv uses Vulkan on Linux and Metal 4 on macOS.
 - `aarch64-darwin`: native Metal 4; Vulkan via MoltenVK for comparison (read).
 - No Windows; HLSL and WGSL exist only as shader outputs (read).
 - Developer's machine and main test platform appear to be Apple Silicon (wiki measurements on M2 Pro, arm64) (read).
-- This machine: x86-64 Linux; to be tested by `task 17: Build and run luv's programs and test suite; record the runs` (not yet run).
+- This machine, x86-64 Linux: builds, test suite, Luvcraft, Luft and `luv-shaderc` work (ran: runs 2–13).
+- GPU choice: with several Vulkan devices, luv took the first one, the Intel iGPU (`vulkaninfo`: the only device here without `VK_EXT_mesh_shader`; the RTX 4060 and llvmpipe have it); Luft then died at start with `GPU request failed during :CREATE-MESH-RENDER-PIPELINE: :VULKAN-MESH-SHADER-RUNTIME-UNAVAILABLE`; with `VK_DRIVER_FILES=/run/opengl-driver/share/vulkan/icd.d/nvidia_icd.json` it ran (ran: runs 7, 8). luv has no device-selection option; `VK_DRIVER_FILES` is the workaround (ran). For us: no mesh or task shaders, so the game runs on any Vulkan 1.4 iGPU (recommendation).
+- `aarch64-linux`, `aarch64-darwin`: evaluated only (`nix flake show` lists their packages); not run here (read).
 
 ## Performance
 
@@ -138,14 +145,29 @@ The wiki measures CPU frame time with luv's trace zones and Tracy; there are no 
 - A streaming run: 8.5 ms median, 43 ms p95, 10 frames over the 16.7 ms deadline (read).
 - World text: 165 scene draws, 0.17 ms median scene encoding (M2 Pro) (`../luv/wiki/slug-bezier.org`) (read).
 - Physics: 300–400 awake bodies ≈ 0.25 ms per step (read).
+- Luvcraft on this machine at 959×1010: its frame pacer measured 20–36 ms of GPU work per frame on the Intel Iris Xe and settled at 24–36 Hz; on the RTX 4060 16–22 ms, settling at 36–48 Hz (ran: runs 6, 9). Luvcraft's full pipeline (shadows, bloom, sun shafts, McCLIM overlay) is heavy on an iGPU; our frame budget should assume an iGPU (assumed).
 - Tools: `with-cpu-trace-zone`, Tracy (`nix develop .#tracy`) (read).
 - What this means for us: a few hundred draws and an orbital integrator fit easily in a 16 ms frame on the developer's hardware (assumed); lavapipe on agents will be slow (assumed).
 
 ## Runs
 
-Filled in by `task 17: Build and run luv's programs and test suite; record the runs`, `task 18: Try luv's live image, screenshots and headless rendering; record the findings` and `task 19: Probe program: a lit sphere in a luv window plus a screenshot`: each run with command, time and outcome.
+Filled in by `task 17: Build and run luv's programs and test suite; record the runs`, `task 18: Try luv's live image, screenshots and headless rendering; record the findings` and `task 19: Probe program: a lit sphere in a luv window plus a screenshot`: each run with command, time and outcome. Runs 1–14 are from 2026-10-14 at luv `6abc9d1`; `R` stands for that revision. Program runs used `env -u LD_LIBRARY_PATH` from run 6 on (see Packaging); build links went to `/tmp/t17/`, deleted afterwards.
 
-- None yet.
+- Run 1: `nix flake show --accept-flake-config path:../luv`: 5 s; outputs `apps`, `devShells`, `lib`, `packages` for `x86_64-linux`, `aarch64-linux`, `aarch64-darwin`; no overlays or checks.
+- Run 2: `nix build --accept-flake-config path:../luv#{luvcraft,luft,luv-shaderc} --out-link /tmp/…`: 47 s, 36 s, 11 s; all built locally (nothing substituted for the game outputs).
+- Run 3: `nix build --accept-flake-config github:mbrock/luv/R#{luvcraft,luft,luv-shaderc}`: 16 s (already in the store from an earlier build), 36 s (built locally), 0.8 s (same path as run 2); store paths differ from run 2 except `luv-shaderc`.
+- Run 4: `curl https://luv.swa.sh/nix-cache/<hash>.narinfo` for the `luvcraft`, `luft`, `luv-shaderc` and `lisp` paths of runs 2–3: all 404; `nix-cache-info` answers, so the cache is up but holds no x86_64-linux luv outputs at R.
+- Run 5: `nix run --accept-flake-config github:mbrock/luv/R` with the session's `LD_LIBRARY_PATH` (a host `alsa-lib`): exits in under a second, `Error opening shared object "libSDL3.so": … version 'GLIBC_2.43' not found (required by …alsa-lib…/libasound.so.2)`; no window.
+- Run 6: the same without `LD_LIBRARY_PATH`: Luvcraft opens "luvcraft — walk, jump, mine, and build" on Vulkan at 1382×864 within ~1 s after the store paths are present, compiles 47 shader modules in 1.5 s, loads the saved world from `~/.local/share/luvcraft/worlds/default.sexp`, opens Slynk on a local port; frame pacer settles at 24–36 Hz (Intel iGPU). Stopped after 30 s with `kill $!`; log "canvas closed".
+- Run 7: `nix run … github:mbrock/luv/R#luft`: window opens, then exits after 3 loop iterations with `:VULKAN-MESH-SHADER-RUNTIME-UNAVAILABLE` (Intel iGPU picked).
+- Run 8: the same with `VK_DRIVER_FILES=…/nvidia_icd.json`: Luft runs on the RTX 4060 (1533 loop iterations in 30 s, 1100×800 window resized to 959×1010 by the compositor); stopped by PID, "canvas closed".
+- Run 9: Luvcraft's built launcher with `VK_DRIVER_FILES=…/nvidia_icd.json`, 25 s: frame pacer 16–22 ms GPU work, 36–48 Hz; stopped by PID.
+- Run 10: `luv-shaderc --out /tmp/… ../luv/hal/shaderc/examples/sky.lisp`: 0.3 s; "1 program, 10 files": `sky.{vertex,fragment}.{spv,metal,hlsl,wgsl}`, `sky.json` (stages, entry points, resources), `sky.hh` (C++ reflection); `spirv-val --target-env vulkan1.3` accepts both SPIR-V modules. `--target msl|hlsl|spirv|wgsl` limits the outputs.
+- Run 11: `make test` in a `/tmp` clone of `../luv` at R (cold: first `nix develop` of the default shell, dependencies from `luv.swa.sh` and `cache.nixos.org`): 284 s wall, exit 0; Python lock tests "Ran 4 tests … OK", "parinfer: strict check passed", 31 suites (34 parallel tasks, 16 SBCL workers) all PASS in 40.7 s; slowest `luvcraft/core/test [1/2]` 9.4 s.
+- Run 12: `make test-suite` in the same clone (warm): 15.6 s wall, exit 0; 31 suites (37 tasks) all PASS in 14.0 s.
+- Run 13: `make luft-test` in the same clone: 1.9 s wall, exit 0; "LUFT: 611001 star checks passed."
+- Run 14: `nix eval github:mbrock/luv/R#lib --apply …`: `lib` = `{ environmentFor }`; its attributes listed under Packaging.
+- Afterwards: `git -C ../luv status` shows only the pre-existing `result` symlink; no `sbcl`, `luvcraft` or `luft` process left.
 
 ## Gaps and workarounds
 

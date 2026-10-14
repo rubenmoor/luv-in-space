@@ -401,6 +401,79 @@ INSERT INTO plan (id, milestone_id, subject, priority, body, created_at, created
 - Headless test command and the screenshot command.
 - Live-image dev loop (or the reason it''s skipped).
 - `AGENTS.md` "Commands", verified from a clean clone; decisions recorded.', '2026-10-14T16:13:35Z', 9);
+INSERT INTO plan (id, milestone_id, subject, priority, body, created_at, created_by_task) VALUES (9, 1, 'architecture', 700, 'Part 3 of `plan 1: masterplan`: write `docs/architecture.md`, the technical ground every later milestone builds on. It runs after `plan 7: luv capabilities` and `plan 8: walking skeleton` and rests on `docs/luv-capabilities.md`, the skeleton in `src/`, `tests/`, `scripts/`, `flake.nix`, and the decisions they recorded. It writes down how the game is built on luv and the technical choices that are still open (units, frames, integrator, time warp, module layout, testing), and records those choices as decisions so the design (`task 11: write plan: game design`) and `milestone 2: Flight core: Newtonian flight in near-Earth orbit` can implement from it.
+
+## Ground rules
+- Read first: `docs/luv-capabilities.md` (especially "Gaps and workarounds" and "What this means for luv-in-space"), `docs/luv-wishlist.md`, `AGENTS.md`, the skeleton''s code, and `pm decision list --answered`.
+- Binding decisions, cited in the document, not reopened: `decision 1: How the game consumes luv`, `decision 2: Screenshots and GPU test: offscreen capture on a hidden canvas, headless on lavapipe`, `decision 3: luv ASDF systems the game depends on`, `decision 4: Depth strategy`, `decision 5: Precision of positions`, `decision 6: Target platforms`, `decision 7: Placeholder labels: dot-matrix overlay quads`, `decision 8: Live image: ./sly wraps luv''s client from the flake input`, `decision 9: Layout of systems and directories`, `decision 10: Test and screenshot commands`, `decision 11: Render pipelines are luv live shader pipelines`.
+- The document describes; it does not implement. No game code beyond what a check needs (e.g. a throwaway numeric experiment in `/tmp` to pick an integrator step is fine; it is not committed).
+- Where a choice depends on the game design (`docs/design.md`, written later by the plan from `task 11: write plan: game design`), state the architecture''s default and its constraint on the design (e.g. "thrust only below warp x10"), so the design picks within it.
+- Style per `AGENTS.md`: intro paragraph under each top-level heading, then concise bullets; units in SI; cite decisions by id and subject.
+- Out of scope: game features; the design and story documents.
+
+## docs/architecture.md: contents
+### Dependency on luv
+- Flake input pinned in `flake.lock`, dev shell and package from `luv.lib.environmentFor`, the copied application recipe, binary cache, launcher without `LD_LIBRARY_PATH` (`decision 1`).
+- ASDF systems: `luv-in-space` depends on `luv` only; tests add `luv/test-support` and Parachute; how a new luv system becomes a dependency (recorded decision first, `decision 3`); candidates already known: `luv/production` for a trajectory-prediction worker, `luv/arithmetic` quantities at boundaries.
+- What the game builds on from luv: HAL (devices, pipelines, buffers, textures), the shader language with live shader pipelines (`decision 11`), the SDL3 canvas and its events, `capture-application-screenshot`, `audio-sink`; what it writes itself (camera, projection, impostors, stars, ribbons, text/screens, HDR, physics, audio mixer, saves), each pointing to its section in `docs/luv-capabilities.md`.
+- Dev loop: `./sly` live image (start, play, eval to redefine functions and shaders while playing, screenshot, stop), `scripts/test`, `scripts/screenshot`, `nix build`/`nix run`, `nix flake check`; what to keep live-redefinable (no closures captured over functions the loop calls; state in the `game` object).
+- luv wishlist: how a gap moves to `docs/luv-wishlist.md`.
+
+### Module layout
+- Target layout of `src/` as files and packages, extending the skeleton (`package`, `shaders`, `scene`, `main`, `capture`) per `decision 9`; one line each on purpose and dependencies, in load order, e.g.:
+  - math (double-float vec3/quaternion on the CPU, single-float conversion at the GPU boundary), units/constants (G·M of bodies, radii, J2000 epoch);
+  - bodies and ephemerides (on-rails positions of Sun, Earth, Moon, planets as functions of time);
+  - physics (state, gravity, integrator, Kepler propagation, orbital elements), ship (rigid body, mass, thrusters, propellant), simulation clock and time warp;
+  - rendering: camera and projection, sphere impostors, stars, ribbons/markers, meshes (ship, asteroids), HDR and tone map, the 2D/text pass for instruments;
+  - cockpit and instruments, autopilot (orbit targeting, presets), input mapping, audio, story/quests, save/load, main loop, capture;
+  - tests mirroring the modules (`tests/<module>.lisp`).
+- Package split: one game package plus `luv-in-space.shaders` as now, or more; decide and say why.
+- Which milestone first creates each module (2 to 6), consistent with the masterplan''s milestone list.
+- Assets: where textures (Blue Marble) and the star table (HYG ≤ 6.5) live, how they are fetched or committed (size limits, Nix fetch vs. git), how attribution and the CC BY-SA table are kept (from `docs/luv-capabilities.md`).
+
+### Units and coordinates
+- Unit of length: metre (SI throughout: m, s, kg, N, m/s); state why not km or AU (precision of double over 10^12 m: ~1e-4 m at 1 AU, ample); constants as μ = GM (m^3/s^2) from a named source (e.g. IAU/JPL values).
+- Time: simulation time as double seconds since an epoch (e.g. J2000 TDB, or a game-start epoch with a fixed calendar date); resolution of double seconds over decades of game time.
+- Frames: the frame of integration (heliocentric inertial, ecliptic J2000? or the dominant body''s inertial frame with re-centring on sphere-of-influence change); planet-centred inertial frames for orbital elements and instruments; body-fixed rotating frame for Earth''s surface (crash detection, ground track, the texture''s longitude); ship-local body frame (x forward, y, z) for thrusters and cockpit; the camera frame. Give the transforms between them and where each is used.
+- Rendering: camera-relative positions computed in double, then single float (`decision 5`); the projection function in one place (reversed-Z, infinite far, near 0.1 m, `decision 4`), including the Vulkan clip-y flip; cockpit in the same pass; stars at infinity first.
+- Floating-origin pitfalls to name: subtracting large positions before converting, cancelling terms computed in double on the CPU (ray-sphere `h(2r+h)`), orbit-line vertices made relative to the camera each frame.
+
+### Time and integration
+- The clock: the frame adds `elapsed x warp` to a double accumulator and runs fixed steps, capped per frame (sim slows rather than stalls); render the latest state or interpolate.
+- The integrator for the ship: choose and justify (e.g. symplectic velocity Verlet/leapfrog at a fixed step for coasting and thrust, or RK4/RK45 with step control); step size for LEO (orbital period ~5,500 s) with the error it gives; thrust and attitude (quaternion, angular velocity, torques from RCS) integrated in the same step.
+- Gravity model: point masses (Earth, Moon, Sun as the design needs); patched conics vs. n-body for the ship: choose (e.g. n-body with on-rails bodies, the dominant body''s frame for precision; patched conics only for prediction and the autopilot); Earth J2 in or out, with the reason.
+- On rails: planets and moons from ephemerides (choose: Keplerian elements with secular rates, e.g. JPL "Approximate Positions of the Planets", vs. a truncated series; the Moon''s model); the ship on rails (Kepler propagation from elements) while coasting at high warp in one body''s field.
+- Time warp: levels (e.g. x1 to x100,000 or more), when each is allowed (no thrust above a level; altitude limits near a body; drop out of warp before an SOI change, periapsis below the surface, a scheduled burn); switching between integrated and on-rails motion without a jump (state → elements → state round-trip).
+- Collisions: crash detection against body spheres (and terrain height if ever), done per step with a swept test so high warp can''t tunnel; the Sun''s heat as a function of distance (the rule itself is the design''s).
+- Trajectory prediction for the map, instruments and the autopilot: where it runs (frame thread with a budget, or a worker via `luv/production`, then a recorded dependency), its horizon and resolution.
+- Determinism: same inputs and steps give the same trajectory (for tests and scripted runs).
+
+### Testing
+- Headless physics tests as `milestone 2` requires: energy and angular-momentum drift bounds for a circular and an eccentric Earth orbit over N orbits at each warp level and in rails mode; set concrete bounds (e.g. relative energy drift < 1e-6 per 100 orbits; state the numbers the integrator choice makes reachable) and how they''re measured.
+- Other tests: Kepler round-trip (state ↔ elements), ephemeris spot checks against JPL Horizons values (a handful, committed as constants with the source), frame transforms, warp transitions without jumps, crash detection, save/load round-trip.
+- Scripted runs: driving the game from a script (an input sequence or a control function) for a burn, an orbit raise, a deorbit, each ending with a screenshot (`scripts/screenshot` or `./sly screenshot`); how `milestone 2`''s "Done when" is demonstrated by an agent.
+- GPU tests stay as `decision 2`/`decision 10`: one frame on a hidden canvas with lavapipe, image checks rather than pixel-exact comparisons.
+- How agents build, run, test and screenshot: point to `AGENTS.md` "Commands" rather than duplicating.
+
+## Decisions to record (`pm decision record`)
+- Unit of length (and SI units throughout) and the time epoch.
+- Coordinate frames: the frame of integration, re-centring rule, body-fixed frames.
+- Integrator and step size; gravity model (n-body on rails vs. patched conics; J2).
+- Ephemerides source and model for the bodies.
+- Time-warp rules (levels, thrust limit, rails switching).
+- Module layout and package split.
+- Asset storage and attribution (if decided here rather than left to the design).
+- Depth strategy and precision are already `decision 4` and `decision 5`: cite, don''t re-record; supersede only with a reason.
+
+## Done when
+- `docs/architecture.md` covers the sections above, agrees with `docs/luv-capabilities.md`, `AGENTS.md` and the skeleton, and cites the decisions it relies on.
+- The new decisions are recorded; follow-ups the document reveals (e.g. a missing luv wishlist entry, a test the skeleton lacks) are added as tasks in the plan they belong to.
+
+## Suggested split
+- Dependency on luv, dev loop and module layout (incl. assets).
+- Units, frames and time; decisions recorded.
+- Integration, gravity model, ephemerides, time warp, collisions and prediction; a throwaway numeric check of the integrator''s drift at the chosen step; decisions recorded.
+- Testing section with concrete drift bounds; final read-through against the other documents.', '2026-10-14T17:31:46Z', 10);
 
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (1, 1, 'write the masterplan of milestone 1: Scope and design: what luv can carry, what the game is', 'masterplan', 'done', NULL, '2026-10-14, plan 1 body (tasks.sql)', 'Write `plan 1: masterplan`, the masterplan of `milestone 1: Scope and design: what luv can carry, what the game is`: expand on everything that needs to be done to achieve it,
 divided into parts. State in the masterplan that its own tasks are not implementation work: each of them writes the
@@ -437,14 +510,14 @@ INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, crea
 - Body: the part''s bullets made concrete: `flake.nix` with luv as a pinned input, package and `apps.default`, dev shell with SBCL/luv and `pm`; an ASDF system under `src/` drawing something recognisable with `PLACEHOLDER(<task id>)` where it shows; a headless test command; a screenshot command writing a PNG; the live-image dev loop if luv''s `./sly` can be reused; `AGENTS.md` "Commands" filled in and verified from a clean `git clone`.
 
 Done when: the plan exists with priority 800 and its "create tasks" task is queued.', '2026-10-14T16:11:45Z', '2026-10-14T16:13:37Z', 7);
-INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (10, 1, 'write plan: architecture', 'plan', 'open', 790, NULL, 'Write the plan for part 3 of `plan 1: masterplan`: "architecture" (`docs/architecture.md`).
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (10, 1, 'write plan: architecture', 'plan', 'done', 790, '2026-10-14, plan 9: architecture (tasks.sql)', 'Write the plan for part 3 of `plan 1: masterplan`: "architecture" (`docs/architecture.md`).
 
 - Priority 790 on this task: it runs after the work of the plans "luv capabilities" (900) and "walking skeleton" (800), so the plan is grounded in `docs/luv-capabilities.md` and the skeleton. Read them first.
 - `pm plan list`, then `pm plan add 1 "architecture" --priority 700` with the full body.
 - Body: the part''s bullets in `plan 1: masterplan` (dependency on luv, module layout, units and coordinates, depth strategy, time and integration, time warp, testing incl. the energy/angular-momentum drift tests that `milestone 2: Flight core: Newtonian flight in near-Earth orbit` requires), and the decisions to record (unit of length, coordinate frames, integrator, depth strategy).
 - Check `pm decision list --answered` for decisions the earlier parts recorded and follow them.
 
-Done when: the plan exists with priority 700 and its "create tasks" task is queued.', '2026-10-14T16:11:45Z', NULL, 7);
+Done when: the plan exists with priority 700 and its "create tasks" task is queued.', '2026-10-14T16:11:45Z', '2026-10-14T17:31:49Z', 7);
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (11, 1, 'write plan: game design', 'plan', 'open', 690, NULL, 'Write the plan for part 4 of `plan 1: masterplan`: "game design" (`docs/design.md`).
 
 - Priority 690 on this task: it runs after the work of the plan "architecture" (700), so the plan is grounded in `docs/luv-capabilities.md` and `docs/architecture.md`. Read them first.
@@ -676,6 +749,9 @@ INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, crea
 - Verify with `./sly`: play, screenshot, redefine `earth-fragment` (e.g. red oceans) by `./sly eval`, screenshot again, read both; stop playing and stop the image by `./sly stop`.
 - A broken redefinition keeps the last good pipeline; reporting it is `task 28: Live image: report failed live artifacts`.
 - `scripts/test` and `scripts/screenshot` still pass; update the live image bullet in `AGENTS.md` "Commands".', '2026-10-14T17:23:16Z', '2026-10-14T17:30:44Z', 26);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (31, 9, 'create tasks for plan 9: architecture', 'split', 'open', 1000, NULL, 'Split `plan 9: architecture` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
+done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
+tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-14T17:31:46Z', NULL, 10);
 
 INSERT INTO decision (id, subject, status, options, body, answer, reason, created_at, closed_at, created_by_task, signoff, kind, decided_by_task, consequences) VALUES (1, 'How the game consumes luv', 'answered', '[]', 'Findings of `task 17: Build and run luv''s programs and test suite; record the runs` (docs/luv-capabilities.md, Packaging and Runs).
 - luv''s flake exports apps, devShells, packages and lib; lib has only environmentFor, which returns everything the packaging needs (pkgs, lisp, applicationEnvironment/Packages, developmentEnvironmentHook, slynkSource, swashPackage, …). No overlays.
@@ -715,3 +791,4 @@ INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, b
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (18, 27, '2026-10-14T17:23:57Z', '2026-10-14T17:26:00Z', 'done', NULL, 0, '43b13518ef638aac5c877d90d8ede25210e92c7a', 'claude-opus-5-5[1m]', 'f0b93c62-ae59-44aa-8bd9-854e9b8da5c4', 18, 32, 6225, 564502, 31931, 0.49297640000000009, 2177276);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (19, 29, '2026-10-14T17:26:00Z', '2026-10-14T17:28:49Z', 'done', NULL, 0, '09d185e3c020955ab7b76277e05daa1d14ee9e39', 'claude-opus-5-5[1m]', '3217bcb8-4b51-4d7d-8b83-a0dec8dbc916', 27, 44, 12904, 1049787, 49897, 0.86738939999999987, 2177276);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (20, 30, '2026-10-14T17:28:49Z', '2026-10-14T17:30:51Z', 'done', NULL, 0, 'b94c0e8eb3767fa2711c050bb6b6e049be8155c0', 'claude-opus-5-5[1m]', '3def936a-88ae-4209-a2e6-53746fdb49d0', 28, 52, 8932, 1604737, 71957, 1.0754514, 2177276);
+INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (21, 10, '2026-10-14T17:30:51Z', '2026-10-14T17:31:55Z', 'done', NULL, 0, 'a9dddfdc8706ff471ac563d2f6b1c87315b138d0', 'claude-opus-5-5[1m]', 'c7358f73-2059-4471-b0b3-9ac954898d70', 7, 14, 5786, 260722, 44180, 0.5213604, 2177276);

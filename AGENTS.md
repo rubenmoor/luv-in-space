@@ -34,6 +34,9 @@ Luv in Space is a showcase for [luv](https://github.com/mbrock/luv), Mikael Broc
 ## Commands
 - Dev shell: `direnv allow` or `nix develop`; it provides `pm`.
 - Build, run, test, screenshot: to be filled in by `milestone 1`.
+- Live image: `./sly start` (a Slynk image with `luv-in-space` loaded; ~8 s cold), `./sly play`, `./sly status`, `./sly screenshot /tmp/x.png`, `./sly eval '(defun …)' --package LUV-IN-SPACE` (redefine while playing), `./sly failures`, `./sly resume`, `./sly stop-playing`, `./sly stop`; `./sly --help` lists all. Enters the dev shell itself; options go after the code.
+  - `./sly` is luv's client from the flake input with `play`, `screenshot`, `stop-playing` and status redefined for this game (`scripts/sly-client.lisp`); `sly-server.lisp` boots the image. State in `build/` (~410 MB, git-ignored).
+  - Shader redefinitions don't reach the running scene yet (`task 30: Live shader pipelines for the scene`); redefine Lisp functions, or `./sly stop-playing` and `./sly play` after reloading shaders.
 
 ## Layout
 - `docs/`: scope, design, story, architecture; the source of truth for features after `milestone 1`.

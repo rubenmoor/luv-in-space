@@ -1,0 +1,35 @@
+#!/bin/sh
+# ./sly: the live image for this checkout (docs: AGENTS.md "Commands").
+# luv's ./sly client with play, screenshot and stop-playing for luv-in-space;
+# enters the dev shell itself if needed.
+set -eu
+
+root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+cd "$root"
+
+if [ "${LUV_DEV_ENVIRONMENT_MODE:-}" != nix-develop ]; then
+  exec nix develop --accept-flake-config "$root" -c "$0" "$@"
+fi
+
+case ":${CL_SOURCE_REGISTRY:-}:" in
+  *:"$root/":*) ;;
+  *) export CL_SOURCE_REGISTRY="$root/:${CL_SOURCE_REGISTRY:-}" ;;
+esac
+export LUV_SLY_SYSTEM=luv-in-space
+unset LUV_SLYNK_HOST LUV_SLYNK_PORT LUV_SLYNK_PID LUV_SLYNK_ATTACH_ONLY
+if [ "${1:-}" = "--lisp" ]; then
+  [ "$#" -ge 2 ] || { echo "sly: --lisp requires a session ID or Lisp name" >&2; exit 2; }
+  export LUV_LISP_SELECTOR=$2
+  shift 2
+fi
+
+client=build/sly-client
+environment="$root
+$(realpath "$(command -v sbcl)")
+$CL_SOURCE_REGISTRY"
+if [ ! -x "$client" ] || [ scripts/sly-client.lisp -nt "$client" ] \
+  || [ "$(cat build/sly-client.environment 2>/dev/null)" != "$environment" ]; then
+  scripts/build-sly-client "$environment"
+fi
+
+exec "$client" "$@"

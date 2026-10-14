@@ -1,0 +1,21 @@
+#!/bin/sh
+# Builds build/sly-client (scripts/sly-client.lisp on luv's sly-client from
+# the flake input). Run by ./sly when the client is missing or stale.
+set -eu
+
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$root"
+mkdir -p build
+
+printf 'Building cached ./sly client core...\n'
+log=build/sly-client-build.log
+if ! sbcl --noinform --non-interactive --disable-debugger \
+    --load scripts/sly-client.lisp \
+    --eval '(sb-ext:save-lisp-and-die "build/sly-client.tmp" :executable t :save-runtime-options t
+              :toplevel (function sly-client::luv-in-space-entry-point))' \
+    >"$log" 2>&1; then
+  cat "$log" >&2
+  exit 1
+fi
+mv build/sly-client.tmp build/sly-client
+printf '%s\n' "$1" > build/sly-client.environment

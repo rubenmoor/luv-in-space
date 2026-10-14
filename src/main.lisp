@@ -13,6 +13,21 @@
 (defmethod luv:application-live-artifacts ((game game))
   (scene-live-artifacts (game-scene game)))
 
+(defun failed-live-artifacts (&optional (game *game*))
+  (and game
+       (remove :failed (luv:application-live-artifacts game)
+               :key #'luv:live-artifact-status :test-not #'eq)))
+
+(defun report-failed-live-artifacts (&optional (game *game*) (stream *standard-output*))
+  "Print each failed live artifact of GAME with its diagnostic; return their count.
+A failed artifact keeps drawing its last good build."
+  (let ((failed (failed-live-artifacts game)))
+    (dolist (artifact failed)
+      (format stream "Live artifact ~A FAILED (last good build still drawn):~%  ~A~%"
+              (luv:live-artifact-label artifact)
+              (luv:live-artifact-diagnostic artifact)))
+    (length failed)))
+
 (defun draw (game)
   (let ((context (game-context game)))
     (incf (game-frame-count game))

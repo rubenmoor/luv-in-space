@@ -68,7 +68,19 @@ outside it (luv and its dependencies) in build/sly-dependencies.core."
                    "luv-in-space is playing: ./sly screenshot PNG; ./sly stop-playing closes it.")
                   (t "Nothing is playing: ./sly play starts it.")))
     (when answer
-      (print-canvas-health (princ-to-string answer)))))
+      (print-canvas-health (princ-to-string answer)))
+    (when (and answer (search "LUV-IN-SPACE" (string-upcase (princ-to-string answer))))
+      (print-failed-live-artifacts))))
+
+(defun print-failed-live-artifacts ()
+  "Shaders that failed to rebuild: luv keeps the last good pipeline silently."
+  (let ((report (ignore-errors
+                 (with-slynk-connection (stream)
+                   (authenticate stream)
+                   (evaluate-captured-output-on
+                    stream "(luv-in-space:report-failed-live-artifacts)" "CL-USER")))))
+    (when (plusp (length report))
+      (write-result-string report))))
 
 (defun run-play (arguments)
   (when arguments

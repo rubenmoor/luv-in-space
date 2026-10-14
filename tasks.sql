@@ -931,9 +931,136 @@ INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, crea
 - Extend the existing `applicationPackage` item in `docs/luv-wishlist.md` ("Packaging and tooling"): the exported recipe should take a list of runtime data directories to install and expose to the image (an environment variable or a function returning the installed path), as it does for `fonts/`.
 - Cite the finding: `docs/luv-capabilities.md` "Packaging" (the recipe ships `fonts/`, removes the copied tree) and `docs/architecture.md` "Assets".
 - Docs only; no code change.', '2026-10-14T17:39:18Z', '2026-10-14T17:56:06Z', 32);
-INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (37, 10, 'create tasks for plan 10: game design', 'split', 'open', 1000, NULL, 'Split `plan 10: game design` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (37, 10, 'create tasks for plan 10: game design', 'split', 'done', 1000, '2026-10-14, tasks.sql: tasks 38-43 for plan 10', 'Split `plan 10: game design` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
 done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
-tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-14T17:57:23Z', NULL, 11);
+tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-14T17:57:23Z', '2026-10-14T17:58:44Z', 11);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (38, 10, 'Design: the game in one page and the ship(s)', 'work', 'open', NULL, NULL, 'First part of `plan 10: game design`: create `docs/design.md` and write its sections "The game in one page" and "The ship(s)", as the plan body specifies.
+
+## Read first
+- The plan body (ground rules, both sections); `docs/luv-capabilities.md` ("Gaps and workarounds", "What this means for luv-in-space"); `docs/architecture.md` (all; especially "Units", "Frames", "Integrator", "Files in load order"); `docs/luv-wishlist.md`; `pm milestone show 2` … `6`; `pm decision list --answered`.
+- Binding, cite, don''t reopen: `decision 14: Units and time epoch` (μ, radii, start date default 2040-01-01), `decision 15: Coordinate frames` (FRD body axes), `decision 16: Integrator and simulation clock` (propellant mass and inertia in the state), `decision 19: Time-warp rules` (other ships on rails).
+
+## Write
+- Create `docs/design.md`: intro paragraph, then every top-level heading of the plan ("The game in one page", "The ship(s)", "Flight", "The cockpit", "The places", "Scope"), each not written by this task with an intro sentence and `PLACEHOLDER(<task id>)` naming the task that fills it (`pm show p10` lists them).
+- The game in one page: minute-to-minute and hour-to-hour play, the start (ship in LEO: pick the start orbit, altitude and inclination, which later tasks compute Δv from; date per `decision 14`), the luv showcase, the pillars later sections use to justify cuts.
+- The ship(s), all bullets of the plan: parts table (mass, dimensions, FRD position), propulsion from real engines of the class (sources named), mass budget and Δv by the rocket equation empty and with a towed load, T/W and burn times, a Δv table for the standard legs (LEO raise, GEO, TLI, LOI, NEA rendezvous, Mars/Venus transfer) computed from `decision 14` constants so "The places" can check against it; principal moments of inertia and how they change with propellant; RCS forces, torques, accelerations; refuelling (where, how, economy or none); damage (minimal, what is cut); other ships (kinds, on rails); how each ship looks as a parts list with dimensions (generated meshes, `meshes.lisp`).
+- Whether the ship docks or grapples (the gear is a part); `Flight` describes how it is flown.
+- Calculations in `/tmp`, formulas stated in the document; nothing of them committed.
+
+## Decisions to record (`pm decision record`)
+- The player''s ship: parts and masses, main engine and RCS technology with thrust, Isp, propellant, Δv budget; the start orbit.
+- Docking or grappling, and towing (in or out).
+- Damage model (or none); refuelling and economy (or none); other ships on rails.
+
+## Done when
+- `docs/design.md` exists with all six top-level sections, the two above written, the others marked; every figure has its formula or source; the decisions are recorded and cited; `git add docs/design.md`.', '2026-10-14T17:58:38Z', NULL, 37);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (39, 10, 'Design: flight controls, control modes, views, instruments and time warp', 'work', 'open', NULL, NULL, 'Second part of `plan 10: game design`: write the first half of the section "Flight" in `docs/design.md`: controls, control modes, views, instruments, time warp, as the plan body specifies.
+
+## Read first
+- The plan body ("Flight"); `docs/design.md` as written so far (the ship, its RCS accelerations); `docs/luv-capabilities.md` ("Windowing and input", "Gamepad and joystick", "Orbit lines and markers", "HUD and instruments"); `docs/architecture.md` ("Time warp", "Trajectory prediction", "Rendering precision").
+- Binding, cite: `decision 7: Placeholder labels: dot-matrix overlay quads`, `decision 16: Integrator and simulation clock`, `decision 19: Time-warp rules`, `decision 20: Trajectory prediction on the frame thread`.
+
+## Write
+- Controls: a complete key map (keyboard and mouse via luv''s canvas events) for attitude, translation, throttle and cut, all attitude holds, warp, views, map, autopilot, pause, quit; mouse look and switch presses; gamepad: a milestone or cut, with the reason.
+- Control modes: direct rate RCS, rate damping, holds; what x1 and x4 feel like given the ship''s accelerations.
+- Views: cockpit (eye point in FRD from the ship''s parts), outside camera, map view (focus body, zoom range across 10^12 m, orbit lines, prediction ribbon, targets); when each is available.
+- Instruments: the list from the plan, each with its milestone (`milestone 2` minimal readout vs. `milestone 3` full set); how they are drawn is the cockpit task''s, only reference it.
+- Time warp: the levels from `decision 19`, the thrust limit under warp (≤ x1,000: pick), SOI drop-out (stop or continue), burn lead time (default 60 s), how warp is shown and refused.
+- Replace this part''s `PLACEHOLDER` line; leave the second half of "Flight" marked for the next task.
+
+## Decisions to record (`pm decision record`)
+- Control scheme (key map, control modes) and views; gamepad''s milestone or cut.
+- Warp choices within `decision 19`: thrust limit, SOI drop-out, burn lead time.
+
+## Done when
+- These subsections are complete and agree with the ship section and `docs/architecture.md`; the decisions are recorded and cited; `git add docs/design.md`.', '2026-10-14T17:58:38Z', NULL, 37);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (40, 10, 'Design: autopilot, docking and towing, dying, saving and sound', 'work', 'open', NULL, NULL, 'Third part of `plan 10: game design`: write the second half of the section "Flight" in `docs/design.md`: the autopilot, close-range manoeuvring, towing, dying and what follows, saving, sound, as the plan body specifies.
+
+## Read first
+- The plan body ("Flight"); `docs/design.md` as written so far (ship, docking or grappling choice, controls, warp); `docs/architecture.md` ("Collisions and the Sun", "Time warp", "Trajectory prediction", "Saves" under "Testing", "Files in load order" for `autopilot.lisp`, `saves.lisp`, `audio.lisp`); `docs/luv-capabilities.md` ("Audio", "Save files").
+- Binding, cite: `decision 16: Integrator and simulation clock`, `decision 17: Gravity model`, `decision 19: Time-warp rules`, `decision 20: Trajectory prediction on the frame thread`, `decision 21: Physics test bounds and flight scripts`, and the ship decisions of the previous tasks (`pm decision list --answered --grep ship`).
+
+## Write
+- Autopilot: manoeuvres per milestone (circularise, raise/lower Ap/Pe, plane change, rendezvous and stop at a range in `milestone 3`; TLI, Hohmann to an asteroid or planet, capture in `milestone 4`); picking a preset, showing planned burns, watching and interrupting; safety rules (no periapsis below the crash radius, abort on low propellant); it writes `controls` like the player.
+- Close-range manoeuvring: docking or grappling as the ship section chose: how it''s flown, tolerances (closing speed, alignment), contact; its milestone or cut.
+- Towing: attaching, the stack''s mass and inertia, thrust on the stack.
+- Dying: crash radii per body (Earth''s 100 km entry interface default or another value), contact-speed rule near stations and asteroids; the Sun''s rule (pick the hull temperature rule of "Collisions and the Sun", warning and death thresholds, the distance in AU it gives for this ship; compute it); life support if any; what the player sees and what follows (checkpoint restart or fresh start); interaction with quests.
+- Saving: when, what, the milestone (`milestone 5` needs saves).
+- Sound: what is heard through the hull, synthesised per "Audio"; its milestone (architecture default 6) or cut.
+- Replace this part''s `PLACEHOLDER` line.
+
+## Decisions to record (`pm decision record`)
+- How death works: crash rules and radii, the Sun''s heat rule and thresholds, what follows.
+- Autopilot scope per milestone and its safety rules.
+- Saving (when, milestone); audio''s milestone or cut.
+
+## Done when
+- "Flight" is complete and agrees with the ship section and `docs/architecture.md`; the Sun''s distance is computed, not guessed; the decisions are recorded and cited; `git add docs/design.md`.', '2026-10-14T17:58:38Z', NULL, 37);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (41, 10, 'Design: the cockpit', 'work', 'open', NULL, NULL, 'Fourth part of `plan 10: game design`: write the section "The cockpit" in `docs/design.md`, as the plan body specifies.
+
+## Read first
+- The plan body ("The cockpit"); `docs/design.md` as written so far (life-support module dimensions, eye point, instrument list and milestones, controls); `docs/luv-capabilities.md` ("Rendering", "HUD and instruments", "Orbit lines and markers", "Sun glare and brightness"); `docs/architecture.md` ("Files in load order": `text.lisp`, `meshes.lisp`, cockpit and instrument files).
+- Binding, cite: `decision 3: luv ASDF systems the game depends on`, `decision 4: Depth strategy` (cockpit in the same pass), `decision 7: Placeholder labels: dot-matrix overlay quads`, `decision 11: Render pipelines are luv live shader pipelines`, `decision 15: Coordinate frames`.
+
+## Write
+- The DIY look and a layout as a list of panels with positions and sizes (m, FRD) relative to the eye point, enough to build the cockpit mesh from; the window and its frame.
+- Each instrument of the "Flight" list: what it shows, how it is drawn (Slug text on an in-world screen texture, needle gauge mesh, lamp, dot-matrix display, orbit plot), update rate, milestone.
+- Ghostty terminal screen: keep (what for, what it costs) or cut, with the reason; if kept, add a follow-up task in this plan for the decision extending `decision 3`.
+- Interaction: switches by mouse or keys; flying from the cockpit alone (`milestone 3` outcome); what the outside view adds.
+- Readability rules at 1280x800: minimum text size, contrast in sun and shadow, colour use.
+- How messages and radio reach the player (screens, printer strip, lamp), named so `docs/story.md` can use them.
+- Replace this section''s `PLACEHOLDER` line.
+
+## Decisions to record (`pm decision record`)
+- Cockpit instrument technology (Slug screens, gauges, lamps) and Ghostty in or out.
+- The message channels the story may use.
+
+## Done when
+- The section is complete and agrees with "Flight" and the ship; the decisions are recorded and cited; `git add docs/design.md`.', '2026-10-14T17:58:38Z', NULL, 37);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (42, 10, 'Design: the places, with real data and Δv checked against the ship', 'work', 'open', NULL, NULL, 'Fifth part of `plan 10: game design`: write the section "The places" in `docs/design.md`, as the plan body specifies.
+
+## Read first
+- The plan body ("The places"); `docs/design.md` as written so far (start orbit, the ship''s Δv table and refuelling, the Sun''s heat rule and its distance, autopilot presets, docking/towing); `docs/architecture.md` ("Units", "Ephemerides", "Rails", "Assets"); `docs/luv-capabilities.md` ("Spheres and planet surfaces", "Sun glare and brightness", "Instancing many objects", "Starfield").
+- Binding, cite: `decision 13: Asset storage and attribution` (texture licences, SOURCE.md, size limits), `decision 14: Units and time epoch` (μ and radii only from there), `decision 17: Gravity model` (drag is the design''s option), `decision 18: Ephemerides` (game time before 2050-01-01), `decision 19: Time-warp rules` (places on rails).
+
+## Write
+- Earth: Blue Marble, atmosphere rim, night side and clouds (in or cut), drag (cut or exponential atmosphere, with the reason).
+- 4 to 6 Earth-orbit points of interest (`milestone 3` presets): name, purpose, orbit elements and epoch (real ones from a named source and date read, e.g. a CelesTrak TLE; invented ones marked invented), Δv from the start orbit (computed), look.
+- The Moon: texture source and licence (checked against `decision 13`), lunar orbits of interest, landing in or cut (per the ship), Δv for TLI and LOI.
+- Near-Earth asteroids and the belt: real objects from JPL SBDB with designation and date read, how they are shown, the ship''s work there; Δv and Hohmann travel times.
+- Planets in scope with Δv and travel times the ship can do (with refuelling where needed), their look and texture sources.
+- The Sun: look, danger zone in AU from the chosen heat rule, warnings.
+- A sources list with dates read.
+- Check every destination''s Δv against the ship''s Δv table; where one isn''t reachable, change the plan (refuelling, cut) and say so.
+- Replace this section''s `PLACEHOLDER` line. Data and calculations in `/tmp`; no assets are downloaded or committed here (asset work belongs to the milestone the scope table assigns it to); a texture licence still to check is a follow-up task in this plan.
+
+## Decisions to record (`pm decision record`)
+- Places in scope: Earth-orbit points of interest, the Moon (landing in or out), which asteroids, which planets.
+- Drag in or out; Earth''s night side and clouds.
+
+## Done when
+- The section is complete with sources and dates; every destination''s Δv is checked against the ship''s; the decisions are recorded and cited; `git add docs/design.md`.', '2026-10-14T17:58:38Z', NULL, 37);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (43, 10, 'Design: scope table, read-through and what the story may use', 'work', 'open', NULL, NULL, 'Last part of `plan 10: game design`: write the section "Scope" in `docs/design.md` and read the whole document through against the other documents, as the plan body specifies.
+
+## Read first
+- The plan body ("Scope", "Done when"); all of `docs/design.md`; `docs/luv-capabilities.md`; `docs/architecture.md`; `docs/luv-wishlist.md`; `pm milestone show 1` … `6` (Outcomes and Done-whens); `pm decision list --answered` (all decisions the earlier tasks of this plan recorded).
+
+## Write
+- One prioritised table: feature, priority (must/should/could), milestone (2 flight core, 3 cockpit and autopilot, 4 the solar system, 5 story and quests, 6 release) or "cut", reason. Cover every feature named in the document and in `milestone 1`''s developer ideas (rugged ships, low-tech weapons, autopilot presets, Moon, belt, planets, Sun death, DIY cockpit, story), plus title screen, intro, controls help, credits screen (`decision 13: Asset storage and attribution`), README, performance target, saves, audio, gamepad.
+- Weapons: in or cut (low-tech only, only if the story needs them).
+- Check against each milestone''s Outcome and Done when (e.g. `milestone 2`: outside view, minimal readout, crash into Earth; `milestone 4`: Sun death tested; `milestone 5`: saves). Where the design wins inside a milestone''s intent, say so; a real contradiction with a milestone is a `pm decision add` (and this task stays done; the decision blocks nothing here).
+- "What the story may use": a short list by milestone (2 to 5) for `task 12: write plan: story`: ship, places, message channels, mechanics.
+- Read-through: names (modules as in `docs/architecture.md` "Files in load order"), figures and milestones agree across sections and with `docs/architecture.md` and `docs/luv-capabilities.md`; every decision the document relies on is cited; no `PLACEHOLDER` lines left in `docs/design.md`; style per `AGENTS.md`.
+- Where `docs/architecture.md` must follow a design choice (e.g. a module the design adds), adjust it here, citing the decision.
+
+## Decisions to record (`pm decision record`)
+- Weapons in or out; the scope table as the milestones'' specification (one decision listing what each milestone gets and what is cut).
+
+## Follow-ups
+- Tasks for what the document reveals: an asset licence to check, a luv wishlist item (`docs/luv-wishlist.md`), an architecture section to adjust beyond this task; each in the plan it belongs to (`pm plan list`), not duplicating existing tasks.
+
+## Done when
+- The plan''s "Done when" holds: every feature has a milestone or a cut with a reason; every destination''s Δv is checked; the decisions are recorded; `git add docs/design.md` (and any changed doc).', '2026-10-14T17:58:38Z', NULL, 37);
 
 INSERT INTO decision (id, subject, status, options, body, answer, reason, created_at, closed_at, created_by_task, signoff, kind, decided_by_task, consequences) VALUES (1, 'How the game consumes luv', 'answered', '[]', 'Findings of `task 17: Build and run luv''s programs and test suite; record the runs` (docs/luv-capabilities.md, Packaging and Runs).
 - luv''s flake exports apps, devShells, packages and lib; lib has only environmentFor, which returns everything the packaging needs (pkgs, lisp, applicationEnvironment/Packages, developmentEnvironmentHook, slynkSource, swashPackage, …). No overlays.
@@ -992,3 +1119,4 @@ INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, b
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (27, 35, '2026-10-14T17:52:30Z', '2026-10-14T17:55:50Z', 'done', NULL, 0, '95792eff982049c8b819445ba512506271f7840d', 'claude-opus-5-5[1m]', '11df0454-39ae-41bf-a581-6b149bd1f84a', 15, 28, 19810, 1009653, 85895, 1.2854026000000003, 2286516);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (28, 36, '2026-10-14T17:55:50Z', '2026-10-14T17:56:12Z', 'done', NULL, 0, '9182821547222fc334cea9e75b386e370206a523', 'claude-opus-5-5[1m]', 'a0013bff-e06a-48e8-8ce9-dc3e67f6b9e7', 7, 12, 2107, 192459, 29121, 0.31364780000000003, 2286516);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (29, 11, '2026-10-14T17:56:12Z', '2026-10-14T17:57:34Z', 'done', NULL, 0, '21f9d1ccaf68537221153acd8f2080ae8f870542', 'claude-opus-5-5[1m]', 'a1fa1cbb-e77f-4b36-8b7a-5895819d10d0', 9, 14, 7394, 412649, 92273, 0.96864979999999989, 2286516);
+INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (30, 37, '2026-10-14T17:57:34Z', '2026-10-14T17:58:51Z', 'done', NULL, 0, '3ccb8fd840a0f1a330837c48f31885c6ae8fb145', 'claude-opus-5-5[1m]', 'd1a9c847-1832-4dee-a9ed-404cccfd178b', 6, 12, 8281, 236871, 46089, 0.58175420000000011, 2286516);

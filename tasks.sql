@@ -1398,6 +1398,13 @@ INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, crea
 - Add the script (e.g. `sun-dive`) to `docs/architecture.md` "Scripts by milestone", `milestone 4`, in the table''s terms: start state, actions (holds, throttle, `:after-dv`, `(:warp :coast)`), and expectations: the warp drop-out on entering 0.551 AU, the danger mark, death by heat with `(:expect :lost :heat)`. If a wait or condition is missing (e.g. a wait on the hull temperature or on the dominant body being the Sun), add it to "Waits and expectations" with its milestone.
 - Keep the expected run time small (state the steps at coarse warp over ~100 days) and note it.
 - Cite `decision 34: How death works`, `decision 56: Flight-script actions, start states and the quest play-through`; record a decision only if a lasting choice changes.', '2026-10-14T21:33:08Z', '2026-10-14T21:52:11Z', 64, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (70, 1, 'post-milestone cleanup of milestone 1: Scope and design: what luv can carry, what the game is', 'cleanup', 'open', NULL, NULL, 'After `milestone 1: Scope and design: what luv can carry, what the game is`, for the whole project:
+* rewrite top-level .md files to reflect the current state of the project
+* remove files that have become redundant
+* suggest entirely new files, if necessary
+* delete code that isn''t actually used
+* check pending decisions if they are still relevant and really pending
+* check other milestones if their contents are up-to-date; raise a decision for each change they need', '2026-10-14T21:55:01Z', NULL, NULL, 0);
 
 INSERT INTO decision (id, subject, status, options, body, answer, reason, created_at, closed_at, created_by_task, signoff, kind, decided_by_task, consequences) VALUES (1, 'How the game consumes luv', 'answered', '[]', 'Findings of `task 17: Build and run luv''s programs and test suite; record the runs` (docs/luv-capabilities.md, Packaging and Runs).
 - luv''s flake exports apps, devShells, packages and lib; lib has only environmentFor, which returns everything the packaging needs (pkgs, lisp, applicationEnvironment/Packages, developmentEnvironmentHook, slynkSource, swashPackage, …). No overlays.

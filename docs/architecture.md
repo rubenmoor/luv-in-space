@@ -22,7 +22,7 @@ The game is its own renderer and simulation on luv's HAL, shader language, SDL3 
 - Nothing from `luvcraft/*` or `luft/*`: their ideas (sky, bloom, text runs, saves) are copied and adapted, since loading them pulls in the block game.
 - A new luv system becomes a dependency only through a recorded decision (`pm decision record`, superseding or extending `decision 3`), then the `:depends-on` line, then a note in `docs/luv-capabilities.md` "ASDF systems".
 - Known candidates, not yet dependencies:
-  - `luv/production`: a latest-value worker for trajectory prediction off the frame thread ("Time and integration" decides).
+  - `luv/production`: a latest-value worker for trajectory prediction off the frame thread; not used: prediction runs on the frame thread (`decision 20: Trajectory prediction on the frame thread`).
   - `luv/arithmetic` quantity declarations at boundaries (save files, instruments); it is already loaded through `luv`, so using it needs no new dependency, only a rule; the integrator stays on plain `double-float`.
   - `luv/ghostty`: only if `docs/design.md` keeps a real terminal screen; needs the full dev shell, not `slim`.
 
@@ -210,7 +210,110 @@ Where each frame is used:
 
 ## Time and integration
 
-PLACEHOLDER(34): written by `task 34: Architecture: integrator, gravity model, ephemerides, time warp, collisions and prediction`.
+The ship is integrated with classical RK4 on a fixed, deterministic step in its dominant body's frame, against the Sun, Earth, Moon and later the planets moving on rails from analytic ephemerides; Earth's J2 is in. The same integrator, step rule and force model drive flight at every warp level, trajectory prediction and the autopilot's refined burns, so what the map shows is what the ship flies. Only objects other than the ship use Kepler rails. These rules are `decision 16: Integrator and simulation clock`, `decision 17: Gravity model`, `decision 18: Ephemerides`, `decision 19: Time-warp rules` and `decision 20: Trajectory prediction on the frame thread`; the code lives in `physics.lisp`, `clock.lisp`, `bodies.lisp`, `orbits.lisp`, `hazards.lisp` and `prediction.lisp` (`decision 12: Module layout and package split`).
+
+### The clock
+- Each frame: `acc += min(elapsed, 0.1 s) × warp` in `double-float`; the 0.1 s cap absorbs stalls (debugger, a parked `./sly` frame, window drags).
+- While `acc ≥ h` (the next step, see below): step, `t += h`, `acc −= h`; at most 4,096 steps per frame and at most 4 ms of steps (checked every 64 steps). What remains beyond the cap is dropped (`acc` clamped below one step): the sim slows rather than stalls, and the warp readout shows the actual rate, measured over the last second.
+- The step count per frame never changes a trajectory: steps depend on the state, the controls and the warp level, not on the frame rate or the cap.
+- Controls (input, autopilot, test scripts write `controls`) are sampled once per frame and held over each step (zero-order hold).
+- Rendering lags the simulation by one step and interpolates between the last two states: cubic Hermite for positions (from positions and velocities, in double), slerp for attitude; a re-centring between them is applied to both (see "Rendering precision"). At ×1 the lag is ≤ 1/64 s.
+- Elapsed time comes from luv's canvas frame function; nothing in the simulation reads a wall clock.
+
+### Integrator
+- Classical fixed-step RK4 on the whole ship state: position r and velocity v (body-centred inertial, ICRF axes), attitude quaternion q (body → inertial), angular velocity ω (body axes), propellant mass m_p (`decision 16: Integrator and simulation clock`).
+- Derivatives: ṙ = v; v̇ = gravity(t, r) + q (F_body / m) q*; q̇ = ½ q ⊗ (0, ω); I ω̇ = τ − ω × I ω (Euler's equations, principal axes, I from the current propellant load, held over a step); ṁ_p = −Σ F_i / (I_sp,i g₀), g₀ = 9.80665 m/s².
+- After each step: q renormalised in double; propellant that would go negative within a step instead runs the last step at the throttle fraction that empties it exactly, so the step stays on the grid.
+- Why RK4 over a symplectic integrator: what players, rendezvous, prediction and the autopilot notice is phase (along-track) error, and RK4's is ~10^5 times smaller than velocity Verlet's at the same cost per orbit (measured below); symplectic schemes bound energy error only with a constant step and a separable, conservative system, and thrust, mass flow, attitude and a state-dependent step break all three. RK4's energy drift is secular but measured at 1e-11 per 1,000 LEO orbits.
+- Step, `h`:
+  - Fine: 1/64 s at warp ×1 and ×4 (time warp below), whatever the state. It keeps input latency under a frame, resolves RCS pulses and rotation (ω h ≤ 0.02 rad at 1 rad/s), and is far below orbital accuracy needs.
+  - Coarse (above ×4): h = η · min over gravitating bodies of √(d³/μ), d the distance to each body's centre, η = 1/256, rounded down to a power of two and clamped to [1/64 s, 16,384 s]; under thrust also h ≤ 1 s. 2π/η ≈ 1,600 to 3,200 steps per orbit after rounding, at any eccentricity or distance (shorter near periapsis, longer at apoapsis): 2 s in a 400 km LEO, 512 s on a translunar coast, 16,384 s heliocentric.
+  - All steps are powers of two ≥ 1/64 s, and scheduled events (burn start and end, autopilot commands) are on the 1/64 s grid, so `t` stays a multiple of 1/64 s and exact (`decision 14: Units and time epoch`); a step is shortened to land on the next event.
+- Re-centring after a step, never inside one (`decision 15: Coordinate frames`).
+- Cost: measured ~180 ns per RK4 step with Earth point mass, J2, and the Sun and Moon as third bodies (typed `double-float` SBCL, x86_64 i5-12500H; body positions from `sin`/`cos` as a stand-in for the ephemeris cache), ~50 ns for a point mass alone. Attitude and thrust add a few tens of ns; the 4,096-step cap is ~1 ms.
+
+### Measured drift
+A throwaway SBCL script (not committed) integrated two-body Earth orbits (μ = 3.98600435507×10^14 m³/s², periapsis 6,778 km, i = 51.6°) and compared with the exact solution after a whole number of periods; relative energy error ΔE/E, relative angular-momentum error ΔL/L and position error at the end.
+
+| Orbit | Integrator, step | Orbits | Steps/orbit | ΔE/E | ΔL/L | Position error |
+|---|---|---|---|---|---|---|
+| circular | RK4, 1/64 s | 100 | 355,421 | 1.3e-12 | 6.5e-13 | 4 mm |
+| circular | RK4, 1 s | 1,000 | 5,554 | 4e-14 | 2e-14 | 5 mm |
+| circular | RK4, 2 s (η = 1/256) | 1,000 | 2,777 | 1.0e-11 | 5.2e-12 | 0.36 m |
+| circular | RK4, 4 s (η = 1/128) | 1,000 | 1,388 | 3.3e-10 | 1.7e-10 | 11 m |
+| circular | RK4, 16 s | 1,000 | 347 | 3.4e-7 | 1.7e-7 | 11 km |
+| circular | Verlet, 1 s | 1,000 | 5,554 | 2e-13 | 1e-13 | 18 km |
+| e = 0.5 | RK4, η = 1/256 | 1,000 | 2,472 | 8.4e-11 | 2.8e-11 | 10 m |
+| e = 0.5 | RK4, η = 1/512 | 1,000 | 4,944 | 2.7e-12 | 7.6e-13 | 0.36 m |
+| e = 0.5 | Verlet, η = 1/512 | 1,000 | 4,944 | 2.4e-6 | 3e-14 | 31 km |
+| e = 0.9 | RK4, η = 1/256 | 1,000 | 4,355 | 1.4e-9 | 4.1e-11 | 1.6 km |
+
+- At the 1/64 s fine step the error is roundoff, not truncation (~1e-12 after 3.5×10^7 steps).
+- With η = 1/256 one LEO orbit costs ~2,800 steps (~0.5 ms), and 1,000 orbits (two months) drift less than a metre; e = 0.9 orbits are rarer and still within 2 km per 1,000 orbits.
+- Coarse-step drift with third bodies and J2 is not a conservation test (energy is not conserved in a moving frame); `task 35: Architecture: testing section with drift bounds; read-through against the other documents` sets the test bounds on two-body runs from these numbers.
+
+### Gravity model
+- n-body against on-rails bodies, in the ship's dominant-body frame (`decision 17: Gravity model`; `decision 15: Coordinate frames`): the central body's point mass plus each third body's direct minus indirect term, μ_b ((d_b − r)/|d_b − r|³ − d_b/|d_b|³), d_b the body's position in the frame.
+  - Earth frame: Earth (with J2), Sun, Moon.
+  - Moon frame: Moon, Earth (point mass), Sun.
+  - Sun frame: Earth, Moon (separately, not the barycentre) and, from `milestone 4`, the planets as point masses with system μ.
+  - Planet frames (milestone 4): planet, Sun.
+- Earth's J2 in: J2 = 1.08263×10^-3 (EGM2008), with Earth's equatorial radius; Earth's pole is ICRF z (`decision 15`), so the term is a few multiplications in the frame's own axes. It is the largest perturbation in LEO (~1e-2 m/s², against ~1e-6 m/s² from the Moon) and makes orbit planes regress ~5° per day at 51.6°, which a player can see and sun-synchronous orbits rely on.
+- Out, with the reason: other zonal and tesseral terms, the Moon's J2 (invisible at game scale); drag and an atmosphere (needs a model and matters only below ~300 km; the design may add an exponential atmosphere as a force); solar radiation pressure (~1e-7 m/s² for a dense ship); relativity.
+- Patched conics and Kepler elements are not the ship's motion; they serve osculating elements for instruments and orbit lines, first guesses for the autopilot (Hohmann, Lambert) which then refines its burns by shooting with the integrator, and rails for other objects.
+
+### Ephemerides
+- Sun: fixed at the heliocentric origin (`decision 18: Ephemerides`); its barycentric wobble is ignored.
+- Planets and the Earth–Moon barycentre: Standish, "Keplerian Elements for Approximate Positions of the Major Planets" (JPL Solar System Dynamics), Table 1: J2000 ecliptic elements and their rates per Julian century, valid 1800–2050, errors of tens of arcseconds (~10^3–10^4 km). Solve Kepler's equation (Newton from M + e sin M, to 1e-14 rad), rotate ecliptic → ICRF by ε (see "Frames"). Velocities from the same elements analytically.
+- Moon: the truncated ELP-2000/82 series in Meeus, "Astronomical Algorithms" (2nd ed., 1998), ch. 47: geocentric ecliptic longitude, latitude and distance of date (~10″, ~20 km), precessed to the J2000 ecliptic (general precession in longitude), then ε; velocity by central difference of ±60 s in double (error ~1e-5 m/s).
+- Earth: barycentre − μ_Moon / (μ_Earth + μ_Moon) × geocentric Moon, so Earth wobbles ~4,700 km monthly around the barycentre.
+- Cache: each body is read through cubic Hermite nodes (position and velocity) at fixed spacing, 4,096 s for Earth and Moon and 65,536 s for the planets; a node is a pure function of its index, computed on first use and kept in a small table in the `game` object. Interpolation error is below 2 cm for the Moon; the integrator asks four times per step and pays a lookup, not a series.
+- Time range: Table 1 ends at 2050-01-01. The default start date is 2040 ("Time"); the design keeps game time within the decade, or a task switches to Standish Table 2a/2b (3000 BC–3000 AD, coarser). A test asserts the start date is inside the range.
+- Spot checks against JPL Horizons are `task 35: Architecture: testing section with drift bounds; read-through against the other documents`'s.
+
+### Rails
+- The ship is never on rails: at every warp level it is integrated (`decision 17`). The step rule makes coasting at high warp cheap (2 s steps in LEO), so the switch and its jump are avoided rather than handled.
+- Bodies (Sun, planets, Moon) are always on rails from the ephemerides.
+- Other objects (stations, other ships, asteroids) are on Kepler rails around their body: elements at an epoch, propagated exactly for any t; around Earth with J2's secular rates (Ω̇, ω̇, Ṁ) so stations precess like the ship (`decision 19: Time-warp rules`).
+- Promotion: an object within 100 km of the ship becomes integrated with the ship's force model and step (elements → state at the current t, exact at that instant); beyond 200 km it is demoted (state → osculating elements, plus the secular rates). A station on rails ignoring the Moon and J2's short-period terms would drift metres per hour against a ship parked beside it.
+- Round trip state → elements → state reproduces the state to ~1e-9 relative (`task 35` tests it); near-circular and near-equatorial orbits use non-singular forms (argument of latitude, true longitude) inside `orbits.lisp`.
+
+### Time warp
+Levels and rules are `decision 19: Time-warp rules`; where they touch play, the design picks within them.
+
+- Levels: ×1, ×4, ×10, ×100, ×1,000, ×10,000, ×100,000, ×1,000,000. The design may drop levels, not add finer step rules.
+- ×1 and ×4: the fine 1/64 s step, full rotational dynamics, all controls.
+- Above ×4: the coarse step; attitude is kinematic: held inertial or in the orbital frame (prograde, normal, radial), integrated as the hold's rotation, no Euler's equations; manual RCS is off. Entering needs a hold or |ω| < 0.01 rad/s.
+- Thrust: allowed up to ×1,000 under an attitude hold (long low-thrust burns of tugs); the design may lower the limit, not raise it above ×1,000 without a new decision.
+- Budget: a level is never refused for cost; in LEO ×100,000 fits the 4,096-step cap (~830 steps per frame at 60 Hz), ×1,000,000 runs at the cap and the readout shows the actual rate (~×490,000). The design may grey out levels whose actual rate is below the nominal one, or add altitude limits for comfort.
+- Drop-outs, from the prediction's events: the clock lowers the warp so that the next event arrives no sooner than 3 s real time, and goes to ×1 at it:
+  - impact, or a periapsis below a crash radius;
+  - a sphere-of-influence change (design default: stop; it may let warp continue across);
+  - a scheduled burn, at its start minus its lead time (attitude settle; design default 60 s);
+  - entering a Sun hazard zone (the design's rule).
+- Warp up is refused while thrust is on above the thrust limit, while rotating without a hold, or with an event less than 3 s real time away at the new level.
+- Changing warp never changes the state; only the step size changes, at a step boundary.
+
+### Collisions and the Sun
+- Crash spheres: one per body, radius R + h_crash in its frame; defaults h_crash = 0 for all bodies and 100 km for Earth (entry interface: a ship without a heat shield does not survive entry); the design picks the radii and what a crash means. Bodies are spheres (`decision 14`).
+- Swept test after each step, against the central body and every third body with a crash sphere (the Moon from Earth's frame): the step's path relative to the body is the cubic Hermite of the two relative states; the chord's closest approach minus the bound h² |a|_max / 8 on the curve's sag is compared with the radius, and only then refined (Newton on d|p(s)|²/ds over the Hermite). With the coarse step rule the sag is ~r / 500,000, so no warp level can tunnel through a body or skip a periapsis below the surface.
+- An impact gives its exact time (on the Hermite) and the point in the body-fixed frame (latitude, longitude) for the crash view.
+- Sun: the flux S = L☉ / (4π d²), L☉ = 3.828×10^26 W (IAU 2015 B3), 1,361 W/m² at 1 AU, computed each step from the heliocentric distance, zero in a body's shadow (cylindrical shadow of Earth, Moon, planets). Offered to the design: the radiative-equilibrium temperature of a plate facing the Sun, T = (α S / (2 ε σ))^(1/4) (331 K at 1 AU for α = ε), and a hull temperature that relaxes towards it with a time constant (updated exactly per step for constant flux). The rule that burns and kills is the design's; the Sun's sphere at R☉ is the last crash sphere.
+
+### Trajectory prediction
+- On the frame thread (`decision 20: Trajectory prediction on the frame thread`): `prediction.lisp` runs the flight's integrator, force model and coarse step rule from a copy of the current state, with planned burns as scheduled controls, and keeps every step's state (double, relative to its body) for ribbons and event search; `luv/production` is not a dependency (`decision 3: luv ASDF systems the game depends on` stands).
+- Budget: 1 ms per frame, resumable; one LEO orbit is ~2,800 steps (~0.5 ms), a translunar coast a few thousand, so a full prediction takes one to a few frames.
+- Horizon: until the first of one osculating period (two in the map view), an SOI change plus one period (or periapsis) in the new body, an impact, 30 days inside a planet's sphere or 2 years heliocentric, 20,000 steps.
+- Resolution: one point per step (~2,800 per LEO orbit); the ribbon code decimates to its vertex budget; events (apsides, nodes, SOI changes, impact, closest approach to a target) are found by root-finding on the Hermite between stored states.
+- Recompute: while coasting the prediction stays valid (determinism) and only its tail is extended; under thrust or after a control change it restarts each frame with a one-period horizon; it also restarts when it deviates from the flown state by more than 1 m (fine and coarse steps differ by millimetres per orbit).
+- The autopilot shoots with the same function (differential correction of burn times and Δv); its iterations share the budget and may take several frames.
+- Revisit, recording `luv/production` as a dependency, only if a profile shows prediction above 2 ms per frame (many promoted objects, autopilot iterations).
+
+### Determinism
+- Same initial state and the same controls and warp level per step give the same trajectory bit for bit on one build and platform: fixed steps chosen from the state, no wall clock, frame rate or step cap in the simulation, ephemeris nodes as pure functions of their index, no hash-table iteration order or unseeded randomness in simulation code (random state, if any, in the `game` object with a seed).
+- SBCL does not contract multiply–add, so arithmetic is plain IEEE double; `sin`, `cos`, `atan2`, `exp` come from libm and may differ in the last bit between x86_64 and aarch64, so cross-platform comparisons use tolerances.
+- Replays and scripted runs record controls and warp keyed by step index (`t` on the 1/64 s grid), not by frame; `task 35` uses this for scripted burns.
+- A function redefined in the live image changes the trajectory from that step on, as expected; tests run in a fresh image.
 
 ## Testing
 

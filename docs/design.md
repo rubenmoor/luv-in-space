@@ -143,7 +143,7 @@ What one tank reaches from the start orbit (6,650 m/s):
 - No docking port and no crew transfer: the pilot never leaves the cab.
 - Grappled, the object is part of one rigid stack: combined mass, CoM and inertia tensor (as in the table above), the main engine's trim through the new CoM, the RCS mixer with the new lever arms. Releasing gives both bodies the stack's velocity and rotation at the release point.
 - Rated load: 100 t; the grapple refuses heavier fixtures (with 100 t the stack has 1.0 km/s and turns 90° in over 40 s; heavier loads would give the player little to fly).
-- How it is flown, the tolerances (closing speed, alignment) and what happens on contact: "Flight" (task 40).
+- How it is flown, the tolerances (closing speed, alignment) and what happens on contact: "Flight", "Grappling and berthing".
 
 ### Refuelling and resupply
 - Where: depots only; which depots and their orbits are "The places"' (task 42).
@@ -152,7 +152,7 @@ What one tank reaches from the start orbit (6,650 m/s):
 
 ### Damage
 - None (`decision 25: Damage model`): the ship is intact or destroyed. No part is damaged, leaks or is repaired; there are no hit points.
-- Destroyed means death: a contact harder than the crash rule, a crash into a body, or the Sun's heat past its threshold; the rules and what follows are "Flight"'s (task 40).
+- Destroyed means death: a contact harder than the crash rule, a crash into a body, or the Sun's heat past its threshold; the rules and what follows are "Flight", "Dying and what follows".
 - Cut, with the reason (pillars "Newton is the game" and "small and finished"): per-part damage (lost thrusters, leaks, dead screens), over-stress while pushing a load, repair at stations. Each needs effects, cockpit warnings and repairs for an event a careful pilot rarely meets.
 
 ### Other ships
@@ -218,12 +218,12 @@ Keyboard and mouse through luv's canvas events (`docs/luv-capabilities.md` "Wind
 | Map zoom ×10 in / out | Page-up / Page-down | 2 |
 | Target next / previous / clear | ] / [ / \ | 3 |
 | Autopilot: open the preset list; choose; engage; disengage | O; Up/Down; Return; Backspace | 3 |
-| Grapple (arm, latch, release; behaviour in task 40's part) | G | 3 |
+| Grapple (arm, release; "Grappling and berthing") | G | 3 |
 | Controls help | F1 | 6 (before: the window title lists the main keys, as luv's games do) |
 | Quit | Escape, Control+Q | 2; from 6 Escape pauses and opens the menu (resume, controls, credits, quit) |
 
 - Pressing the key of the active hold again releases it to rate damping; pitch or yaw keys release any hold; roll keys during a hold turn the ship about the hold's axis and the hold keeps the new roll.
-- Free keys kept for later parts: Space, B, U, Y, F2–F12; saving keys, if any, come from task 40's "Saving" and use these.
+- Free keys kept for later parts: Space, B, Y, F2–F12; U is sound on/off ("Sound"); there is no save key ("Saving").
 - Mouse:
   - Right button held: look (cockpit: head look; outside and map: orbit the camera); luv's relative pointer mode while held, so the pointer stays put.
   - Wheel: cockpit field of view; outside camera distance; map zoom (×1.2 per notch).
@@ -263,12 +263,12 @@ Three views of one scene, drawn by one renderer (reversed-Z, `decision 4: Depth 
   - Eye point (14.1, 0, −3.6) m from R in FRD: in the cab (cylinder Ø 3.0 × 4.5, x 10.5–15.0, axis at z = −3.5), 0.9 m behind the flat front wall, 0.1 m above the cab's axis, facing +x. The 1.2 × 0.6 m window centred at (15.0, 0, −3.6) spans ±34° horizontally and ±18° vertically from it. "The cockpit" (task 41) may move the eye point with its panel layout and says so.
   - Field of view 70° vertical (96° horizontal) by default, so the window and the panels around it are both in view; the wheel zooms between 20° and 90°.
   - Head look by mouse: yaw ±150°, pitch −60° to +80°, no translation (the pilot is strapped in); Home recentres.
-  - The grapple's tip sits 55° below the line of sight (atan(3.6 / 2.5)), outside the window: close work uses the grapple camera on a cockpit screen (task 40's and task 41's parts).
+  - The grapple's tip sits 55° below the line of sight (atan(3.6 / 2.5)), outside the window: close work uses the grapple camera on a cockpit screen ("Grappling and berthing", "The cockpit").
 - Map (`milestone 2` basic, completed by 3 and 4): the same scene from a far camera at true scale, not a separate chart.
   - Focus: the ship (default when the map opens), the dominant body, the target, or another body; Tab cycles. The camera orbits the focus (right drag) at a distance from 50 m (ship focus) or 1.2 × the body's radius to 1.5×10^13 m (100 AU), ×1.2 per wheel notch and ×10 per Page key, about 80 notches from Earth's surface to the edge; the zoom eases exponentially over 0.15 s.
   - Opening the map frames the ship's orbit: focus the dominant body, distance 2.5 × the apoapsis radius (or the body's radius, if larger), viewed 30° above the orbit plane from the normal side.
   - Bodies are drawn as their impostors at true size; below 6 px they become a marker with a label, so the Moon and the planets stay findable. The ship and targets are markers at every zoom.
-  - Lines, as screen-space ribbons (`docs/luv-capabilities.md` "Orbit lines and markers"; `ribbons.lisp`): `milestone 2` the ship's osculating orbit (2 px) with apoapsis and periapsis markers and an impact marker where the orbit meets the crash sphere; `milestone 3` the predicted trajectory (`decision 20: Trajectory prediction on the frame thread`, two periods in the map) in place of the osculating orbit, the target's orbit, closest approach, relative ascending and descending nodes, and the planned burns (task 40's autopilot); `milestone 4` the Moon's and planets' orbits (1 px), SOI changes on the trajectory, focus on the Moon, the Sun and the planets.
+  - Lines, as screen-space ribbons (`docs/luv-capabilities.md` "Orbit lines and markers"; `ribbons.lisp`): `milestone 2` the ship's osculating orbit (2 px) with apoapsis and periapsis markers and an impact marker where the orbit meets the crash sphere; `milestone 3` the predicted trajectory (`decision 20: Trajectory prediction on the frame thread`, two periods in the map) in place of the osculating orbit, the target's orbit, closest approach, relative ascending and descending nodes, and the planned burns ("The autopilot"); `milestone 4` the Moon's and planets' orbits (1 px), SOI changes on the trajectory, focus on the Moon, the Sun and the planets.
   - Colours: the ship's line cyan, the target's orange, bodies' orbits grey, the part of a trajectory after a planned burn dashed, impacts red; labels as the readout's text.
   - The exposure is fixed in the map, so stars stay visible next to a lit Earth.
 
@@ -291,12 +291,13 @@ What the pilot reads, and from which milestone; how each is drawn and where it s
 | Attitude indicator | the nose against the orbital frame (prograde, normal, radial markers), the hold's target direction, angular rates per axis | 3 |
 | Δv remaining | by the rocket equation at the current mass, load included (m/s) | 3 |
 | Mass and thrust-to-weight | stack mass (t) and acceleration at full throttle (m/s²) | 3 |
-| Burn | planned Δv, Δv left, time to start, burn duration (task 40's autopilot) | 3 |
+| Burn | planned Δv, Δv left, time to start, burn duration ("The autopilot") | 3 |
 | Target | name, distance, closing speed, relative velocity in body axes, time and distance of closest approach | 3 |
-| Grapple range and alignment | from the grapple's range finder (task 40's part) | 3 |
+| Grapple range and alignment | from the grapple's range finder ("Grappling and berthing") | 3 |
 | More alarms | low propellant (below the Δv of the planned burns, or 5 %), rotation above the warp limit, autopilot aborts | 3 |
 | Body and SOI | the dominant body's name, time to the next SOI change | 4 |
-| Sun | distance (AU), flux, hull temperature with warning and danger marks (task 40's Sun rule) | 4 |
+| Sun | distance (AU), flux, hull temperature with warning and danger marks ("Dying and what follows") | 4 |
+| Life support | consumables in days left at the current crew ("Dying and what follows") | 4 |
 | Radio and messages | the quest line's messages (task 41's channel, `milestone 5`'s quests) | 5 |
 
 ### Time warp
@@ -307,16 +308,132 @@ Within `decision 19: Time-warp rules` and `docs/architecture.md` "Time warp"; th
   - Burns with a scheduled cut-off (the autopilot's burns, flight scripts' `:after-dv`): up to ×100; the cut lands on the 1/64 s grid at any warp, and the longest burn (all 28 t, 1,213 s) takes 12 s of real time.
   - Above ×4 a burn always flies in a hold (`decision 19`); throttling up at a higher warp lowers the warp to the limit at once instead of refusing the throttle.
 - Drop-outs, from the prediction's events (warp lowered so the event is ≥ 3 s of real time away, ×1 at the event):
-  - impact, or a periapsis below the crash radius (radii in task 40's "Dying");
+  - impact, or a periapsis below the crash radius (radii in "Dying and what follows");
   - SOI change: stop (×1 at the change), the architecture's default; the pilot checks the new body's periapsis before warping on;
   - a scheduled burn, at its start minus the lead time: 60 s or the estimated slew to the burn attitude plus 10 s, whichever is longer. The slew rule ("Control modes") turns 180° in 40 s wet and 59 s with 100 t, so 60 s covers almost every case;
-  - entering a Sun hazard zone (the rule is task 40's).
+  - entering the Sun's warning zone, inside 0.551 AU ("Dying and what follows"); and the life-support alarms at 30 and 7 days.
 - Refusals (`decision 19`): warp up is refused while thrusting above the limit, while rotating faster than 0.01 rad/s without a hold, or with an event under 3 s of real time away at the new level.
-- Shown: the readout's warp field (nominal level; actual rate in amber when below 90 % of nominal; "PAUSED"); a refusal or drop-out writes a message with its reason for 3 s, e.g. "WARP REFUSED: ENGINE ON, LIMIT ×10", "WARP REFUSED: ROTATING, SET A HOLD", "WARP ×1: PERIAPSIS BELOW 100 KM IN 3 S". From `milestone 3` the cockpit's warp lamp flashes with it ("The cockpit"); from `milestone 6` a short tone (task 40's "Sound").
+- Shown: the readout's warp field (nominal level; actual rate in amber when below 90 % of nominal; "PAUSED"); a refusal or drop-out writes a message with its reason for 3 s, e.g. "WARP REFUSED: ENGINE ON, LIMIT ×10", "WARP REFUSED: ROTATING, SET A HOLD", "WARP ×1: PERIAPSIS BELOW 100 KM IN 3 S". From `milestone 3` the cockpit's warp lamp flashes with it ("The cockpit"); from `milestone 6` a short tone ("Sound").
 - Pause (P) is apart from warp: no steps run, every view, the camera and the map still work, flight inputs are ignored; resuming restores the warp level.
 - Warp is allowed while grappled and coasting, e.g. while refuelling (`decision 26: Refuelling and economy`), under the same rules.
 
-PLACEHOLDER(40): the autopilot, grappling and towing, dying, saving and sound: `task 40: Design: autopilot, docking and towing, dying, saving and sound`.
+### The autopilot
+The flight computer's planner: it plans burns from the current state to a goal, shows them, and flies them by writing `controls` as the pilot does (same throttle, holds, RCS, propellant; `milestone 3`'s constraint, pillar "Newton is the game"). The lasting choice is `decision 32: Autopilot scope and safety rules`. Code: `autopilot.lisp` (planning, execution), `prediction.lisp` (shooting), `places.lisp` (destinations).
+- Planning: a first guess from Kepler elements and patched conics (Hohmann, plane change at a node, Lambert for intercepts; `decision 17: Gravity model`), then refined by shooting with the flight's own integrator and force model (`decision 20: Trajectory prediction on the frame thread`): differential correction of each burn's start time, Δv and direction until the predicted result meets the goal (apsides within 0.1 % or 1 km, plane within 0.01°, rendezvous point within 100 m). Iterations share the 1 ms prediction budget, so a plan takes a few frames to a second; "PLANNING…" shows meanwhile.
+- Burns: finite, centred on the impulsive node (start at t_node − t_burn / 2, `t_burn` from "Mass budget and Δv"), at a fixed inertial attitude found by the shooting; the cut-off is by Δv delivered (as flight scripts' `:after-dv`), on the 1/64 s grid.
+  - Throttle: full, unless the burn would last under 10 s, then lowered to make it 10 s, down to the 10 % minimum.
+  - Burns under 0.5 m/s (below 1.8 s even at 10 % throttle wet, 10,180 N / 35,961 kg = 0.283 m/s²) are flown with the RCS along ±x (1,780 N: 0.050 m/s² wet).
+  - After each burn the computer measures the result; an error over 0.2 m/s or 1 % adds a trim burn before the next leg.
+- Manoeuvres, `milestone 3` (around the dominant body, Earth in practice):
+  - Circularise at the next apoapsis or periapsis.
+  - Set apoapsis or set periapsis to an altitude, burning at the opposite apsis.
+  - Change orbit: a Hohmann transfer to a circular altitude (two burns).
+  - Change plane: to an inclination, or to a target's plane, at the ascending or descending node, whichever is cheaper (combined with an apsis change when both are asked, at apoapsis).
+  - Rendezvous with a point of interest (`places.lisp`, "The places") and stop at a range: match the plane; a Lambert intercept found by searching departure times over the next 48 h and transfer times of 0.4 to 1.5 periods for the least Δv, aiming 1 km behind the target on its orbit; a braking burn there; then the terminal phase on RCS and low throttle along the relative-retrograde hold, closing at most at range / 100 s (10 m/s at 1 km, 1 m/s at 100 m), down to the stop range (default 100 m, on the target's grapple-fixture axis if it has one), where it nulls the relative velocity below 0.02 m/s and keeps station (holds the range within ±5 m, at ×1 and ×4) until disengaged.
+- Manoeuvres, `milestone 4`, across spheres of influence (patched-conic first guess, the whole chain shot through the SOI change):
+  - TLI: from Earth orbit to a lunar periapsis altitude and inclination (default 100 km), the departure time searched over the next 30 days.
+  - Capture: at the periapsis of the current body, into a circular orbit or one with a set apoapsis (LOI; Earth capture on return).
+  - Return: TEI from lunar orbit to an Earth periapsis of 400 km, then capture.
+  - Transfer to an asteroid or planet in scope ("The places"): a Lambert search over departure dates in the next 2 years and flight times up to 1.5 × the Hohmann time, for the least total Δv; departure burn from Earth orbit; mid-course corrections at 10 %, 50 % and 90 % of the coast (each typically under 10 m/s, from the ephemeris and integration difference); arrival as a rendezvous (asteroid, stop at 1 km then as in `milestone 3`) or a capture (planet).
+- Not planned: landings (none exist), aerobraking (no atmosphere model, `decision 17`), gravity assists and low-thrust spirals (cost far more than they show; pillar "small and finished").
+- Picking a preset: O opens the autopilot screen (a cockpit screen from `milestone 3`, "The cockpit"; in the outside and map views a panel of the overlay): the list of manoeuvres, then their goals (altitudes, inclinations, the selected target or a place). Up/Down move, Left/Right change a value (altitude in 10 km steps, inclination in 0.5° steps, held keys accelerate ×10 after 1 s; a place from the list), Return plans. Places of `places.lisp` appear as one-line presets ("Rendezvous: <place>").
+- Showing the plan, before and while it runs:
+  - Map: each burn as a marker on the predicted trajectory with its Δv; the trajectory after the first burn dashed (as "Views"); the goal orbit thin in the ship's colour.
+  - Burn instrument ("Instruments"): number of burns, total Δv, propellant needed and left after, time to the next burn, its Δv and duration, the arrival time.
+  - A second Return engages; Backspace drops the plan.
+- Flying it: the autopilot sets the burn attitude hold (slewing at the rules of "Control modes"), throttles at the burn start, cuts by Δv, sets rate damping with a prograde hold between burns. It never changes warp: the player warps the coasts; the clock drops warp before each burn by its lead time (`decision 31: Warp choices within the time-warp rules`) and caps warp during a burn at ×100. "Warp to the next burn" as an automatic function is cut: the player's own warp keys and the drop-outs do it.
+- Interrupting: Backspace disengages at once (throttle off, rate damping, the plan kept on the map in grey; Return re-plans from the new state and engages). Any rotation, translation or throttle key while engaged also disengages ("AUTOPILOT OFF: PILOT INPUT").
+- Safety rules (planning refuses with the reason on the screen; execution aborts: engine cut, rate damping, alarm, "AUTOPILOT ABORT: <reason>", plan kept for re-planning):
+  - No planned trajectory, including every intermediate orbit up to the prediction's horizon, comes below a body's minimum periapsis: its crash radius ("Dying and what follows") plus a margin of 50 km (Earth, the planets) or 10 km (the Moon). The Earth floor is thus 150 km altitude.
+  - Propellant: the plan's propellant (by the rocket equation with the stack's current mass) plus a reserve of max(2 % of the plan's Δv, 20 m/s) must be on board; during execution, an abort when the propellant falls below what the remaining burns need plus half the reserve.
+  - During a burn, each frame: if the predicted orbit after cutting now is safe but the one after the full burn is not (the burn has gone wrong), cut now; an attitude error over 5° cuts the burn, re-settles, and resumes once, then aborts.
+  - No plan passes inside the Sun's warning distance (0.551 AU, "Dying and what follows"), or arrives after the consumables run out.
+  - A contact or a latch during the plan aborts it.
+- Flight scripts engage presets with `(:autopilot <preset> …)` and wait with `(:wait :autopilot-done)`; `milestone 3`'s headless test runs one script per Earth-orbit preset from the start orbit, `milestone 4`'s one per destination ("Scripted runs" in `docs/architecture.md`).
+
+### Grappling and berthing
+The nose grapple is the ship's only way to hold on to something (`decision 24: Grapple, not docking; towing in`); the last 100 m to a fixture are always flown by the pilot, which is the game's finest piloting. The lasting choice is `decision 33: Grapple tolerances, contact and berthing`. From `milestone 3`. Code: `ship.lisp` (the grapple's state, the stack), `hazards.lisp` (contact), `cockpit.lisp` (the grapple camera).
+- Fixtures: a plate with a central pin and three guides, an outward axis, and a kind: towable (cargo pods, bagged rocks; a mass up to the 100 t rating) or berth (depots, stations; any mass).
+- G cycles the grapple: stowed → armed (claws open, floodlight and range finder on, the grapple camera on its cockpit screen) → stowed; when latched, G releases.
+- Range finder and alignment (the "Grapple range and alignment" instrument), for the nearest fixture within 500 m in front of the nose: range from the cone's tip (16.6 m from R) to the plate, closing speed, the pin's lateral offset in body y and z, the angle between the ship's +x and the fixture's inward axis, the relative rotation rate; each value green inside its capture tolerance, amber outside.
+- Flying it: the autopilot or the pilot stops on the fixture axis at ~100 m; the pilot turns to the target hold (7), then flies in with RCS translation in fine control at ×1 (taps of 0.8 mm/s wet, "Control modes"), braking with the relative-retrograde hold (0) or the translation keys. The grapple camera (a view from the cone along +x with a crosshair and the range values) is what the pilot looks at; the outside view helps.
+- Capture tolerances, at the moment the tip touches the plate: closing speed 0.01 to 0.30 m/s; lateral offset ≤ 0.30 m (the cone's 0.8 m radius less the guides' reach); angle ≤ 10°; relative rotation ≤ 0.5°/s. Real berthing and docking runs at a few cm/s; the game's window is wider so a careful first try can work.
+- Capture: the claws close over 2 s and the bodies become one stack in a perfectly inelastic coupling: linear and angular momentum conserved, the stack's state from the two bodies' masses, velocities, rotations and inertia ("Inertia"). The impulse at 0.3 m/s between a wet Mule and 50 t is 6.4 kN s, harmless.
+- Missed capture (contact outside the tolerances, but at ≤ 1.0 m/s): a bounce with restitution 0.3 along the contact normal, no damage (`decision 25: Damage model`), message "NO CAPTURE: <TOO FAST|OFF AXIS|MISALIGNED|ROTATING>".
+- Release: G while latched opens the claws; both bodies keep the stack's motion at release (as "Grapple and towing"), the pilot backs off with the RCS. Refused while the stack rotates faster than 0.5°/s or the engine fires.
+- Towable fixtures over 100 t: the claws do not close ("LOAD 150 T OVER 100 T RATING"), and the contact counts as a missed capture.
+- Berthing (a berth fixture): the ship becomes a passenger of the station: its state is held at the station's fixture (pose relative to it fixed), the station keeps moving on its rails (or integrated, when promoted), and engine and RCS are locked ("ENGINE LOCKED: BERTHED"). Refuelling and restocking work only berthed (`decision 26: Refuelling and economy`); warp is allowed. Release returns the ship to integration with the station's velocity.
+- Contact with anything else (the hull against a station, a rock, a pod): the ship's collision shape is three boxes (truss with tanks 17.0 × 3.6 × 3.6 m including the engine, cab 4.5 × 3.0 × 3.0, grapple cone as a box 1.6 × 1.6 × 1.6); objects are spheres (rocks, bagged rocks) or a few boxes (stations, depots, pods), from their definitions in `places.lisp`. Tested each step against promoted objects (within 100 km, `decision 19: Time-warp rules`) by a swept bounding-sphere test first, then the boxes; a predicted contact is a warp drop-out like an impact. At ≤ 1.0 m/s relative normal speed: the bounce above; above 1.0 m/s: the ship is destroyed ("Dying and what follows"). 1 m/s against 36 t is 18 kJ, a car at 30 km/h: enough to buckle a truss tube or split the cab's 4 mm shell. Objects never break.
+
+### Towing
+- Grappled to a towable load, the ship and the load are one rigid stack (`decision 24`): its mass, CoM and full inertia tensor recomputed per step from the propellant and the load's mass properties (a sphere, box or the fixture's stated tensor), as in "Inertia"; the load's collision shape joins the ship's.
+- Thrust: the main engine's gimbal trims through the stack's CoM (1.2° to 1.6° with 50 t, inside ±4°, "Propulsion"), so a burn pushes the stack without torque; the RCS mixer uses lever arms from the stack's CoM. A load is pushed, never pulled: there is no cable.
+- What the pilot gets: 1.74 km/s and 0.12 g₀ wet with 50 t, a 90° turn in 31 s (rate damping), "Mass budget and Δv" and "Control modes"; the autopilot plans with the stack's mass, and its Δv and burn times show it.
+- Not modelled (pillar "small and finished"): flexing of the stack, the claws' load limits under thrust (1.18 m/s² on 50 t is 59 kN, inside any grapple worth its name), slosh in the load.
+
+### Dying and what follows
+Death ends the flight, never the game: the player goes on from the last checkpoint. The lasting choice is `decision 34: How death works`. Code: `hazards.lisp` (`milestone 2`: crash; `milestone 3`: contact; `milestone 4`: Sun, life support).
+- Crash spheres (`docs/architecture.md` "Collisions and the Sun", radius R + h_crash, bodies as spheres per `decision 14: Units and time epoch`):
+
+| Body | h_crash | Why |
+|---|---|---|
+| Earth | 100 km | entry interface: the tug has no heat shield and breaks up in entry (the architecture's default) |
+| Moon | 0 | no atmosphere; the sphere at the mean radius 1,737.4 km; the highest terrain (~10.8 km) is ignored, since bodies are spheres |
+| Venus | 200 km | the top of its dense atmosphere (Venus probes' entry interface) |
+| Mars | 125 km | Mars entry interface as used for landers |
+| Gas giants and the Sun | 1,000 km above the 1-bar radius; the Sun at R☉ | never approached by a reachable trajectory; only the swept test's completeness needs them |
+
+  - Whether Venus and Mars are in scope is "The places"'s choice; the radii stand if they are.
+  - Impacts are found by the swept test exactly (time and body-fixed point; `docs/architecture.md`); an impact on the prediction is an alarm and a warp drop-out ("Time warp").
+- Contact: above 1.0 m/s relative normal speed with any object ("Grappling and berthing").
+- The Sun: a hull temperature T that relaxes towards an equilibrium, as offered by `docs/architecture.md` "Collisions and the Sun":
+  - Equilibrium of a sunlit, white-painted plate radiating from both sides with the cab's internal heat added: T_eq = ((α S + q) / (2 ε σ))^(1/4), with S = 1,361 W/m² / d² (d in AU; zero in a shadow), α = 0.30 and ε = 0.85 (white paint, aged), q = 100 W/m² for the cab's dissipation and planetary infrared, σ = 5.670374×10⁻⁸ W m⁻² K⁻⁴. This gives 269 K at 1 AU, 179 K in shadow, 309 K at Venus's orbit (0.723 AU), 231 K at Mars's (1.524 AU).
+  - Relaxation: dT/dt = (T_eq − T) / τ, τ = 900 s, updated exactly per step for constant flux, T ← T_eq + (T − T_eq) e^(−h/τ). τ is the plate's linearised time constant C / (8 ε σ T³) at 350 K, with C = 2,700 kg/m³ × 4 mm × 1.5 (frames) × 900 J/(kg K) = 14,580 J/(m² K): 882 s.
+  - Thresholds, with the distances where T_eq reaches them, d = √(α × 1,361 / (2 ε σ T⁴ − q)) AU:
+
+| Hull temperature | Mark | T_eq reached at | What happens |
+|---|---|---|---|
+| 350 K (77 °C) | warning | 0.551 AU | amber "HULL TEMP" alarm; the cab's coolers cannot hold the cabin below 30 °C; warp drop-out on entering (the Sun hazard zone of `decision 19: Time-warp rules`); the autopilot plans nothing inside |
+| 400 K (127 °C) | danger | 0.415 AU | red alarm, flashing; the instrument shows the time to 450 K at the current flux |
+| 450 K (177 °C) | death | 0.326 AU | the pilot dies of heat ("LOST: HEAT") |
+
+  - So Mercury's orbit (0.307 to 0.467 AU, Standish Table 1; T_eq 463 to 378 K) lies in the warning and danger zones and partly past death; Venus (0.718 to 0.728 AU) is safe. A ship on a transfer ellipse from 1 AU to a perihelion of 0.326 AU crosses 0.551 AU 24 days before perihelion (Kepler's equation on the ellipse, a = 0.663 AU), so the warning leaves weeks to turn back; against such changes of d, τ is short and T follows T_eq closely.
+  - The hull temperature is shown from `milestone 4` ("Instruments"); in Earth orbit it moves between ~180 and ~270 K with the shadow, which teaches the gauge harmlessly.
+- Life support (`milestone 4`): consumables in person-days, 180 when full ("Parts"), spent at one per day per person aboard (the jump seat doubles it, if the story uses it); restocked when berthed at a depot or station ("Refuelling and resupply"). Alarms at 30 and 7 days left (each a warp drop-out, an event of the same kind as those of `decision 19`), death at zero ("LOST: LIFE SUPPORT"); the autopilot refuses plans that arrive after the consumables run out. In Earth orbit it never matters; for a transfer it does ("Δv for the standard legs": 146 to 472 days).
+- Not causes of death: running out of propellant (the ship drifts; the pilot may still be stranded, and the story's employer can send a tanker as a quest may decide), high rotation, high acceleration (at most 1.3 g₀ dry).
+- What the player sees:
+  - The simulation stops at the moment of death (the impact time on the Hermite, the contact, the threshold crossing); warp falls to ×1.
+  - The view switches to outside, the camera fixed at its last position, looking at the ship; for an Earth impact a 3 s orange glow on the ship (entry heating), for a contact a white flash, for heat the ship's lights going out, for life support the cab's lights going out.
+  - A panel: "LOST: <cause>" with the facts (body, speed, latitude and longitude; or hull temperature and distance in AU; or days), and the choices: Return restarts from the last checkpoint, N starts a new game.
+  - Nothing else: no debris simulation, no explosion particles (pillar "small and finished").
+- What follows: a restart from the last checkpoint ("Saving"); there is no permanent death. Before `milestone 5` the checkpoints live in memory: `milestone 2` has only the start state (Return and N are the same); `milestone 3` adds one when an autopilot plan completes and when the ship berths.
+- Quests (`milestone 5`): death never fails or skips a quest; the checkpoint is at or after the start of the current quest step, so the step is flown again. A quest may set its own checkpoint (e.g. before a dangerous burn).
+
+### Saving
+From `milestone 5` (its outcome "progress saved and resumed"); the lasting choice is `decision 35: Saving and audio`. Code: `saves.lisp`, as `docs/architecture.md` sets it: one versioned s-expression per file under `$XDG_DATA_HOME/luv-in-space/`, read safely, written atomically.
+- Two files, no save slots and no save key:
+  - `checkpoint.sexp`: written at the start of each quest step, when a quest asks, when the ship berths, when an autopilot plan completes, and only in a safe state (no impact or contact predicted, coasting, hull below the warning); death restarts from it.
+  - `resume.sexp`: written when the player quits (Escape menu or closing the window) and every 5 min of real time; Continue on the title screen loads it. It is deleted on death, so a doomed state is never resumed.
+- What is saved: format version; `t`; the dominant body; the ship's state (r, v, q, ω, propellant) as exact doubles; controls (throttle, hold mode, fine control, rate damping; the throttle is off in a checkpoint, which is only taken while coasting); the grapple state and the latched object with its pose relative to the ship; the hull temperature and consumables; the target; the states of promoted objects and the elements of objects whose rails a quest changed; quest state (`quests.lisp`); the warp level is not saved (loads run at ×1, paused). Autopilot plans are not saved: re-planning is cheap.
+- New game (N, or the title screen from `milestone 6`): the start state ("The start"); it overwrites both files after a confirmation.
+- Tests: `docs/architecture.md` "Saves" (round trip bit for bit, continuation, safety).
+
+### Sound
+Only what travels through the hull and the cab's air: there is no sound in vacuum, so the ship sounds like a machine around the pilot. Synthesised in Lisp, no sound files, through one `audio-sink` and a small mixer (`docs/luv-capabilities.md` "Audio"; `audio.lisp`). `milestone 6`, priority "should" (`decision 35: Saving and audio`): flight, cockpit and story come first, and an agent cannot hear it; the game is complete without it.
+- Voices:
+  - Cab ambience: fans and pumps, a constant low hum with slow noise; always on while alive.
+  - Main engine: low-passed noise and a 40–60 Hz rumble, gain by throttle, a thump at ignition and cut-off.
+  - RCS: a short noise burst per thruster pulse (gain by duty cycle), panned by the thruster's y relative to the eye point; the front blocks louder (nearer the cab).
+  - Valves and mechanisms: clicks on throttle steps and hold changes, the grapple's motor whine and the claws' clunk, the propellant transfer's hiss while refuelling.
+  - Contact: a dull thud by impact speed.
+  - Alarms: a two-tone chime for warnings (amber), a fast beep for danger (red), a short tone for warp refused or dropped; each alarm sounds once per onset, the danger beep repeats until acknowledged (a click on the lamp or U).
+  - Radio: static and a chirp when a message arrives (`milestone 5`'s messages); voices are not recorded (text only, "The cockpit").
+- Under warp above ×4 the RCS is off and so is its sound; the engine's sound plays at any warp it runs under (up to ×100); ambience plays always, paused included.
+- Key: U toggles sound on and off (from the free keys of "Controls"); the state is kept in the resume file.
+- No audio device (headless agents, `nix flake check`): the game runs silent; tests never open the sink.
+
+### Not in "Flight"
+- Cut, with the reason (pillar "small and finished" unless named): docking ports and crew transfer (`decision 24`), EVA, landing on any body (the tug has no legs; pillar "the ship is a tool"), aerobraking and drag (`decision 17: Gravity model`), automatic warp by the autopilot, a debris or explosion simulation, per-part damage (`decision 25: Damage model`), recorded radio voices, manual save slots.
 
 ## The cockpit
 

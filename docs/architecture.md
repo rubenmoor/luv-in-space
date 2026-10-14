@@ -79,7 +79,7 @@ The game is one ASDF system with flat files in `src/`, loaded serially in the or
 In brackets: the milestone that first creates the file; later milestones extend it.
 
 - `package.lisp` (skeleton): the packages.
-- `math.lisp` (milestone 2): `double-float` vec3 and quaternion on the CPU, specialised arrays; conversion to `single-float` arrays at the GPU boundary; needs package.
+- `math.lisp` (milestone 2): `double-float` vec3 `(simple-array double-float (3))`, quaternion `(simple-array double-float (4))` as (w x y z), unit, body → inertial, and mat3 `(simple-array double-float (9))` row-major on the CPU; plain functions return fresh arrays, hot ones have in-place `!` twins with the destination first (`vec3-add! out a b`); `relative-single` the one conversion to `single-float` arrays at the GPU boundary (`decision 65: Vectors and quaternions in math.lisp`); needs package.
 - `units.lisp` (milestone 2): SI constants: G·M and radii of bodies, epoch, conversions for display (km, km/s) with their source; needs math.
 - `bodies.lisp` (milestone 2: Sun, Earth, Moon; 4: planets): bodies (Sun, Earth, Moon, planets): μ, radius, rotation, ephemeris function of time; needs units.
 - `orbits.lisp` (milestone 2; 4: hyperbolas): orbital elements ↔ state vectors for ellipses and hyperbolas, Kepler propagation, apsides, periods, crossing times of a radius; needs math, bodies.
@@ -456,11 +456,11 @@ The ship is never on rails (`decision 17: Gravity model`, `decision 19: Time-war
 - Kepler propagation against the integrator: the same orbit propagated on rails and integrated (coarse step, two-body) for 10 orbits agrees within the coarse position bound above.
 - Rails with J2 (`tests/clock.lisp` or `tests/places.lisp`): an object on rails with J2 secular rates and the integrated ship with J2 alone, from the same state in a 400 km, 51.6° orbit, agree on the node Ω within 0.05° after one day (short-period terms averaged over the last orbit); Ω̇ matches the closed form −(3/2) n J2 (R/p)² cos i within 1e-9 relative. The polar start orbit (`decision 38: Start orbit: polar`): its closed-form |Ω̇| is below 1e-15 rad/s, and the ship integrated with J2 alone for 7 days keeps its node within 1e-6° of 270° (J2's force lies in a polar orbit's plane).
 - Promotion and demotion (`decision 19`): promoting an object at `t` and demoting it in the next step moves it by less than 1 mm; an object promoted beside the ship stays within 1 m of a reference integration after 1 hour.
-- Frame transforms (`tests/physics.lisp`, `tests/bodies.lisp`):
+- Frame transforms (`tests/physics.lisp`, `tests/bodies.lisp`; the quaternion tests in `tests/math.lisp`):
   - Re-centring Earth → Sun → Earth at a step boundary returns the LEO state within 1e-3 m and 1e-6 m/s (heliocentric resolution ~3e-5 m, "Units").
   - Frame independence: a translunar coast integrated with re-centring (Earth → Moon → Earth) and one kept in Earth's frame throughout agree within 10 m at the Moon's sphere boundary; the hysteresis keeps a ship parked on the boundary from re-centring more than once.
   - Earth Rotation Angle at J2000.0 (UT1) is 0.7790572732640 rev, and advances by 1.00273781191135448 rev per UT1 day; body-fixed x lands on the texture's centre column (u = 0.5, v = 0.5) and the north pole on v = 0 ("Frames").
-  - Quaternions and FRD: body → inertial → body round trips within 1e-15; a positive pitch rate turns the nose from +x towards −z (body); a positive yaw rate towards +y.
+  - Quaternions and FRD (`tests/math.lisp`): body → inertial → body round trips within 2e-15 (two rotations of a unit vector reach ~5 ulp, 1.2e-15, per component); a positive pitch rate turns the nose from +x towards −z (body); a positive yaw rate towards +y; a positive roll rate +y towards +z.
   - Projection (`tests/camera.lisp`): a point straight ahead at distance d gets depth 0.1/d, a point to the right positive clip x, a point below positive clip y on Vulkan (`decision 4: Depth strategy`); `h (2r + h)` agrees with |c|² − r² computed in rationals within 1e-12 relative, and the single-float difference does not.
 - Ephemeris spot checks (`tests/bodies.lisp`, `decision 18: Ephemerides`):
   - A handful of JPL Horizons vectors committed as constants in the test file, each with its query in a comment (target, centre, ICRF axes, TDB, the date fetched): the Earth–Moon barycentre, Mars and Jupiter heliocentric, and the Moon geocentric, at three dates within the game's range (e.g. 2026-01-01, 2040-01-01 and 2049-06-01 TDB).

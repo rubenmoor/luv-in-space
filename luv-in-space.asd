@@ -6,6 +6,7 @@
   :serial t
   :pathname "src/"
   :components ((:file "package")
+               (:file "math")
                (:file "shaders")
                (:file "scene")
                (:file "main")
@@ -24,6 +25,7 @@
   :serial t
   :pathname "tests/"
   :components ((:file "package")
+               (:file "math")
                (:file "scene")
                (:file "capture"))
   :perform (test-op (operation component)

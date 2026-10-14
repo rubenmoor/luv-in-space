@@ -608,6 +608,55 @@ INSERT INTO plan (id, milestone_id, subject, priority, body, created_at, created
 - Setting, characters, premise, the start date and the names; decisions recorded; `docs/design.md` and `docs/architecture.md` updated for renamings and the date.
 - The quest line: quests, steps, completion conditions, Δv and time checks, checkpoints; decision recorded.
 - How the story is told: every RADIO message and JOB card in exact text, the tape notes, the introduction; a read-through of `docs/story.md` against `docs/design.md` "What the story may use".', '2026-10-14T19:33:18Z', 12);
+INSERT INTO plan (id, milestone_id, subject, priority, body, created_at, created_by_task) VALUES (12, 1, 'consistency check and sign-off', 400, 'Part 6 of `plan 1: masterplan`: make the Done when of `milestone 1: Scope and design: what luv can carry, what the game is` true. The four documents (`docs/luv-capabilities.md`, `docs/architecture.md`, `docs/design.md`, `docs/story.md`) and `docs/luv-wishlist.md` were written by many tasks, with later decisions (`decision 46` to `decision 59`) refining earlier text; this plan checks that they agree with each other, with the decision log and with the skeleton, that the scope is complete, and that the skeleton works from a clean checkout.
+
+## Ground rules for every task
+- Each check task fixes what it finds in the documents itself when the fix is small and the answer is already decided (a stale number, a name, a missing cross-reference); it cites the decision or section the fix follows.
+- A fix that changes a lasting choice supersedes its decision (`pm decision record`, naming the decision it supersedes) and updates every document that cites it.
+- A gap too large for the task (a missing design section, a figure that needs a new calculation) becomes a follow-up task in this plan, with a body another worker can act on.
+- Work only a later milestone can do is not a task here: it goes into the `docs/design.md` "Scope" feature list or the section that milestone''s masterplan reads (the masterplans of milestones 2 to 6, tasks 2 to 6, are not yet written).
+- Each task ends with a short list of what it checked and what it changed, in its done note.
+- No game features; the skeleton is changed only to fix a command that fails.
+
+## Task: figures, dates and names agree across the documents
+- The ship''s figures in every document match `docs/design.md` "Parts", "Mass budget and Δv": 28 t of LH2/LOX, v_e 4,410 m/s, 6,650 m/s empty, 1,738 m/s with 50 t, 1,017 m/s with 100 t, 180 person-days, 10 kg/s transfer.
+- Δv per leg in `docs/story.md` (quest table, per-quest "Propellant" lines, "Running checks") against `docs/design.md` "Δv for the standard legs", "Earth-orbit points of interest", "The Moon", "Δv checked against the ship", "Rendezvous: search, phasing and the approach" and `decision 55: Meeting 2040 BQ7 and the lunar arrival from the polar plane`. Known suspect: quest 7''s "1,378 + 1,353" in the quest table, while `docs/design.md` gives 1,273 m/s for Highport → Peary Depot (1,353 with margin); recompute or correct, and the "Running checks" propellant and the flight scripts'' `:dv-below` and `:propellant-above` that follow from it.
+- Dates and times: start 2040-01-01 00:00 UTC, TLI 2040-01-20 06:01, Moon at Highport''s apogee 2040-01-26 02:36, BQ7 found 2040-01-19, meeting ~2040-03-10 23:00, perigee 2040-03-12 12:00, TANKER 3 leaving Fulmar 2040-03-06 06:00; the same in story, design, architecture''s flight scripts and `decision 50`, `decision 55`, `decision 58`.
+- Names and ids: place names, call signs, ship names and the ids of `docs/story.md` "Names and terms" ("Proposed ids") used identically in `docs/design.md` (places, fixtures, rigid bodies) and `docs/architecture.md` (flight scripts, start states, removal causes `:burned-up`, `:delivered`).
+- Units, frames and epoch: SI and `double-float` world positions, frames (heliocentric, planet-centred, ship-local FRD), the epoch and constants of `decision 14: Units and time epoch`; the same wherever the documents give formulas or figures.
+
+## Task: the documents agree with the decision log
+- `pm decision list --answered`: every answered decision is reflected in the document it concerns, and no document states the superseded part of a decision (e.g. `decision 50` partly superseded by `decision 55`; `decision 19` by `decision 43`).
+- Decisions are cited by id and current subject; a subject in a citation that no longer matches is corrected.
+- Decisions recorded by tasks but missing from the documents, and choices in the documents that no decision records although they are lasting (unit of length, frames, integrator, depth strategy, propulsion, death, planets in scope, names, premise), are listed; missing records are added with `pm decision record`.
+
+## Task: luv capabilities, wishlist and architecture agree
+- Every gap in `docs/luv-capabilities.md` "Gaps and workarounds" has its workaround named in `docs/architecture.md` (the file that holds it in "Files in load order") and, where it would serve other luv programs, a line in `docs/luv-wishlist.md`; every wishlist line rests on a finding in `docs/luv-capabilities.md`.
+- The luv systems, rendering paths and choices the architecture relies on (reversed-Z infinite far projection, camera-relative `single-float` rendering, Slug text, the overlay''s dot-matrix labels, render targets for the grapple camera, `sdl3-image`, the audio sink, no Ghostty per `decision 36`) are ones `docs/luv-capabilities.md` found working, or are marked as built in this repo.
+- The performance budgets in `docs/design.md` "Performance target" and `docs/architecture.md` ("Integrator", "Trajectory prediction", the play-through''s run time) agree with the measurements in `docs/luv-capabilities.md` "Performance".
+
+## Task: every feature assigned, and milestones agree with the scope
+- Every feature named in a section of `docs/design.md` (ship, flight, controls, views, instruments, autopilot, time warp, dying, saving, sound, cockpit, places) has a row in "Scope" "Feature list" with a priority and milestone 2 to 6, or is cut with its reason; rows without a section, and sections without a row, are fixed.
+- `docs/architecture.md` "Files in load order" gives each file the milestone the feature list gives its features (e.g. `audio.lisp` and sound, `hazards.lisp` and the Sun''s heat, `saves.lisp` and saves, `title.lisp`), and "Scripts by milestone" matches the Done when rows.
+- `pm milestone show 2` to `6`: each milestone''s Outcome and Done when is covered by "must" rows of that milestone, as "Each milestone against its Outcome and Done when" claims; a real contradiction with a milestone is a `pm decision add` (the only human decision this plan may raise).
+
+## Task: the story uses only what is in scope by milestone 5
+- Every place, object, skill, instrument, channel and action a quest of `docs/story.md` uses exists in the feature list in milestones 2 to 5 (or 2 to 4 for what makes a quest flyable, as its "Milestone" column says), and nothing cut (weapons, landing, EVA, docking ports, money, save slots, Ghostty, recorded voices) appears.
+- Every "should" a quest relies on (the passing rock, the moving story ships) has its fallback in "If a ''should'' is dropped", and the architecture''s play-through covers that fallback.
+- Mechanical checks, by a throwaway script (not committed): JOB card lines ≤ 26 characters, title plus step id fits; every RADIO message id unique, its trigger names an existing step or date, its sender a call sign of "Names and terms"; every step referenced by a flight script exists in the story.
+- The quest play-through scripts in `docs/architecture.md` "The quest play-through" use only the actions, waits and start states defined in "Scripted runs", and their end states match each next quest''s "Expected state at start" in `docs/story.md`.
+
+## Task: the skeleton from a clean checkout, and the skeleton against the documents
+- `git clone` this repo into a temp dir; there, run every command of `AGENTS.md` "Commands" as written: `nix develop` (or `direnv allow`), `nix build`, `nix run` (stopped by PID after a few seconds), `scripts/test`, `scripts/screenshot out.png`, `./sly start`, `./sly status`, `./sly screenshot`, `./sly eval` of a shader, `./sly stop`, `nix flake check`; record the times and update those `AGENTS.md` gives where they are off. Read the screenshot. Remove the temp dir and leave no process running.
+- The skeleton agrees with `docs/architecture.md`: flake input and pin, ASDF systems and packages (`luv-in-space`, `luv-in-space.shaders`, `luv-in-space.tests`), files `package`, `shaders`, `scene`, `main`, `capture`, `PLACEHOLDER(23)` in code and on screen, test and screenshot commands as "Dependency on luv" and "Dev loop" describe them.
+- A failing command is fixed in this task if the fix is small; otherwise a follow-up task in this plan.
+
+## Task: sign-off (last; priority 390)
+- Runs after every other task of this plan and their follow-ups.
+- Walks the Done when of `milestone 1`: the four documents exist, agree with each other (the check tasks'' notes), the feature list assigns every feature; the skeleton builds and runs from a clean checkout and its test passes (the clean-checkout task''s note, and `scripts/test` once more on the current tree).
+- Style pass over all docs (`AGENTS.md`: intro paragraph under each top-level heading, concise bullets) and no stale text ("TODO", "TBD", references to tasks as still open that are done).
+- What later milestones need from the documents and is still missing: a follow-up task here if the documents must say it, or a row or note in `docs/design.md` "Scope" for that milestone''s masterplan.
+- When nothing is left, a short note in its done note that `milestone 1` is ready for the developer''s reading; closing the milestone is the developer''s.', '2026-10-14T21:18:28Z', 13);
 
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (1, 1, 'write the masterplan of milestone 1: Scope and design: what luv can carry, what the game is', 'masterplan', 'done', NULL, '2026-10-14, plan 1 body (tasks.sql)', 'Write `plan 1: masterplan`, the masterplan of `milestone 1: Scope and design: what luv can carry, what the game is`: expand on everything that needs to be done to achieve it,
 divided into parts. State in the masterplan that its own tasks are not implementation work: each of them writes the
@@ -668,14 +717,14 @@ INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, crea
 - The story uses only features `docs/design.md` puts in milestones 2 to 5.
 
 Done when: the plan exists with priority 500 and its "create tasks" task is queued.', '2026-10-14T16:11:45Z', '2026-10-14T19:33:20Z', 7, 0);
-INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (13, 1, 'write plan: consistency check and sign-off', 'plan', 'open', 490, NULL, 'Write the plan for part 6 of `plan 1: masterplan`: "consistency check and sign-off".
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (13, 1, 'write plan: consistency check and sign-off', 'plan', 'done', 490, '2026-10-14, plan 12: consistency check and sign-off (tasks.sql only)', 'Write the plan for part 6 of `plan 1: masterplan`: "consistency check and sign-off".
 
 - Priority 490 on this task: it runs after the work of the plan "story" (500), when all four documents and the skeleton exist. Read them first.
 - `pm plan list`, then `pm plan add 1 "consistency check and sign-off" --priority 400` with the full body.
 - Body: the part''s bullets in `plan 1: masterplan`: the four documents agree with each other and with the skeleton (units, names, features, milestone assignments); every feature in `docs/design.md` is assigned to milestones 2 to 6 or cut; the story uses only features in scope by milestone 5; the skeleton builds, runs, tests and screenshots from a clean checkout with the `AGENTS.md` commands; follow-up tasks for what later milestones still need. Name the concrete checks you find needed after reading the documents.
 - The milestone''s "Done when" in `milestone 1: Scope and design: what luv can carry, what the game is` is the target.
 
-Done when: the plan exists with priority 400 and its "create tasks" task is queued.', '2026-10-14T16:11:45Z', NULL, 7, 0);
+Done when: the plan exists with priority 400 and its "create tasks" task is queued.', '2026-10-14T16:11:45Z', '2026-10-14T21:18:30Z', 7, 0);
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (14, 7, 'create tasks for plan 7: luv capabilities', 'split', 'done', 1000, '2026-10-14, tasks 16-21 in plan 7; decisions identified (consumption of luv, ASDF systems, depth strategy, precision, target platforms) are recorded by tasks 17, 19, 20, 21; none need the human', 'Split `plan 7: luv capabilities` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
 done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
 tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-14T16:13:00Z', '2026-10-14T16:15:17Z', 8, 0);
@@ -1249,6 +1298,9 @@ Do:
 - Fix in `docs/design.md` "The terminal path and crowded targets": e.g. extend the plan check (`decision 58: Story ships'' slots at Fulmar Depot and Peary Depot, schedules and clear plans`, now for objects other than the target) to the target itself (>= 200 m beyond its bound until the aim point), or prefer transfer times that arrive from behind/below; give the Δv cost against the quest tables ("The quest line''s rendezvous", `docs/story.md` running checks) and update them if it changes.
 - `docs/architecture.md` "Scripts by milestone": a `:clearance-above` expectation on `rendezvous-fulmar-phasing` covering the target until the aim point.
 - Record a decision refining `decision 54`.', '2026-10-14T21:10:30Z', '2026-10-14T21:16:42Z', 58, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (60, 12, 'create tasks for plan 12: consistency check and sign-off', 'split', 'open', 1000, NULL, 'Split `plan 12: consistency check and sign-off` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
+done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
+tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-14T21:18:28Z', NULL, 13, 0);
 
 INSERT INTO decision (id, subject, status, options, body, answer, reason, created_at, closed_at, created_by_task, signoff, kind, decided_by_task, consequences) VALUES (1, 'How the game consumes luv', 'answered', '[]', 'Findings of `task 17: Build and run luv''s programs and test suite; record the runs` (docs/luv-capabilities.md, Packaging and Runs).
 - luv''s flake exports apps, devShells, packages and lib; lib has only environmentFor, which returns everything the packaging needs (pkgs, lisp, applicationEnvironment/Packages, developmentEnvironmentHook, slynkSource, swashPackage, …). No overlays.
@@ -1379,6 +1431,7 @@ INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, b
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (53, 53, '2026-10-14T20:52:45Z', '2026-10-14T21:04:01Z', 'done', NULL, 0, '5e537b16be0161653d6a2101da6f5e5a9898564d', 'claude-opus-5-5[1m]', '8913fb54-4966-49f2-96f5-31ab319e1322', 53, 78, 66639, 6067088, 195672, 4.1118856000000008, 2373073);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (54, 58, '2026-10-14T21:04:01Z', '2026-10-14T21:10:48Z', 'done', NULL, 0, '758aa7b74f9e45368cc2b76c1bb6ceac5bc410cd', 'claude-opus-5-5[1m]', '707335b9-5e94-4f86-b003-f06c15f7bc91', 34, 48, 39568, 2667153, 142668, 2.4663265999999995, 2373073);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (55, 59, '2026-10-14T21:10:48Z', '2026-10-14T21:16:54Z', 'done', NULL, 0, 'e4808ab3adcb015d558768dc281a9b1527d9c699', 'claude-opus-5-5[1m]', 'ca911e46-36b0-48ef-932f-42fd0a5d70b3', 38, 64, 30282, 2449651, 94319, 1.8503782000000006, 2373073);
+INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (56, 13, '2026-10-14T21:17:16Z', '2026-10-14T21:18:38Z', 'done', NULL, 0, 'c63b60f8924a7eb7e50ea4d86dc3d9be97595e2f', 'claude-opus-5-5[1m]', 'c57e464f-ef3b-4f71-aff9-456c64e89560', 13, 24, 7562, 549866, 61871, 0.7562772, 2373073);
 
 INSERT INTO task_decision (task_id, decision_id) VALUES (44, 28);
 INSERT INTO task_decision (task_id, decision_id) VALUES (44, 45);

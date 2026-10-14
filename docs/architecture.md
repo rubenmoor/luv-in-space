@@ -33,19 +33,20 @@ The game is its own renderer and simulation on luv's HAL, shader language, SDL3 
   - SDL3 canvas: windows, cadence clock, key and pointer events, relative pointer mode ("Windowing and input").
   - `capture-application-screenshot` for screenshots and the GPU test (`decision 2: Screenshots and GPU test: offscreen capture on a hidden canvas, headless on lavapipe`).
   - `sdl3-image` (loaded by `luv`) for decoding textures ("Rendering", image loading).
-  - `audio-sink` for sound ("Audio").
+  - `audio-sink` for sound ("Audio"; opened, fed and closed on SDL's `dummy` driver in run 35).
   - Slug glyph rendering and HarfBuzz shaping for instrument text ("HUD and instruments").
-- Written here, each after its section in `docs/luv-capabilities.md` "Gaps and workarounds":
-  - Camera and projection: reversed-Z, infinite far plane, clip-y flip in one function ("Depth range across 10^12 m"; `decision 4: Depth strategy`).
-  - Camera-relative conversion from `double-float` world state ("Double-precision positions"; `decision 5: Precision of positions`).
-  - Sphere impostors for the Sun, planets and moons, Blue Marble Earth ("Spheres and planet surfaces").
-  - Stars from a catalogue as instanced quads at infinity ("Starfield").
-  - HDR target, bloom, tone map, exposure ("Sun glare and brightness").
-  - Screen-space ribbons and markers ("Orbit lines and markers").
-  - Text runs (a copy of Luvcraft's `text.lisp`) and cockpit screens: Slug text and ribbons drawn on the screens' planes, the grapple camera the only render target ("HUD and instruments"; `decision 36: Cockpit instruments: Slug screens, dot-matrix strip, gauges and lamps; Ghostty out`); dot-matrix placeholder labels until then (`decision 7: Placeholder labels: dot-matrix overlay quads`).
-  - Instanced meshes for ships and asteroids ("Instancing many objects").
-  - Physics: clock, warp, integrator, Kepler propagation, ephemerides ("Fixed physics step and time warp"; "Physics and SIMD").
-  - Audio mixer and synthesised voices ("Audio"); saves ("Save files"); gamepad polling ("Gamepad and joystick").
+- Written here, each after its section in `docs/luv-capabilities.md` "Gaps and workarounds", in the files of "Files in load order":
+  - Camera and projection: reversed-Z, infinite far plane, clip-y flip in one function ("Depth range across 10^12 m"; `decision 4: Depth strategy`): `camera.lisp` (the skeleton's `scene.lisp` until then).
+  - Camera-relative conversion from `double-float` world state ("Double-precision positions"; `decision 5: Precision of positions`): `math.lisp` (double vectors, the single-float boundary), `camera.lisp`.
+  - Sphere impostors for the Sun, planets and moons, Blue Marble Earth ("Spheres and planet surfaces"): `impostors.lisp`; texture decoding through `sdl3-image` into a rank-2 array in `assets.lisp`.
+  - Stars from a catalogue as instanced quads at infinity ("Starfield"): `stars.lisp`, the table from `scripts/convert-stars`.
+  - HDR target, bloom, tone map, exposure ("Sun glare and brightness"): `post.lisp`.
+  - Screen-space ribbons and markers ("Orbit lines and markers"): `ribbons.lisp`.
+  - Text runs (a copy of Luvcraft's `text.lisp`) and cockpit screens: Slug text and ribbons drawn on the screens' planes, the grapple camera the only render target ("HUD and instruments"; `decision 36: Cockpit instruments: Slug screens, dot-matrix strip, gauges and lamps; Ghostty out`); dot-matrix placeholder labels until then (`decision 7: Placeholder labels: dot-matrix overlay quads`): `text.lisp`, `cockpit.lisp`, `overlay.lisp` (the skeleton's `scene.lisp` until then).
+  - Instanced meshes for ships and asteroids ("Instancing many objects"): `meshes.lisp`.
+  - Physics: clock, warp, integrator, Kepler propagation, ephemerides ("Fixed physics step and time warp"; "Physics and SIMD"): `clock.lisp`, `physics.lisp`, `orbits.lisp`, `bodies.lisp`.
+  - Audio mixer and synthesised voices ("Audio"): `audio.lisp`; saves ("Save files"): `saves.lisp`; gamepad polling ("Gamepad and joystick"): `input.lisp`.
+  - From "Other findings": shader functions for `atan2` and friends (no `atan`/`asin`/`acos`/`tan`) in `shaders.lisp`; the failed-live-artifact report in `main.lisp` (`report-failed-live-artifacts`, called by our `./sly status`); launchers without `LD_LIBRARY_PATH` in `flake.nix` ("Flake input and package"); the `./sly` client in `scripts/sly-client.lisp` ("Dev loop").
 
 ### Dev loop
 - Commands: `AGENTS.md` "Commands" (`./sly`, `scripts/test`, `scripts/screenshot`, `nix build`, `nix run`, `nix flake check`); `decision 8: Live image: ./sly wraps luv's client from the flake input` and `decision 10: Test and screenshot commands`.

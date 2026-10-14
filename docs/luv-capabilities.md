@@ -1,6 +1,6 @@
 # What luv can carry
 
-This document records what [luv](https://github.com/mbrock/luv) offers Luv in Space, a solar-system flight game, and where it falls short. It is the first output of `plan 7: luv capabilities`; this draft comes from reading luv's docs and code only (`task 16: Read luv's docs and systems; draft docs/luv-capabilities.md`). Every claim carries how it was checked: `(read)` for reading; later tasks of the plan change claims to `(ran)` after running them, or mark them `(assumed)`. Paths into luv are written `../luv/<path>`.
+This document records what [luv](https://github.com/mbrock/luv) offers Luv in Space, a solar-system flight game, and where it falls short. It is the first output of `plan 7: luv capabilities`, written by its tasks 16 to 21 from reading luv's docs and code, building and running its programs and tests, and running probe programs against it. Every claim carries how it was checked: `(ran)` when it was run (the runs are listed under "Runs"), `(read)` when it comes from luv's docs or code, `(assumed)` when neither; recommendations are marked as such. Paths into luv are written `../luv/<path>`. The short version is "What this means for luv-in-space"; what would better live in luv is in `docs/luv-wishlist.md`.
 
 - luv revision examined: `6abc9d10ec8991c2cfe92888b84946372d6030b9` (2026-10-13, "Rewrite the README for people; film a real terminal; Luvland overview").
 - Later tasks keep this revision unless they say why; `flake.lock` of the walking skeleton pins the same one.
@@ -79,7 +79,7 @@ SDL3 opens windows and reads input; luv wraps it in a canvas protocol (`../luv/h
 - Clocks drive frames: demand, cadence (fixed fps) and presentation clocks; `request-canvas-frame` runs a function on the canvas thread (read).
 - Events: pointer motion/enter/exit/buttons/wheel, key press/release, window resize, pixel-size change, focus, close request; dispatched to `handle-canvas-event` (read).
 - Relative mouse mode: `set-canvas-relative-pointer-mode` (read).
-- Gamepad and joystick: not exposed by the canvas protocol; SDL3 has them, cl-sdl3 may bind them (read; binding not checked).
+- Gamepad and joystick: not exposed by the canvas protocol; luv initialises only SDL's video subsystem and its event loop ignores event types it does not know; cl-sdl3 binds SDL3's gamepad and joystick API (`src/gamepad/func.lisp` of luv's `cl-sdl3-without-mixer` source) (read). Workaround under "Gaps and workarounds".
 - On this machine Luvcraft and Luft open an SDL3 window on Wayland with Vulkan and close cleanly on `SIGTERM` ("canvas closing … canvas closed" in the log) (ran: runs 6, 8, 9).
 - Input as the programs announce it in their window titles: Luvcraft "1–9,0 select · e place · x mine · c pick · I inventory · F phone · shift sprint · arrows look · tab focus · ctrl-q quit"; Luft "click to play · WASD move · Space jump, twice to fly · L/R edit · 1–8 material · Tab terminal · F5 camera · Esc release" (ran; keys not pressed, the session had no human at the keyboard).
 - Minimal example of opening a window and drawing every frame: `start-clear-color-demo` in `../luv/hal/examples.lisp` (read).
@@ -95,7 +95,7 @@ Development in luv happens in a long-lived SBCL image supervised by Swash, drive
 - State written inside the checkout: `build/` (`sly-client` 130 MB, `sly-dependencies.core` 365 MB, build logs; ignored by git), plus the FASL cache under `~/.cache/common-lisp/luv/` and Swash's journal entries. There is no option to move `build/`, so the runs used a `/tmp` clone of `../luv` (ran).
 - The image keeps the environment it was started with: Environment changes in the client's shell do not reach it; `(sb-posix:setenv …)` inside the image does, e.g. `VK_DRIVER_FILES` set by `./sly eval` before `play luft` moved Luft to the NVIDIA GPU, because luv creates the Vulkan instance per canvas (ran: run 18).
 - Live shader redefinition: loading a new `define-shader-function` for Luft's colour grade while it played changed the next frame (screenshot turned red) with no restart, in 2.7 s (ran: run 20).
-- A broken shader redefinition (unknown operator) keeps the last good pipeline drawing; nothing reaches `./sly status`, `./sly failures` or the log; the error is only in `luv:live-artifact-diagnostic` of the application's live artifacts (status `:failed`) (ran: run 21). For us: a dev command that prints failed live artifacts.
+- A broken shader redefinition (unknown operator) keeps the last good pipeline drawing; nothing reaches `./sly status`, `./sly failures` or the log; the error is only in `luv:live-artifact-diagnostic` of the application's live artifacts (status `:failed`) (ran: run 21). For us: a dev command that prints failed live artifacts (`task 28: Live image: report failed live artifacts`).
 - Failure parking: an error in a Lisp frame function parks the canvas; `./sly status` says "frames are PARKED … ./sly resume", `./sly failures` prints the error and backtrace, the window stays responsive; after fixing the function `./sly resume` resumed drawing (ran: run 22). `./sly failures` prints a literal `~%` (cosmetic luv bug, ran).
 - Errors at start (`play luft` on a GPU without mesh shaders) abort the evaluation; the image stays up and `./sly eval` keeps working (ran: run 17).
 - Evaluation errors print the backtrace and "No input; aborting evaluation" when stdin is not a terminal, so an agent's command returns instead of hanging (ran).
@@ -111,7 +111,7 @@ Development in luv happens in a long-lived SBCL image supervised by Swash, drive
 - `./sly` cannot run from the luv flake input: it writes `build/` into its own root, which would be the read-only store (read; follows from `sly`, `scripts/build-sly-client`).
 - So `task 26: Live image dev loop for luv-in-space` copies the setup here, with this repo as root (recommendation; not built yet): `sly`, `sly-server.lisp`, `sly-client.asd`, `scripts/sly-client.lisp`, `scripts/build-sly-client`, `scripts/build-sly-dependency-core`, `scripts/sly-dependency-core.lisp`, `scripts/sly-asdf-status.lisp`, `scripts/require-dev-environment`, `scripts/with-build-lock.py`; `sly-server.lisp` loads `luvcraft/build-progress.lisp` from the root, so point that at luv's source in the flake input; `sly-client.asd` needs `luv/parinfer` and `cl-json` from luv's registry.
 - In the copy: `LUV_SLY_SYSTEM=luv-in-space` set in our shell hook after luv's hook; `play`, `screenshot`, `stop-playing` rewritten to call our game's start, capture and stop functions. Systems outside the root (luv itself, in the store) go into the dependency core, so restarts stay fast and only our code is compiled live (read: `scripts/sly-dependency-core.lisp`).
-- Wishlist for luv (for `task 21: Remaining gaps, luv wishlist, summary and decisions of the luv findings`): `./sly` with a configurable root and build directory, and `play`/`screenshot`/`stop-playing` through a registered application protocol instead of hard-coded games.
+- Wishlist for luv (`docs/luv-wishlist.md`): `./sly` with a configurable root and build directory, and `play`/`screenshot`/`stop-playing` through a registered application protocol instead of hard-coded games.
 
 ## Screenshots, headless runs and tests
 
@@ -250,16 +250,65 @@ What a solar-system flight game needs that luv lacks, each gap with a workaround
 - Gap: none in the HAL; no ready instanced mesh renderer.
 - Workaround here: asteroids as one or a few rock meshes (generated in Lisp, displaced icospheres) drawn with per-instance position, scale and rotation, camera-relative in single float; distant asteroids as sprites or not at all (the real belt is empty to the eye) (assumed). Markers and stars as instanced quads (ran). Cost: ~100 lines per instanced kind.
 
-### Other gaps, for `task 21: Remaining gaps, luv wishlist, summary and decisions of the luv findings`
+### Audio
 
-- Audio: `audio-sink` in base `luv` (`../luv/hal/sdl/audio.lisp`) plays pushed float frames through SDL3; no mixer or sound loading (read).
-- Saves: Luvcraft writes s-expressions under `$XDG_DATA_HOME/luvcraft` (`../luv/luvcraft/play.lisp`, `persistence.lisp`) (read).
-- Gamepad: not in the canvas protocol (read).
-- Back-face culling not available (read); with a broken depth range the far hemisphere of a sphere shows through (ran: run 30). Planet impostors and reversed-Z sidestep it for bodies (ran: run 32); closed ship meshes rely on depth alone.
+- luv has: `audio-sink` in base `luv` (`../luv/hal/sdl/audio.lisp`, exported from `luv`): one SDL3 playback stream on the default device; the caller pushes mono single-float frames with a left/right pan (`push-audio-sink-mono`), sets a gain, and reads a played-frames clock; SDL resamples and paces it on its own thread (read). Luvcraft uses it for film sound, fed by FFmpeg (`../luv/luvcraft/sound.lisp`) (read). No mixer, no sound-file loading in `luv`; luv's flake patches SDL_mixer out of cl-sdl3 and offers `sdl3-mixer` only in the opt-in `mixer` dev shell (`../luv/flake.nix`) (read). cl-sdl3 binds `SDL_LoadWAV_IO` (read).
+- Gap: no mixing of several sounds and no loading of sound assets in the default environment.
+- Workaround here: one `audio-sink` fed by a small mixer in Lisp on its own thread, as Luvcraft's film pump does: a quarter second queued ahead, voices summed into one buffer per push. Ship sounds are synthesised, not sampled (engine rumble as filtered noise scaled by throttle, RCS puffs, valve clicks, alarm tones, radio static), which suits a DIY cockpit in vacuum (only what travels through the hull is heard) and needs no asset loading; radio voices, if ever wanted, as WAV through `SDL_LoadWAV_IO` (assumed; nothing played here). `sdl3-mixer` is not used: it is outside luv's main shell and its application closure.
+- Headless agents have no audio device; the game must run with sound off when `open-audio-sink` fails, and tests never open one (assumed; SDL's `dummy` audio driver is the alternative, not tried).
+- Cost: ~150 lines for the mixer and a few voices; deferred to the design's scope (recommendation: after flight and cockpit work, before release).
+
+### Save files
+
+- luv has: nothing in base `luv`; Luvcraft writes one printable s-expression per world to `$XDG_DATA_HOME/luvcraft/worlds/default.sexp` (falling back to `~/.local/share/`), reads it with `*read-eval*` off and a fresh readtable, rejects files with more than one form, and replaces the file atomically through a temporary file and a rename (`../luv/luvcraft/play.lisp`, `persistence.lisp`) (read; run 6 loaded such a save).
+- Gap: none that luv should fill; the pattern is a few dozen lines.
+- Workaround here: the same pattern under `$XDG_DATA_HOME/luv-in-space/` (or `~/.local/share/luv-in-space/`): a versioned plist (format version, game time, ship state in SI `double-float`, quest progress), read safely, written atomically, at checkpoints rather than continuously (assumed). Tests point `XDG_DATA_HOME` at a temp directory. macOS gets the same path (no `~/Library/Application Support`) for now (recommendation).
+- Cost: ~100 lines plus a round-trip test.
+
+### Fixed physics step and time warp
+
+- luv has: no simulation clock; the canvas's clocks drive frames (demand, cadence, presentation) and the frame function gets the elapsed seconds (read: `../luv/hal/canvas.lisp`). Luvcraft steps its player at a fixed 1/120 s with a `double-float` accumulator inside the frame function, with no cap on steps per frame and no interpolation between steps (`../luv/luvcraft/render.lisp`, `simulation.lisp`) (read). `luv/production` hands latest values from a worker thread to frames (read).
+- Gap: orbital flight needs a fixed step decoupled from the frame rate and time warp up to ×10^5 or more; at warp, a fixed small step would need millions of steps per second.
+- Workaround here: the frame function adds `elapsed × warp` to a `double-float` accumulator and runs fixed steps, capped per frame (the sim slows rather than stalls); under thrust or near bodies, warp is limited to what the step allows; while coasting at high warp the ship moves on rails (Kepler propagation from its orbital elements, exact for any step) and planets and moons are always on rails from ephemerides. Rendering uses the latest state, or interpolates between the last two steps if the step is long against the frame (assumed; the integrator, step size and warp levels are for `docs/architecture.md`). Trajectory prediction for the map and the autopilot runs on a worker through `luv/production` (assumed; would add it as a recorded dependency per `decision 3: luv ASDF systems the game depends on`).
+- Cost: ~200 lines for the clock, warp rules and Kepler propagation, excluding the integrator.
+
+### Gamepad and joystick
+
+- luv has: keyboard, mouse buttons, wheel and relative pointer mode through its canvas events; no gamepad or joystick; luv calls `SDL_Init` with video only and its event handler ignores gamepad events (`../luv/hal/sdl/canvas.lisp`); cl-sdl3, which `luv` loads, binds SDL3's gamepad API (`SDL_GetGamepads`, `SDL_OpenGamepad`, axis and button state) (read).
+- Gap: a flight game benefits from analogue sticks for attitude and translation.
+- Workaround here: keyboard and mouse first; a gamepad later by initialising SDL's gamepad subsystem on the canvas thread (`request-canvas-frame`) and polling axis and button state each frame through cl-sdl3, since luv's event loop drops the events but SDL updates the state while it pumps events (assumed; no gamepad attached here, not tried).
+- Cost: ~80 lines; deferred (recommendation: milestone 3 or 6, per `docs/design.md`).
+
+### Other findings
+
+- Back-face culling: not available (read: `../luv/hal/vulkan/native.lisp`); with a broken depth range the far hemisphere of a sphere shows through (ran: run 30). Planet impostors and reversed-Z sidestep it for bodies (ran: run 32); closed ship meshes rely on depth alone, which costs overdraw only (assumed).
+- Clip-space y: a game negates clip y on the Vulkan path (ran: run 29); keep it in one projection function so a Metal check later touches one place (recommendation).
+- GPU choice: luv takes the first Vulkan device; `VK_DRIVER_FILES` picks another (ran: runs 7, 8, 18). We avoid mesh and task shaders so any Vulkan 1.4 device works (recommendation).
+- `LD_LIBRARY_PATH` from the host breaks luv launchers (ran: run 5); our launcher, scripts and checks unset it (recommendation; see Packaging).
+- Shader-language gaps met: no `atan`/`asin`/`acos`/`tan`, no scalar–vector broadcasting for `-`, only `let*` at statement level (ran: run 32). Workarounds: shader functions for `atan2` and friends, explicit `vec3` constants (ran).
+- Live-artifact failures are silent: a broken shader redefinition keeps the last good pipeline and reports nowhere but `luv:live-artifact-diagnostic` (ran: run 21). Workaround: our live-image tooling prints failed live artifacts (`task 28: Live image: report failed live artifacts`).
+- The luv binary cache holds luv's dependencies but not its game outputs at the pinned revision, so our image builds locally, ~40 s (ran: runs 2–4).
 
 ## What this means for luv-in-space
 
-Filled in by `task 21: Remaining gaps, luv wishlist, summary and decisions of the luv findings`, the summary that the walking skeleton, architecture and design build on.
+The game is its own renderer and simulation on luv's HAL, shader language, SDL3 canvas and capture path, with luv consumed as a pinned flake input. luv gives a sound base for a small, explicit renderer and a strong agent workflow (headless screenshots, live image); everything game-shaped (camera, depth mapping, planets, stars, lines, text panels, HDR, physics, audio mixing, saves) is written here. This summary is what `plan 8: walking skeleton` and the architecture, design and story parts of `plan 1: masterplan` build on.
+
+- Systems to load: `luv` only; tests add `luv/test-support`; nothing from `luvcraft/*` or `luft/*`, whose ideas (sky, bloom, text runs, terminal wall, saves) are copied and adapted instead (`decision 3: luv ASDF systems the game depends on`).
+- Consuming luv: flake input `github:mbrock/luv` at `6abc9d1`, dev shell and package from `luv.lib.environmentFor`, a copy of luv's `applicationPackage` recipe here, luv's sources on `CL_SOURCE_REGISTRY`, luv's binary cache, launchers without `LD_LIBRARY_PATH` (`decision 1: How the game consumes luv`).
+- Build and run: `nix build` / `nix run` of this repo's package; first build ~40 s for our image on top of cached dependencies (ran for luv's games, runs 2–6).
+- Test: Parachute via `luv/test-support`, `asdf:test-system` with a non-zero exit on failure; the GPU test renders on a hidden canvas with lavapipe, as a `nix flake check` in the sandbox (`decision 2: Screenshots and GPU test: offscreen capture on a hidden canvas, headless on lavapipe`).
+- Screenshot: `capture-application-screenshot` on a hidden canvas into a PNG; works with no display (ran: runs 24–27, 31, 33).
+- Live image: copy luv's `./sly` setup here with this repo as root and our own `play`/`screenshot`/`stop-playing` (`task 26: Live image dev loop for luv-in-space`).
+- Depth: reversed-Z, `depth32-float`, infinite far plane, near 0.1 m, in every pass; stars first at infinity (`decision 4: Depth strategy`).
+- Precision: `double-float` world state on the CPU, camera-relative single floats to the GPU, cancelling quantities computed in double (`decision 5: Precision of positions`).
+- Rendering approach: planets, moons and the Sun as ray-traced sphere impostors writing `:frag-depth`; Earth from NASA Blue Marble (credited); stars from HYG ≤ magnitude 6.5 as instanced additive quads (CC BY-SA 4.0 for the derived table); orbit lines and markers as screen-space ribbons; an HDR target, bloom and tone map after Luvcraft's; instruments on in-world cockpit screens rendered from offscreen textures with Slug text (a copy of Luvcraft's `text.lisp`). Largest rendering cost: the text and screen pass.
+- Simulation: fixed step with a `double-float` accumulator; on rails (Kepler, ephemerides) at high warp and for bodies; trajectory prediction on a worker; `luv/arithmetic` quantities at boundaries, plain `double-float` in the integrator (assumed; `docs/architecture.md` decides).
+- Input: keyboard and mouse through luv's canvas events; gamepad via SDL directly, deferred.
+- Audio: synthesised ship sounds through one `audio-sink` and a Lisp mixer, off when no device; deferred.
+- Saves: a versioned s-expression under `$XDG_DATA_HOME/luv-in-space/`, atomic writes.
+- Frame budget: assume an Intel iGPU (Luvcraft's full pipeline ran at 24–36 Hz on one here); agents render on lavapipe, slowly (ran: runs 6, 28, 33).
+- Platforms: `x86_64-linux` built and tested here; `aarch64-linux` and `aarch64-darwin` evaluated only; no Windows (`decision 6: Target platforms`).
+- Cut or deferred: Windows (luv has no backend); mesh and task shaders (not on every iGPU); logarithmic depth and layered depth passes (reversed-Z suffices); procedural continents (the real Earth texture is cheaper and better); `sdl3-mixer` (outside luv's main closure); Ghostty terminal screens (a second copy of Luvcraft's terminal wall; reconsider in `docs/design.md` if a real terminal earns its cost); loading `luvcraft/core` for its sky or physics (pulls in the whole block game).
 
 ## Runs
 

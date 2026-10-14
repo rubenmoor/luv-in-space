@@ -1,0 +1,42 @@
+# luv wishlist
+
+This list collects what Luv in Space builds for itself but would better live in [luv](https://github.com/mbrock/luv), so that other luv programs could share it. Every item is backed by a finding in `docs/luv-capabilities.md` (cited by section or run) at luv revision `6abc9d10ec8991c2cfe92888b84946372d6030b9`. Nothing here changes `../luv`; the workaround lives in this repo until luv offers the item, and then this repo switches over.
+
+## Packaging and tooling
+
+luv's flake and live image are built around luv's own games; a dependent repo copies parts of them.
+
+- `applicationPackage` as a flake output (`lib.applicationPackage { src; system; entry; … }`): today it is a `let` binding inside `outputs`, so this repo copies ~120 lines of recipe (Packaging; `decision 1: How the game consumes luv`). Why in luv: every luv game needs the same dumped image, FASL cache, fonts and launcher.
+- luv's Lisp sources as a package or `lib` attribute for `CL_SOURCE_REGISTRY` (Packaging). Why: dependents now point at the input's source tree by convention.
+- A `checks` helper that renders headless on lavapipe in the Nix sandbox (Screenshots; run 27). Why: any luv program wants a GPU smoke test in `nix flake check`.
+- Launchers that replace `LD_LIBRARY_PATH` instead of prepending to it (run 5). Why: a host `LD_LIBRARY_PATH` makes luv's own `nix run` die before its first frame.
+- `./sly` with a configurable root and build directory, and `play`/`screenshot`/`stop-playing` through a registered application protocol instead of forms naming Luvcraft, Luft and Luvland (Live image; runs 24, 25). Why: other games could use the live image as is instead of a copy (`task 26: Live image dev loop for luv-in-space`).
+- `./sly status` or `./sly failures` reporting failed live artifacts (run 21). Why: a broken shader redefinition is silent today; the last good pipeline keeps drawing.
+- `./sly failures` printing `~%` literally (run 22): a small format bug.
+- Test and build targets with an output directory option (Screenshots, tests; runs 11–15). Why: they write into `<checkout>/build/`, so running them against a read-only or shared checkout needs a clone.
+- Game outputs in the binary cache for `x86_64-linux` (runs 2–4). Why: `nix run github:mbrock/luv` builds locally despite the cache.
+
+## Rendering
+
+luv's HAL is a good base; these are the pieces every 3D program on it rewrites.
+
+- A camera and projection helper with reversed-Z and an infinite far plane, and the Vulkan clip-y convention inside it (Rendering; runs 29–31; `decision 4: Depth strategy`). Why: each game builds its own clip rows and has to discover the y flip and the depth precision trap.
+- Double-precision camera-relative positions: a helper that takes `double-float` world positions and a camera and yields single-float camera-relative ones (Double-precision positions; `decision 5: Precision of positions`). Why: any large world (Luvcraft's frontier included, at scale) meets single-float limits.
+- Sphere primitives: UV/icosphere mesh generation and a ray-traced sphere impostor shader function with `:frag-depth` (Spheres and planet surfaces; runs 30, 32). Why: planets, balls and markers are common; the impostor is round at every distance.
+- Line and point rendering: either `:line-list`/`:point-list` topologies in the backends or a screen-space ribbon helper (Orbit lines and markers; run 32). Why: the backends accept only triangle lists and strips.
+- Back-face culling as a pipeline option (Other findings; run 30). Why: closed meshes pay overdraw, and debugging depth issues is harder without it.
+- More blend modes, at least additive (Rendering). Why: premultiplied alpha with alpha 0 works but is a trick.
+- Shader-language operators `atan`/`atan2`, `asin`, `acos`, `tan`, scalar–vector broadcasting for `-`, and `let` at statement level (run 32). Why: spherical coordinates and common maths need polynomial workarounds today.
+- Texture loading from image files into a texture (Rendering, image loading; run 32). Why: `sdl3-image` is already loaded; every program writes the same decode, convert and rank-2 array copy.
+- The instanced world-text run (`make-world-text-run`) and HDR/bloom/tone-map passes moved from `luvcraft/core` into a loadable system (HUD and instruments; Sun glare). Why: this repo copies ~400 lines of text code and ~250 of post-processing that only exist inside the block game.
+- The terminal-wall renderer as a loadable system next to `luv/ghostty` (HUD and instruments). Why: a terminal screen in the world needs ~2,150 lines of Luvcraft code today.
+- Vulkan device selection by option (prefer discrete, or by name) (Platforms; runs 7, 8). Why: luv takes the first device, and `VK_DRIVER_FILES` is the only way to choose.
+
+## Input, audio, persistence
+
+Small gaps where luv's SDL3 wrapper stops short.
+
+- Gamepad and joystick events in the canvas protocol (Gamepad and joystick). Why: SDL3 and cl-sdl3 have them; luv initialises video only and drops the events.
+- A small mixer on top of `audio-sink` (several voices, stereo push) (Audio). Why: `audio-sink` takes one mono stream with a pan; every program that plays more than one sound writes a mixer.
+- A save-file helper: safe read of one form, atomic write, XDG data path (Save files). Why: Luvcraft's pattern is generic and this repo copies it.
+- A fixed-step simulation clock with an accumulator and a step cap (Fixed physics step and time warp). Why: Luvcraft has one inline in its frame function; games need the same thing.

@@ -33,11 +33,11 @@ Luv in Space is a showcase for [luv](https://github.com/mbrock/luv), Mikael Broc
 
 ## Commands
 - Dev shell: `direnv allow` or `nix develop`; SBCL with luv on `CL_SOURCE_REGISTRY`, Vulkan/SDL3, `pm`, `git`. The scripts below enter it themselves.
-- Build: `nix build` (`result/bin/luv-in-space`); ~17 s from a fresh clone, luv and its dependencies from luv's binary cache.
+- Build: `nix build` (`result/bin/luv-in-space`); ~17 s from a fresh clone, luv and its dependencies from luv's binary cache; ~11 s when only the game's image builds.
 - Run: `nix run` opens the window; Escape or closing the window quits. An agent stops it by PID.
-- Test: `scripts/test` (Parachute, `luv-in-space/tests`; renders one frame on a hidden canvas, lavapipe without a display; exit 1 on failure; ~5 s). `nix flake check` runs it in the sandbox.
+- Test: `scripts/test` (Parachute, `luv-in-space/tests`; renders one frame on a hidden canvas, lavapipe without a display; exit 1 on failure; ~5 s). `nix flake check` runs it in the sandbox (~16 s).
 - Screenshot: `scripts/screenshot out.png [--frames N]`: a 1280x800 PNG of the scene from a hidden canvas, headless too; ~3 s.
-- Live image: `./sly start` (a Slynk image with `luv-in-space` loaded; ~8 s cold), `./sly play`, `./sly status`, `./sly screenshot /tmp/x.png`, `./sly eval '(defun …)' --package LUV-IN-SPACE` (redefine while playing), `./sly failures`, `./sly resume`, `./sly stop-playing`, `./sly stop`; `./sly --help` lists all. Enters the dev shell itself; options go after the code.
+- Live image: `./sly start` (a Slynk image with `luv-in-space` loaded; ~5 s cold), `./sly play`, `./sly status`, `./sly screenshot /tmp/x.png` (window size, after `./sly play`), `./sly eval '(defun …)' --package LUV-IN-SPACE` (redefine while playing), `./sly failures`, `./sly resume`, `./sly stop-playing`, `./sly stop`; `./sly --help` lists all. Enters the dev shell itself; options go after the code.
   - `./sly` is luv's client from the flake input with `play`, `screenshot`, `stop-playing` and status redefined for this game (`scripts/sly-client.lisp`); `sly-server.lisp` boots the image. State in `build/` (~410 MB, git-ignored).
   - Shaders are live: a `define-shader` re-evaluated with `./sly eval '(define-frame-shader earth-fragment …)' --package LUV-IN-SPACE.SHADERS` shows on the next frame (luv live shader pipelines, refreshed in `draw`). A source that fails to parse is rejected by the eval; one that fails to build keeps the last good pipeline, and `./sly status` names it with its error (`Live artifact earth FAILED …`) until a fix rebuilds it; in Lisp `(luv-in-space:report-failed-live-artifacts)`.
 

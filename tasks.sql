@@ -221,12 +221,29 @@ INSERT INTO milestone (id, subject, status, body, created_at, implemented_at, qu
 - A headless test plays through the whole quest line (scripted inputs or autopilot) to its end.
 - Every quest has been played once in the running game, with screenshots.
 - Tests pass; `AGENTS.md` and `docs/` match what was built.', '2026-10-14T16:07:15Z', NULL, 4);
+INSERT INTO milestone (id, subject, status, body, created_at, implemented_at, queue_index) VALUES (6, 'Release: one command to play, a README for people', 'open', 'The release: Luv in Space as a showcase anyone can start with one command and understand in a minute. The design in `docs/` is the specification; this milestone implements what `docs/design.md` assigns to it.
+
+## Outcome
+- `nix run github:rubenmoor/luv-in-space` starts the game on the platforms luv supports (at least x86-64 Linux).
+- A title screen, a short introduction, the controls in game; a smooth first minute for a new player.
+- Performance: a steady frame rate on the developer''s machine, measured and documented.
+- `README.md` for people: what it is, what it shows of luv, screenshots and a short recording, how to run it, credits to luv.
+
+## Constraints
+- As in `AGENTS.md`: no changes to `../luv`; own choices recorded, not asked.
+- Publishing beyond pushing to this repository (stores, announcements) is out of scope.
+
+## Done when
+- `nix run` from a clean machine state works, verified by an agent.
+- The README''s screenshots show the current game.
+- Tests pass; `AGENTS.md` and `docs/` match what was built.', '2026-10-14T16:07:32Z', NULL, 5);
 
 INSERT INTO plan (id, milestone_id, subject, priority, body, created_at, created_by_task) VALUES (1, 1, 'masterplan', 1000, 'tbd.', '2026-10-14T16:06:30Z', NULL);
 INSERT INTO plan (id, milestone_id, subject, priority, body, created_at, created_by_task) VALUES (2, 2, 'masterplan', 1000, 'tbd.', '2026-10-14T16:06:59Z', NULL);
 INSERT INTO plan (id, milestone_id, subject, priority, body, created_at, created_by_task) VALUES (3, 3, 'masterplan', 1000, 'tbd.', '2026-10-14T16:07:00Z', NULL);
 INSERT INTO plan (id, milestone_id, subject, priority, body, created_at, created_by_task) VALUES (4, 4, 'masterplan', 1000, 'tbd.', '2026-10-14T16:07:01Z', NULL);
 INSERT INTO plan (id, milestone_id, subject, priority, body, created_at, created_by_task) VALUES (5, 5, 'masterplan', 1000, 'tbd.', '2026-10-14T16:07:15Z', NULL);
+INSERT INTO plan (id, milestone_id, subject, priority, body, created_at, created_by_task) VALUES (6, 6, 'masterplan', 1000, 'tbd.', '2026-10-14T16:07:32Z', NULL);
 
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (1, 1, 'write the masterplan of milestone 1: Scope and design: what luv can carry, what the game is', 'masterplan', 'open', NULL, NULL, 'Write `plan 1: masterplan`, the masterplan of `milestone 1: Scope and design: what luv can carry, what the game is`: expand on everything that needs to be done to achieve it,
 divided into parts. State in the masterplan that its own tasks are not implementation work: each of them writes the
@@ -243,3 +260,6 @@ plan for one part.', '2026-10-14T16:07:01Z', NULL, NULL);
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (5, 5, 'write the masterplan of milestone 5: Story and quests: the playable prelude', 'masterplan', 'open', NULL, NULL, 'Write `plan 5: masterplan`, the masterplan of `milestone 5: Story and quests: the playable prelude`: expand on everything that needs to be done to achieve it,
 divided into parts. State in the masterplan that its own tasks are not implementation work: each of them writes the
 plan for one part.', '2026-10-14T16:07:15Z', NULL, NULL);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (6, 6, 'write the masterplan of milestone 6: Release: one command to play, a README for people', 'masterplan', 'open', NULL, NULL, 'Write `plan 6: masterplan`, the masterplan of `milestone 6: Release: one command to play, a README for people`: expand on everything that needs to be done to achieve it,
+divided into parts. State in the masterplan that its own tasks are not implementation work: each of them writes the
+plan for one part.', '2026-10-14T16:07:32Z', NULL, NULL);

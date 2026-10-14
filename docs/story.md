@@ -266,7 +266,7 @@ How `quests.lisp` runs the line; per-quest sections only add what differs.
 
 | Step | JOB card | Y | Completion |
 |---|---|---|---|
-| 5.1 | UP TO HIGHPORT / Rendezvous: Highport / Two burns, 12 h coast / Read the plan first | | on station at `(:highport :plant)` |
+| 5.1 | UP TO HIGHPORT / Rendezvous: Highport / Three burns, 12 h coast / Read the plan first | | on station at `(:highport :plant)` |
 | 5.2 | BERTH AT THE PLANT / Plant face, in its shadow / Floodlight on with G | | berthed at `(:highport :plant)` |
 | 5.3 | FILL HER UP / Transfer on: B | | propellant full |
 
@@ -317,7 +317,7 @@ How `quests.lisp` runs the line; per-quest sections only add what differs.
 | 7.2 | TRANS-LUNAR / O: Rendezvous: Peary Depot / Leaves at a perigee / Five days out | | the dominant body is the Moon |
 | 7.3 | PEARY DEPOT / Autopilot flies the LOI / Pod off 100 m out, still | | removed `:pod-14` by `:delivered` (at `(:peary-depot :berth)`) |
 | 7.4 | BERTH AND FILL / Peary's one arm, then B | | berthed at `(:peary-depot :berth)` and propellant full |
-| 7.5 | HOME / O: Rendezvous: Highport / TEI and capture, one plan / Then berth at the plant | | berthed at `(:highport :plant)` |
+| 7.5 | HOME / O: Rendezvous: Highport / TEI and capture, one plan / Plant fixture, then B | | berthed at `(:highport :plant)` and propellant full |
 
 - The windows: the Moon stands at Highport's apogee direction on 2040-01-26 and 2040-02-22 (`docs/story.md` "Start date"); the TLI preset finds the next one. The return falls from the Moon at Highport's apogee direction to its perigee, so it leaves Peary within ~1 day of arrival; a pilot who misses it waits berthed at Peary for the next month (restocked there) or returns to 400 km (3,983 m/s, `docs/design.md` "The Moon") and climbs again via Fulmar. The autopilot's TLI aims at Peary Depot's plane (i and Ω) and takes the phasing into the LOI: "TLI: Peary Depot" and "Rendezvous: Peary Depot" plan the same chain (`docs/design.md` "Rendezvous: search, phasing and the approach").
 | Id | Trigger | Sender | Y | Text |
@@ -434,8 +434,8 @@ Propellant and stores carried from quest to quest, on the nominal path (Δv budg
 - A pilot who flies there by hand meets the hull-temperature rule and the stranded offer (escape path).
 
 ### If a "should" is dropped
-- The passing rock (`milestone 4` "should"): quest 9 is replaced by its ending alone. After quest 8's 8.5 (and 8e), the ending follows at once: 9h, 9i and 9.7's job card; Skua Yard 5's assay is 8d. The date messages about BQ7 (D1, D4–D7) are not sent. The line is complete with eight quests.
-- Story ships moving (`milestone 5` "should"): no quest depends on them. THRIFT and TANKER 3 are then not drawn ("Other ships"); THRIFT's messages are sent from its scheduled position for the light time (Highport's until 2040-01-26 06:00, then Peary Depot's); TANKER 3 in the stranded offer was only ever told.
+- The passing rock (`milestone 4` "should"): quest 9 is replaced by its ending alone. After quest 8's 8.5 (and 8e), the ending follows at once: 9h, 9i and 9.7's job card; Skua Yard 5's assay is 8d. The date messages about BQ7 (D1, D4–D7) are not sent. Quest 8 is never skipped (its skip date exists for BQ7), so 8f and 9g are not sent. The line is complete with eight quests.
+- Story ships moving (`milestone 5` "should"): no quest depends on them. THRIFT and TANKER 3 are then not drawn ("Other ships"); D2, D3 and 7f use the scheduled times, and THRIFT's messages are sent from its scheduled position for the light time (Highport's until 2040-01-26 06:00, then Peary Depot's; `docs/architecture.md` "Story ships' schedules"); TANKER 3 in the stranded offer was only ever told.
 - Night lights, clouds, the sunlit patch, the moving ships, sound: none is a completion condition.
 
 ### Follow-ups

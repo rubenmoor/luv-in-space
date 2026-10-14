@@ -121,7 +121,7 @@ WHERE m.status = 'open' AND t.status = 'open'
                   WHERE td.task_id = t.id AND d.status = 'pending')
 ORDER BY m.queue_index, priority DESC, m.id, p.id, t.id;
 
-INSERT INTO milestone (id, subject, status, body, created_at, implemented_at, queue_index) VALUES (1, 'Scope and design: what luv can carry, what the game is', 'open', 'The first milestone finds out what luv can carry and turns the developer''s ideas into a concrete, scoped game design. Every later milestone builds what these documents specify, so they must be specific enough to implement from, and honest about luv''s limits.
+INSERT INTO milestone (id, subject, status, body, created_at, implemented_at, queue_index) VALUES (1, 'Scope and design: what luv can carry, what the game is', 'implemented', 'The first milestone finds out what luv can carry and turns the developer''s ideas into a concrete, scoped game design. Every later milestone builds what these documents specify, so they must be specific enough to implement from, and honest about luv''s limits.
 
 ## The developer''s ideas (input, not yet scope)
 - Hard sci-fi. Humans have only just begun travelling in space; all technology is known and realistic.
@@ -158,7 +158,7 @@ INSERT INTO milestone (id, subject, status, body, created_at, implemented_at, qu
 
 ## Done when
 - The four documents exist, agree with each other, and the feature list assigns every feature to a later milestone or cuts it.
-- The skeleton builds and runs from a clean checkout with the commands in `AGENTS.md`, and its test passes.', '2026-10-14T16:06:30Z', NULL, 0);
+- The skeleton builds and runs from a clean checkout with the commands in `AGENTS.md`, and its test passes.', '2026-10-14T16:06:30Z', '2026-10-14T21:56:19Z', 0);
 INSERT INTO milestone (id, subject, status, body, created_at, implemented_at, queue_index) VALUES (2, 'Flight core: Newtonian flight in near-Earth orbit', 'open', 'The flight core: a ship flying under Newtonian physics in near-Earth orbit, from which every other milestone builds. The design in `docs/` (from `milestone 1`) is the specification; this milestone implements what `docs/design.md` assigns to it.
 
 ## Outcome

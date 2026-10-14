@@ -150,3 +150,109 @@
         (true (< (abs (- (lis::rad->deg (acos (lis::vec3-dot sun (lis::vec3-normalize r))))
                          25))
                  1))))))
+
+;;; Hyperbolas (docs/architecture.md "Hyperbolic rails")
+
+;; (q e i Ω ω): e = 1.5 and e = 3.
+(defparameter *test-hyperbolas*
+  (list (list 7.378d6 1.5d0 (deg 40) (deg 120) (deg 250))
+        (list 1d7 3d0 (deg 150) (deg 10) (deg 80))))
+
+(defun hyperbolic-anomalies () '(0d0 0.5d0 -0.5d0 2d0 -2d0))
+
+(defun test-hyperbola (elements h time)
+  (destructuring-bind (q e i raan argp) elements
+    (lis::make-hyperbolic-orbit *mu* q e i raan argp (- (* e (sinh h)) h) time)))
+
+(define-test hyperbolic-round-trip
+  (let ((time (lis::start-t)) (worst 0d0))
+    (dolist (elements *test-hyperbolas*)
+      (dolist (h (hyperbolic-anomalies))
+        (let ((given (test-hyperbola elements h time)))
+          (multiple-value-bind (r v) (lis::orbit-state given time)
+            (let ((orbit (lis::state->orbit r v *mu* time)))
+              (multiple-value-bind (r2 v2) (lis::orbit-state orbit time)
+                (setf worst (max worst (rel-diff r2 r) (rel-diff v2 v)
+                                 (abs (- 1 (/ (lis::orbit-q orbit) (lis::orbit-q given))))
+                                 (abs (- (lis::orbit-e orbit) (lis::orbit-e given)))
+                                 (abs (- (lis::orbit-i orbit) (lis::orbit-i given)))
+                                 (angle-diff (lis::orbit-raan orbit) (lis::orbit-raan given))
+                                 (angle-diff (lis::orbit-argp orbit) (lis::orbit-argp given))
+                                 (/ (abs (- (lis::orbit-tp orbit) (lis::orbit-tp given)))
+                                    (/ (lis::orbit-n given)))))))))))
+    (true (< worst 1d-9))))
+
+(define-test hyperbolic-propagation
+  (let ((t0 (lis::start-t)))
+    (dolist (elements *test-hyperbolas*)
+      (dolist (h (hyperbolic-anomalies))
+        (multiple-value-bind (r v) (lis::orbit-state (test-hyperbola elements h t0) t0)
+          (let* ((orbit (lis::state->orbit r v *mu* t0))
+                 (t1 (+ t0 (/ 1.7d0 (lis::orbit-n orbit)))))
+            (multiple-value-bind (r1 v1) (lis::orbit-state orbit t1)
+              (multiple-value-bind (r0 v0)
+                  (lis::orbit-state (lis::state->orbit r1 v1 *mu* t1) t0)
+                (true (< (rel-diff r0 r) 1d-9))
+                (true (< (rel-diff v0 v) 1d-9))))))))))
+
+(define-test hyperbolic-kepler-residual
+  (let ((worst 0d0))
+    (dolist (e '(1.5d0 3d0))
+      (loop for k from -6 to 3
+            do (dolist (m (list (expt 10d0 k) (* 3 (expt 10d0 k))
+                                (- (expt 10d0 k)) (* -3 (expt 10d0 k))))
+                 (when (<= (abs m) 1d3)
+                   (let ((h (lis::solve-kepler-hyperbolic m e)))
+                     (setf worst (max worst (/ (abs (- (* e (sinh h)) h m)) (abs m)))))))))
+    (true (< worst 1d-14))))
+
+;; √(v∞² + 2μ/q) at periapsis, and no apoapsis or period.
+(define-test hyperbolic-periapsis
+  (let* ((q 7.378d6) (v-inf 500d0)
+         (orbit (lis::make-hyperbolic-orbit *mu* q (+ 1 (/ (* q v-inf v-inf) *mu*))
+                                            (deg 30) 0d0 0d0 0d0 0d0))
+         (speed (lis::vec3-norm (nth-value 1 (lis::orbit-state orbit 0d0)))))
+    (true (< (abs (- 1 (/ speed (sqrt (+ (* v-inf v-inf) (/ (* 2 *mu*) q)))))) 1d-12))
+    (false (lis::orbit-period orbit))
+    (false (lis::orbit-apoapsis-radius orbit))
+    (false (lis::orbit-next-apsis orbit 1d0 :periapsis))
+    (true (< (abs (lis::orbit-next-apsis orbit -1d0 :periapsis)) 1d-9))))
+
+(define-test hyperbolic-radius-crossings
+  (let* ((orbit (test-hyperbola (first *test-hyperbolas*) 0d0 0d0))
+         (radius 2d7))
+    (multiple-value-bind (inbound outbound) (lis::orbit-radius-crossings orbit radius -1d6)
+      (true (< (abs (+ inbound outbound)) 1d-6))
+      (true (< inbound 0 outbound))
+      (dolist (time (list inbound outbound))
+        (true (< (abs (- (lis::vec3-norm (lis::orbit-state orbit time)) radius)) 1d-3))))
+    (multiple-value-bind (inbound outbound) (lis::orbit-radius-crossings orbit radius 0d0)
+      (false inbound)
+      (true outbound))
+    (false (lis::orbit-radius-crossings orbit 7d6 -1d6))))
+
+;; |e − 1| < 1e-6 shows as 1 ± 1e-6 on its side.
+(define-test near-parabolic-display
+  (let* ((r (lis::vec3 7d6 0 0))
+         (escape (sqrt (/ (* 2 *mu*) 7d6))))
+    (dolist (side '(1 -1))
+      (let ((orbit (lis::state->orbit r (lis::vec3 0 (* escape (+ 1 (* side 1d-8))) 0)
+                                      *mu* 0d0)))
+        (true (= (lis::orbit-e orbit) (+ 1 (* side 1d-6))))))))
+
+(define-test orbit-points
+  (dolist (elements (list (fourth *test-orbits*) (fifth *test-orbits*)))
+    (let* ((orbit (test-orbit elements 0.3d0 0d0))
+           (p (lis::vec3-normalize (lis::orbit-state orbit (lis::orbit-tp orbit))))
+           (points (lis::orbit-points orbit 0d0 (* 1.3d0 (lis::orbit-period orbit)) 97))
+           (worst 0d0))
+      (true (= (length points) 97))
+      (loop for point across points
+            for rn = (lis::vec3-norm point)
+            for c = (/ (lis::vec3-dot point p) rn)
+            do (setf worst (max worst (abs (- rn (/ (lis::orbit-semi-latus orbit)
+                                                    (+ 1 (* (lis::orbit-e orbit) c))))))))
+      (true (< worst 1d-6))))
+  (let* ((orbit (test-hyperbola (second *test-hyperbolas*) 0d0 0d0))
+         (points (lis::orbit-points orbit -1d3 1d3 3)))
+    (true (< (rel-diff (svref points 1) (lis::orbit-state orbit 0d0)) 1d-15))))

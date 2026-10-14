@@ -301,6 +301,61 @@ INSERT INTO plan (id, milestone_id, subject, priority, body, created_at, created
 INSERT INTO plan (id, milestone_id, subject, priority, body, created_at, created_by_task) VALUES (4, 4, 'masterplan', 1000, 'tbd.', '2026-10-14T16:07:01Z', NULL);
 INSERT INTO plan (id, milestone_id, subject, priority, body, created_at, created_by_task) VALUES (5, 5, 'masterplan', 1000, 'tbd.', '2026-10-14T16:07:15Z', NULL);
 INSERT INTO plan (id, milestone_id, subject, priority, body, created_at, created_by_task) VALUES (6, 6, 'masterplan', 1000, 'tbd.', '2026-10-14T16:07:32Z', NULL);
+INSERT INTO plan (id, milestone_id, subject, priority, body, created_at, created_by_task) VALUES (7, 1, 'luv capabilities', 900, 'Part 1 of `plan 1: masterplan`: find out what luv can carry for a solar-system flight game, by building luv and running its programs, tests and screenshot paths, not only by reading. The findings ground `plan 1: masterplan` parts 2 to 5 (skeleton, architecture, design, story), so every claim in the deliverables says how it was checked (ran, read, or assumed).
+
+## Ground rules
+- `../luv` is read-only: build and run it from its flake (`nix build`/`nix run` on `github:mbrock/luv` or `path:../luv`), or with build outputs in a temp dir; never edit or commit there, and leave no new files that `git -C ../luv status` would show (its `result` symlink already exists; leave it).
+- Note the luv revision examined (`git -C ../luv rev-parse HEAD`) at the top of `docs/luv-capabilities.md`; part 2 pins the same revision in `flake.lock`.
+- Every window opened is closed (`./sly stop-playing`, or `kill $!` by PID); no image or game left running; never kill by name pattern.
+- Docs style per `AGENTS.md`: intro paragraph, then concise bullets.
+- Headless/no-display findings matter: record what works without a display (agents run in such sessions).
+
+## Reading list (in `../luv`)
+- `AGENTS.md`, `README.md`, `CLAUDE.md`, `Makefile`, `flake.nix` (packages, apps, devShells, `applicationPackage`, the luv nix cache), `luv.asd`, `luft.asd`, `luvcraft.asd` (system names and dependencies).
+- `wiki/`: `index.org`, `gpu-architecture.org`, `metal-backend.org`, `mathematical-shaders.org`, `sky-and-light.org`, `temporal-antialiasing.org`, `frame-performance.org`, `physics-and-simd.org`, `sb-simd.org`, `quantities-and-measurement.org`, `field-notes-measures.org`, `world-terminal.org`, `slug-bezier.org` (text), `technical-debt.org`, `luft-star-figures.org` (stars), `application-workbench.org`.
+- Code: `hal/` (`gpu.lisp`, `canvas.lisp`, `application-lifecycle.lisp`, `application-capture.lisp`, `capture-specification.lisp`, `png.lisp`, `sdl/`, `vulkan/`, `metal/`, `shader/`), `luv/`, `terminal/`, `arithmetic/`, `luft/star-*.lisp`, `luvcraft/` (game loop, input, physics, sky), `scripts/` (`test.lisp`, `captures.lisp`, `readme-screenshots.lisp`, `build-application`), `sly`, `sly-init.lisp`.
+
+## Run (each run noted in the doc with command, time, outcome)
+- `nix run --accept-flake-config github:mbrock/luv` (Luvcraft) and `#luft`: does a window open here, how fast from the cache, what input it takes; close it.
+- `nix build` of `#luvcraft`, `#luft`, `#luv-shaderc`; `luv-shaderc` on `hal/shaderc/examples/sky.lisp` into a temp dir.
+- The test suite: `make test` / `make test-suite` / `make luft-test` inside `nix develop ../luv`, outputs kept out of `../luv` where possible; if a target can only write into `../luv/build` (ignored build output), note it.
+- The live image: `./sly start`, `./sly play luft`, `./sly status`, `./sly screenshot /tmp/…png` (read the PNG), `./sly eval`, redefining a shader or function while playing, `./sly stop-playing`, stopping the image by PID. Find out whether `./sly` can serve a different checkout (this repo) or how part 2 should copy the setup.
+- Screenshots and headless: `scripts/captures`, `hal/application-capture.lisp`: can a frame be rendered offscreen to PNG without a window or display (for tests and the screenshot command)?
+- A tiny probe program loaded from a temp dir against luv''s ASDF systems: open a window, draw a sphere mesh with a Lisp shader, take a screenshot, close. This answers which systems a game loads (`luv`, `luv/shader`, `luv/terminal`, `luv/arithmetic`, …) and seeds part 2 (walking skeleton); keep its source in the doc or an appendix, not as repo code.
+
+## Capabilities to report
+- Rendering: meshes and vertex formats, Lisp shaders (stages, uniforms, textures, compute), lighting, shadows, sky/sun, bloom, fog, TAA, in-world text (Slug glyphs), terminal screens (Ghostty) and whether they can show game-generated text (instrument panels) without a shell.
+- Windowing and input: SDL3, keyboard, mouse (relative mode), gamepad/joystick (SDL3 has it; does luv expose it?), resizing, fullscreen.
+- Live image and dev loop: `./sly`, Swash, failure parking and `./sly resume`.
+- Screenshots and headless runs, tests (Parachute), how luv runs its own tests.
+- Physics and SIMD: what luvcraft''s physics is (voxel collision, not orbital), `sb-simd`, use of `double-float`; the quantities/units library and whether it fits SI orbital mechanics.
+- Packaging: `applicationPackage` in luv''s flake, whether this repo can reuse it through the luv flake input (`lib`, overlays) or must copy it; the binary cache (`luv.swa.sh`).
+- Platforms: Linux x86-64/ARM64 (Vulkan), macOS Apple Silicon (Metal 4); what was tested on this machine vs. only read.
+- Performance: frame budget numbers from `frame-performance.org` or measured.
+
+## Gaps to assess, each with a workaround in this repo
+- Depth range across 10^12 m: reversed-Z with float depth, logarithmic depth, or layered passes (far bodies, near bodies, cockpit); check what depth format and clear luv uses and whether a game can set them.
+- Double-precision positions: physics in `double-float` in Lisp, camera-relative single-float positions sent to the GPU.
+- Spheres and planet surfaces: UV/icosphere generation, an Earth shader (texture vs. procedural continents, clouds, atmosphere rim), texture loading (which image formats luv loads; licences of public Earth textures, e.g. NASA Blue Marble).
+- Starfield: luft''s star tables, or a catalogue (e.g. HYG, Yale BSC; licence noted) drawn as points or sprites.
+- Sun glare and brightness: bloom from luvcraft''s sky, a sun disc, exposure across Earth-lit and deep-space scenes.
+- Orbit lines and markers: does luv draw lines? otherwise thin quads or ribbons.
+- HUD/2D overlay: screen-space text and shapes over the 3D view, vs. everything drawn on in-world cockpit screens.
+- Audio: luv''s main shell has none (`sdl3-mixer` only in a side shell); SDL3 audio via cl-sdl3, or cut.
+- Save files: luvcraft''s save path; a small s-expression save under `$XDG_DATA_HOME`.
+- Anything else found (e.g. fixed physics step decoupled from frame rate, instancing many objects).
+
+## Deliverables
+- `docs/luv-capabilities.md`: luv revision, one section per capability area (what it offers, how it was checked, limits), the gaps each with its workaround, and a short "what this means for luv-in-space" summary that parts 2 to 4 of `plan 1: masterplan` build on.
+- `docs/luv-wishlist.md`: what would better live in luv than here (e.g. a reversed-Z option, double-precision camera helpers, sphere meshes, line rendering, audio), each with why.
+- Decisions recorded with `pm decision record`, at least: which luv ASDF systems the game depends on; how the game consumes luv (flake input, which package or lib output); the depth strategy and the precision approach as findings-backed recommendations (part 3, architecture, may supersede them); which platforms are targeted and tested.
+- Follow-up tasks (`pm task add`) for gaps needing work outside this part, in the plan they belong to.
+
+## Suggested split
+- Read and summarise luv''s docs and systems (no running).
+- Build and run luv''s programs, tests, live image and screenshots; record outcomes.
+- Probe program: a sphere in a window plus a screenshot, from a temp dir against luv.
+- Assess the gaps with workarounds; write `docs/luv-capabilities.md` and `docs/luv-wishlist.md`; record the decisions.', '2026-10-14T16:13:00Z', 8);
 
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (1, 1, 'write the masterplan of milestone 1: Scope and design: what luv can carry, what the game is', 'masterplan', 'done', NULL, '2026-10-14, plan 1 body (tasks.sql)', 'Write `plan 1: masterplan`, the masterplan of `milestone 1: Scope and design: what luv can carry, what the game is`: expand on everything that needs to be done to achieve it,
 divided into parts. State in the masterplan that its own tasks are not implementation work: each of them writes the
@@ -323,14 +378,14 @@ plan for one part.', '2026-10-14T16:07:32Z', NULL, NULL);
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (7, 1, 'create tasks for plan 1: masterplan', 'split', 'done', 1000, '2026-10-14, tasks 8-13', 'Split `plan 1: masterplan` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
 done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
 tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-14T16:11:02Z', '2026-10-14T16:11:47Z', 1);
-INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (8, 1, 'write plan: luv capabilities', 'plan', 'open', 1000, NULL, 'Write the plan for part 1 of `plan 1: masterplan`: "luv capabilities".
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (8, 1, 'write plan: luv capabilities', 'plan', 'done', 1000, '2026-10-14, plan 7: luv capabilities', 'Write the plan for part 1 of `plan 1: masterplan`: "luv capabilities".
 
 - `pm plan list` first, then `pm plan add 1 "luv capabilities" --priority 900` with the full body.
 - Body: the part''s bullets in `plan 1: masterplan`, made concrete: which `../luv` docs and code to read, which luv programs, tests and screenshot paths to build and run (via luv''s flake), which gaps to assess, each with a workaround in this repo.
 - Deliverables of the plan: `docs/luv-capabilities.md`, `docs/luv-wishlist.md`, recorded decisions (e.g. which luv systems to depend on).
 - Respect the ground rules of `plan 1: masterplan` (read-only `../luv`, docs style from `AGENTS.md`, close every window).
 
-Done when: the plan exists with priority 900 and its "create tasks" task is queued.', '2026-10-14T16:11:45Z', NULL, 7);
+Done when: the plan exists with priority 900 and its "create tasks" task is queued.', '2026-10-14T16:11:45Z', '2026-10-14T16:13:02Z', 7);
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (9, 1, 'write plan: walking skeleton', 'plan', 'open', 1000, NULL, 'Write the plan for part 2 of `plan 1: masterplan`: "walking skeleton".
 
 - `pm plan list` first, then `pm plan add 1 "walking skeleton" --priority 800`; it runs after the plan "luv capabilities" (priority 900) and depends on its findings on how a luv program is built, started and screenshotted; refer to it by id.
@@ -369,7 +424,11 @@ INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, crea
 - The milestone''s "Done when" in `milestone 1: Scope and design: what luv can carry, what the game is` is the target.
 
 Done when: the plan exists with priority 400 and its "create tasks" task is queued.', '2026-10-14T16:11:45Z', NULL, 7);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (14, 7, 'create tasks for plan 7: luv capabilities', 'split', 'open', 1000, NULL, 'Split `plan 7: luv capabilities` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
+done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
+tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-14T16:13:00Z', NULL, 8);
 
 
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (1, 1, '2026-10-14T16:10:25Z', '2026-10-14T16:11:12Z', 'done', NULL, 0, 'dbb0732a624bc26e8981cc36772e27859e6c5ea6', 'claude-opus-5-5[1m]', '332e5758-5e41-45e9-975c-f9674f9ae310', 5, 10, 4524, 144844, 45557, 0.4839448, 2177276);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (2, 7, '2026-10-14T16:11:12Z', '2026-10-14T16:11:52Z', 'done', NULL, 0, '413343ae3d6bf69e5b19c1f2946215ec59767499', 'claude-opus-5-5[1m]', 'ef09344d-70e2-4295-94e9-29228b85f2ab', 5, 10, 4111, 147758, 29261, 0.3458996, 2177276);
+INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (3, 8, '2026-10-14T16:11:52Z', '2026-10-14T16:13:08Z', 'done', NULL, 0, '42cf81d600dbdeff190872b1fa14165d477205fd', 'claude-opus-5-5[1m]', '2f2a21a0-a00e-459d-bc9e-552a88c42cd3', 9, 18, 8020, 310398, 36150, 0.5117516, 2177276);

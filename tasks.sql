@@ -190,10 +190,27 @@ INSERT INTO milestone (id, subject, status, body, created_at, implemented_at, qu
 ## Done when
 - From a low Earth orbit, every Earth-orbit preset is reached by autopilot in a headless test, and once in the running game with screenshots.
 - Tests pass; `AGENTS.md` and `docs/` match what was built.', '2026-10-14T16:07:00Z', NULL, 2);
+INSERT INTO milestone (id, subject, status, body, created_at, implemented_at, queue_index) VALUES (4, 'The solar system: Moon, asteroid belt, planets, the deadly Sun', 'open', 'The solar system: beyond Earth orbit to the Moon, the asteroid belt and the planets the design includes. The design in `docs/` is the specification; this milestone implements what `docs/design.md` assigns to it.
+
+## Outcome
+- The Moon, the asteroid belt and the planets in scope, on realistic orbits, rendered at every distance from far away to close by as designed.
+- Transfers by autopilot (e.g. trans-lunar injection, Hohmann transfers, capture), with the time warp they need.
+- The Sun is deadly: too close, the ship heats up and the pilot dies, with warnings first.
+- Asteroids as places of work for the ship (moving them around, or as designed).
+
+## Constraints
+- As in `AGENTS.md`: no changes to `../luv`; own choices recorded, not asked.
+- Real orbital data where `docs/design.md` asks for it; delta-v and travel times plausible for the ship.
+
+## Done when
+- From Earth orbit, every destination in scope is reached by autopilot in a headless test, and once in the running game with screenshots.
+- Flying towards the Sun kills the pilot, tested.
+- Tests pass; `AGENTS.md` and `docs/` match what was built.', '2026-10-14T16:07:01Z', NULL, 3);
 
 INSERT INTO plan (id, milestone_id, subject, priority, body, created_at, created_by_task) VALUES (1, 1, 'masterplan', 1000, 'tbd.', '2026-10-14T16:06:30Z', NULL);
 INSERT INTO plan (id, milestone_id, subject, priority, body, created_at, created_by_task) VALUES (2, 2, 'masterplan', 1000, 'tbd.', '2026-10-14T16:06:59Z', NULL);
 INSERT INTO plan (id, milestone_id, subject, priority, body, created_at, created_by_task) VALUES (3, 3, 'masterplan', 1000, 'tbd.', '2026-10-14T16:07:00Z', NULL);
+INSERT INTO plan (id, milestone_id, subject, priority, body, created_at, created_by_task) VALUES (4, 4, 'masterplan', 1000, 'tbd.', '2026-10-14T16:07:01Z', NULL);
 
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (1, 1, 'write the masterplan of milestone 1: Scope and design: what luv can carry, what the game is', 'masterplan', 'open', NULL, NULL, 'Write `plan 1: masterplan`, the masterplan of `milestone 1: Scope and design: what luv can carry, what the game is`: expand on everything that needs to be done to achieve it,
 divided into parts. State in the masterplan that its own tasks are not implementation work: each of them writes the
@@ -204,3 +221,6 @@ plan for one part.', '2026-10-14T16:06:59Z', NULL, NULL);
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (3, 3, 'write the masterplan of milestone 3: Cockpit and autopilot: the DIY cockpit, orbits and Earth-orbit presets', 'masterplan', 'open', NULL, NULL, 'Write `plan 3: masterplan`, the masterplan of `milestone 3: Cockpit and autopilot: the DIY cockpit, orbits and Earth-orbit presets`: expand on everything that needs to be done to achieve it,
 divided into parts. State in the masterplan that its own tasks are not implementation work: each of them writes the
 plan for one part.', '2026-10-14T16:07:00Z', NULL, NULL);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (4, 4, 'write the masterplan of milestone 4: The solar system: Moon, asteroid belt, planets, the deadly Sun', 'masterplan', 'open', NULL, NULL, 'Write `plan 4: masterplan`, the masterplan of `milestone 4: The solar system: Moon, asteroid belt, planets, the deadly Sun`: expand on everything that needs to be done to achieve it,
+divided into parts. State in the masterplan that its own tasks are not implementation work: each of them writes the
+plan for one part.', '2026-10-14T16:07:01Z', NULL, NULL);

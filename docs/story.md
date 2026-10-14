@@ -81,12 +81,12 @@ Built from the tug's parts or a capsule frustum and on Kepler rails only (`decis
 |---|---|---|---|---|
 | STUBBORN (M-04) | Mule tug, Cairn livery | Cairn Water | berthed at a Highport arm | no (part of Highport) |
 | THISTLE (M-05) | Mule tug, Cairn livery | Cairn Water | berthed at a Highport arm | no (part of Highport) |
-| THRIFT (M-09) | Mule tug, Cairn livery, pilot Dag Eliassen | Cairn Water | between trips in Highport's orbit, 5 km behind Highport | should: Highport ↔ Peary Depot, crossing the pilot's lunar trip; if dropped, told only, never drawn |
+| THRIFT (M-09) | Mule tug, Cairn livery, pilot Dag Eliassen | Cairn Water | between trips in Highport's orbit, 5 km ahead of Highport (`docs/design.md` "Earth-orbit points of interest") | should: Highport ↔ Peary Depot, crossing the pilot's lunar trip; if dropped, told only, never drawn |
 | TANKER 2 | uncrewed tanker | Cairn Water | berthed at Fulmar Depot's fixture B | no (part of Fulmar) |
-| TANKER 3 | uncrewed tanker | Cairn Water | between trips in Highport's orbit, 2 km behind Highport | should: Highport ↔ Fulmar Depot; if dropped, told only, never drawn |
+| TANKER 3 | uncrewed tanker | Cairn Water | between trips in Highport's orbit, 2 km ahead of Highport | should: Highport ↔ Fulmar Depot; if dropped, told only, never drawn |
 | AURORA 11 | crew capsule | Boreal Orbital | berthed at Tern Station's node | no (part of Tern) |
 | GRINDSTONE | rock mover, pilot Ruth Abara | Cairn Water | parked in Skua Yard with its 10 m rock | no (fixed, `decision 47: Rigid bodies of the places`) |
-| BAGGER 3 | uncrewed bagger probe: a box 1.5 m with two small solar wings | Cairn Water | nets 2040 BQ7 out beyond the Moon, then rides 1 km ahead of it on its rails until the pilot grapples the rock, and leaves out of view | with the rock (`milestone 4` "should", scenery on rails as `docs/design.md` "Asteroids" has it); if the passing rock is dropped, told only |
+| BAGGER 3 | uncrewed bagger probe: a box 1.5 m with two small solar wings | Cairn Water | nets 2040 BQ7 out beyond the Moon, then rides 1 km ahead of it on its rails, on the far side from the pilot's approach; after the grapple it flies on past perigee and out of Earth's sphere, out of view | with the rock (`milestone 4` "should", scenery on rails as `docs/design.md` "Asteroids" has it); if the passing rock is dropped, told only |
 
 - Cairn Water's livery: white cab, a grey cairn of three stacked stones and the registration stencilled in black on both cab sides. Boreal Orbital's: white with a pale green band.
 
@@ -162,7 +162,7 @@ Every name the story fixes, for `places.lisp`, `quests.lisp`, `meshes.lisp` and 
 - TANKER 2, TANKER 3: Cairn's uncrewed tankers.
 - AURORA 11: Boreal's crew capsule.
 - GRINDSTONE: Cairn's rock mover.
-- BAGGER 3: Cairn's bagger probe (told only).
+- BAGGER 3: Cairn's bagger probe, with 2040 BQ7.
 
 ### Rocks and dates
 - 2040 BQ7: the passing rock (found 2040-01-19, perigee 2040-03-12 12:00 UTC); pilots say "BQ7".

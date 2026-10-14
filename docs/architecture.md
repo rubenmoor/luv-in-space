@@ -358,7 +358,7 @@ Levels and rules are `decision 19: Time-warp rules`; where they touch play, the 
     - Missed capture or other contact at a normal speed of at most 1.0 m/s: a frictionless impulse along n with restitution 0.3, j = −1.3 v_n / (1/m_s + 1/m_o + n · ((I_s⁻¹ (r_s × n)) × r_s) + n · ((I_o⁻¹ (r_o × n)) × r_o)), applied to both bodies' v and ω; a berth object's terms are zero (immovable).
     - Above 1.0 m/s: death at t_c (state from the Hermite, for the LOST panel), the cause, object and speed recorded.
   - Excluded: the object the ship just released (a berth or a load) until the ship's boxes and its shapes no longer overlap; objects on rails (beyond 100 km) are only seen by the prediction's bounding-sphere event ("Time warp").
-  - Cost: one bounding-sphere test per promoted object per step (a few at most: at Skua Yard its six rocks, the rock mover and Highport 30 km away); the narrow phase only in steps where spheres meet, a few dozen box tests.
+  - Cost: one bounding-sphere test per promoted object per step (a few at most: at Skua Yard its six rocks, the rock mover, and Highport with THRIFT and TANKER 3 30–35 km away); the narrow phase only in steps where spheres meet, a few dozen box tests.
 - Life support (`milestone 4`, `decision 34`): consumables c in person-days, 180 when full, a scalar of the simulation state; per step c ← c − n_crew h / 86,400 exactly, restocked while berthed at a depot or station; the alarms at 30 and 7 days and death at 0 are scheduled events at their closed-form times, so death lands on the grid.
 
 ### Trajectory prediction

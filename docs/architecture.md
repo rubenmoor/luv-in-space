@@ -223,7 +223,7 @@ The ship is integrated with classical RK4 on a fixed, deterministic step in its 
 
 ### Integrator
 - Classical fixed-step RK4 on the whole ship state: position r and velocity v (body-centred inertial, ICRF axes), attitude quaternion q (body → inertial), angular velocity ω (body axes), propellant mass m_p (`decision 16: Integrator and simulation clock`).
-- Derivatives: ṙ = v; v̇ = gravity(t, r) + q (F_body / m) q*; q̇ = ½ q ⊗ (0, ω); I ω̇ = τ − ω × I ω (Euler's equations, principal axes, I from the current propellant load, held over a step); ṁ_p = −Σ F_i / (I_sp,i g₀), g₀ = 9.80665 m/s².
+- Derivatives: ṙ = v; v̇ = gravity(t, r) + q (F_body / m) q*; q̇ = ½ q ⊗ (0, ω); I ω̇ = τ − ω × I ω (Euler's equations with the full symmetric inertia tensor I in body axes about the current centre of mass, and its inverse, from `ship.lisp` for the current propellant load and any grappled load, held over a step; not diagonal, as the cab tilts the principal axes, `docs/design.md` "Inertia"); ṁ_p = −Σ F_i / (I_sp,i g₀), g₀ = 9.80665 m/s².
 - After each step: q renormalised in double; propellant that would go negative within a step instead runs the last step at the throttle fraction that empties it exactly, so the step stays on the grid.
 - Why RK4 over a symplectic integrator: what players, rendezvous, prediction and the autopilot notice is phase (along-track) error, and RK4's is ~10^5 times smaller than velocity Verlet's at the same cost per orbit (measured below); symplectic schemes bound energy error only with a constant step and a separable, conservative system, and thrust, mass flow, attitude and a state-dependent step break all three. RK4's energy drift is secular but measured at 1e-11 per 1,000 LEO orbits.
 - Step, `h`:
@@ -348,6 +348,7 @@ The ship is never on rails (`decision 17: Gravity model`, `decision 19: Time-war
   - ×10, ×100, ×1,000, ×10,000, ×100,000, ×1,000,000: the coarse step, over 10 circular orbits each; ×1,000,000 hits the 4,096-step cap every frame, and the test checks the cap holds and the trajectory is unchanged ("The clock").
   - The same run with frames of 1/144 s and with irregular elapsed times (a fixed pseudo-random list in the test) gives the same states: the frame rate never changes a trajectory.
 - Rotation: a torque-free asymmetric body (I = diag(1, 2, 3)×10^4 kg m², |ω| = 0.1 rad/s) for 1,000 s at the fine step keeps rotational energy and |I ω| (in inertial axes) within 1e-9 relative and |q| within 1e-12 of 1.
+  - The same with a non-diagonal tensor, I = R diag(1, 2, 3)×10^4 kg m² Rᵀ with R a 10° rotation about body y (I_xz ≠ 0, as the Mule's), same ω and bounds.
 - Thrust (`tests/ship.lisp`): a constant-thrust burn in field-free space matches the rocket equation, Δv = I_sp g₀ ln(m₀/m₁), within 1e-9 relative; a burn that empties the tanks ends with m_p = 0 exactly and the ship's mass at its dry mass; a burn under the 1 s thrust cap above ×4 matches the same burn at the fine step within 1e-6 relative in Δv.
 
 ### Rails, orbits and frames

@@ -472,9 +472,9 @@ Done when: the plan exists with priority 400 and its "create tasks" task is queu
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (14, 7, 'create tasks for plan 7: luv capabilities', 'split', 'done', 1000, '2026-10-14, tasks 16-21 in plan 7; decisions identified (consumption of luv, ASDF systems, depth strategy, precision, target platforms) are recorded by tasks 17, 19, 20, 21; none need the human', 'Split `plan 7: luv capabilities` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
 done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
 tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-14T16:13:00Z', '2026-10-14T16:15:17Z', 8);
-INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (15, 8, 'create tasks for plan 8: walking skeleton', 'split', 'open', 1000, NULL, 'Split `plan 8: walking skeleton` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (15, 8, 'create tasks for plan 8: walking skeleton', 'split', 'done', 1000, '2026-10-14, tasks 22-27 in plan 8; no human decisions needed, lasting choices recorded by tasks 22-27', 'Split `plan 8: walking skeleton` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
 done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
-tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-14T16:13:35Z', NULL, 9);
+tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-14T16:13:35Z', '2026-10-14T16:16:18Z', 9);
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (16, 7, 'Read luv''s docs and systems; draft docs/luv-capabilities.md', 'work', 'open', NULL, NULL, 'First task of `plan 7: luv capabilities`: read luv and write the first draft of `docs/luv-capabilities.md`, from reading only (no running yet). Later tasks of the plan run things and fill in or correct the draft.
 
 ## Do
@@ -561,6 +561,92 @@ INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, crea
 
 ## Done when
 - Both docs complete per the plan''s "Deliverables"; decisions recorded; docs staged.', '2026-10-14T16:15:15Z', NULL, 14);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (22, 8, 'Flake: luv input, dev shell, package and nix run opening an empty window', 'work', 'open', NULL, NULL, 'Part of `plan 8: walking skeleton`: make this repo build against luv pinned as a flake input, with a minimal ASDF system `luv-in-space` that opens an empty window and quits on Escape or window close.
+
+## Read first
+- `docs/luv-capabilities.md` (luv revision, packaging, `applicationPackage`, the binary cache, platforms, the probe program appendix) and the answered decisions: `pm decision list --answered --grep luv --grep platform --grep ASDF`. They are binding.
+- `../luv/flake.nix` (read-only), `../luv/scripts/build-application`.
+
+## Do
+- `flake.nix`:
+  - input `luv` = `github:mbrock/luv`, locked in `flake.lock` at the revision `docs/luv-capabilities.md` names; `inputs.nixpkgs.follows` only if luv builds with it and still hits its cache, else keep luv''s nixpkgs (note which in a short comment).
+  - `nixConfig` with luv''s binary cache (`luv.swa.sh` and its public key) as luv''s flake has it.
+  - `packages.default` (`luv-in-space`) with luv''s `applicationPackage` if the input exposes it; else a copy adapted here, and an entry in `docs/luv-wishlist.md` asking luv to export it.
+  - `apps.default`: starts the game; `nix run` from the repo root opens the window.
+  - `devShells.default`: luv''s dev shell environment (SBCL with luv''s Lisp deps, Vulkan/SDL3 libraries; reuse `luv.devShells.<system>.default` via `inputsFrom` or equivalent) plus `pm` and `git`; `.envrc` (`use flake`) keeps working.
+  - Systems: the platforms decided in `plan 7: luv capabilities`; evaluate the non-Linux-x86-64 ones with `nix flake check --no-build` or `nix eval`.
+- `luv-in-space.asd` at the repo root: system `luv-in-space`, sources under `src/`: `src/package.lisp`, `src/main.lisp` (entry point: window, frame loop clearing to a dark colour, Escape/close quits). Depends on the luv systems decided in `plan 7: luv capabilities`. Seed from the probe program in `docs/luv-capabilities.md`.
+- Add `result` and other build outputs to `.gitignore`.
+
+## Done when
+- `nix build` succeeds; `nix run` opens a window that closes on Escape (close it yourself: by PID if Escape can''t be sent); `nix develop -c sbcl` can `(asdf:load-system "luv-in-space")`; `nix flake check --no-build` passes for all listed systems; `flake.lock` and the files staged; no process left running.', '2026-10-14T16:16:09Z', NULL, 15);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (23, 8, 'Placeholder scene: lit Earth sphere and a PLACEHOLDER label', 'work', 'open', NULL, NULL, 'Part of `plan 8: walking skeleton`: draw a recognisable placeholder scene in the window the flake task made (`src/main.lisp`).
+
+## Read first
+- `docs/luv-capabilities.md`: the probe program appendix (sphere mesh, Lisp shaders, lighting), in-world text and terminal screens (which is cheapest for a label), depth and precision findings; answered decisions `pm decision list --answered --grep depth --grep precision --grep luv`.
+
+## Do
+- `src/scene.lisp` (add it to `luv-in-space.asd`):
+  - a pure function generating a unit sphere mesh (UV sphere or icosphere; positions and normals), testable without a GPU;
+  - an Earth placeholder: the sphere with a procedural colour (e.g. blue oceans, a few green/brown bands; no texture), diffuse light from a fixed sun direction, dark background; a few star points optional;
+  - vertex and fragment shaders written in luv''s Lisp shader language, the way luv''s programs do;
+  - a visible on-screen label `PLACEHOLDER(23)` with luv''s cheapest text path (in-world text or a terminal screen, per `plan 7: luv capabilities`).
+- Mark the scene code with `PLACEHOLDER(23)` comments.
+- Don''t pre-empt the architecture (part 3 of `plan 1: masterplan`): no depth or double-precision scheme beyond what the probe used; camera at a plain distance from a unit-ish sphere is fine.
+
+## Done when
+- `nix run` shows the lit sphere and the label; you took a screenshot (by the path `docs/luv-capabilities.md` recommends), read it and confirmed both are visible; window closed; `nix build` passes; files staged.', '2026-10-14T16:16:09Z', NULL, 15);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (24, 8, 'Screenshot command: scripts/screenshot writes a PNG of the scene and exits', 'work', 'open', NULL, NULL, 'Part of `plan 8: walking skeleton`: a command an agent can run from a terminal, without a human, that starts the game, renders some frames, writes a PNG and exits.
+
+## Read first
+- `docs/luv-capabilities.md`: screenshots and headless runs (`hal/application-capture.lisp`, `capture-specification.lisp`, `./sly screenshot`, offscreen rendering without a display).
+
+## Do
+- `scripts/screenshot <out.png> [--frames N]` (executable, runs inside the dev shell; or `nix run .#screenshot -- out.png` as well if cheap): renders the placeholder scene, writes the PNG, exits with non-zero status on failure. Offscreen if luv allows it; else a window it closes itself (by the program quitting or by PID, never by name pattern).
+- Default frame count shows the scene fully (label included).
+- Reuse luv''s capture code through its ASDF systems; any capture glue here goes into `src/` (e.g. `src/capture.lisp`) so the test can reuse it.
+
+## Done when
+- `scripts/screenshot /tmp/lis.png` produces a PNG of the window''s size showing the sphere and the `PLACEHOLDER` label (read it and check); no process left running; the time it takes noted in the commit-ready files (e.g. a comment at the top of the script); files staged.', '2026-10-14T16:16:09Z', NULL, 15);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (25, 8, 'Headless test: luv-in-space/tests and a test command', 'work', 'open', NULL, NULL, 'Part of `plan 8: walking skeleton`: a test system and a command that runs it with a non-zero exit on failure.
+
+## Read first
+- `docs/luv-capabilities.md`: how luv runs its tests (Parachute, `scripts/test.lisp`, `make test`), what works without a display or GPU, whether tests run in the nix sandbox.
+
+## Do
+- `luv-in-space/tests` in `luv-in-space.asd`, sources under `tests/` (Parachute, as luv uses it). Tests:
+  - the system loads;
+  - the sphere mesh function of `src/scene.lisp`: expected vertex/index counts for given subdivisions, every position at unit radius, normals unit length;
+  - if luv renders offscreen without a display: one frame to a PNG (reuse the screenshot command''s capture code) with the expected size and a non-background pixel at the sphere''s centre; otherwise skip this test with the reason printed.
+- `scripts/test` (executable, inside the dev shell): loads `luv-in-space/tests`, runs it, exits non-zero on failure.
+- `checks.<system>.default` in `flake.nix` running the GPU-free tests, if they can run in the nix sandbox; if not, a short comment in `flake.nix` saying why, and the test stays a dev-shell command.
+
+## Done when
+- `scripts/test` passes; breaking a test (temporarily) makes it exit non-zero; `nix flake check` passes (or the reason it can''t run the test is noted); files staged.', '2026-10-14T16:16:09Z', NULL, 15);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (26, 8, 'Live image dev loop for luv-in-space', 'work', 'open', NULL, NULL, 'Part of `plan 8: walking skeleton`: the live-image dev loop (luv''s Slynk-based `./sly`) for this repo''s system.
+
+## Read first
+- `docs/luv-capabilities.md`: the live image section (`./sly start`, `play`, `screenshot`, `eval`, `stop-playing`, failure parking, `resume`) and whether `./sly` can serve another checkout. `../luv/sly`, `../luv/sly-init.lisp` (read-only).
+
+## Do
+- If `./sly` can load this repo''s system: a `./sly`-like wrapper here (e.g. `./sly` at the repo root, adapted from luv''s, using the dev shell''s luv, never `../luv`) or documented steps, covering: start the image, load `luv-in-space`, play, screenshot, redefine a function (e.g. the sphere colour) while playing and see it change in a second screenshot, stop playing, stop the image by PID.
+- If it can''t be reused: say why in `AGENTS.md` ("Commands") and add a follow-up task (`pm task add 8 …`) for what it would take; note in `docs/luv-wishlist.md` what luv could export to make it reusable.
+
+## Done when
+- The loop was run end to end once (two screenshots read, showing the change), or the reason it can''t be is written down with a follow-up task; no image or window left running; files staged.', '2026-10-14T16:16:09Z', NULL, 15);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (27, 8, 'AGENTS.md Commands, verified from a clean clone; skeleton decisions recorded', 'work', 'open', NULL, NULL, 'Part of `plan 8: walking skeleton`, its last task: fill in the "Commands" section of `AGENTS.md` and prove each command works from a clean checkout.
+
+## Do
+- `AGENTS.md` "Commands": replace "to be filled in by `milestone 1`" with one bullet each for: dev shell, build (`nix build`), run (`nix run`), test (`scripts/test` or what the test task made), screenshot, live image (or why there is none). Keep the existing style (concise bullets).
+- Verify: `git clone` the repo (HEAD holds the earlier tasks'' work; your uncommitted `AGENTS.md` edit isn''t needed there) into `$(mktemp -d)`, run each command there (close every window), note the time of a cold `nix build`/first run in `AGENTS.md`, delete the clone.
+- Record the lasting choices with `pm decision record`, citing what they rely on:
+  - layout of systems and directories (`luv-in-space.asd`, `src/`, `tests/`, `scripts/`);
+  - the test command and the screenshot command (paths, arguments, headless or windowed);
+  - the dev loop (live image wrapper, or none and why).
+- Fix small breakages found in the clean clone; larger ones become follow-up tasks in `plan 8: walking skeleton`.
+
+## Done when
+- Every command in "Commands" ran from the clean clone; decisions recorded; `AGENTS.md` staged; clone deleted; no process left running.', '2026-10-14T16:16:09Z', NULL, 15);
 
 
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (1, 1, '2026-10-14T16:10:25Z', '2026-10-14T16:11:12Z', 'done', NULL, 0, 'dbb0732a624bc26e8981cc36772e27859e6c5ea6', 'claude-opus-5-5[1m]', '332e5758-5e41-45e9-975c-f9674f9ae310', 5, 10, 4524, 144844, 45557, 0.4839448, 2177276);
@@ -568,3 +654,4 @@ INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, b
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (3, 8, '2026-10-14T16:11:52Z', '2026-10-14T16:13:08Z', 'done', NULL, 0, '42cf81d600dbdeff190872b1fa14165d477205fd', 'claude-opus-5-5[1m]', '2f2a21a0-a00e-459d-bc9e-552a88c42cd3', 9, 18, 8020, 310398, 36150, 0.5117516, 2177276);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (4, 9, '2026-10-14T16:13:08Z', '2026-10-14T16:13:46Z', 'done', NULL, 0, 'e98c78fecc390ad4cffcbee0ac1e76d680a398d5', 'claude-opus-5-5[1m]', '6bcb2306-9a2d-4200-8e9b-16a13d12798b', 6, 12, 3433, 176342, 25464, 0.30768840000000003, 2177276);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (5, 14, '2026-10-14T16:13:46Z', '2026-10-14T16:15:23Z', 'done', NULL, 0, '2fcb3e5fd5091e1dc8c5d2f0260d407319f40a1c', 'claude-opus-5-5[1m]', 'c572bc8a-2e53-40b9-a246-e4bc234e996a', 7, 14, 11269, 241880, 38126, 0.57881999999999989, 2177276);
+INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (6, 15, '2026-10-14T16:15:23Z', '2026-10-14T16:16:26Z', 'done', NULL, 0, 'e91356694c977e6c7466802e01e8ace2a48297d3', 'claude-opus-5-5[1m]', '96ca9c6c-bac2-4d87-bdf0-70a7ebb81d26', 6, 12, 5980, 201764, 33006, 0.4240488, 2177276);

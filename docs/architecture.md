@@ -108,7 +108,7 @@ In brackets: the milestone that first creates the file; later milestones extend 
 - `render.lisp` (milestone 2): the frame: passes in order, encoding everything above into the canvas or a capture; needs all rendering files.
 - `input.lisp` (milestone 2): canvas events to `controls`; key map; gamepad polling later; needs controls.
 - `audio.lisp` (milestone 6 by default; earlier if `docs/design.md` says so): `audio-sink`, the Lisp mixer, synthesised voices; silent when no device; needs ship, controls.
-- `title.lisp` (milestone 6): title screen, introduction, in-game controls help; needs overlay, text.
+- `title.lisp` (milestone 6): title screen, introduction, in-game controls help, the Escape menu and the credits screen (`decision 13: Asset storage and attribution`, `decision 42: Scope: what each milestone builds`); needs overlay, text.
 - `main.lisp` (skeleton): the `game` object, start/stop, the frame function, `main`; needs everything.
 - `capture.lisp` (skeleton): screenshots and `capture-scene`; needs main.
 

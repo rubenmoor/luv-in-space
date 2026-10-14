@@ -130,7 +130,7 @@ Nine quests in a fixed order, each a job a little farther out and a little heavi
 |---|---|---|---|---|---|---|---|
 | 1 | Shakedown | CAIRN OPS | start orbit, 400 km | manual turns, rate damping, holds, throttle, Ap/Pe, warp | 2 | 6 | 2 h |
 | 2 | Home port | TERN | Tern Station | targets, autopilot rendezvous, target and relative holds, grapple camera, berthing | 3 | 31 | ≤ 1 day |
-| 3 | Seventeen | LINDGREN | Derelict K-17, 800 km | grappling a towable load, a burn below the autopilot's floor by hand, PERI alarm, release | 3 | 619 | ≤ 2 days |
+| 3 | Seventeen | LINDGREN | Derelict K-17, 800 km | grappling a towable load, a burn below the autopilot's floor by hand, PERI alarm, release | 3 | 622 | ≤ 2 days |
 | 4 | Topping off | CAIRN OPS | Fulmar Depot | rendezvous alone, berthing beside a tanker, propellant transfer (B) | 3 | 126 | ≤ 2 days |
 | 5 | The long climb | CAIRN OPS | Highport | a multi-burn plan, the Burn instrument, a long coast at warp, an eccentric orbit | 3 | 2,799 | ≤ 3 days |
 | 6 | Rock three | HIGHPORT | Skua Yard, Highport | towing 50 t, a heavy stack's turns and trim, delivering a load, a refused load | 3 | 50 | ≤ 2.5 days |
@@ -215,7 +215,7 @@ How `quests.lisp` runs the line; per-quest sections only add what differs.
 ### 3. Seventeen
 - Giver: LINDGREN (Sami Lindgren, Kiruna; CAIRN OPS lends PATIENCE). Goal: grapple Derelict K-17, push it into an orbit that meets Earth's crash sphere, release it, save the tug, see it burn up (`docs/design.md` "The derelict's re-entry"). Place: K-17, 800 km, u₀ 270°, spinning 0.3°/s about its axis.
 - Skills: a rendezvous to a towable fixture on a turning object; grappling a load; a stack's mass and turns; a burn below the autopilot's 150 km floor by hand (it refuses, `decision 32: Autopilot scope and safety rules`); the PERI lamp and the impact marker; release (G); a fast recovery burn; the SHIP message "K-17 BURNED UP".
-- Milestone: 3. Propellant from Tern Station's 420 km: Hohmann 420 → 800 km 103.4 + 102.0 = 205 m/s (√(μ/r) and vis-viva as "Δv for the standard legs"; the design's 217 is from 400 km) and terminal 20 m/s, 1,775 kg; the push 196 m/s with the 36 t stack, 1,580 kg (`docs/design.md`: 1.6 t); the tug's perigee raised back to 400 km and circularised, 89 + 109 m/s, 1,417 kg. Total 619 m/s, 4,772 kg. Time: ≤ 2 days (K-17 gains 28° per orbit on a ship at 420 km, so the autopilot's Hohmann opens within 13 orbits); the push to the burn-up, 1 h. Expected state at start: 27,665 kg, berthed at Tern.
+- Milestone: 3. Propellant from Tern Station's 420 km: Hohmann 420 → 800 km 103.4 + 102.0 = 205 m/s (√(μ/r) and vis-viva as "Δv for the standard legs"; the design's 217 is from 400 km), 208 m/s with a transfer that passes K-17 clear (`docs/design.md` "The terminal path and crowded targets", `decision 59: Rendezvous transfers pass the target clear`), and terminal 20 m/s, 1,798 kg; the push 196 m/s with the 36 t stack, 1,580 kg (`docs/design.md`: 1.6 t); the tug's perigee raised back to 400 km and circularised, 89 + 109 m/s, 1,417 kg. Total 622 m/s, 4,795 kg. Time: ≤ 2 days (K-17 gains 28° per orbit on a ship at 420 km, so the autopilot's Hohmann opens within 13 orbits); the push to the burn-up, 1 h. Expected state at start: 27,665 kg, berthed at Tern.
 
 | Step | JOB card | Y | Completion |
 |---|---|---|---|
@@ -243,7 +243,7 @@ How `quests.lisp` runs the line; per-quest sections only add what differs.
 ### 4. Topping off
 - Giver: CAIRN OPS (TERN controls Fulmar Depot's berths). Goal: berth at Fulmar Depot's free fixture A and fill the tanks. Place: Fulmar Depot, 500 km, u₀ 180°; TANKER 2 berthed at fixture B.
 - Skills: a rendezvous chosen and flown without help; berthing beside a berthed tanker (fixture A faces +z, the tanker's B −z); propellant transfer (B), the XFER line and the PROP gauge; warp while berthed.
-- Milestone: 3. Propellant: 56 m/s (`docs/design.md` "Earth-orbit points of interest", 400 → 500 km), phasing ≤ 50 m/s (the ship gains 7.9° per orbit on Fulmar from 400 km, a full turn in 2.9 days; inside 48 h by waiting, else a drift orbit at ≤ 33 m/s, `docs/design.md` "Rendezvous: search, phasing and the approach"), terminal 20: 126 m/s, 869 kg. Time: ≤ 2 days and 47 min of transfer. Expected state at start: 22,893 kg, 400 km circular.
+- Milestone: 3. Propellant: 56 m/s (`docs/design.md` "Earth-orbit points of interest", 400 → 500 km), phasing ≤ 50 m/s (the ship gains 7.9° per orbit on Fulmar from 400 km, a full turn in 2.9 days; inside 48 h by waiting, else a drift orbit at ≤ 33 m/s and ≤ 1 m/s for a final transfer that passes the depot clear, `docs/design.md` "Rendezvous: search, phasing and the approach"), terminal 20: 126 m/s, 869 kg. Time: ≤ 2 days and 47 min of transfer. Expected state at start: 22,870 kg, 400 km circular.
 
 | Step | JOB card | Y | Completion |
 |---|---|---|---|
@@ -417,8 +417,8 @@ Propellant and stores carried from quest to quest, on the nominal path (Δv budg
 |---|---|---|---|---|---|---|
 | 1 | 28,000 | 81 | 27,919 | — | 10 vs 6,650 | 2 h |
 | 2 | 27,919 | 254 | 27,665 | — (Tern restocks) | 31 vs 6,640 | 1 day |
-| 3 | 27,665 | 4,772 | 22,893 | — | push 196 with 2.5 t vs 5,493 | 2 days |
-| 4 | 22,893 | 869 | 22,024 → 28,000 | Fulmar Depot | 126 vs 5,974 | 2 days |
+| 3 | 27,665 | 4,795 | 22,870 | — | push 196 with 2.5 t vs 5,490 | 2 days |
+| 4 | 22,870 | 869 | 22,001 → 28,000 | Fulmar Depot | 126 vs 5,971 | 2 days |
 | 5 | 28,000 | 16,899 | 11,101 → 28,000 | Highport | 2,799 vs 6,650 | 3 days |
 | 6 | 28,000 | 688 | 27,312 → 28,000 | Highport | 25 with 50 t vs 1,738 | 2.5 days |
 | 7 | 28,000 | 12,821 out; 9,501 back | 15,179 → 28,000 at Peary; 18,499 → 28,000 | Peary Depot, Highport | 1,353 with 12 t vs 3,866 | 12 days |

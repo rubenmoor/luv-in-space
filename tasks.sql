@@ -749,9 +749,93 @@ INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, crea
 - Verify with `./sly`: play, screenshot, redefine `earth-fragment` (e.g. red oceans) by `./sly eval`, screenshot again, read both; stop playing and stop the image by `./sly stop`.
 - A broken redefinition keeps the last good pipeline; reporting it is `task 28: Live image: report failed live artifacts`.
 - `scripts/test` and `scripts/screenshot` still pass; update the live image bullet in `AGENTS.md` "Commands".', '2026-10-14T17:23:16Z', '2026-10-14T17:30:44Z', 26);
-INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (31, 9, 'create tasks for plan 9: architecture', 'split', 'open', 1000, NULL, 'Split `plan 9: architecture` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (31, 9, 'create tasks for plan 9: architecture', 'split', 'done', 1000, '2026-10-14, tasks.sql: tasks 32-35', 'Split `plan 9: architecture` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
 done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
-tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-14T17:31:46Z', NULL, 10);
+tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-14T17:31:46Z', '2026-10-14T17:32:37Z', 10);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (32, 9, 'Architecture: dependency on luv, dev loop, module layout and assets', 'work', 'open', NULL, NULL, 'First part of `plan 9: architecture`: create `docs/architecture.md` with its top intro paragraph and the sections "Dependency on luv" and "Module layout" (incl. assets), as the plan body specifies. Later tasks of the plan add the other sections.
+
+## Read first
+- `docs/luv-capabilities.md` ("Gaps and workarounds", "What this means for luv-in-space"), `docs/luv-wishlist.md`, `AGENTS.md`, `flake.nix`, `luv-in-space.asd`, `src/`, `tests/`, `scripts/`, `sly-server.lisp`.
+- Binding: `decision 1: How the game consumes luv`, `decision 3: luv ASDF systems the game depends on`, `decision 8: Live image: ./sly wraps luv''s client from the flake input`, `decision 9: Layout of systems and directories`, `decision 10: Test and screenshot commands`, `decision 11: Render pipelines are luv live shader pipelines`; cite them, don''t reopen.
+
+## Write
+- Document skeleton: intro paragraph; top-level sections "Dependency on luv", "Module layout", "Units and coordinates", "Time and integration", "Testing" (the last three as headings with `PLACEHOLDER(<task id>)` lines pointing to the tasks of `plan 9: architecture` that fill them).
+- "Dependency on luv": flake input and pin, `luv.lib.environmentFor`, copied application recipe, binary cache, launcher without `LD_LIBRARY_PATH`; ASDF systems and how a new luv system becomes a dependency (decision first; candidates `luv/production` for prediction, `luv/arithmetic` at boundaries); what the game uses from luv vs. writes itself, each pointing to its section in `docs/luv-capabilities.md`; the dev loop (`./sly`, `scripts/test`, `scripts/screenshot`, `nix build`/`run`, `nix flake check`) and the rules that keep code live-redefinable (state in the `game` object, no closures captured over functions the loop calls); how a gap goes into `docs/luv-wishlist.md`. Point to `AGENTS.md` "Commands" instead of duplicating it.
+- "Module layout": target `src/` files in load order (math, units/constants, bodies/ephemerides, physics, ship, clock/warp, rendering parts, cockpit/instruments, autopilot, input, audio, story/quests, save/load, main, capture), one line each on purpose and dependencies; the package split (keep one game package plus `luv-in-space.shaders`, or more: decide and say why); the milestone (2 to 6) that first creates each module, consistent with the milestones in `pm milestone list`; tests mirroring modules as `tests/<module>.lisp`.
+- Assets: where the Blue Marble texture and the HYG star table (mag ≤ 6.5) live, committed vs. fetched by Nix (size limits), how attribution and the CC BY-SA table''s licence are kept.
+
+## Decisions to record (`pm decision record`)
+- Module layout and package split.
+- Asset storage and attribution.
+
+## Done when
+- `docs/architecture.md` exists with the two sections filled, agreeing with `docs/luv-capabilities.md`, `AGENTS.md` and the skeleton; decisions recorded and cited; follow-ups (e.g. a missing wishlist entry) added as tasks.', '2026-10-14T17:32:34Z', NULL, 31);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (33, 9, 'Architecture: units, coordinate frames, simulation time and rendering precision', 'work', 'open', NULL, NULL, 'Second part of `plan 9: architecture`: fill the section "Units and coordinates" of `docs/architecture.md` (created by the previous task of the plan), as the plan body specifies.
+
+## Read first
+- The plan body''s "Units and coordinates"; `docs/luv-capabilities.md` (depth, precision, impostors); `src/scene.lisp` (current projection and camera).
+- Binding: `decision 4: Depth strategy`, `decision 5: Precision of positions`; cite, don''t re-record.
+
+## Write
+- Unit of length metre, SI throughout; why not km or AU (double precision at 10^12 m, about 1e-4 m at 1 AU); constants as μ = GM in m^3/s^2 from a named source (IAU 2015 / JPL DE440 values), radii.
+- Time: simulation time as double seconds since an epoch (choose: J2000 TDB, or a fixed game-start date expressed relative to J2000); the resolution of double seconds over decades of game time; how a calendar date for the game''s start is set.
+- Frames: frame of integration (heliocentric ecliptic J2000 vs. dominant-body inertial frame with re-centring on SOI change: choose), planet-centred inertial frames for elements and instruments, Earth''s body-fixed rotating frame (rotation model, prime meridian vs. the texture''s longitude), ship body frame (axis convention), camera frame; the transforms between them and where each is used.
+- Rendering: camera-relative positions in double then single float; one projection function (reversed-Z, infinite far, near 0.1 m, Vulkan clip-y flip); cockpit in the same pass; stars at infinity drawn first.
+- Floating-origin pitfalls: subtracting large positions before converting, cancelling terms in double on the CPU (ray-sphere `h(2r+h)`), orbit-line vertices made camera-relative each frame.
+- Replace this section''s `PLACEHOLDER` line.
+
+## Decisions to record (`pm decision record`)
+- Unit of length (SI throughout) and the time epoch.
+- Coordinate frames: frame of integration, re-centring rule, body-fixed frames.
+
+## Done when
+- The section is complete, cites `decision 4`, `decision 5` and the new decisions, and agrees with `docs/luv-capabilities.md` and the skeleton.', '2026-10-14T17:32:34Z', NULL, 31);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (34, 9, 'Architecture: integrator, gravity model, ephemerides, time warp, collisions and prediction', 'work', 'open', NULL, NULL, 'Third part of `plan 9: architecture`: fill the section "Time and integration" of `docs/architecture.md`, as the plan body specifies, backed by a throwaway numeric check.
+
+## Read first
+- The plan body''s "Time and integration"; the sections of `docs/architecture.md` already written (units, frames, epoch and their decisions); `docs/luv-capabilities.md` (physics, SIMD, `luv/production`).
+
+## Write
+- The clock: `elapsed x warp` into a double accumulator, fixed steps, a per-frame cap (sim slows rather than stalls); render the latest state or interpolate.
+- Integrator for the ship: choose and justify (e.g. velocity Verlet/leapfrog at a fixed step vs. RK4/RK45); step size for LEO (period ~5,500 s) with its measured error; thrust and attitude (quaternion, angular velocity, RCS torques) in the same step.
+- Gravity model: point masses (which bodies), n-body with on-rails bodies vs. patched conics (choose; patched conics for prediction/autopilot only?), Earth J2 in or out with the reason.
+- Ephemerides: source and model for planets (e.g. JPL "Approximate Positions of the Planets", Keplerian elements with secular rates) and for the Moon; the ship on rails (Kepler propagation) while coasting at high warp.
+- Time warp: levels; when each is allowed (thrust limit, altitude limits, drop out before SOI change, periapsis below surface, a scheduled burn); switching integrated ↔ rails without a jump (state → elements → state). Where it depends on the design, give the default and the constraint the design must pick within.
+- Collisions: swept test per step against body spheres so high warp can''t tunnel; Sun heat as a function of distance (the rule itself is the design''s).
+- Trajectory prediction: where it runs (frame thread with a budget, or a `luv/production` worker, then a recorded dependency per `decision 3: luv ASDF systems the game depends on`), horizon and resolution.
+- Determinism: same inputs and steps give the same trajectory.
+- Numeric check: a throwaway script in `/tmp` (SBCL in the dev shell) integrating a circular and an eccentric (e.g. e = 0.5) Earth orbit with the chosen integrator and step, over 100+ orbits; report relative energy and angular-momentum drift in the document; don''t commit the script, delete it.
+- Replace this section''s `PLACEHOLDER` line.
+
+## Decisions to record (`pm decision record`)
+- Integrator and step size; gravity model (n-body on rails vs. patched conics; J2).
+- Ephemerides source and model.
+- Time-warp rules (levels, thrust limit, rails switching).
+- Trajectory prediction''s home, if it adds `luv/production` as a dependency.
+
+## Done when
+- The section is complete, with the measured drift numbers, decisions recorded and cited.', '2026-10-14T17:32:34Z', NULL, 31);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (35, 9, 'Architecture: testing section with drift bounds; read-through against the other documents', 'work', 'open', NULL, NULL, 'Last part of `plan 9: architecture`: fill the section "Testing" of `docs/architecture.md` and check the whole document, as the plan body specifies.
+
+## Read first
+- The plan body''s "Testing"; the whole `docs/architecture.md`, especially the integrator choice and its measured drift; `tests/`, `scripts/test`, `AGENTS.md` "Commands".
+- Binding: `decision 2: Screenshots and GPU test: offscreen capture on a hidden canvas, headless on lavapipe`, `decision 10: Test and screenshot commands`, and the integrator/warp decisions recorded by the previous tasks of the plan.
+
+## Write
+- Headless physics tests `milestone 2` needs: energy and angular-momentum drift bounds for a circular and an eccentric Earth orbit over N orbits at each warp level and in rails mode; concrete numbers the chosen integrator reaches (from the previous task''s measurement, with margin) and how they are measured.
+- Other tests: Kepler round-trip, ephemeris spot checks against JPL Horizons (a handful of values committed as constants with their source), frame transforms, warp transitions without jumps, crash detection, save/load round-trip.
+- Scripted runs: driving the game from a script (input sequence or control function) for a burn, an orbit raise and a deorbit, each ending with a screenshot (`scripts/screenshot` or `./sly screenshot`); how an agent demonstrates `milestone 2`''s "Done when".
+- GPU tests as `decision 2`/`decision 10`: one frame on a hidden canvas with lavapipe, image checks, not pixel-exact comparisons.
+- Point to `AGENTS.md` "Commands" for how to build, run, test and screenshot.
+- Replace the last `PLACEHOLDER` line.
+
+## Read-through
+- Every section of the plan body is covered; the document agrees with `docs/luv-capabilities.md`, `docs/luv-wishlist.md`, `AGENTS.md` and the skeleton; every decision it relies on is cited by id and subject; no `PLACEHOLDER` left.
+- Style per `AGENTS.md`: intro paragraph under each top-level heading, concise bullets, SI units.
+- Follow-ups (a missing wishlist entry, a test the skeleton lacks, a hook scripted runs need) added as tasks in the plan they belong to.
+
+## Done when
+- `docs/architecture.md` meets the plan''s "Done when".', '2026-10-14T17:32:34Z', NULL, 31);
 
 INSERT INTO decision (id, subject, status, options, body, answer, reason, created_at, closed_at, created_by_task, signoff, kind, decided_by_task, consequences) VALUES (1, 'How the game consumes luv', 'answered', '[]', 'Findings of `task 17: Build and run luv''s programs and test suite; record the runs` (docs/luv-capabilities.md, Packaging and Runs).
 - luv''s flake exports apps, devShells, packages and lib; lib has only environmentFor, which returns everything the packaging needs (pkgs, lisp, applicationEnvironment/Packages, developmentEnvironmentHook, slynkSource, swashPackage, …). No overlays.
@@ -792,3 +876,4 @@ INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, b
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (19, 29, '2026-10-14T17:26:00Z', '2026-10-14T17:28:49Z', 'done', NULL, 0, '09d185e3c020955ab7b76277e05daa1d14ee9e39', 'claude-opus-5-5[1m]', '3217bcb8-4b51-4d7d-8b83-a0dec8dbc916', 27, 44, 12904, 1049787, 49897, 0.86738939999999987, 2177276);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (20, 30, '2026-10-14T17:28:49Z', '2026-10-14T17:30:51Z', 'done', NULL, 0, 'b94c0e8eb3767fa2711c050bb6b6e049be8155c0', 'claude-opus-5-5[1m]', '3def936a-88ae-4209-a2e6-53746fdb49d0', 28, 52, 8932, 1604737, 71957, 1.0754514, 2177276);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (21, 10, '2026-10-14T17:30:51Z', '2026-10-14T17:31:55Z', 'done', NULL, 0, 'a9dddfdc8706ff471ac563d2f6b1c87315b138d0', 'claude-opus-5-5[1m]', 'c7358f73-2059-4471-b0b3-9ac954898d70', 7, 14, 5786, 260722, 44180, 0.5213604, 2177276);
+INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (22, 31, '2026-10-14T17:31:55Z', '2026-10-14T17:32:42Z', 'done', NULL, 0, 'e130f498827a1d7f0fc72ecf04a6a882880cbeb9', 'claude-opus-5-5[1m]', '73c2e6aa-599a-4000-a141-26151023b203', 5, 10, 5067, 159786, 33197, 0.39891319999999997, 2177276);

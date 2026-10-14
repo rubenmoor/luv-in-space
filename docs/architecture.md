@@ -557,10 +557,11 @@ Each action is what a key (or a click) does in play (`docs/design.md` "Controls"
 - `(:wait <condition>)` waits until the condition holds; `(:expect <condition>)` checks it now and records a pass or a failure. A condition is a keyword and its arguments, written flat: `(:wait :quest-step "2.3")`, `(:expect :removed :k-17 :burned-up)`.
 - Conditions (`h` an altitude above the dominant body's sphere, as the instruments show):
   - Events of the prediction (2; 4 SOI): `:apoapsis`, `:periapsis`, `:impact`, `:soi <body>`.
-  - Orbit (2): `:altitude-below h`, `:periapsis-below h`, `:periapsis-above h`, `:apoapsis-below h`, `:apoapsis-above h`, `:dominant <body>` (4); `:crashed`.
+  - Orbit (2): `:altitude-below h`, `:periapsis-below h`, `:periapsis-above h`, `:apoapsis-below h`, `:apoapsis-above h`, `:dominant <body>` (4); `:crashed`; `:sun-distance-below <m>`, `:sun-distance-above <m>` (4; the stack's CoM from the Sun's centre, heliocentric, in m as everything else: 0.551 AU is `8.2429e10`).
   - Attitude (2): `:settled` (the hold reports settled), `:rate-below <°/s>`.
   - Time (2): `:date "2040-01-21"` or `"2040-01-21T06:00:00"` (UTC; a scheduled time on the grid, so a coarse step lands on it exactly, as a burn's start).
-  - Ship (2; 3): `:propellant-above <kg>`, `:propellant-full`, `:latched`, `:latched <id>`, `:berthed <fixture>`, `:on-station <fixture>` (the story's term), `:removed <id> [<cause>]`.
+  - Ship (2; 3): `:propellant-above <kg>`, `:propellant-full`, `:latched`, `:latched <id>`, `:berthed <fixture>`, `:on-station <fixture>` (the story's term), `:removed <id> [<cause>]`; `:hull-above <K>`, `:hull-below <K>` (4; the hull temperature of "Collisions and the Sun", exact on the step grid: a wait on `:hull-above 450` ends at the death's closed-form time).
+  - Clock (2; 4): `:drop-out <kind>` (a wait only: the clock dropped warp to ×1 at an event of that kind since the wait began; kinds `:impact`, `:soi`, `:burn`, `:contact` (3), `:sun-zone` (4, entering 0.551 AU), `:life-support` (4); "Time warp").
   - Autopilot (3): `:autopilot-done` (the plan's last burn flown and, for a rendezvous, on station; it then keeps station until `:off`).
   - Quests (5): `:quest-step "n.m"` (that step is the current one: given, the previous completed), `:quest-skipped <n>`, `:quest-line-done` (step 9.7, or the ending alone if the passing rock is dropped).
 - Expectations only, on the run's record (3; 4):
@@ -569,7 +570,7 @@ Each action is what a key (or a click) does in play (`docs/design.md` "Controls"
   - `:burn <kind> :between "<UTC>" "<UTC>"`, `:since-burn <kind> :below <s>`: the plan's first burn of that kind. The autopilot labels its burns `:departure` (TLI, TEI, a Lambert departure, a Hohmann's first), `:mcc`, `:capture` (LOI, Earth capture, with any phasing merged into it), `:phasing`, `:arrival` (the braking at the aim point), `:terminal`, `:trim`; the record keeps each burn's kind, start, end and Δv.
   - `:clearance-above <m> [:except (<id> …)] [:only (<id> …)] [:until :aim-point]`: the least distance from the stack's CoM to any object's CoM (or only those listed) since the last `(:autopilot …)` engaged; `:until :aim-point` ends the span at the `:arrival` burn's start, for the target itself (the plan check of `docs/design.md` "The terminal path and crowded targets").
   - `:aim-point <n>`: the plan's aim point was candidate n of `docs/design.md` "The terminal path and crowded targets".
-  - `:lost <cause>`, `:offer`: a death or a stranded offer happened (and does not fail the script).
+  - `:lost <cause>`, `:offer`: a death or a stranded offer happened (and does not fail the script); causes `:crash` (2), `:contact` (3), `:heat` and `:life-support` (4), the LOST panel's (`decision 34: How death works`).
 
 #### Start states
 - `(:start :new-game)` (2): the start state (`docs/design.md` "The start"); also when a script has no `:start`.
@@ -620,6 +621,44 @@ Each action is what a key (or a click) does in play (`docs/design.md` "Controls"
 | `rendezvous-peary` | `:date "2040-01-19"`, `:orbit (:near :pod-14 :at-slot)`, `:grappled :pod-14` | `(:autopilot :rendezvous (:peary-depot :berth))` | `:burn :departure :between "2040-01-20T05:01" "2040-01-20T07:01"`, `:since-burn :capture :below 18000` (2 Peary periods of 7,067 s and 1 h of terminal phase), `:since-burn :departure :below 561600` (6.5 days), `:dv-below 1342`, `:on-station (:peary-depot :berth)` |
 | `return-highport` | `:date "2040-01-26T12:00:00"`, `:berthed (:peary-depot :berth)`, `:removed ((:skua-yard-3 :delivered) (:pod-14 :delivered))`; then `(:release)`, `(:translate :aft :dv 0.2)`, `(:after 300)` | `(:autopilot :rendezvous (:highport :plant))` | `:since-burn :capture :below 170640` (47.4 h), `:dv-below 1345` (1,273 + 30 + 2 m/s of phasing, + 3 %), `:on-station (:highport :plant)` |
 | `intercept-bq7` ("should") | `:date "2040-03-05"`, `:orbit (:near :highport :behind 1000)` | `(:autopilot :rendezvous :bq7)`, then `(:approach :bq7)`, `(:autopilot :rendezvous :skua-yard)` | first leg: `:burn :departure :between "2040-03-05T15:56" "2040-03-05T16:56"`, `:date-between "2040-03-10T20:00" "2040-03-11T02:00"` at `:autopilot-done`, `:dv-below 2101`, `:on-station :bq7`; then `:latched :bq7`; second leg: `:dv-below 536` (the capture's 495, ≤ 5 of phasing over it and 20 of terminal phase, + 3 %), `:date-between "2040-03-12T12:00" "2040-03-13T15:00"` at `:autopilot-done` |
+| `sun-dive` | `:date "2040-03-24"`, `:orbit (:circular 400e3 :u 23)`, full tanks | by hand (the autopilot plans nothing inside 0.551 AU): the prograde hold, two full-throttle burns cut by `:after-dv`, 2,000 m/s at the start and 4,600 m/s centred on the next perigee, then `(:warp :coast)` | apoapsis 19,000–20,000 km after the first burn; `:dominant :sun`; `:drop-out :sun-zone` at 0.550–0.552 AU between 2040-06-03 and 06-08; `:hull-above 400` (the danger mark) at 0.405–0.416 AU; `:hull-above 450` and `(:expect :lost :heat)` inside 0.326 AU between 2040-06-23 and 06-28 |
+
+- `sun-dive`, the test of `milestone 4`'s Done when "Flying towards the Sun kills the pilot" (`docs/design.md` "The Sun", `decision 34: How death works`), written out; its figures from a throwaway two-body script (not committed: the finite burns integrated in Earth's field, patched to the Sun at Earth's sphere, the hull rule on the heliocentric ellipse), so the task that writes `flights/sun-dive.sexp` tunes `:u` and the wait before the second burn with the flight's own integrator and keeps the expectations' ranges:
+
+```lisp
+((:start :state (:date "2040-03-24" :orbit (:circular 400e3 :u 23)))
+ (:warp :coast)                         ; burns with a cut-off fly at x100
+ (:throttle 1.0)                        ; the start state's prograde hold
+ (:after-dv 2000.0 :throttle 0)         ; 568 s, 13,112 kg: 453 x 19,482 km
+ (:expect :apoapsis-above 19.0e6)
+ (:expect :apoapsis-below 20.0e6)
+ (:wait :apoapsis)
+ (:after 10078 :throttle 1.0)           ; half the 20,798 s period less half the burn
+ (:after-dv 4600.0 :throttle 0)         ; 641 s centred on perigee; ~90 kg left
+ (:wait :soi :sun)                      ; Earth's sphere left ~1.4 days on
+ (:expect :dominant :sun)
+ (:screenshot "leaving-earth")
+ (:wait :drop-out :sun-zone :within 7776000)        ; 0.551 AU, ~73.5 days on
+ (:expect :sun-distance-below 8.2578e10)            ; 0.552 AU
+ (:expect :sun-distance-above 8.2279e10)            ; 0.550 AU
+ (:expect :date-between "2040-06-03" "2040-06-08")
+ (:wait :hull-above 350 :within 21600)              ; the warning, ~1 h later
+ (:screenshot "warning")
+ (:wait :hull-above 400 :within 1296000)            ; the danger mark, ~10.7 days on
+ (:expect :sun-distance-below 6.2233e10)            ; 0.416 AU
+ (:expect :sun-distance-above 6.0587e10)            ; 0.405 AU
+ (:screenshot "danger")
+ (:wait :hull-above 450 :within 1296000)            ; death, ~9.4 days on
+ (:expect :lost :heat)
+ (:expect :sun-distance-below 4.8769e10)            ; 0.326 AU
+ (:expect :date-between "2040-06-23" "2040-06-28")
+ (:screenshot "lost"))
+```
+
+  - Why near an equinox: the polar plane (i 90°, Ω 270°, normal along −x) holds every departure asymptote of the start orbit, and the dive needs one against Earth's heliocentric velocity. That velocity lies in the plane only near the equinoxes (Earth at ecliptic longitude 180° or 0°); on 2040-01-01 it is 80° out of it and no tank reaches 0.326 AU (an impulsive v∞ of 35 km/s). Near 2040-03-20 the impulsive cost is the design's (v∞ 8.94 km/s, 6,386 m/s from 400 km), rising ~10 m/s within 5 days of the equinox. 2040-03-24 rather than 03-20: on 03-20 the escape passes 8,200 km from the Moon, on 03-24 288,000 km (outside its 66,000 km sphere), with the same perihelion.
+  - Why two burns: one full-throttle burn of all 28 t from 400 km (1,213 s, about a fifth of an orbit, best started at u 1°) gives v∞ 8.87 km/s and a perihelion of 0.329 AU, where T_eq is 448 K: the pilot lives. Raising the apogee first and burning the rest centred on perigee loses less to gravity: v∞ 9.20 km/s, perihelion 0.317 AU (a 0.657 AU, e 0.518, 0.2° from the ecliptic), 90 kg left; the second burn cut at 4,400 m/s instead leaves 0.329 AU, so the margin is ~200 m/s.
+  - Timeline: burns 2040-03-24 00:00–06:00; Earth's sphere left 03-25 09:00; 0.551 AU 2040-06-05 13:00, 350 K an hour later; 400 K 06-16 06:00 at 0.415 AU; 450 K 06-25 17:00 at 0.3255 AU, 3.4 days before perihelion; 94 days of game time, inside the ephemerides (2050) and the 180 person-days.
+  - Run time: ~1,200 steps of ≤ 1 s under thrust at ×100, ~1,300 coarse steps on the coast to perigee, ~450 to Earth's sphere and ~1,100 heliocentric (4,096 s at the sphere, 16,384 s at 1 AU, 2,048 s at 0.33 AU), plus the prediction's and a few fine steps at each drop-out: ~5,000 steps, well under 1 s headless, so it fits `scripts/test`'s budget ("Rules for tests").
 
 - `milestone 5`: the quest play-through below.
 

@@ -430,7 +430,7 @@ Propellant and stores carried from quest to quest, on the nominal path (Δv budg
 - Stores: no leg is away from a restock for more than 12 days of 180; life support never decides a quest, it teaches the LIFE line.
 
 ### The Sun
-- Not a quest. The warning zone (0.551 AU) is 4,143 m/s from LEO and 1,473 m/s from Highport's perigee, 125 days to perihelion (`docs/design.md` "The Sun"); the way back to 1 AU takes as long again, ~250 days against 180 person-days, and no depot waits there. A close call with the Sun does not fit, so the Sun stays a danger told about: the third tape note and THRIFT's message 8e.
+- Not a quest. The warning zone (0.551 AU) is 4,143 m/s from LEO near an equinox and out of reach from Highport's orbit, 125 days to perihelion (`docs/design.md` "The Sun"); the way back to 1 AU takes as long again, ~250 days against 180 person-days, and no depot waits there. A close call with the Sun does not fit, so the Sun stays a danger told about: the third tape note and THRIFT's message 8e.
 - A pilot who flies there by hand meets the hull-temperature rule and the stranded offer (escape path).
 
 ### If a "should" is dropped

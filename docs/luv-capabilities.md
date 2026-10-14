@@ -54,7 +54,7 @@ The HAL is a small explicit GPU API: devices, buffers, textures, samplers, bind 
 - Shader language (`../luv/hal/shader/language.lisp`, `../luv/wiki/mathematical-shaders.org`): vertex, fragment, compute, task and mesh stages; types `float`, `int`, `uint`, `uint64`, `bool`, `vec2..4`, `ivec`, `uvec`, `mat2..4` (column-major), structures; resources: uniform blocks (vec4 lanes, mat4), storage buffers, `texture-2d`, `texture-2d-array`, `texture-cube`, `texture-3d`, depth textures with comparison samplers, read-write textures; GLSL-style math (`mix`, `clamp`, `smoothstep`, `normalize`, `expt`, …), conditionals, bounded folds, no general loops (read).
 - No 64-bit floats in shaders: all float types are 32-bit (read).
 - Shaders are lowered to SPIR-V (assembled in Lisp; no external compiler), MSL, WGSL, HLSL; `luv-shaderc` does the same ahead of time (ran: run 10, SPIR-V passes `spirv-val`; at run time Luvcraft logs each SPIR-V module it prepares, run 6).
-- Live shaders: `define-shader-program` and shader methods are redefinable; `../luv/hal/live-artifact.lisp` rebuilds a pipeline on redefinition, keeps the last good one on error (read).
+- Live shaders: `define-shader-program` and shader methods are redefinable; `../luv/hal/live-artifact.lisp` rebuilds a pipeline on redefinition, keeps the last good one on error (ran: runs 20, 21).
 - Lighting, shadows, sky, sun, bloom, fog: all in Luvcraft (`../luv/luvcraft/shaders.lisp`, `render.lisp`, `sky.lisp`), not in `luv`: HDR `:rgba16-float` scene, ACES tone map, quarter-resolution bloom, sun shafts, directional shadow map, procedural sky with Henyey-Greenstein sun glow, stars as hashed gaussians, depth-of-field (`../luv/wiki/sky-and-light.org`) (read). A game copies and adapts these ideas; it cannot load them without all of `luvcraft/core`.
 - TAA: Luft-only experiment (Halton jitter, motion vectors, Vulkan resolve shader, MetalFX on Metal); the HAL has a `temporal-scaler` command and multiple render targets (`../luv/wiki/temporal-antialiasing.org`) (read).
 - Text in the world: base `luv` has Slug glyph rendering from TrueType outlines (`../luv/hal/shader/slug*.lisp`), HarfBuzz shaping (`shape-slug-text`) and a glyph outline cache; the instanced world-text run with atlas (`make-world-text-run`) lives in `../luv/luvcraft/text.lisp` (read).
@@ -82,20 +82,43 @@ SDL3 opens windows and reads input; luv wraps it in a canvas protocol (`../luv/h
 Development in luv happens in a long-lived SBCL image supervised by Swash, driven by `./sly`. You redefine functions, classes and shaders while the game runs.
 
 - `./sly start`, `play [luvcraft|luft|luvland]`, `status`, `screenshot PNG`, `stop-playing`, `failures`, `resume`, `eval`, `inspect`, `describe`, `apropos`, `edit`, `xref`, `load`, `systems`, `stale`, `log`, `restart`, `stop`, `list` (`../luv/AGENTS.md`, `../luv/scripts/sly-client.lisp`) (read).
-- `./sly` is bound to its checkout: it enters `../luv`'s Nix shell, starts `sly-server.lisp` from the checkout root, and loads the system in `LUV_SLY_SYSTEM` (default `luv-workbench`) (read).
-- `play`, `screenshot` and `stop-playing` only know Luvcraft, Luft and Luvland; `eval`, `describe` and the rest are generic. Luv in Space needs its own launcher or a copy of the setup; to be settled by `task 18: Try luv's live image, screenshots and headless rendering; record the findings` (read).
+- The whole loop works for an agent from a terminal: `start` (26 s cold, 3–4 s with a cached dependency core), `play luft`, `status`, `screenshot`, `eval`, live redefinition, `failures`, `resume`, `stop-playing`, `stop` (ran: runs 15–25).
+- Swash runs each image as a transient `systemd --user` unit; `./sly list --all` reads the instances from Swash's journal events, keyed by checkout root (`LUV_ROOT`). The image's PID is in `./sly list`; `./sly stop` ends it and the PID is gone afterwards (ran).
+- State written inside the checkout: `build/` (`sly-client` 130 MB, `sly-dependencies.core` 365 MB, build logs; ignored by git), plus the FASL cache under `~/.cache/common-lisp/luv/` and Swash's journal entries. There is no option to move `build/`, so the runs used a `/tmp` clone of `../luv` (ran).
+- The image keeps the environment it was started with: Environment changes in the client's shell do not reach it; `(sb-posix:setenv …)` inside the image does, e.g. `VK_DRIVER_FILES` set by `./sly eval` before `play luft` moved Luft to the NVIDIA GPU, because luv creates the Vulkan instance per canvas (ran: run 18).
+- Live shader redefinition: loading a new `define-shader-function` for Luft's colour grade while it played changed the next frame (screenshot turned red) with no restart, in 2.7 s (ran: run 20).
+- A broken shader redefinition (unknown operator) keeps the last good pipeline drawing; nothing reaches `./sly status`, `./sly failures` or the log; the error is only in `luv:live-artifact-diagnostic` of the application's live artifacts (status `:failed`) (ran: run 21). For us: a dev command that prints failed live artifacts.
+- Failure parking: an error in a Lisp frame function parks the canvas; `./sly status` says "frames are PARKED … ./sly resume", `./sly failures` prints the error and backtrace, the window stays responsive; after fixing the function `./sly resume` resumed drawing (ran: run 22). `./sly failures` prints a literal `~%` (cosmetic luv bug, ran).
+- Errors at start (`play luft` on a GPU without mesh shaders) abort the evaluation; the image stays up and `./sly eval` keeps working (ran: run 17).
+- Evaluation errors print the backtrace and "No input; aborting evaluation" when stdin is not a terminal, so an agent's command returns instead of hanging (ran).
 - Swash, Slynk (without Emacs) and the `sly` Emacs package come from luv's flake (`swashPackage`, `slynkSource`) (read).
-- Evaluation errors leave the image alive and wait for a restart choice on stdin (read).
+
+### Using the live image from this repo
+
+`./sly` serves the checkout it lives in, and only its generic commands work for another game. An external ASDF system loads fine into a luv image, but `play`, `screenshot` and `stop-playing` are hard-wired to Luvcraft, Luft and Luvland.
+
+- Loading another system into a running luv image works: `./sly eval '(asdf:load-asd "/path/x.asd")'`, then `(asdf:load-system "x")` in a second `eval` (one form is read whole, so package-qualified symbols of the new system fail in the same form) (ran: run 24).
+- `LUV_SLY_SYSTEM` picks the image's system, but luv's shell hook unsets it, and `./sly` re-enters that shell when called from outside; set it (and `CL_SOURCE_REGISTRY`) inside the dev shell, after the hook. Then the image held only the probe system: no `LUVCRAFT` or `LUFT` packages (ran: run 25).
+- In such an image `./sly screenshot` and `./sly stop-playing` fail with a reader package error (their forms name `LUVCRAFT:` symbols); `status`, `eval`, `failures`, `resume`, `stop` work (ran: run 25).
+- `./sly` cannot run from the luv flake input: it writes `build/` into its own root, which would be the read-only store (read; follows from `sly`, `scripts/build-sly-client`).
+- So `task 26: Live image dev loop for luv-in-space` copies the setup here, with this repo as root (recommendation; not built yet): `sly`, `sly-server.lisp`, `sly-client.asd`, `scripts/sly-client.lisp`, `scripts/build-sly-client`, `scripts/build-sly-dependency-core`, `scripts/sly-dependency-core.lisp`, `scripts/sly-asdf-status.lisp`, `scripts/require-dev-environment`, `scripts/with-build-lock.py`; `sly-server.lisp` loads `luvcraft/build-progress.lisp` from the root, so point that at luv's source in the flake input; `sly-client.asd` needs `luv/parinfer` and `cl-json` from luv's registry.
+- In the copy: `LUV_SLY_SYSTEM=luv-in-space` set in our shell hook after luv's hook; `play`, `screenshot`, `stop-playing` rewritten to call our game's start, capture and stop functions. Systems outside the root (luv itself, in the store) go into the dependency core, so restarts stay fast and only our code is compiled live (read: `scripts/sly-dependency-core.lisp`).
+- Wishlist for luv (for `task 21: Remaining gaps, luv wishlist, summary and decisions of the luv findings`): `./sly` with a configurable root and build directory, and `play`/`screenshot`/`stop-playing` through a registered application protocol instead of hard-coded games.
 
 ## Screenshots, headless runs and tests
 
 luv renders screenshots from the GPU, not from the desktop, and can render without a visible window. Tests are Parachute systems run by luv's own runner.
 
-- `capture-application-screenshot`: renders one frame offscreen into a target texture, reads it back and writes a PNG; the game implements `capture-canvas`, `prepare-capture`, `encode-capture-frame`, `cleanup-capture` (`../luv/hal/application-capture.lisp`) (read).
+- `capture-application-screenshot`: renders one frame offscreen into a target texture, reads it back and writes a PNG; the game implements `capture-canvas` and `encode-capture-frame` (optionally `prepare-capture`, `cleanup-capture`) (`../luv/hal/application-capture.lisp`) (read). The canvas must be open with an RGBA8/BGRA8 context; the PNG has the canvas's size (ran: runs 24–27).
+- A 40-line probe outside luv (an application class, the two methods, a clear colour; source in "Appendix: screenshot probe") got a correct PNG: linear (1.0, 0.5, 0.1) came out as sRGB (255, 188, 89) (ran: runs 24, 26, 27).
+- `./sly screenshot` uses the same path for Luft and Luvcraft: 1.3 s for a 959×1010 frame of the running game, including the status line (ran: run 19).
+- Hidden canvases (`make-sdl-canvas :visible-p nil`) render and capture at the requested size; visible windows get the compositor's size (959×1010 under this tiling compositor, not the 320×200 asked for), so screenshots for tests should use a hidden canvas (ran: run 24).
 - Films: `capture-application-film` writes frame sequences/video (read).
-- Hidden canvases: Luvcraft's `capture-hidden-luvcraft-screenshot` opens a hidden SDL canvas (`:visible-p nil`), renders one frame and saves it (`../luv/luvcraft/capture.lisp`); smoke targets `make smoke` / `vulkan-smoke` do this for the built program (read).
-- No display: with neither `DISPLAY` nor `WAYLAND_DISPLAY`, luv sets `SDL_VIDEODRIVER=offscreen` (`kmsdrm` on a Linux console), and the dev shell then points Vulkan at Mesa's lavapipe software driver (`LUV_LAVAPIPE_ICD`) (`../luv/flake.nix`, `../luv/hal/sdl/canvas.lisp`) (read). So agents without a display should get software-rendered screenshots (not yet run).
+- No display works: with neither `DISPLAY` nor `WAYLAND_DISPLAY` set when the dev shell is entered, its hook sets `SDL_VIDEODRIVER=offscreen` (`kmsdrm` on a Linux console) and `VK_DRIVER_FILES` to Mesa's lavapipe (`LUV_LAVAPIPE_ICD`); the probe rendered and saved its PNG that way, and Luvcraft's `--smoke-test` rendered a full 3D frame (HDR, Slug text, HUD) on lavapipe in 8 s (ran: runs 26, 28). The variables must be unset before `nix develop`, since the hook decides on entry (read: `../luv/flake.nix`).
+- Inside the Nix build sandbox (no `/dev/dri`, no GPU, no display) the probe rendered on lavapipe and wrote the PNG into `$out`, in 21 s including compiling luv (ran: run 27). So the skeleton's GPU test can be a `nix flake check` (`checks.<system>`) built with `lib.environmentFor`'s `slimDevelopmentEnvironment`, `slimDevelopmentPackages` and `slimDevelopmentEnvironmentHook`, `HOME` set to `$TMPDIR` for the FASL cache. Recorded as `decision 2: Screenshots and GPU test: offscreen capture on a hidden canvas, headless on lavapipe`.
+- Rendering outside the shell needs `LUV_PROJECT_ROOT` (or `CL_SOURCE_REGISTRY`) pointing at luv's source; `./sly` and luv's scripts set it, a bare `nix develop -c sbcl` does not, and luv then failed to load (ran: run 26).
 - Tests: Parachute via `luv/test-support`; `make test` runs a Parinfer check plus `scripts/test.lisp`, which discovers the `.asd` test systems and runs them in parallel workers; `make LUV_DEV_SHELL=slim test` runs only Luft's tests (`../luv/Makefile`) (read).
+- Test model for this repo: each `…/test` system has `:perform (test-op … (uiop:symbol-call '#:luv.test-support '#:test-package '#:<package>))`; `test-package` runs the package's Parachute tests and signals on failure, so `sbcl --non-interactive --eval '(asdf:test-system "luv-in-space/tests")'` exits non-zero on a failure. luv's own suites use fake GPU objects (`../luv/hal/application-capture-tests.lisp`); real-GPU checks are smoke runs (`luvcraft --smoke-test PNG`), not Parachute tests (read).
 - `make test`, `make test-suite`, `make luft-test` pass at the examined revision on x86-64 Linux: 31 Parachute suites, 0 failures; Luft's 611,001 star checks pass (ran: runs 11–13).
 - Tests and builds write into `<checkout>/build/` (sly client, dependency core, logs) and the FASL cache under `~/.cache/common-lisp/luv/<closure>`; the targets take no output-directory option, so the runs here used a throwaway `git clone` of `../luv` in `/tmp` to keep `../luv` clean (ran).
 
@@ -168,6 +191,73 @@ Filled in by `task 17: Build and run luv's programs and test suite; record the r
 - Run 13: `make luft-test` in the same clone: 1.9 s wall, exit 0; "LUFT: 611001 star checks passed."
 - Run 14: `nix eval github:mbrock/luv/R#lib --apply …`: `lib` = `{ environmentFor }`; its attributes listed under Packaging.
 - Afterwards: `git -C ../luv status` shows only the pre-existing `result` symlink; no `sbcl`, `luvcraft` or `luft` process left.
+
+Runs 15–28 are from 2026-10-14 at R, by `task 18: Try luv's live image, screenshots and headless rendering; record the findings`, in a `/tmp/t18` clone of `../luv` with `LD_LIBRARY_PATH` unset; screenshots were read, then deleted with the clone.
+
+- Run 15: `./sly start`: 26 s wall; builds `build/sly-client` and `build/sly-dependencies.core`, compiles `luv-workbench` (287 files, 38 systems, 19 s), Slynk on a kernel-assigned loopback port, image PID shown by `./sly list`.
+- Run 16: `./sly status` ("Nothing is playing"), `./sly eval` of `uiop:getenv`: the image has the dev shell's `LD_LIBRARY_PATH` and `WAYLAND_DISPLAY`, no `VK_DRIVER_FILES`.
+- Run 17: `./sly play luft` on the default (Intel) GPU: window opens and closes after 3 loop iterations, `GPU-REQUEST-ERROR` during mesh pipeline creation, backtrace, "No input; aborting evaluation"; image still up.
+- Run 18: `./sly eval '(sb-posix:setenv "VK_DRIVER_FILES" "…/nvidia_icd.json" 1)'`, then `./sly play luft`: 4.1 s to a running viewer; `./sly status` "LUFT is playing … canvas loop is healthy (frame, 516 iterations, 497 frames)".
+- Run 19: `./sly screenshot /tmp/t18/luft-1.png`: 1.3 s, 959×1010 `:bgra8-unorm-srgb`; a grey blocky cliff face with grass terraces at its foot, a sandy path and grass in the foreground, blue sky with soft clouds, crosshair centred, status line "LUFT · mode 1P · terrain · ready · pid … · fps 60 · heap 500M".
+- Run 20: `./sly eval '(load "/tmp/t18/redef.lisp")'` redefining Luft's `paper-grade` shader function (luminance mapped to red): 2.7 s; the next screenshot shows the same scene in reds and browns.
+- Run 21: redefinition calling an unknown shader operator: the red frame stays; status healthy, `./sly failures` "No failures are retained"; `luv:live-artifact-diagnostic` reports "LUFT renderer cohort" `:failed`, "Cannot understand shader expression … UNKNOWN-OPERATOR".
+- Run 22: `sb-int:encapsulate` of Luft's per-frame `prepare-viewer-frame-renderer` with an error: status "frames are PARKED: a frame failed at … in frame (loop iteration 5161)"; `./sly failures` shows the message and backtrace; `./sly screenshot` fails while parked; after `unencapsulate`, `./sly resume` → "healthy"; reloading `luft/render/shaders.lisp` restored the original colours (screenshot as run 19, clouds moved).
+- Run 23: `./sly stop-playing`: 1.6 s; `(luv:open-canvases)` → `NIL`.
+- Run 24: a probe system in `/tmp/t18/probe` (appendix) loaded into the running image by `./sly eval`; visible window captured at 959×1010, hidden canvas at 320×200; both PNGs uniform (255, 188, 89).
+- Run 25: `./sly stop` (PID gone), then `LUV_SLY_SYSTEM=t18-probe ./sly start --name probe` from outside the shell: the variable was dropped, the image loaded `luv-workbench`; inside `nix develop` with `LUV_SLY_SYSTEM` and `CL_SOURCE_REGISTRY` exported: 4 s start, image with `T18-PROBE` and without `LUVCRAFT`/`LUFT`; `./sly screenshot` and `stop-playing` fail (reader package error), capture by `eval` works; `./sly stop`.
+- Run 26: `env -u DISPLAY -u WAYLAND_DISPLAY LUV_PROJECT_ROOT=… nix develop … -c sbcl --script headless.lisp out.png`: `SDL_VIDEODRIVER=offscreen`, `VK_DRIVER_FILES=…/lvp_icd.x86_64.json`; hidden 320×200 canvas, PNG (255, 188, 89); ~2 s for canvas, frames and capture. Without `LUV_PROJECT_ROOT` the script failed while loading the probe (luv not on the source registry).
+- Run 27: `nix build --impure -f sandbox.nix`: a `runCommand` with luv's slim development environment and hook, running the same script in the sandbox; "no /dev/dri", lavapipe, PNG in `$out` with the expected pixel; 21 s total.
+- Run 28: `env -u DISPLAY -u WAYLAND_DISPLAY SDL_VIDEODRIVER=offscreen VK_DRIVER_FILES=…lvp… luvcraft --smoke-test out.png` (built `#luvcraft` at R): exit 0 in 8.2 s; 960×640 frame: floating dark-stone islands with glowing cyan blocks under a pale sky, the player's hands, the hotbar with ten block icons and "Stone", "Creative · F6", status line with "fps 0".
+- Afterwards: no `sbcl` or Swash host process left (`ps`); `./sly list --all` shows all three images `exited`; `git -C ../luv status` unchanged; `/tmp/t18` deleted.
+
+## Appendix: screenshot probe
+
+The probe of runs 24–27: an ASDF system `t18-probe` (`:depends-on ("luv")`, one file) that opens a canvas, clears it every frame and takes an offscreen screenshot. It seeds the skeleton's screenshot and GPU test; `task 19: Probe program: a lit sphere in a luv window plus a screenshot` extends it to a sphere.
+
+```lisp
+(defpackage #:t18-probe (:use #:cl) (:export #:start #:stop #:screenshot #:*app*))
+(in-package #:t18-probe)
+
+(defclass app () ((canvas :initarg :canvas :reader app-canvas)
+                  (device :initarg :device :reader app-device)
+                  (color :initform (vector 1.0 0.5 0.1 1.0) :accessor app-color)))
+(defvar *app* nil)
+
+(defmethod luv:capture-canvas ((app app)) (app-canvas app))
+(defmethod luv:encode-capture-frame ((app app) capture encoder target extent)
+  (declare (ignore capture extent))
+  (luv:encode encoder (luv:make-gpu-clear-texture-command :texture target :color (app-color app))))
+
+(defun draw (app)
+  (let ((c (app-color app)))
+    (luv:render-canvas-color (luv:canvas-context (app-canvas app)) (aref c 0) (aref c 1) (aref c 2))))
+
+(defun start (&key (visible t))
+  (let* ((canvas (luv:make-sdl-canvas :title "t18 probe" :width 320 :height 200 :visible-p visible))
+         (_ (luv:open-canvas canvas))
+         (device (luv:request-gpu-device luv:*gpu-provider* (luv:make-device-descriptor :label "t18")))
+         (app (make-instance 'app :canvas canvas :device device)))
+    (declare (ignore _))
+    (luv:make-canvas-context canvas luv:*gpu-provider* (luv:make-canvas-configuration :device device))
+    (setf (luv:canvas-clock canvas)
+          (luv:make-cadence-clock (lambda (native ts) (declare (ignore native ts)) (draw app))
+                                  :frames-per-second 30))
+    (setf *app* app)))
+
+(defun screenshot (path) (luv:capture-application-screenshot *app* path))
+
+(defun stop (&optional (app *app*))
+  (let ((canvas (app-canvas app)))
+    (when (eq :open (luv:canvas-state canvas))
+      (setf (luv:canvas-clock canvas) (luv:make-demand-clock)))
+    (luv:close-canvas canvas)
+    (luv:destroy (app-device app))
+    (setf *app* nil)
+    (values)))
+```
+
+- Headless script: `(asdf:load-system "t18-probe")`, then `(luv:call-with-sdl-main-thread (lambda () (t18-probe:start :visible nil) (sleep 1) (t18-probe:screenshot path) (t18-probe:stop)))`, `(uiop:quit 0)`.
+- Sandbox derivation: `(builtins.getFlake …).lib.environmentFor "x86_64-linux"` as `e`; `e.pkgs.runCommand "…" (e.slimDevelopmentEnvironment // { nativeBuildInputs = e.slimDevelopmentPackages; })` with a script that sets `HOME=$TMPDIR`, `LUV_PROJECT_ROOT=<luv source>`, unsets `DISPLAY`/`WAYLAND_DISPLAY`, runs `e.slimDevelopmentEnvironmentHook` and `luv_activate_native_environment`, then `sbcl --script`.
 
 ## Gaps and workarounds
 

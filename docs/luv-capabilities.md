@@ -18,7 +18,7 @@ luv is a Common Lisp GPU workshop, not a general engine: a small WebGPU-shaped h
 
 luv defines many ASDF systems in `../luv/luv.asd`, `../luv/luvcraft.asd`, `../luv/luft.asd` and smaller `.asd` files. ★ marks the ones a game like ours likely loads; the rest are listed so a later reader knows what to skip.
 
-- ★ `luv`: HAL (`hal/gpu.lisp`), canvas protocol and SDL3 host, Vulkan backend (Metal on Darwin), PNG writing, offscreen captures, live artifacts, lifecycle/release, Slug text, SDL3 audio sink, CPU trace zones. Depends on `luv/arithmetic`, `luv/shader`, `luv/slug-shader`, `luv/spir-v`, `luv/msl`, `luv/wgsl`, `cffi`, `closer-mop`, `ieee-floats`, `sdl3` (cl-sdl3), `zpng`, `zpb-ttf`, `sb-posix`; on Darwin `luv/objective-c`, `float-features`, `trivial-main-thread` (read).
+- ★ `luv`: the only system the sphere probe needed (ran: run 30); HAL (`hal/gpu.lisp`), canvas protocol and SDL3 host, Vulkan backend (Metal on Darwin), PNG writing, offscreen captures, live artifacts, lifecycle/release, Slug text, SDL3 audio sink, CPU trace zones. Depends on `luv/arithmetic`, `luv/shader`, `luv/slug-shader`, `luv/spir-v`, `luv/msl`, `luv/wgsl`, `cffi`, `closer-mop`, `ieee-floats`, `sdl3` (cl-sdl3), `zpng`, `zpb-ttf`, `sb-posix`; on Darwin `luv/objective-c`, `float-features`, `trivial-main-thread` (read).
 - ★ `luv/shader`: the backend-neutral typed shader language and program linking; depends on `closer-mop`, `luv/arithmetic` (read).
 - ★ `luv/arithmetic`: semantic quantities (dimensions, units, points vs. differences), columnar records, a checked arithmetic compiled to Lisp, `vec3`; depends on `closer-mop`, `luv/domains` (read).
 - `luv/domains`: finite-domain protocols; no dependencies (read).
@@ -51,6 +51,10 @@ The HAL is a small explicit GPU API: devices, buffers, textures, samplers, bind 
 - Blending: opaque or `:premultiplied-alpha` per target; nothing else. Premultiplied output with alpha 0 adds colour, which covers additive glows (read; additive use assumed).
 - Back-face culling: off in the Vulkan backend (`:cull-mode nil` in `../luv/hal/vulkan/native.lisp`); no option to enable it (read).
 - Depth: only `:depth32-float`; every compare op (`:less`, `:greater`, `:greater-or-equal`, …) and a depth clear value in [0, 1] are accepted, so reversed-Z is expressible; depth clamp is not exposed. Luvcraft uses `:less`, clear 1.0, near 0.1 m, far 180 m (`../luv/luvcraft/simulation.lisp`, `render.lisp`) (read).
+- A game owns its projection: luv has no camera or projection helper; the clip rows come from the game's uniforms (ran: "Appendix: probe program").
+- Clip space on the Vulkan path: y points down, depth 0..1; the viewport is not flipped (`cmd-set-viewport-and-scissor` in `../luv/hal/vulkan/native.lisp`), so a game negates clip y, as Luvcraft's shaders do (ran: run 29, the first sphere came out upside down). Metal not checked.
+- Reversed-Z works: compare `:greater`, clear 0.0 and an infinite projection (`depth = near/z`) drew Earth from 629 km altitude and the Moon from 384,400 km, both with near 0.1 m; the standard projection (`:less`, clear 1.0, far 10^7 / 10^9 m) showed the sphere's far side bleeding through the near side at Earth scale and drew nothing at the Moon's distance, where `1 - near/z` rounds to 1.0 in single float (ran: runs 29–31).
+- Rendering to the window: the canvas's swapchain textures carry only `:copy-dst` unless the canvas configuration asks for more; a game that renders straight into them passes `:usage '(:render-attachment :copy-dst)` to `make-canvas-configuration`. Render passes take texture views, not textures (`:unsupported-render-pass` otherwise), and a view destroyed before `submit` fails (`gpu-object-destroyed-error`), so views live as long as their texture (ran: run 29).
 - Shader language (`../luv/hal/shader/language.lisp`, `../luv/wiki/mathematical-shaders.org`): vertex, fragment, compute, task and mesh stages; types `float`, `int`, `uint`, `uint64`, `bool`, `vec2..4`, `ivec`, `uvec`, `mat2..4` (column-major), structures; resources: uniform blocks (vec4 lanes, mat4), storage buffers, `texture-2d`, `texture-2d-array`, `texture-cube`, `texture-3d`, depth textures with comparison samplers, read-write textures; GLSL-style math (`mix`, `clamp`, `smoothstep`, `normalize`, `expt`, …), conditionals, bounded folds, no general loops (read).
 - No 64-bit floats in shaders: all float types are 32-bit (read).
 - Shaders are lowered to SPIR-V (assembled in Lisp; no external compiler), MSL, WGSL, HLSL; `luv-shaderc` does the same ahead of time (ran: run 10, SPIR-V passes `spirv-val`; at run time Luvcraft logs each SPIR-V module it prepares, run 6).
@@ -210,6 +214,17 @@ Runs 15–28 are from 2026-10-14 at R, by `task 18: Try luv's live image, screen
 - Run 28: `env -u DISPLAY -u WAYLAND_DISPLAY SDL_VIDEODRIVER=offscreen VK_DRIVER_FILES=…lvp… luvcraft --smoke-test out.png` (built `#luvcraft` at R): exit 0 in 8.2 s; 960×640 frame: floating dark-stone islands with glowing cyan blocks under a pale sky, the player's hands, the hotbar with ten block icons and "Stone", "Creative · F6", status line with "fps 0".
 - Afterwards: no `sbcl` or Swash host process left (`ps`); `./sly list --all` shows all three images `exited`; `git -C ../luv status` unchanged; `/tmp/t18` deleted.
 
+Runs 29–31 are from 2026-10-14 at R, by `task 19: Probe program: a lit sphere in a luv window plus a screenshot`, with the probe of "Appendix: probe program" in a `mktemp -d` directory, loaded from luv's default dev shell straight against `../luv` (`LUV_PROJECT_ROOT=../luv`; FASLs go to `~/.cache`, nothing was written into `../luv`).
+
+- Run 29: first attempts, visible windows: `GPU request failed during :CREATE: :UNSUPPORTED-RENDER-PASS` (the swapchain texture passed as `:view`); then "requires usage :RENDER-ATTACHMENT … but was created with (:COPY-DST)" and "has already been destroyed during :SUBMIT" (a view destroyed right after `end-pass`); then a lit sphere, upside down (clip y). Each fixed as noted under Rendering.
+- Run 30: `env -u LD_LIBRARY_PATH LUV_PROJECT_ROOT=../luv nix develop path:../luv -c sbcl --script run.lisp OUT t`: 11 s wall for five scenes (load, five windows, five captures); each scene 1.6–1.7 s for open, 1 s of frames, capture, close; visible windows captured at the compositor's 959×1010.
+  - `small-standard`: a blue sphere on black, lit from the upper left, terminator on the right, dark side faintly visible (3 % ambient).
+  - `earth-standard`: Earth's limb across the lower half, black space above; lighter and darker facet patches scattered over the surface, the far hemisphere showing through (no culling, depth precision gone).
+  - `earth-reversed`: the same view, clean surface; the limb is visibly polygonal (64 slices at 7,000 km).
+  - `moon-standard`: all black. `moon-reversed`: a lit disc a few pixels wide in the centre (1,737 km radius at 384,400 km).
+- Run 31: the same with `env -u DISPLAY -u WAYLAND_DISPLAY` and hidden canvases (`OUT nil`): the hook chose `SDL_VIDEODRIVER=offscreen` and lavapipe; 10 s wall; five 640×400 PNGs matching run 30 (each scene 1.5–1.6 s).
+- Afterwards: no `sbcl` process left; `git -C ../luv status` shows only the old `result`; the temp dir deleted.
+
 ## Appendix: screenshot probe
 
 The probe of runs 24–27: an ASDF system `t18-probe` (`:depends-on ("luv")`, one file) that opens a canvas, clears it every frame and takes an offscreen screenshot. It seeds the skeleton's screenshot and GPU test; `task 19: Probe program: a lit sphere in a luv window plus a screenshot` extends it to a sphere.
@@ -259,20 +274,313 @@ The probe of runs 24–27: an ASDF system `t18-probe` (`:depends-on ("luv")`, on
 - Headless script: `(asdf:load-system "t18-probe")`, then `(luv:call-with-sdl-main-thread (lambda () (t18-probe:start :visible nil) (sleep 1) (t18-probe:screenshot path) (t18-probe:stop)))`, `(uiop:quit 0)`.
 - Sandbox derivation: `(builtins.getFlake …).lib.environmentFor "x86_64-linux"` as `e`; `e.pkgs.runCommand "…" (e.slimDevelopmentEnvironment // { nativeBuildInputs = e.slimDevelopmentPackages; })` with a script that sets `HOME=$TMPDIR`, `LUV_PROJECT_ROOT=<luv source>`, unsets `DISPLAY`/`WAYLAND_DISPLAY`, runs `e.slimDevelopmentEnvironmentHook` and `luv_activate_native_environment`, then `sbcl --script`.
 
+## Appendix: probe program
+
+The probe of runs 29–31, by `task 19: Probe program: a lit sphere in a luv window plus a screenshot`: an ASDF system `sphere-probe` (`:depends-on ("luv")`, two files) that draws a UV sphere (32 stacks, 64 slices, 12,288 vertices, unit positions as normals) with a vertex and a fragment shader in luv's shader language, Lambert diffuse light from a sun direction, a camera with camera-relative positions computed in `double-float`, a depth buffer, and an offscreen screenshot. It seeds `plan 8: walking skeleton`.
+
+- Needed systems: only `luv`. Its dependencies bring the shader language (`luv/shader`), its SPIR-V lowering and `luv/arithmetic`; shader files use a package with `(:use #:cl #:luv.shader)` and `(:shadowing-import-from #:luv.shader #:step)`, like luv's `luv.shader-user`.
+- What a game writes itself: the projection and camera, mesh generation, the depth target, texture views and their lifetime, pipeline creation (`make-render-pipeline-descriptor`), the frame function (`present-canvas-frame`) and the two capture methods.
+- Shaders are compiled at `start` with `make-shader-module-descriptor :language :mathematical :code (sphere-vertex)`; a game that wants live shader edits uses `make-live-shader-pipeline` with `define-shader-method` roles instead (see Rendering) (not tried here).
+- Leaks accepted in a probe: the per-frame uniform write while the previous frame may be in flight, depth targets after a resize, capture views; the game keeps per-frame resources in `canvas-frame-resource-cache` slots.
+- Run: `env -u LD_LIBRARY_PATH LUV_PROJECT_ROOT=<luv checkout> nix develop --accept-flake-config path:<luv checkout> -c sbcl --script run.lisp OUT-DIR t` (visible windows; `nil` for hidden canvases, and also `-u DISPLAY -u WAYLAND_DISPLAY` for headless). Time: about 2 s per scene after the first load; luv's FASLs were cached from earlier runs.
+
+`sphere-probe.asd`:
+
+```lisp
+(defsystem "sphere-probe"
+  :depends-on ("luv")
+  :serial t
+  :components ((:file "shaders") (:file "sphere")))
+```
+
+`shaders.lisp`:
+
+```lisp
+(defpackage #:sphere-probe.shaders
+  (:use #:cl #:luv.shader)
+  (:shadowing-import-from #:luv.shader #:step))
+(in-package #:sphere-probe.shaders)
+
+;; Unit-sphere vertices; the uniform block places the sphere relative to the
+;; camera and projects it through four clip rows.
+(define-shader sphere-vertex
+    (:stage :vertex
+     :inputs ((unit :vec3 :location 0))
+     :outputs ((clip-position :vec4 :built-in :position)
+               (normal :vec3 :location 0))
+     :resources ((frame :uniform-block :binding 0
+                  :members ((clip-x :vec4) (clip-y :vec4)
+                            (clip-z :vec4) (clip-w :vec4)
+                            (body :vec4) (sun :vec4)))))
+  (let* ((point (vec4 (+ (swizzle body :xyz) (* unit (swizzle body :w))) 1.0)))
+    (set-output clip-position
+                (vec4 (dot clip-x point) (dot clip-y point)
+                      (dot clip-z point) (dot clip-w point)))
+    (set-output normal unit)))
+
+(define-shader sphere-fragment
+    (:stage :fragment
+     :inputs ((normal :vec3 :location 0))
+     :outputs ((color :vec4 :location 0))
+     :resources ((frame :uniform-block :binding 0
+                  :members ((clip-x :vec4) (clip-y :vec4)
+                            (clip-z :vec4) (clip-w :vec4)
+                            (body :vec4) (sun :vec4)))))
+  (let* ((n (normalize normal))
+         (diffuse (clamp (dot n (swizzle sun :xyz)) 0.0 1.0))
+         (albedo (vec3 0.25 0.45 0.9)))
+    (set-output color (vec4 (+ (* albedo diffuse) (* albedo 0.03)) 1.0))))
+```
+
+`sphere.lisp`:
+
+```lisp
+(defpackage #:sphere-probe
+  (:use #:cl)
+  (:export #:start #:stop #:screenshot #:*app*))
+(in-package #:sphere-probe)
+
+;;; Scenes: eye, target, body centre and radius in metres (double-float),
+;;; near and far planes, and the depth mode (:standard or :reversed).
+(defparameter *scenes*
+  '(:small (:eye (0d0 0d0 3d0) :target (0d0 0d0 0d0)
+            :center (0d0 0d0 0d0) :radius 1d0 :near 0.1d0 :far 100d0)
+    ;; Earth from 629 km altitude, looking 70 degrees up from nadir so the
+    ;; limb crosses the view.
+    :earth (:eye (0d0 0d0 7d6) :target (0d0 0.9397d6 6.658d6)
+            :center (0d0 0d0 0d0) :radius 6.371d6 :near 0.1d0 :far 1d7)
+    ;; The Moon from Earth's distance.
+    :moon (:eye (0d0 0d0 3.844d8) :target (0d0 0d0 0d0)
+           :center (0d0 0d0 0d0) :radius 1.737d6 :near 0.1d0 :far 1d9)))
+
+(defun v- (a b) (mapcar #'- a b))
+(defun dot3 (a b) (reduce #'+ (mapcar #'* a b)))
+(defun cross (a b)
+  (destructuring-bind ((ax ay az) (bx by bz)) (list a b)
+    (list (- (* ay bz) (* az by)) (- (* az bx) (* ax bz)) (- (* ax by) (* ay bx)))))
+(defun unit (a) (let ((l (sqrt (dot3 a a)))) (mapcar (lambda (x) (/ x l)) a)))
+
+(defun uniform-data (scene depth width height)
+  "Clip rows for camera-relative points, the body relative to the eye, the sun."
+  (destructuring-bind (&key eye target center radius near far) scene
+    (let* ((forward (unit (v- target eye)))
+           (right (unit (cross forward '(0d0 1d0 0d0))))
+           (up (cross right forward))
+           (focal (/ (tan (/ (* 50 (/ pi 180)) 2))))
+           (aspect (/ width height))
+           (rows
+             (list (append (mapcar (lambda (x) (* x (/ focal aspect))) right) '(0))
+                   ;; clip y points down on luv's Vulkan path
+                   (append (mapcar (lambda (x) (* x (- focal))) up) '(0))
+                   (ecase depth
+                     ;; depth = far/(far-near) * (1 - near/z), compare :less
+                     (:standard
+                      (append (mapcar (lambda (x) (* x (/ far (- far near)))) forward)
+                              (list (/ (* far near) (- near far)))))
+                     ;; infinite reversed-Z: depth = near/z, compare :greater
+                     (:reversed (list 0 0 0 near)))
+                   (append forward '(0))
+                   (append (v- center eye) (list radius))
+                   (append (unit '(-1d0 0.6d0 0.8d0)) '(0)))))
+      (map '(simple-array single-float (*))
+           (lambda (x) (coerce x 'single-float))
+           (apply #'append rows)))))
+
+(defun uv-sphere (&key (stacks 32) (slices 64))
+  "Triangle-list positions of a unit sphere."
+  (let ((data (make-array 0 :element-type 'single-float :adjustable t :fill-pointer 0)))
+    (flet ((corner (i j)
+             (let ((theta (* pi (/ i stacks))) (phi (* 2 pi (/ j slices))))
+               (dolist (x (list (* (sin theta) (cos phi)) (cos theta)
+                                (* (sin theta) (sin phi))))
+                 (vector-push-extend (coerce x 'single-float) data)))))
+      (dotimes (i stacks)
+        (dotimes (j slices)
+          (loop for (a b) in '((0 0) (1 0) (1 1) (0 0) (1 1) (0 1))
+                do (corner (+ i a) (+ j b))))))
+    (coerce data '(simple-array single-float (*)))))
+
+(defclass app ()
+  ((canvas :initarg :canvas :reader app-canvas)
+   (device :initarg :device :reader app-device)
+   (context :initarg :context :reader app-context)
+   (scene :initarg :scene :accessor app-scene)
+   (depth :initarg :depth :reader app-depth)
+   (vertices :initarg :vertices :reader app-vertices)
+   (vertex-count :initarg :vertex-count :reader app-vertex-count)
+   (uniforms :initarg :uniforms :reader app-uniforms)
+   (layout :initarg :layout :reader app-layout)
+   (bind-group :initarg :bind-group :reader app-bind-group)
+   (modules :initarg :modules :reader app-modules)
+   (pipeline :initarg :pipeline :reader app-pipeline)
+   (depth-target :initform nil :accessor app-depth-target)
+   (color-views :initform (make-hash-table :test #'eq) :reader app-color-views)))
+
+(defvar *app* nil)
+
+(defun depth-view (app extent)
+  "A depth32-float texture and view of EXTENT, remade when the size changes."
+  (let ((cached (app-depth-target app)))
+    (if (and cached (equal (first cached) extent))
+        (third cached)
+        (let* ((device (app-device app))
+               (texture (luv:create device (luv:make-texture-descriptor
+                                            :label "sphere depth" :size extent
+                                            :dimensions :2d :format :depth32-float
+                                            :usage '(:render-attachment))))
+               (view (luv:create device (luv:make-texture-view-descriptor
+                                         :texture texture))))
+          ;; The old target may still be in flight; a probe just leaks it.
+          (setf (app-depth-target app) (list extent texture view))
+          view))))
+
+;; A view must outlive the submit; one per swapchain or capture texture.
+(defun color-view (app texture)
+  (or (gethash texture (app-color-views app))
+      (setf (gethash texture (app-color-views app))
+            (luv:create (app-device app)
+                        (luv:make-texture-view-descriptor :texture texture)))))
+
+(defun encode-scene (app encoder target extent)
+  (luv:write-buffer (app-uniforms app)
+                    (uniform-data (getf *scenes* (app-scene app)) (app-depth app)
+                                  (first extent) (second extent)))
+  (let* ((view (color-view app target))
+         (pass (luv:begin-render-pass
+               encoder
+               (luv:make-render-pass-descriptor
+                :color-attachments
+                `((:view ,view :load-op :clear :store-op :store
+                   :clear-value #(0.0 0.0 0.0 1.0)))
+                :depth-stencil-attachment
+                `(:view ,(depth-view app extent)
+                  :depth-load-op :clear :depth-store-op :store
+                  :depth-clear-value ,(if (eq (app-depth app) :reversed) 0.0 1.0))))))
+    (luv:set-pipeline pass (app-pipeline app))
+    (luv:set-bind-group pass 0 (app-bind-group app))
+    (luv:set-vertex-buffer pass 0 (app-vertices app))
+    (luv:draw pass (app-vertex-count app))
+    (luv:end-pass pass)))
+
+(defmethod luv:capture-canvas ((app app)) (app-canvas app))
+(defmethod luv:encode-capture-frame ((app app) capture encoder target extent)
+  (declare (ignore capture))
+  (encode-scene app encoder target extent))
+
+(defun draw (app)
+  (let ((context (app-context app)))
+    (luv:present-canvas-frame
+     context
+     (lambda (texture encoder time)
+       (declare (ignore time))
+       (encode-scene app encoder texture (luv:canvas-extent context))))))
+
+(defun start (&key (visible t) (scene :small) (depth :standard)
+                (width 640) (height 400))
+  (let* ((canvas (luv:make-sdl-canvas :title "sphere probe" :width width :height height
+                                      :visible-p visible))
+         (_ (luv:open-canvas canvas))
+         (device (luv:request-gpu-device luv:*gpu-provider*
+                                         (luv:make-device-descriptor :label "sphere")))
+         (context (luv:make-canvas-context canvas luv:*gpu-provider*
+                                           (luv:make-canvas-configuration
+                                            :device device
+                                            :usage '(:render-attachment :copy-dst))))
+         (mesh (uv-sphere))
+         (vertices (luv:create device (luv:make-buffer-descriptor
+                                       :label "sphere" :size (* 4 (length mesh))
+                                       :usage '(:vertex :copy-dst))))
+         (uniforms (luv:create device (luv:make-buffer-descriptor
+                                       :label "frame" :size (* 4 24) :usage '(:uniform))))
+         (layout (luv:create device (luv:make-bind-group-layout-descriptor
+                                     :entries '((:binding 0 :type :uniform-buffer)))))
+         (bind-group (luv:create device (luv:make-bind-group-descriptor
+                                         :layout layout
+                                         :entries `((:binding 0 :resource ,uniforms)))))
+         (vertex-module (luv:create device (luv:make-shader-module-descriptor
+                                            :language :mathematical
+                                            :code (sphere-probe.shaders::sphere-vertex))))
+         (fragment-module (luv:create device (luv:make-shader-module-descriptor
+                                              :language :mathematical
+                                              :code (sphere-probe.shaders::sphere-fragment))))
+         (pipeline
+           (luv:create device
+                       (luv:make-render-pipeline-descriptor
+                        :label "sphere" :layout layout
+                        :vertex `(:module ,vertex-module
+                                  :buffers ((:array-stride 12
+                                             :attributes ((:shader-location 0 :offset 0
+                                                           :format :float32x3)))))
+                        :fragment `(:module ,fragment-module
+                                    :targets ((:format ,(luv:canvas-format context))))
+                        :primitive '(:topology :triangle-list)
+                        :depth-stencil `(:format :depth32-float :depth-write-enabled t
+                                         :depth-compare ,(if (eq depth :reversed)
+                                                             :greater :less)))))
+         (app (make-instance 'app :canvas canvas :device device :context context
+                                  :scene scene :depth depth
+                                  :vertices vertices :vertex-count (/ (length mesh) 3)
+                                  :uniforms uniforms :layout layout :bind-group bind-group
+                                  :modules (list vertex-module fragment-module)
+                                  :pipeline pipeline)))
+    (declare (ignore _))
+    (luv:write-buffer vertices mesh)
+    (setf (luv:canvas-clock canvas)
+          (luv:make-cadence-clock (lambda (native ts) (declare (ignore native ts)) (draw app))
+                                  :frames-per-second 30))
+    (setf *app* app)))
+
+(defun screenshot (path) (luv:capture-application-screenshot *app* path))
+
+(defun stop (&optional (app *app*))
+  (let ((canvas (app-canvas app)))
+    (when (eq :open (luv:canvas-state canvas))
+      (setf (luv:canvas-clock canvas) (luv:make-demand-clock)))
+    (luv:close-canvas canvas)
+    (luv:destroy (app-device app))
+    (setf *app* nil)
+    (values)))
+```
+
+`run.lisp`:
+
+```lisp
+;; sbcl --script run.lisp OUT-DIR VISIBLE(t|nil)
+(require :asdf)
+(asdf:load-asd (merge-pathnames "probe/sphere-probe.asd" *load-truename*))
+(asdf:load-system "sphere-probe")
+(let ((out (second sb-ext:*posix-argv*))
+      (visible (string= "t" (third sb-ext:*posix-argv*))))
+  (luv:call-with-sdl-main-thread
+   (lambda ()
+     (loop for (scene depth) in '((:small :standard) (:earth :standard) (:earth :reversed)
+                                    (:moon :standard) (:moon :reversed))
+           for name = (format nil "~A/~(~A-~A~).png" out scene depth)
+           do (let ((start (get-internal-real-time)))
+                (sphere-probe:start :visible visible :scene scene :depth depth)
+                (sleep 1)
+                (sphere-probe:screenshot name)
+                (sphere-probe:stop)
+                (format t "~&~A in ~,1F s~%" name
+                        (/ (- (get-internal-real-time) start)
+                           internal-time-units-per-second)))))))
+(uiop:quit 0)
+```
+
 ## Gaps and workarounds
 
 Filled in by `task 20: Assess luv's rendering gaps for solar-system scale, each with a workaround` and `task 21: Remaining gaps, luv wishlist, summary and decisions of the luv findings`. Gaps already visible from reading, for those tasks to assess:
 
-- Depth range across 10^12 m: only `:depth32-float`, but `:greater` and clear 0.0 allow reversed-Z (read).
+- Depth range across 10^12 m: only `:depth32-float`, but `:greater` and clear 0.0 allow reversed-Z; an infinite reversed-Z projection with near 0.1 m drew Earth from orbit and the Moon from Earth's distance, where the standard projection failed (ran: runs 30, 31).
 - Double-precision positions: no f64 on the GPU; camera-relative single-float positions needed (read).
-- Spheres and planet surfaces: no mesh generators; no texture loading (read).
+- Spheres and planet surfaces: no mesh generators; no texture loading (read). A 64-slice UV sphere generated in Lisp shows a polygonal limb from low orbit (ran: run 30); planets need finer or view-dependent tessellation, or a per-pixel ray–sphere fragment shader.
 - Starfield: Luvcraft's stars are procedural hashes; luft's "stars" are cubical-topology neighbourhoods, not astronomy (`../luv/wiki/luft-star-figures.org`) (read).
 - Orbit lines and markers: no line or point topology (read).
 - HUD/2D overlay: Slug text and McCLIM exist; no simple screen-space 2D layer in core (read).
 - Audio: `audio-sink` in base `luv` (`../luv/hal/sdl/audio.lisp`) plays pushed float frames through SDL3; no mixer or sound loading (read).
 - Saves: Luvcraft writes s-expressions under `$XDG_DATA_HOME/luvcraft` (`../luv/luvcraft/play.lisp`, `persistence.lisp`) (read).
 - Gamepad: not in the canvas protocol (read).
-- Back-face culling not available (read).
+- Back-face culling not available (read); with a broken depth range the far hemisphere of a sphere shows through (ran: run 30).
 
 ## What this means for luv-in-space
 

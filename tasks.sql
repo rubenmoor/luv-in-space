@@ -297,7 +297,61 @@ Last: make the milestone''s "Done when" true.
 - The four documents agree with each other and with the skeleton (units, names, features, milestone assignments); every feature in `docs/design.md` is assigned to milestones 2 to 6 or cut; the story uses only features in scope by milestone 5.
 - The skeleton builds and runs from a clean checkout with the `AGENTS.md` commands, its test passes, the screenshot command works.
 - Add follow-up tasks for anything the later milestones need from these documents that is still missing.', '2026-10-14T16:06:30Z', NULL);
-INSERT INTO plan (id, milestone_id, subject, priority, body, created_at, created_by_task) VALUES (2, 2, 'masterplan', 1000, 'tbd.', '2026-10-14T16:06:59Z', NULL);
+INSERT INTO plan (id, milestone_id, subject, priority, body, created_at, created_by_task) VALUES (2, 2, 'masterplan', 1000, 'The masterplan of `milestone 2: Flight core: Newtonian flight in near-Earth orbit`. The specification is `docs/design.md` "Scope" → "Feature list", the rows with milestone 2 (`decision 42: Scope: what each milestone builds`, `decision 62: Scope: must rows for each milestone''s Outcome`), built as `docs/architecture.md` sets out; "Each milestone against its Outcome and Done when" maps them onto the milestone. The work is divided into ten parts below, in the order they should run.
+
+**The tasks of this masterplan are not implementation work: each of them writes the plan for one part** (`pm plan add 2 "<subject>" --priority N`), with its tasks split from it later. Each part plan names its files, its tests and its docs changes, and cites the sections and decisions it builds on.
+
+## Rules for every part
+- Files and load order: `docs/architecture.md` "Files in load order" (`decision 12: Module layout and package split`); a file is created by the part named here, extended by later milestones. Simulation files (`math` … `flights`) never call the HAL or SDL.
+- Tests: `docs/architecture.md` "Testing" gives each test and its bound (`decision 21: Physics test bounds and flight scripts`); each test is written by the task that writes the code it checks; `scripts/test` stays under ~15 s, physics under ~5 s.
+- Live-redefinable code: the rules of `docs/architecture.md` "Dev loop" (state in `*game*`, `defparameter` tunables, lambdas calling named functions).
+- Precision and depth: `decision 4: Depth strategy`, `decision 5: Precision of positions`; pipelines are luv live shader pipelines (`decision 11: Render pipelines are luv live shader pipelines`).
+- Milestone 2 integrates the ship in Earth''s frame only: re-centring between Earth, Moon and Sun frames, SOI drop-outs and the planets are `milestone 4`''s rows; Earth''s gravity with J2, the Moon and the Sun as third bodies are in (`decision 17: Gravity model`).
+- Unfinished parts carry `PLACEHOLDER(<task id>)`; gaps in luv go to `docs/luv-capabilities.md` and `docs/luv-wishlist.md` ("luv wishlist").
+- Each part keeps `docs/` and `AGENTS.md` in step with what it builds (a new command in "Commands", a changed file in "Layout" or "Files in load order").
+
+## Parts
+
+### 1. Simulation foundations: math, units, bodies, orbits (priority 700)
+- `math.lisp` (double vec3, quaternions, the single-float boundary), `units.lisp` (μ from DE440, radii from IAU, J2, g₀, `*start-date*` 2040-01-01 00:00 UTC, the calendar, display conversions), `bodies.lisp` (Sun, Earth, Moon: μ, radius, rotation, Earth Rotation Angle; ephemerides of `decision 18: Ephemerides` with the Hermite node cache), `orbits.lisp` (ellipse elements ↔ state with non-singular forms, Kepler propagation, apsides, period, radius crossings; hyperbolas for osculating display of an escape, the rest is `milestone 4`''s).
+- Tests: `tests/units.lisp`, `tests/bodies.lisp` (Horizons spot checks for the Moon and the Earth–Moon barycentre, cache), `tests/orbits.lisp` (round trips), from "Rails, orbits and frames".
+
+### 2. Ship, integrator and flight computer (priority 680)
+- `physics.lisp` (state, gravity: Earth with J2 plus Sun and Moon with indirect terms, RK4 on r, v, q, ω, m_p with the full inertia tensor, the step rule), `ship.lisp` (the Mule''s parts, mass, CoM, tensor per propellant load, engine 10–100 % through the CoM, the 24 RCS thrusters, one propellant pool; `docs/design.md` "The ship(s)", `decision 22: The player''s ship and its propulsion`), `controls.lisp` (control state, the RCS mixer, direct / rate damping / holds 1–6 and R / fine control; "Control modes", `decision 29: Control scheme: key map, control modes, gamepad`).
+- Tests: the drift table, rotation and thrust tests of "Drift bounds"; the ship''s mass and tensor against `docs/design.md` "Inertia"; the mixer gives commanded torque exactly; holds settle within 0.1°.
+
+### 3. Clock, warp, hazards and events (priority 660)
+- `clock.lisp` (the frame accumulator, fine and coarse steps, eight warp levels, refusals, thrust limits ×10 / ×100, pause, the simulation state as one copyable object, the start-state checkpoint and its restore; `decision 16: Integrator and simulation clock`, `decision 19: Time-warp rules`, `decision 31: Warp choices within the time-warp rules`), `hazards.lisp` (swept crash test against Earth R+100 km and the Moon R, exact impact time and point, death stops the simulation; `decision 34: How death works`), `prediction.lisp` (the milestone-2 events: apsides, impact, periapsis below the crash radius, a scheduled cut-off, for drop-outs and scripts).
+- Tests: `tests/clock.lisp` (bit-for-bit through the clock at every level and frame rate, warp transitions, refusals, drop-outs to ×1 at an impact), `tests/hazards.lisp` (crash detection), `tests/prediction.lisp`, the polar start orbit''s node test, checkpoints.
+
+### 4. Rendering foundation and assets (priority 500)
+- `gpu.lisp`, `camera.lisp` (the one projection function, camera-relative conversion), `post.lisp` (HDR target, bloom, tone map, exposure), `render.lisp` (the passes in order), `assets.lisp` and the packaging of `assets/` (`LUV_IN_SPACE_ASSETS`, `decision 13: Asset storage and attribution`, checked with `nix build` and `nix run`); `main.lisp`''s frame runs the clock and renders from the simulation state with interpolation; `scene.lisp`, `tests/scene.lisp` and `PLACEHOLDER(23)` go, their checks move to `tests/render.lisp`; `capture.lisp` renders a given state ("GPU tests").
+- Tests: `tests/camera.lisp`, `tests/render.lisp` image checks.
+
+### 5. Earth, Moon, Sun and stars (priority 480: before the views and the map, which draw them)
+- `stars.lisp` and `scripts/convert-stars` (HYG ≤ 6.5 as `assets/stars/hyg-6.5.sexp`, licence files), `impostors.lisp`: Earth from Blue Marble January with its rotation, the atmosphere rim and the R+100 km halo (`decision 40: Earth''s look and drag`), the Sun''s disc with limb darkening and glare through `post.lisp`, the Moon as an untextured grey Lambert sphere; `assets/*/SOURCE.md`, `CREDITS.md`.
+- Tests: image checks of a lit Earth disc, the Sun''s glare, stars-only frames (`docs/architecture.md` "GPU tests").
+
+### 6. The Mule''s meshes (priority 470)
+- `meshes.lisp`: the parts list of `docs/design.md` "How they look" as generated meshes, instanced where repeated; materials (bare steel, foil, white cab with the stencilled registration "M-07", `decision 49: Story: names, call signs and ships`), lit by the Sun; "should": engine glow while firing, navigation lights and strobe.
+- Tests: an image check of the ship in front of a known background.
+
+### 7. Input and the outside view (priority 450)
+- `input.lisp`: the milestone-2 key map and mouse of `docs/design.md` "Controls" (physical keys, held keys, focus loss, real-time ramps), writing `controls`; the outside view''s orbit camera (orbital frame or locked with C, wheel distance 12 m–5 km, right-drag, Home; `decision 30: Views and cameras`); Escape and Control+Q quit; the window title listing the main keys.
+- Tests: key events to controls without a canvas where possible.
+
+### 8. The basic map (priority 420)
+- The map view (M): true scale, focus ship / Earth with Tab, wheel and Page zoom to 100 AU with easing, bodies below 6 px as labelled markers, fixed exposure; `ribbons.lisp`: the ship''s osculating orbit (cyan, 2 px) with apoapsis, periapsis and impact markers ("Views").
+- Tests: ribbon vertices in double relative to the body; an image check of the map frame.
+
+### 9. Minimal readout, messages and the LOST panel (priority 400)
+- `overlay.lisp`: the dot-matrix overlay (`decision 7: Placeholder labels: dot-matrix overlay quads`) with the milestone-2 rows of `docs/design.md` "Instruments" (altitude, speed, Ap/Pe, throttle, propellant, attitude mode, warp with actual rate and PAUSED, UTC date, alarms); warp refusal and drop-out messages for 3 s; the death view (camera fixed, 3 s orange glow) and the "LOST: CRASH" panel with Return and N restarting from the start state ("Dying and what follows").
+- Tests: readout values from a known state; restart restores the start state bit for bit.
+
+### 10. Flight scripts and the Done when (priority 250: after every other part, since the scripts'' screenshots need the whole picture)
+- `flights.lisp` (after `prediction.lisp`): the milestone-2 actions, waits and expectations of `docs/architecture.md` "Scripted runs" (`decision 21`, `decision 56: Flight-script actions, start states and the quest play-through`), `run-flight` headless and `fly` live; `flights/burn.sexp`, `raise-orbit.sexp`, `deorbit.sexp`; `scripts/fly <name> <out-dir>` with a PNG per `:screenshot`; `AGENTS.md` "Commands".
+- Tests: the scripts headless in `scripts/test` (determinism: twice, bit-identical), their expectations pass.
+- The Done when: from a clean checkout an agent starts the game, flies the raise and the deorbit (scripts headless with screenshots, and once live with `./sly` or `nix run`), and checks that `AGENTS.md` and `docs/` match what was built.', '2026-10-14T16:06:59Z', NULL);
 INSERT INTO plan (id, milestone_id, subject, priority, body, created_at, created_by_task) VALUES (3, 3, 'masterplan', 1000, 'tbd.', '2026-10-14T16:07:00Z', NULL);
 INSERT INTO plan (id, milestone_id, subject, priority, body, created_at, created_by_task) VALUES (4, 4, 'masterplan', 1000, 'tbd.', '2026-10-14T16:07:01Z', NULL);
 INSERT INTO plan (id, milestone_id, subject, priority, body, created_at, created_by_task) VALUES (5, 5, 'masterplan', 1000, 'tbd.', '2026-10-14T16:07:15Z', NULL);
@@ -661,9 +715,9 @@ INSERT INTO plan (id, milestone_id, subject, priority, body, created_at, created
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (1, 1, 'write the masterplan of milestone 1: Scope and design: what luv can carry, what the game is', 'masterplan', 'done', NULL, '2026-10-14, plan 1 body (tasks.sql)', 'Write `plan 1: masterplan`, the masterplan of `milestone 1: Scope and design: what luv can carry, what the game is`: expand on everything that needs to be done to achieve it,
 divided into parts. State in the masterplan that its own tasks are not implementation work: each of them writes the
 plan for one part.', '2026-10-14T16:06:30Z', '2026-10-14T16:11:05Z', NULL, 0);
-INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (2, 2, 'write the masterplan of milestone 2: Flight core: Newtonian flight in near-Earth orbit', 'masterplan', 'open', NULL, NULL, 'Write `plan 2: masterplan`, the masterplan of `milestone 2: Flight core: Newtonian flight in near-Earth orbit`: expand on everything that needs to be done to achieve it,
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (2, 2, 'write the masterplan of milestone 2: Flight core: Newtonian flight in near-Earth orbit', 'masterplan', 'done', NULL, '2026-10-14, tasks.sql (plan 2: masterplan body: ten parts with priorities)', 'Write `plan 2: masterplan`, the masterplan of `milestone 2: Flight core: Newtonian flight in near-Earth orbit`: expand on everything that needs to be done to achieve it,
 divided into parts. State in the masterplan that its own tasks are not implementation work: each of them writes the
-plan for one part.', '2026-10-14T16:06:59Z', NULL, NULL, 0);
+plan for one part.', '2026-10-14T16:06:59Z', '2026-10-14T21:58:18Z', NULL, 0);
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (3, 3, 'write the masterplan of milestone 3: Cockpit and autopilot: the DIY cockpit, orbits and Earth-orbit presets', 'masterplan', 'open', NULL, NULL, 'Write `plan 3: masterplan`, the masterplan of `milestone 3: Cockpit and autopilot: the DIY cockpit, orbits and Earth-orbit presets`: expand on everything that needs to be done to achieve it,
 divided into parts. State in the masterplan that its own tasks are not implementation work: each of them writes the
 plan for one part.', '2026-10-14T16:07:00Z', NULL, NULL, 0);
@@ -1405,6 +1459,9 @@ INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, crea
 * delete code that isn''t actually used
 * check pending decisions if they are still relevant and really pending
 * check other milestones if their contents are up-to-date; raise a decision for each change they need', '2026-10-14T21:55:01Z', '2026-10-14T21:56:13Z', NULL, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (71, 2, 'create tasks for plan 2: masterplan', 'split', 'open', 1000, NULL, 'Split `plan 2: masterplan` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
+done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
+tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-14T21:58:10Z', NULL, 2, 0);
 
 INSERT INTO decision (id, subject, status, options, body, answer, reason, created_at, closed_at, created_by_task, signoff, kind, decided_by_task, consequences) VALUES (1, 'How the game consumes luv', 'answered', '[]', 'Findings of `task 17: Build and run luv''s programs and test suite; record the runs` (docs/luv-capabilities.md, Packaging and Runs).
 - luv''s flake exports apps, devShells, packages and lib; lib has only environmentFor, which returns everything the packaging needs (pkgs, lisp, applicationEnvironment/Packages, developmentEnvironmentHook, slynkSource, swashPackage, …). No overlays.
@@ -1552,6 +1609,7 @@ INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, b
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (65, 69, '2026-10-14T21:42:56Z', '2026-10-14T21:52:22Z', 'done', NULL, 0, '268b71f4d6baf4f39fbf6585031f611ba7a06e5e', 'claude-opus-5-5[1m]', '839e0f5e-7896-43c7-8cfe-dc3d830d0274', 40, 66, 44520, 3559809, 138447, 2.7102018, 2373073);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (66, 67, '2026-10-14T21:52:22Z', '2026-10-14T21:55:01Z', 'done', NULL, 0, 'f5dd0f3eb77f2524fa788e8786e5e7e689079789', 'claude-opus-5-5[1m]', '29694c89-a7a4-43df-b092-d0ea4ecf3d1d', 21, 40, 7025, 1004134, 63395, 0.84864679999999992, 2373073);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (67, 70, '2026-10-14T21:55:01Z', '2026-10-14T21:56:19Z', 'done', NULL, 0, '7bd32b1881e5dd2d0a3a3a16f117a1c430ebee9e', 'claude-opus-5-5[1m]', 'd21e905c-1a44-47d8-a9ee-79b0a49723e2', 17, 28, 7273, 835822, 73806, 0.9031844, 2373073);
+INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (68, 2, '2026-10-14T21:56:19Z', '2026-10-14T21:58:26Z', 'done', NULL, 0, '192fbee7015f73c22a7b4b006e9b54615c48245c', 'claude-opus-5-5[1m]', '89e87a12-5b43-4334-a5af-52f78d115b05', 20, 34, 10739, 1362508, 149709, 1.6850896, 2373073);
 
 INSERT INTO task_decision (task_id, decision_id) VALUES (44, 28);
 INSERT INTO task_decision (task_id, decision_id) VALUES (44, 45);

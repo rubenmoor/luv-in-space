@@ -313,7 +313,7 @@ Within `decision 19: Time-warp rules` and `docs/architecture.md` "Time warp"; th
   - impact, or a periapsis below the crash radius (radii in "Dying and what follows");
   - SOI change: stop (×1 at the change), the architecture's default; the pilot checks the new body's periapsis before warping on;
   - a scheduled burn, at its start minus the lead time: 60 s or the estimated slew to the burn attitude plus 10 s, whichever is longer. The slew rule ("Control modes") turns 180° in 40 s wet and 59 s with 100 t, so 60 s covers almost every case;
-  - entering the Sun's warning zone, inside 0.551 AU ("Dying and what follows"); and the life-support alarms at 30 and 7 days.
+  - entering the Sun's warning zone, inside 0.551 AU ("Dying and what follows"); a predicted contact with an object ("Grappling and berthing"); and the life-support alarms at 30 and 7 days (these added to `decision 19`'s list by `decision 43: Warp drop-outs for contact and life support`).
 - Refusals (`decision 19`): warp up is refused while thrusting above the limit, while rotating faster than 0.01 rad/s without a hold, or with an event under 3 s of real time away at the new level.
 - Shown: the readout's warp field (nominal level; actual rate in amber when below 90 % of nominal; "PAUSED"); a refusal or drop-out writes a message with its reason for 3 s, e.g. "WARP REFUSED: ENGINE ON, LIMIT ×10", "WARP REFUSED: ROTATING, SET A HOLD", "WARP ×1: PERIAPSIS BELOW 100 KM IN 3 S". From `milestone 3` the cockpit's WARP lamp flashes with it ("The cockpit"); from `milestone 6` a short tone ("Sound").
 - Pause (P) is apart from warp: no steps run, every view, the camera and the map still work, flight inputs are ignored; resuming restores the warp level.

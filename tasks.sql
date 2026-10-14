@@ -2343,9 +2343,9 @@ tasks for what the plan asks beyond them. A task that writes a plan gets `--kind
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (89, 20, 'create tasks for plan 20: The basic map', 'split', 'done', 1000, '2026-10-14, tasks 122-127', 'Split `plan 20: The basic map` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
 done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
 tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-14T22:45:13Z', '2026-10-14T23:03:21Z', 79, 0);
-INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (90, 21, 'create tasks for plan 21: Minimal readout, messages and the LOST panel', 'split', 'open', 1000, NULL, 'Split `plan 21: Minimal readout, messages and the LOST panel` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (90, 21, 'create tasks for plan 21: Minimal readout, messages and the LOST panel', 'split', 'done', 1000, '2026-10-14, tasks 128-132; no new decisions (decision 85 and decision 86 cover the plan)', 'Split `plan 21: Minimal readout, messages and the LOST panel` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
 done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
-tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-14T22:48:59Z', NULL, 80, 0);
+tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-14T22:48:59Z', '2026-10-14T23:05:01Z', 80, 0);
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (91, 22, 'create tasks for plan 22: Flight scripts and the Done when', 'split', 'open', 1000, NULL, 'Split `plan 22: Flight scripts and the Done when` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
 done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
 tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-14T22:54:02Z', NULL, 81, 0);
@@ -2782,6 +2782,79 @@ INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, crea
 ## Done when
 - `scripts/test` and `scripts/screenshot` pass.
 - `./sly play`, M and a screenshot: the ring, AP and PE with labels, the ship''s ring; after a retrograde burn lowering periapsis under 100 km, the red arc and IMPACT; Page-down to 100 AU: labelled EARTH and SUN. Screenshots looked at, then deleted; image stopped, no process left.', '2026-10-14T23:03:07Z', NULL, 89, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (128, 21, 'overlay.lisp: readout glyphs, glyph-missing and format-duration in units.lisp', 'work', 'open', NULL, NULL, 'Piece 1, first part, of `plan 21: Minimal readout, messages and the LOST panel`. Binding: `decision 7: Placeholder labels: dot-matrix overlay quads`, `decision 85: Minimal readout: layout, formats, colours and alarms` (the glyph set; every string upcased; a missing glyph is a test failure, not a blank), `decision 73: Warp levels above x4: entry, holds and lowering` (the message texts). Builds on the glyph table and `label-at!` of `plan 20: The basic map` (task 126: overlay.lisp: full glyph table, marker shapes and label-at!); extend that table, don''t duplicate it.
+
+## What
+- `src/overlay.lisp`: add 5×7 glyphs for `% / ! + ( ) , ° × …` to the table (A–Z, 0–9, space, `-`, `.`, `:`).
+- `(glyph-missing string)` → the first character of `string` without a glyph, or nil.
+- Durations: find how `clock.lisp` formats the durations in its warp messages (`plan 15: Clock, warp, hazards and events` piece 5). If it formats them locally, move that to `src/units.lisp` as `(format-duration seconds)` and call it from `clock.lisp`, so the readout''s impact time (next task) and the messages use the same text. If `units.lisp` already has it, just use it. Its output only uses characters of the glyph table.
+
+## Tests
+- `tests/overlay.lisp`: each new character has a glyph with at least one lit cell; `glyph-missing` is nil for "RCS OFF ABOVE ×4", for the refusal and lowering messages the cases of `tests/clock.lisp` produce (collect them through the clock, not copied strings) and for `format-duration` of 0 s, 59 s, 3,600 s and 400 days; it returns `#\a` for "a".
+- `tests/units.lisp` (or where durations are tested): the existing duration texts unchanged by the move.
+
+## Done when
+- `scripts/test` passes; `clock.lisp`''s messages read as before.', '2026-10-14T23:04:59Z', NULL, 90, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (129, 21, 'readout-lines: the milestone-2 readout rows, alarms and messages as a pure function', 'work', 'open', NULL, NULL, 'Piece 1 of `plan 21: Minimal readout, messages and the LOST panel` (read its piece 1 in full: rows, formats, colours, alarms, messages and the test list). Binding: `decision 85: Minimal readout: layout, formats, colours and alarms`, `decision 84: Map ribbons and markers: osculating orbit, adaptive segments, overlay markers and visibility` (the impact time is the readout''s, from the prediction), `decision 75: Prediction in milestone 2: the step function on a copy` (the `:impact` event), `decision 66: Calendar dates on the 1/64 s grid` (UTC truncated to whole seconds). Needs the glyphs and `format-duration` of the task before it in this plan.
+
+## What
+- `src/overlay.lisp`: `(readout-lines render-state clock real-time)` → a list of lines, each a list of runs (text, colour, style `:plain`/`:inverted`, flashing flag): `ALT`, `SPD`, `AP`/`PE` (`AP ESCAPE` when e ≥ 1), `THR`, `PROP`, `MODE`, `WARP` (with `ACT ×<rate>` amber "!" below 0.9 × nominal, `PAUSED`), `UTC`; alarms `! PE BELOW 100 KM` (amber) and `<EARTH|MOON> IMPACT IN <format-duration>` (red, inverted, flashing at 2 Hz of `real-time`, on in the first half of each 0.5 s); then up to `*readout-messages*` 3 of `clock-messages`, newest last, amber with "!", cut at 40 characters with "…".
+- Colours (`defparameter`s citing `decision 85`): labels #8A8A80, values #E8E4D8, caution #FFB000, danger #FF3030.
+- Values from the render state (interpolated, t_r); apsides via `state->orbit` with μ⊕. All strings upcased.
+- `docs/design.md` "Instruments": a short bullet list after the table with the milestone-2 rows as `decision 85` lays them out (labels, units, decimals, alarms, where the impact time comes from).
+
+## Tests (`tests/overlay.lisp`, CPU)
+- All cases of the plan''s piece 1 "Tests": the start state (`ALT 400.0 KM`, `SPD 7.669 KM/S`, `AP`/`PE` 400.0, `THR 0% OFF`, `PROP 28000 KG 100%`, `MODE HOLD PROGRADE SETTLED`, `WARP ×1`, `UTC 2040-01-01 00:00:00`, no alarm, no message); the crafted formats (950 m/s, 1,000 m/s, e = 1.2, throttle 0.45 with and without propellant, rate damp + fine, paused ×1,000, actual rate 490,000 / 950,000 at ×1,000,000); the 400 × 50 km orbit''s PE alarm and, with the prediction run to completion, the impact alarm (duration = impact time − t_r, flashing on at 0.1 s, off at 0.35 s); a refused warp-up message present then gone after 3 s of the clock''s real time; a 60-character message cut to 40 with "…".
+- `glyph-missing` nil for every string of every line above.
+- One `readout-lines` call conses under 16 KB.
+
+## Done when
+- `scripts/test` passes; `./sly eval ''(readout-lines …)'' --package LUV-IN-SPACE` on the live game (`./sly start`, `./sly play`) prints the rows; stop what you started.', '2026-10-14T23:04:59Z', NULL, 90, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (130, 21, 'Draw the readout in the overlay pass, capture-state :readout, remove PLACEHOLDER(80)', 'work', 'open', NULL, NULL, 'Piece 2 of `plan 21: Minimal readout, messages and the LOST panel`. Binding: `decision 85: Minimal readout: layout, formats, colours and alarms` (2 px dot pitch, 12 × 22 px cells, 16 px margin, opaque #0A0C0C box; captures take `:readout`), `decision 76: Frame passes, radiance scale and exposure` (the overlay is after the tone map, exact colours), `decision 77: The frame in main.lisp: render state, capture of a given sim, part 4''s placeholders and first asset`. Needs `readout-lines` (the task before it in this plan) and `label-at!` (`plan 20: The basic map`).
+
+## What
+- `src/overlay.lisp`: `(readout-vertices! out lines x y)`: the opaque #0A0C0C box sized to the lines, each run through `label-at!`; an inverted run draws its colour block with the text in #0A0C0C; a flashing run in its off phase draws nothing. Sizes and colours `defparameter`s.
+- Overlay vertex capacity a `defparameter` sized for the readout, the map''s labels and the LOST panel together; per-frame data through part 4''s frame resource cache (never a buffer the previous frame still reads); text past capacity is cut, never a crash.
+- `src/render.lisp`: the overlay pass draws the readout top left in `:outside` and `:map` (`game-view`), after the map''s markers and labels, from the frame''s render state, the clock and the game''s real time (summed elapsed, kept in `main.lisp`''s game).
+- The `PLACEHOLDER(76 77 80)` label loses 80 (or goes, if 76 and 77 are gone); `PLACEHOLDER(80)` removed from code, `docs/` and `AGENTS.md` (search with `rg -n ''PLACEHOLDER\(.*80''`).
+- `src/capture.lisp`: `capture-state` takes `:readout` (default t). Re-run every earlier GPU test; where a region check now falls under the readout box, that test passes `:readout nil` (say so in its comment) rather than moving its bounds.
+- Docs: `AGENTS.md` "Layout" (`src/`: the readout in `overlay.lisp`) and "Commands" → Screenshot (the PNG shows the readout); `docs/architecture.md` "GPU tests" (`capture-state`''s `:readout`).
+
+## Tests (`tests/render.lisp`, GPU, in the existing `with-capture-game`)
+- The start state''s capture: inside the readout box''s computed rectangle only pixels of exactly #0A0C0C, #8A8A80 and #E8E4D8, at least one of each; with `:readout nil` that rectangle has some pixel not #0A0C0C; `report-failed-live-artifacts` 0.
+
+## Done when
+- `scripts/test` passes; `scripts/screenshot /tmp/r.png` shows the readout top left, legible (look at the PNG); in `./sly play`, `./sly eval` of `(clock-warp-up …)` twice shows `WARP ×10` in the next `./sly screenshot`; the frame time with the readout in the done note. Close every window and stop the image you started.', '2026-10-14T23:04:59Z', NULL, 90, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (131, 21, 'Death record, game-restart! and the orange death glow in main.lisp', 'work', 'open', NULL, NULL, 'Piece 3, first part, of `plan 21: Minimal readout, messages and the LOST panel`. Binding: `decision 86: Death view, LOST panel and restart in milestone 2`, `decision 34: How death works`, `decision 74: Crash test on the step''s Hermite and the death state` (the loss record), `decision 80: The Mule''s meshes in numbers: geometry, draws, materials and lights` (the ship''s per-frame emissive slot), `decision 76: Frame passes, radiance scale and exposure`, `decision 81: Input in milestone 2: held keys per frame, taps, gating and the shared key map`.
+
+## What
+- `src/main.lisp`: the game keeps its summed real time (if piece 2 didn''t add it), the loss last seen and the real time of the death. On the first frame with a new `sim-loss`, `game-view` becomes `:outside` with the outside view''s offset unchanged, and the death time is recorded.
+- `(game-restart! game)`: `clock-restart!` with the start-state checkpoint, view `:outside`, `outside-view-reset!`, map view closed, the input''s held keys, taps and drag cleared, the death record cleared, the exposure snapped.
+- `(death-glow-radiance loss seconds-since-death)` (pure): `*death-glow-radiance*` 4.0 for t ≤ 1 s, linear to 0 at 3 s, 0 after; 0 for a Moon impact. The renderer writes `*death-glow-colour*` #FF6A1A × that ÷ the current exposure into the ship''s emissive slot. Numbers `defparameter`s citing `decision 86`.
+- Docs: `docs/architecture.md` "Checkpoints": `game-restart!` is the restore the LOST panel calls; `docs/design.md` "Dying and what follows" → "What the player sees": the glow''s curve and the camera that may still be orbited.
+
+## Tests (no GPU; `tests/input.lisp` or `tests/render.lisp`, whichever already builds a game without a canvas; `death-glow-radiance` in `tests/overlay.lisp`)
+- `death-glow-radiance`: 4.0 at 0 and 1 s, 2.0 at 2 s, 0 at 3 s and 10 s within 1e-12; 0 for a Moon loss.
+- A game from `plan 15: Clock, warp, hazards and events`''s deorbit state in `:map`, run through `clock-frame!` to the impact: the view becomes `:outside`, the outside view''s offset unchanged, the death time recorded.
+- `game-restart!` gives a sim `equalp` to `(new-game-sim)` at ×1 unpaused, view `:outside` with the default outside camera, no held keys; 1,000 frames of 1/60 s after it equal 1,000 frames after a fresh game bit for bit.
+
+## Done when
+- `scripts/test` passes.', '2026-10-14T23:04:59Z', NULL, 90, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (132, 21, 'The LOST panel, Return and N while lost, capture-state :death-elapsed', 'work', 'open', NULL, NULL, 'Piece 3, second part, of `plan 21: Minimal readout, messages and the LOST panel`. Binding: `decision 86: Death view, LOST panel and restart in milestone 2`, `decision 34: How death works` (in milestone 2 Return and N are the same restart), `decision 81: Input in milestone 2: held keys per frame, taps, gating and the shared key map`, `decision 85: Minimal readout: layout, formats, colours and alarms` (text, colours). Needs `readout-vertices!` and `game-restart!` / `death-glow-radiance` (earlier tasks of this plan).
+
+## What
+- `src/overlay.lisp`: `(lost-panel-lines loss)` (pure), in the readout''s line format: `LOST: CRASH` red inverted (steady), `<EARTH|MOON>  <UTC of the impact>`, `SPEED <as the readout''s SPD>`, `LAT <|lat|, 2 decimals>° <N|S>  LON <|lon|, 2 decimals>° <E|W>`, a blank line, `RETURN  RESTART FROM START`, `N       NEW GAME` (keys #E8E4D8, texts #8A8A80). Drawn on an opaque #0A0C0C box centred horizontally, top at `*lost-panel-top*` 0.6 of the height; the readout stays.
+- `src/input.lisp`: `*key-map*` binds `:return` and `:n` to `:restart` while `sim-lost-p` (N stays translate-back otherwise; flight keys ignored while lost); `:restart` calls `game-restart!`. M, the mouse and quit still act.
+- `src/capture.lisp`: `capture-state` of a lost sim draws the glow at `:death-elapsed` (default 0, the peak) and the panel.
+- Docs: `docs/design.md` "Dying and what follows" → "What the player sees" (the panel''s lines and place, Return and N in milestone 2) and "Controls" (Return and N while lost); `AGENTS.md` "Commands" → Run: after a crash, Return or N restarts; `docs/architecture.md` "GPU tests" (`:death-elapsed`).
+
+## Tests
+- `tests/overlay.lisp`: a loss from `plan 15: Clock, warp, hazards and events`''s radial free fall (Earth) gives `LOST: CRASH`, `EARTH`, the speed as the readout formats it, latitude and longitude from the record with hemisphere letters; a Moon loss gives `MOON`; `glyph-missing` nil for every string.
+- `tests/input.lisp` (synthetic events, no canvas): not lost, N is a held translation key and Return does nothing; lost, W and 1 change nothing and Return restarts; after a restart by N the next `input-frame!` holds no key (no translation in the controls); N and Return give the same sim.
+- `tests/render.lisp` (GPU): the capture of a lost sim at the impact (plan 15''s deorbit case) has the panel box''s rectangle in exact #0A0C0C, #FF3030, #E8E4D8 and #8A8A80 only; the ship''s pixels at `:death-elapsed` 0 are redder (mean R − B) than at 3.5 s by a margin set from the frame.
+
+## Done when
+- `scripts/test` passes and stays under ~15 s (measured, in the done note); in `./sly play`, `./sly eval` setting the deorbit state (or a 200 s retrograde burn) and warping to the impact shows the orange glow and the panel in `./sly screenshot`s, and a synthetic Return brings back the start state with the readout at `ALT 400.0 KM`. Close every window and stop the image you started.', '2026-10-14T23:04:59Z', NULL, 90, 0);
 
 INSERT INTO decision (id, subject, status, options, body, answer, reason, created_at, closed_at, created_by_task, signoff, kind, decided_by_task, consequences) VALUES (1, 'How the game consumes luv', 'answered', '[]', 'Findings of `task 17: Build and run luv''s programs and test suite; record the runs` (docs/luv-capabilities.md, Packaging and Runs).
 - luv''s flake exports apps, devShells, packages and lib; lib has only environmentFor, which returns everything the packaging needs (pkgs, lisp, applicationEnvironment/Packages, developmentEnvironmentHook, slynkSource, swashPackage, …). No overlays.
@@ -2973,6 +3046,7 @@ INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, b
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (85, 87, '2026-10-14T22:59:48Z', '2026-10-14T23:00:43Z', 'done', NULL, 0, 'ee05876b5f81e730a7f20b77e3a247ae81f085e8', 'claude-opus-5-5[1m]', '6b011c1c-b59b-41f1-9f96-ac3f5e3d60ee', 8, 16, 5849, 330743, 42277, 0.5214086, 2373073);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (86, 88, '2026-10-14T23:00:43Z', '2026-10-14T23:01:55Z', 'done', NULL, 0, 'dd0aa2ce4475361498fb9fb6dfdc80c62fccb3ed', 'claude-opus-5-5[1m]', 'b4cef350-1cec-48dc-9243-128e842ff8a1', 7, 14, 7724, 255774, 37593, 0.5064348, 2373073);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (87, 89, '2026-10-14T23:01:55Z', '2026-10-14T23:03:27Z', 'done', NULL, 0, 'a1e88ab89a94bf5f2b99789c289ae0be252e31d8', 'claude-opus-5-5[1m]', '8982431f-3a18-4fbf-a74f-6c2011f50543', 9, 18, 10528, 384927, 52109, 0.7044894, 2373073);
+INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (88, 90, '2026-10-14T23:03:27Z', '2026-10-14T23:05:04Z', 'done', NULL, 0, '83233da855f07e2c86606800716577dc334cbd36', 'claude-opus-5-5[1m]', '7d573233-015a-407d-8f8f-cd8ffb23e30e', 9, 18, 12688, 397009, 49420, 0.72859379999999985, 2373073);
 
 INSERT INTO task_decision (task_id, decision_id) VALUES (44, 28);
 INSERT INTO task_decision (task_id, decision_id) VALUES (44, 45);

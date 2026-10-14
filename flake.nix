@@ -54,6 +54,25 @@
       # luv's root systems (luv, luv/test-support, …) from the input.
       luvRegistry = "${luv}/";
 
+      # On Darwin luv compiles its Objective-C bridge into <luv>/build/, which
+      # the store can't hold (docs/luv-wishlist.md), so luv loads from a
+      # writable copy in `dir` there; Linux keeps the input.
+      isDarwin = environment: environment.pkgs.stdenv.hostPlatform.isDarwin;
+      copyLuv = environment: dir:
+        nixpkgs.lib.optionalString (isDarwin environment) ''
+          if [ ! -d "${dir}" ]; then
+            mkdir -p "$(dirname "${dir}")"
+            rm -rf "${dir}.partial"
+            cp -R ${luv} "${dir}.partial"
+            chmod -R u+w "${dir}.partial"
+            mv "${dir}.partial" "${dir}"
+          fi
+        '';
+      luvRegistryIn = environment: dir:
+        if isDarwin environment then "${dir}/" else luvRegistry;
+      # The dev shell's copy, one per luv revision.
+      luvCache = "\${XDG_CACHE_HOME:-$HOME/.cache}/luv-in-space/luv-${luv.shortRev or "dirty"}";
+
       # A copy of luv's `applicationPackage` (luv flake.nix, a `let` binding,
       # not exported; docs/luv-wishlist.md), adapted: our source, luv's
       # sources from the input, no fonts or Luvcraft extras, no inherited
@@ -149,6 +168,18 @@
             mainProgram = name;
             platforms = systems;
           };
+        } // lib.optionalAttrs (isDarwin environment) {
+          preBuild = copyLuv environment "$out/share/luv" + ''
+            export CL_SOURCE_REGISTRY="$out/share/luv/:${environment.applicationEnvironment.CL_SOURCE_REGISTRY}"
+          '';
+          # SBCL reopens the bridge by the path the image loaded it from:
+          # keep it and objective-c/, as luv's applicationPackage does.
+          postInstall = ''
+            find "$out/share/luv" -mindepth 1 -maxdepth 1 \
+              ! -name build ! -name objective-c -exec rm -rf {} +
+            find "$out/share/luv/build" -mindepth 1 -maxdepth 1 \
+              ! -name 'objective-c-exception-bridge-*.dylib' -exec rm -rf {} +
+          '';
         });
     in {
       packages = forAll (system: environment: rec {
@@ -177,7 +208,7 @@
           cd source
           export HOME="$TMPDIR/home" LUV_PROJECT_ROOT="$PWD" LUV_DEV_SHELL=slim
           mkdir -p "$HOME"
-          export CL_SOURCE_REGISTRY="${luvRegistry}:$CL_SOURCE_REGISTRY"
+          ${copyLuv environment "$TMPDIR/luv"}export CL_SOURCE_REGISTRY="${luvRegistryIn environment "$TMPDIR/luv"}:$CL_SOURCE_REGISTRY"
           unset LD_LIBRARY_PATH DISPLAY WAYLAND_DISPLAY
           ${environment.slimDevelopmentEnvironmentHook}
           luv_activate_native_environment
@@ -196,8 +227,8 @@
             pm.packages.${system}.default
             environment.pkgs.git
           ];
-          shellHook = ''
-            export CL_SOURCE_REGISTRY="$PWD/:${luvRegistry}:${environment.developmentEnvironment.CL_SOURCE_REGISTRY}"
+          shellHook = copyLuv environment luvCache + ''
+            export CL_SOURCE_REGISTRY="$PWD/:${luvRegistryIn environment luvCache}:${environment.developmentEnvironment.CL_SOURCE_REGISTRY}"
             unset LD_LIBRARY_PATH
           '' + environment.developmentEnvironmentHook + ''
             luv_activate_native_environment

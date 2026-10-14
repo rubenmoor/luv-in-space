@@ -32,11 +32,16 @@ Luv in Space is a showcase for [luv](https://github.com/mbrock/luv), Mikael Broc
 - Unfinished game parts: `PLACEHOLDER(<task id>)` in code and, where visible, on screen.
 
 ## Commands
-- Dev shell: `direnv allow` or `nix develop`; it provides `pm`.
-- Build, run, test, screenshot: to be filled in by `milestone 1`.
+- Dev shell: `direnv allow` or `nix develop`; SBCL with luv on `CL_SOURCE_REGISTRY`, Vulkan/SDL3, `pm`, `git`. The scripts below enter it themselves.
+- Build: `nix build` (`result/bin/luv-in-space`); ~17 s from a fresh clone, luv and its dependencies from luv's binary cache.
+- Run: `nix run` opens the window; Escape or closing the window quits. An agent stops it by PID.
+- Test: `scripts/test` (Parachute, `luv-in-space/tests`; renders one frame on a hidden canvas, lavapipe without a display; exit 1 on failure; ~5 s). `nix flake check` runs it in the sandbox.
+- Screenshot: `scripts/screenshot out.png [--frames N]`: a 1280x800 PNG of the scene from a hidden canvas, headless too; ~3 s.
 - Live image: `./sly start` (a Slynk image with `luv-in-space` loaded; ~8 s cold), `./sly play`, `./sly status`, `./sly screenshot /tmp/x.png`, `./sly eval '(defun …)' --package LUV-IN-SPACE` (redefine while playing), `./sly failures`, `./sly resume`, `./sly stop-playing`, `./sly stop`; `./sly --help` lists all. Enters the dev shell itself; options go after the code.
   - `./sly` is luv's client from the flake input with `play`, `screenshot`, `stop-playing` and status redefined for this game (`scripts/sly-client.lisp`); `sly-server.lisp` boots the image. State in `build/` (~410 MB, git-ignored).
   - Shader redefinitions don't reach the running scene yet (`task 30: Live shader pipelines for the scene`); redefine Lisp functions, or `./sly stop-playing` and `./sly play` after reloading shaders.
 
 ## Layout
+- `luv-in-space.asd`: systems `luv-in-space` (`src/`) and `luv-in-space/tests` (`tests/`).
+- `scripts/`: `test`, `screenshot`, the build entry (`build.lisp`) and the `./sly` client; `./sly` and `sly-server.lisp` at the root.
 - `docs/`: scope, design, story, architecture; the source of truth for features after `milestone 1`.

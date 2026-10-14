@@ -158,9 +158,30 @@ INSERT INTO milestone (id, subject, status, body, created_at, implemented_at, qu
 ## Done when
 - The four documents exist, agree with each other, and the feature list assigns every feature to a later milestone or cuts it.
 - The skeleton builds and runs from a clean checkout with the commands in `AGENTS.md`, and its test passes.', '2026-10-14T16:06:30Z', NULL, 0);
+INSERT INTO milestone (id, subject, status, body, created_at, implemented_at, queue_index) VALUES (2, 'Flight core: Newtonian flight in near-Earth orbit', 'open', 'The flight core: a ship flying under Newtonian physics in near-Earth orbit, from which every other milestone builds. The design in `docs/` (from `milestone 1`) is the specification; this milestone implements what `docs/design.md` assigns to it.
+
+## Outcome
+- The game starts with the ship in a low Earth orbit.
+- Orbital mechanics with the precision `docs/architecture.md` sets: Earth''s gravity, plus the Moon''s and the Sun''s where the design calls for them; time warp.
+- The ship as a rigid body with thrusters for rotation and translation, mass, fuel or reaction mass; the player flies it by hand.
+- Earth rendered so it reads as Earth from orbit; space, Sun and stars; the ship (bare steel frame, life-support module) seen from an outside view.
+- Crashing into Earth kills you, as `docs/design.md` says, and the game goes on from there (restart or as designed).
+- A minimal flight readout (altitude, speed, apoapsis and periapsis) until `milestone 3` brings the real cockpit.
+
+## Constraints
+- As in `AGENTS.md`: no changes to `../luv`; own choices recorded, not asked.
+- Physics is tested headless: orbits stay stable over long time warps; energy and angular momentum drift stay within a bound the tests set.
+
+## Done when
+- From a clean checkout an agent can start the game, fly a burn that raises the orbit, and deorbit into Earth, with screenshots of each.
+- Tests pass; `AGENTS.md` and `docs/` match what was built.', '2026-10-14T16:06:59Z', NULL, 1);
 
 INSERT INTO plan (id, milestone_id, subject, priority, body, created_at, created_by_task) VALUES (1, 1, 'masterplan', 1000, 'tbd.', '2026-10-14T16:06:30Z', NULL);
+INSERT INTO plan (id, milestone_id, subject, priority, body, created_at, created_by_task) VALUES (2, 2, 'masterplan', 1000, 'tbd.', '2026-10-14T16:06:59Z', NULL);
 
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (1, 1, 'write the masterplan of milestone 1: Scope and design: what luv can carry, what the game is', 'masterplan', 'open', NULL, NULL, 'Write `plan 1: masterplan`, the masterplan of `milestone 1: Scope and design: what luv can carry, what the game is`: expand on everything that needs to be done to achieve it,
 divided into parts. State in the masterplan that its own tasks are not implementation work: each of them writes the
 plan for one part.', '2026-10-14T16:06:30Z', NULL, NULL);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task) VALUES (2, 2, 'write the masterplan of milestone 2: Flight core: Newtonian flight in near-Earth orbit', 'masterplan', 'open', NULL, NULL, 'Write `plan 2: masterplan`, the masterplan of `milestone 2: Flight core: Newtonian flight in near-Earth orbit`: expand on everything that needs to be done to achieve it,
+divided into parts. State in the masterplan that its own tasks are not implementation work: each of them writes the
+plan for one part.', '2026-10-14T16:06:59Z', NULL, NULL);

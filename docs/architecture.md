@@ -11,7 +11,7 @@ The game is its own renderer and simulation on luv's HAL, shader language, SDL3 
 - Dev shell, package and check all come from `luv.lib.environmentFor <system>`: the dev shell from `developmentEnvironment`, `developmentPackages` and `developmentEnvironmentHook`, plus `pm` and `git`; the check from the `slim…` variants.
 - luv's Lisp sources: the input's store path on `CL_SOURCE_REGISTRY` (on Darwin a writable copy, since luv writes its Objective-C bridge next to its sources; `docs/luv-wishlist.md`).
 - Package: `applicationPackage` in `flake.nix` is a copy of luv's unexported recipe, adapted: source is `gameSource` (`luv-in-space.asd`, `src/`, `scripts/build.lisp`), `sbcl --script scripts/build.lisp` dumps `luv-in-space/program`, the FASL cache ships under `lib/fasl/`, no fonts or Luvcraft extras.
-- Launcher (`bin/luv-in-space`), scripts and the check unset `LD_LIBRARY_PATH`: a host one breaks luv's SDL3 (`docs/luv-capabilities.md` "Packaging").
+- Launcher (`bin/luv-in-space`), scripts and the check unset `LD_LIBRARY_PATH`: a host one breaks luv's SDL3 (`docs/luv-capabilities.md` "Packaging"). `scripts/test`, `scripts/screenshot` and `./sly` always re-enter `nix develop` (~0.6 s), whose hook unsets it, unless `LIS_DEV_SHELL=1` says they already did (the check sets it); an inherited dev shell (direnv) is not trusted.
 - Binary cache `luv.swa.sh` in `nixConfig`; it serves the dependency closure, so only our Lisp image builds locally.
 - Platforms: `x86_64-linux`, `aarch64-linux`, `aarch64-darwin`; only the first is tested (`decision 6: Target platforms`).
 - Moving the pin: a task of its own that bumps `flake.lock`, reruns `scripts/test`, `scripts/screenshot` and `nix flake check`, and updates the revision in `docs/luv-capabilities.md`.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/screenshot <out.png> [--frames N]
 # Renders the scene on a hidden canvas (offscreen), writes a 1280x800 PNG,
-# exits; non-zero on failure. Enters the dev shell itself if needed.
+# exits; non-zero on failure. Enters the dev shell itself.
 # Time: ~5 s warm (dev shell entry, load from cached FASLs, 10 frames,
 # capture), on the desktop GPU and headless on lavapipe alike.
 set -euo pipefail
@@ -25,8 +25,9 @@ if [ -n "$frames" ] && ! [[ "$frames" =~ ^[1-9][0-9]*$ ]]; then usage; fi
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 out="$(realpath -m -- "$out")"
 
-if [ -z "${LUV_DEV_SHELL:-}" ]; then
-  exec nix develop --accept-flake-config "$root" -c "$root/scripts/screenshot" \
+# Always this flake's shell; see scripts/test.
+if [ "${LIS_DEV_SHELL:-}" != 1 ]; then
+  LIS_DEV_SHELL=1 exec nix develop --accept-flake-config "$root" -c "$root/scripts/screenshot" \
     "$out" ${frames:+--frames "$frames"}
 fi
 

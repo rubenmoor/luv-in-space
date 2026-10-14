@@ -206,7 +206,7 @@
           cp -R ${testSource} source
           chmod -R u+w source
           cd source
-          export HOME="$TMPDIR/home" LUV_PROJECT_ROOT="$PWD" LUV_DEV_SHELL=slim
+          export HOME="$TMPDIR/home" LUV_PROJECT_ROOT="$PWD" LUV_DEV_SHELL=slim LIS_DEV_SHELL=1
           mkdir -p "$HOME"
           ${copyLuv environment "$TMPDIR/luv"}export CL_SOURCE_REGISTRY="${luvRegistryIn environment "$TMPDIR/luv"}:$CL_SOURCE_REGISTRY"
           unset LD_LIBRARY_PATH DISPLAY WAYLAND_DISPLAY

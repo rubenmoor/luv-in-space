@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # scripts/test: runs luv-in-space/tests (Parachute); non-zero exit on failure.
-# Enters the dev shell itself if needed. The GPU test renders one frame on a
+# Enters the dev shell itself. The GPU test renders one frame on a
 # hidden canvas; without a display, on lavapipe.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-if [ -z "${LUV_DEV_SHELL:-}" ]; then
-  exec nix develop --accept-flake-config "$root" -c "$root/scripts/test"
+# Always this flake's shell: an inherited one (direnv) may be stale or carry
+# a foreign LD_LIBRARY_PATH (AGENTS.md "Commands").
+if [ "${LIS_DEV_SHELL:-}" != 1 ]; then
+  LIS_DEV_SHELL=1 exec nix develop --accept-flake-config "$root" -c "$root/scripts/test"
 fi
 
 cd "$root"

@@ -1,14 +1,15 @@
 #!/bin/sh
 # ./sly: the live image for this checkout (docs: AGENTS.md "Commands").
 # luv's ./sly client with play, screenshot and stop-playing for luv-in-space;
-# enters the dev shell itself if needed.
+# enters the dev shell itself.
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 cd "$root"
 
-if [ "${LUV_DEV_ENVIRONMENT_MODE:-}" != nix-develop ]; then
-  exec nix develop --accept-flake-config "$root" -c "$0" "$@"
+# Always this flake's shell; see scripts/test.
+if [ "${LIS_DEV_SHELL:-}" != 1 ]; then
+  LIS_DEV_SHELL=1 exec nix develop --accept-flake-config "$root" -c "$0" "$@"
 fi
 
 case ":${CL_SOURCE_REGISTRY:-}:" in

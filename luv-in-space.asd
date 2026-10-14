@@ -8,7 +8,8 @@
   :components ((:file "package")
                (:file "shaders")
                (:file "scene")
-               (:file "main")))
+               (:file "main")
+               (:file "capture")))
 
 (defsystem "luv-in-space/program"
   :description "The standalone luv-in-space executable."

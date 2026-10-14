@@ -5,12 +5,14 @@
    (device :initarg :device :reader game-device)
    (context :initarg :context :reader game-context)
    (scene :initarg :scene :reader game-scene)
+   (frame-count :initform 0 :accessor game-frame-count)
    (quit-requested-p :initform nil :accessor game-quit-requested-p)))
 
 (defvar *game* nil)
 
 (defun draw (game)
   (let ((context (game-context game)))
+    (incf (game-frame-count game))
     (luv:present-canvas-frame
      context
      (lambda (texture encoder time)

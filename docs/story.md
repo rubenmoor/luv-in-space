@@ -344,7 +344,7 @@ Propellant and stores carried from quest to quest, on the nominal path (Δv budg
 ### Follow-ups
 - `task 55: Design: deliveries, the stranded offer, checkpoint floors and POD 14 for the quest line` (`plan 10: game design`): delivered loads removed with cause `:delivered`; the stranded offer restoring the last checkpoint on Y; quest floors vetoing checkpoints; POD 14 placed in Skua Yard. Done.
 - `task 56: Design: autopilot rendezvous for the quest line: phasing, Peary Depot's plane, a hyperbolic target` (`plan 10`): phasing orbits for co-altitude targets; TLI aimed at Peary Depot's plane and phase; transfer times for a target on a hyperbola. Done: `docs/design.md` "Rendezvous: search, phasing and the approach"; it moved BQ7's meeting to ~1.5 days and ~325,000 km and raised the lunar legs to 1,273 m/s (`decision 55: Meeting 2040 BQ7 and the lunar arrival from the polar plane`).
-- `task 57: Architecture: flight-script actions for the quest play-through` (`plan 10`): the actions `milestone 5`'s headless play-through needs (target, grapple, approach to a fixture, transfer, release, acknowledge) and one `flights/quest-<n>.sexp` per quest.
+- `task 57: Architecture: flight-script actions for the quest play-through` (`plan 10`): the actions `milestone 5`'s headless play-through needs (target, grapple, approach to a fixture, transfer, release, acknowledge) and one `flights/quest-<n>.sexp` per quest. Done: `docs/architecture.md` "Scripted runs", "The quest play-through" (`decision 56: Flight-script actions, start states and the quest play-through`).
 
 ## How the story is told
 

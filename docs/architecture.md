@@ -88,11 +88,11 @@ In brackets: the milestone that first creates the file; later milestones extend 
 - `clock.lisp` (milestone 2; 3: checkpoints after plans and berthing): simulation clock, fixed steps, time warp levels and their rules, rails switching; the simulation state as one copyable object, and checkpoints as in-memory snapshots of it ("Checkpoints"); needs physics, controls; asks `prediction.lisp`, loaded later, for the next event (a call at run time, not a load dependency).
 - `hazards.lisp` (milestone 2: crash; 3: contact; 4: Sun, life support): crash detection against bodies for the ship and promoted objects (an object's crash removes it), contact with objects (capture, bounce, death), the hull temperature, consumables, death and its cause; needs physics, bodies, ship.
 - `prediction.lisp` (milestone 2: events for warp drop-outs and flight scripts; 3: trajectories for orbit lines, instruments and the autopilot): trajectory prediction; needs orbits, clock, hazards.
-- `flights.lisp` (milestone 2): flight scripts: read a script, write its actions to `controls` per step, run it headless or in the live game ("Scripted runs"); needs controls, clock, prediction.
 - `autopilot.lisp` (milestone 3): orbit targeting, burns, presets; writes `controls`; needs prediction, controls.
 - `places.lisp` (milestone 3: Earth orbit; 4: Moon, belt): points of interest in Earth orbit, asteroids, destinations of presets; needs bodies, orbits.
 - `quests.lisp` (milestone 5): the quest line: state, triggers, messages; needs places, autopilot.
 - `saves.lisp` (milestone 5): versioned s-expression save files, atomic writes, under `$XDG_DATA_HOME/luv-in-space/`; writes the clock's snapshots as `checkpoint.sexp` and `resume.sexp` (`decision 35: Saving and audio`); needs quests, ship, clock.
+- `flights.lisp` (milestone 2; 3: pilot actions, stated starts; 5: quests, chained starts): flight scripts: read a script, write its actions to `controls` per step, the terminal approach, start states, run it headless or in the live game ("Scripted runs"); the last simulation file, so new simulation files go before it; needs controls, clock, prediction, and from their milestones autopilot, places, quests, saves.
 - `shaders.lisp` (skeleton): all `define-shader`s and `shader-specification-for` methods (package `luv-in-space.shaders`); split into `shaders-<pass>.lisp` after it when it grows; needs package.
 - `assets.lisp` (milestone 2): locating and loading assets: textures through `sdl3-image`, the star table; needs package.
 - `gpu.lisp` (milestone 2): HAL helpers: buffers, live pipelines, views and size-cached targets (from the skeleton's `scene.lisp`); needs shaders.
@@ -112,7 +112,7 @@ In brackets: the milestone that first creates the file; later milestones extend 
 - `main.lisp` (skeleton): the `game` object, start/stop, the frame function, `main`; needs everything.
 - `capture.lisp` (skeleton): screenshots and `capture-scene`; needs main.
 
-- The simulation files (`math` to `saves`) never call the HAL or SDL, so tests load and run them without a canvas; rendering files read simulation state and never change it.
+- The simulation files (`math` to `flights`) never call the HAL or SDL, so tests load and run them without a canvas; rendering files read simulation state and never change it.
 - `scene.lisp` stays until `render.lisp` and its parts replace it; `PLACEHOLDER(23)` and `tests/scene.lisp` go with it (its checks move to `tests/render.lisp`).
 - Tests mirror modules: `tests/<module>.lisp` for each file with logic (`tests/orbits.lisp`, `tests/physics.lisp`, `tests/clock.lisp`, …), listed in `luv-in-space/tests` in the same order; `tests/package.lisp` and `tests/capture.lisp` stay; GPU tests only in `tests/render.lisp` and `tests/capture.lisp`.
 - A file named above may be merged into a neighbour if it stays under ~100 lines; a new file is added to this list by the task that creates it.
@@ -388,7 +388,7 @@ Levels and rules are `decision 19: Time-warp rules`; where they touch play, the 
 
 ## Testing
 
-Physics is tested headless, in the same SBCL process as the rest of `scripts/test`, against bounds set from the drift measured above with a margin of ten or more; rendering is tested by one frame on a hidden canvas with image checks; flights are driven by scripts that end in screenshots, which is how an agent demonstrates a milestone. Simulation files never call the HAL or SDL (`decision 12: Module layout and package split`), so every test below except the GPU and flight-screenshot ones runs without a canvas. The bounds and the flight scripts are `decision 21: Physics test bounds and flight scripts`. How to build, run, test and screenshot is in `AGENTS.md` "Commands", not repeated here.
+Physics is tested headless, in the same SBCL process as the rest of `scripts/test`, against bounds set from the drift measured above with a margin of ten or more; rendering is tested by one frame on a hidden canvas with image checks; flights are driven by scripts that end in screenshots, which is how an agent demonstrates a milestone. Simulation files never call the HAL or SDL (`decision 12: Module layout and package split`), so every test below except the GPU and flight-screenshot ones runs without a canvas. The bounds and the flight scripts are `decision 21: Physics test bounds and flight scripts`, the scripts' pilot actions, start states and the quest play-through `decision 56: Flight-script actions, start states and the quest play-through`. How to build, run, test and screenshot is in `AGENTS.md` "Commands", not repeated here.
 
 ### Rules for tests
 - One `tests/<module>.lisp` per file with logic, in `luv-in-space.tests`, listed in `luv-in-space/tests` in load order ("Files in load order").
@@ -492,18 +492,202 @@ The ship is never on rails (`decision 17: Gravity model`, `decision 19: Time-war
 - The skeleton's `tests/capture.lisp` (`offscreen-frame`) is the first of these; its centre-pixel check moves to `tests/render.lisp` with `scene.lisp` ("Files in load order").
 
 ### Scripted runs
-A flight script drives the game the way a player would, through the `controls` that input and the autopilot also write ("Files in load order"), so a burn, an orbit raise and a deorbit can be flown headless, tested, and shown in screenshots by an agent. Scripts are data keyed by simulation time on the 1/64 s grid, so the runs are deterministic ("Determinism").
+A flight script drives the game the way a player would, through the `controls` that input and the autopilot also write ("Files in load order"), so a burn, an orbit raise, a rendezvous, a grapple and in the end the whole quest line can be flown headless, tested, and shown in screenshots by an agent. Scripts are data keyed by simulation time on the 1/64 s grid, so the runs are deterministic ("Determinism"). The vocabulary is `decision 21: Physics test bounds and flight scripts`, extended for the quests by `decision 56: Flight-script actions, start states and the quest play-through`.
 
-- A script is a list of steps in a file `flights/<name>.sexp` (data, read safely as saves are), each step either an action at a time or a wait:
+#### Steps
+- A script is a list of steps in a file `flights/<name>.sexp` (data, read safely as saves are: no `#.`, symbols only as keywords), run in order; each step is an action or a wait.
   - `(:at 0 :warp 1)`, `(:after 10 :hold :prograde)`, `(:after 30 :throttle 1.0)`, `(:after-dv 25.0 :throttle 0)` (cut-off by Δv delivered), `(:wait :apoapsis)`, `(:wait :periapsis)`, `(:wait :impact)`, `(:wait :altitude-below 120e3)`, `(:screenshot "after-burn")`, `(:expect :periapsis-above 400e3)`.
-  - Times are relative to the previous step (`:after`) or absolute from the script's start (`:at`), rounded to the 1/64 s grid; waits use the prediction's events, so they are exact and cheap at any warp.
-  - The script sets warp itself; during waits it may run at ×1,000,000, and the clock's drop-outs bring it back to ×1 at events as in play.
-- `flights.lisp` (milestone 2, after `prediction.lisp` in the load order; simulation only): reads a script, applies its actions to `controls` at their step, and runs the simulation headless as fast as steps allow (`run-flight`), returning a record of checkpoints (`t`, altitude, apoapsis, periapsis, speed, propellant, crash state) at each `:screenshot` and `:expect`. The same function drives a live game frame by frame (`fly`), so `./sly eval '(fly "raise-orbit")' --package LUV-IN-SPACE` shows the flight in the window.
-- Screenshots: `capture.lisp` renders each `:screenshot` checkpoint's state in one frame on a hidden canvas (as `capture-scene`, with the state set rather than flown, "GPU tests"); a command `scripts/fly <name> <out-dir>` (milestone 2; added to `AGENTS.md` "Commands" by its task) runs a script, writes `<out-dir>/<n>-<label>.png` per checkpoint, prints one line per checkpoint and exits 1 if an `:expect` fails.
-- Scripts shipped with `milestone 2`:
+  - Times are relative to the end of the previous step (`:after`; a bare action is `:after 0`) or absolute from the script's start (`:at`), rounded to the 1/64 s grid.
+  - Actions are applied at their step by a per-step hook of the clock, in `run-flight` (headless) and `fly` (live) alike, so both give the same states bit for bit; a key an action presses acts on the next step, as a key pressed in play.
+- Waits on the prediction's events (apsides, impact, SOI change) are exact and cheap at any warp; waits on conditions are tested after each step, after `hazards.lisp` and `quests.lisp`, so they too are exact on the step grid.
+- Every wait has a limit, `:within <s>` of game time (default 30 days); a wait that runs out ends the script, failed, with the wait and the state.
+- Failure: a failed `:expect` is recorded and the script goes on; a wait out of time, a refused action (the reason the game gives), a death, or a stranded offer ("Floors and the stranded offer"), unless the script expects it with `(:expect :lost <cause>)` or `(:expect :offer)`, ends the script, failed.
+- Quest steps are written as strings, `"2.3"`, never as numbers (a float would read `9.10` as `9.1`).
+
+#### Actions
+Each action is what a key (or a click) does in play (`docs/design.md` "Controls", `decision 29: Control scheme: key map, control modes, gamepad`); none sets the state directly, except `:start`. In brackets the milestone that first needs it.
+
+| Action | The pilot's keys | What it does in the script |
+|---|---|---|
+| `(:start <form>)` (2; 3; 5) | — | the first step only: the state the script starts from ("Start states") |
+| `(:warp <level>)` (2) | . , slash | the level 1 … 1,000,000; refused as in play |
+| `(:warp :coast)` (2) | . | from now on raise warp after every drop-out to the highest level the clock accepts, at most ×4 while the autopilot is in its terminal phase or keeping station, or the ship is within 1 km of an object and not berthed (close work: RCS and contacts at the fine step), and ×1 during `:approach` and `:translate`; `(:warp 1)` ends it |
+| `(:hold <mode>)` (2; 3) | 1–0, R; T | `:prograde`, `:retrograde`, `:normal`, `:anti-normal`, `:radial-out`, `:radial-in`, `:inertial`; `:target`, `:anti-target`, `:rel-prograde`, `:rel-retrograde` (3); `nil` releases to rate damping |
+| `(:throttle <f>)` (2) | Shift, Ctrl, Z, X | the lever: 0 or 0.1 to 1.0 |
+| `(:after-dv <m/s> :throttle 0)` (2) | X | cut when the Δv delivered since the throttle went on reaches it |
+| `(:keys (<key> …) :for <s>)` (2) | any | hold luv physical keys for a time, as fingers do: manual turns and translation |
+| `(:fine <t/nil>)` (2) | F | fine control |
+| `(:translate <axis> :dv <m/s>)` (3) | H/N, I/K, J/L | hold the translation key of `:fwd`, `:aft`, `:up`, `:down`, `:left` or `:right` until the Δv delivered along it reaches the value, at ×1 (it lowers warp); to back off after a release |
+| `(:target <id>)` (3) | ] [ | cycle until the target is the place or load `id`; refused if it is removed or unknown |
+| `(:autopilot <preset> <goal> … [:range <m>] [:limit <s>])` (3; 4) | O, Up/Down, Left/Right, Return, Return | pick, plan, engage; refused with the planner's reason ("NO CLEAR APPROACH", "BELOW 150 KM", …) |
+| `(:autopilot :off)` (3) | Backspace | disengage |
+| `(:grapple :arm)`, `(:grapple :stow)` (3) | G | press G if the grapple is not already in that state |
+| `(:release)` (3) | G | release a latched load or leave a berth; refused (engine on, rotating over 0.5°/s, claws closing) fails |
+| `(:transfer :on)`, `(:transfer :off)` (3) | B | propellant transfer, berthed at a depot; it stops itself when full |
+| `(:approach <fixture> [:speed 0.1] [:tries 3])` (3) | F, W/S/A/D, H/N, I/K, J/L | fly the last metres to capture by hand ("The terminal approach") |
+| `(:ack)` (5) | Y | acknowledge the oldest unacknowledged RADIO marked Y; if none has arrived yet, wait for it (`:within` 1 h) |
+| `(:screenshot "<label>")` (2) | — | a checkpoint in the record; a PNG with `scripts/fly` |
+
+- Presets and goals of `:autopilot` (`docs/design.md` "The autopilot"): `:circularise :ap` / `:pe`, `:set-ap <alt>`, `:set-pe <alt>`, `:hohmann <alt>`, `:plane <inc>` or `:plane :target`, `:rendezvous <place, load or fixture>` (3); `:tli <place>`, `:capture <ap>`, `:return`, and `:rendezvous` across spheres of influence or to a target on a hyperbola (4). A rendezvous whose goal is a place with several fixtures stops at its first free berth fixture unless the goal names one, `(:fulmar-depot :a)`.
+- `:range` (default 100 m, up to 1 km) is the stop point's distance from the fixture's pin along its axis, for the grapple cone's tip, the point of "on station" (`docs/story.md` "Rules for every quest"); the design's clearance rule still refuses a stop point under 100 m from the target's CoM (`docs/design.md` "The terminal path and crowded targets"). With a load latched the load's CoM is nearer by its fixture-to-CoM distance (~2 m), but station keeping's ±5 m can leave it past 100 m, so for a delivery the pilot closes the last metres by hand (`close-in` under "The quest play-through"), as `docs/story.md` 6.3's job card asks.
+- Fixtures are written `(<place> <fixture>)`, or a load's id for its one fixture (`:k-17`, `:pod-14`, `:skua-yard-3`, `:bq7`; `docs/story.md` "Rules for every quest" gives the ids).
+
+#### Waits and expectations
+- `(:wait <condition>)` waits until the condition holds; `(:expect <condition>)` checks it now and records a pass or a failure. A condition is a keyword and its arguments, written flat: `(:wait :quest-step "2.3")`, `(:expect :removed :k-17 :burned-up)`.
+- Conditions (`h` an altitude above the dominant body's sphere, as the instruments show):
+  - Events of the prediction (2; 4 SOI): `:apoapsis`, `:periapsis`, `:impact`, `:soi <body>`.
+  - Orbit (2): `:altitude-below h`, `:periapsis-below h`, `:periapsis-above h`, `:apoapsis-below h`, `:apoapsis-above h`, `:dominant <body>` (4); `:crashed`.
+  - Attitude (2): `:settled` (the hold reports settled), `:rate-below <°/s>`.
+  - Time (2): `:date "2040-01-21"` or `"2040-01-21T06:00:00"` (UTC; a scheduled time on the grid, so a coarse step lands on it exactly, as a burn's start).
+  - Ship (2; 3): `:propellant-above <kg>`, `:propellant-full`, `:latched`, `:latched <id>`, `:berthed <fixture>`, `:on-station <fixture>` (the story's term), `:removed <id> [<cause>]`.
+  - Autopilot (3): `:autopilot-done` (the plan's last burn flown and, for a rendezvous, on station; it then keeps station until `:off`).
+  - Quests (5): `:quest-step "n.m"` (that step is the current one: given, the previous completed), `:quest-skipped <n>`, `:quest-line-done` (step 9.7, or the ending alone if the passing rock is dropped).
+- Expectations only, on the run's record (3; 4):
+  - `:dv-below <m/s>`: Δv delivered by engine and RCS, ∫ |F| / m dt, since the last `(:autopilot …)` engaged.
+  - `:date-between "<UTC>" "<UTC>"`; `:elapsed-below <s>` since the last `(:autopilot …)` engaged.
+  - `:burn <kind> :between "<UTC>" "<UTC>"`, `:since-burn <kind> :below <s>`: the plan's first burn of that kind. The autopilot labels its burns `:departure` (TLI, TEI, a Lambert departure, a Hohmann's first), `:mcc`, `:capture` (LOI, Earth capture, with any phasing merged into it), `:phasing`, `:arrival` (the braking at the aim point), `:terminal`, `:trim`; the record keeps each burn's kind, start, end and Δv.
+  - `:clearance-above <m> :except (<id> …)`: the least distance from the stack's CoM to any object's CoM since the last `(:autopilot …)` engaged.
+  - `:aim-point <n>`: the plan's aim point was candidate n of `docs/design.md` "The terminal path and crowded targets".
+  - `:lost <cause>`, `:offer`: a death or a stranded offer happened (and does not fail the script).
+
+#### Start states
+- `(:start :new-game)` (2): the start state (`docs/design.md` "The start"); also when a script has no `:start`.
+- `(:start :state (<key> <value> …))` (3): a stated state, built from the start state with these changes, deterministically by one function of `flights.lisp` that GPU tests use for their scenes too ("GPU tests"):
+  - `:date`: a UTC string, or `(:periapsis <place> [:before <s>] [:after "<UTC>"])` / `(:apoapsis …)`: the place's first such passage after the date (default the start date), less `:before`, on the grid.
+  - `:orbit`: `(:circular <alt> [:u <°>] [:lead (<place> <°>)])` in the common polar plane (i 90°, Ω 270°), with the argument of latitude u or the place's lead over the ship; `(:near <place> :behind <m>)` / `:above <m>` / `:at-slot` (the place's rails state at the date, offset along −v or radially out, at the place's velocity); `(:on-axis <fixture> <m>)` (on the fixture's axis at m from the pin, +x along its inward axis, at the object's velocity there); `(:elements <body> a e i Ω ω M)`.
+  - `:berthed <fixture>`: latched at the berth pose (the cone's tip on the pin, +x along the inward axis); replaces `:orbit`.
+  - `:grappled <load>`: the load latched at the capture pose; the stack's CoM goes where `:orbit` puts the ship, or the load's own CoM with `(:near <load> :at-slot)`.
+  - `:propellant` (default 28,000 kg), `:consumables` (default 180 days), `:removed ((<id> <cause>) …)`, `:target <id>`; the hull temperature at T_eq of the state.
+  - `:quest "n.m"` (5): quest state at that step's start, earlier quests done, the date messages before the date sent; default no quest.
+  - Controls: rate damping with a prograde hold (none when berthed), throttle off, ×1.
+- `(:start :after "<script>")` (5): the end state of that script. The end state of every script is its simulation state when it ends ("Checkpoints"); before the next script starts from it, it is written and read back through `saves.lisp`'s format (to a string; `tests/saves.lisp` holds the round trip bit for bit), so each link of the chain is a save, as a player's quit and Continue would be: warp ×1 and no autopilot plan. In one process the end states are kept in memory by script name; a script asked for that has not run yet in the process runs first, headless and without screenshots, and so on down the chain.
+- `(:start :file "<path>")` (5): a `checkpoint.sexp` or `resume.sexp` written by `saves.lisp`; to fly on from a player's state.
+
+#### The terminal approach
+`(:approach <fixture> :speed 0.1)` is a pilot, not the autopilot (which never grapples, `decision 32: Autopilot scope and safety rules`): a closed loop in `flights.lisp` that reads only what the cockpit shows, the "Grapple range and alignment" instrument (range, closing speed, the pin's lateral offset in body y and z, angle, relative rotation) and the TARGET screen's relative velocity, and writes only key presses to `controls` at ×1, the keys of `docs/design.md` "Grappling and berthing". It is written once and serves every grapple and berth of the quests and of `milestone 3`'s tests.
+
+- Start: the fixture within the range finder (500 m ahead of the nose, its inward axis within 30° of +x), typically the autopilot's station at 100 m; otherwise it fails, "NO FIXTURE". It disengages the autopilot (Backspace), sets ×1, fine control (F) and rate damping, and arms the grapple (G).
+- Ticks every 1/16 s (4 fine steps), a quick pilot's rate; each tick holds or releases keys:
+  - Attitude: pitch and yaw keys (fine, 0.5°/s) turn +x onto the fixture's inward axis, pressed while the angle exceeds 1° and released inside 0.5°; rate damping stops the turn. No roll. A station held in its orbital frame turns 0.065°/s in LEO, which this follows.
+  - Lateral: the wanted lateral velocity is −offset / 60 s, at most 0.05 m/s per axis; a translation key is held for one tick when the lateral relative velocity differs from it by more than 5 mm/s (one tick of fine translation is 3 mm/s wet, 1.3 mm/s with 100 t).
+  - Along the axis: close at `:speed` (0.02 to 0.25 m/s, default 0.1, inside the capture window of 0.01 to 0.30 m/s), H or N held for a tick when the closing speed is off by more than 0.01 m/s; at 20 m it stops and holds until the offset is under 0.15 m, the angle under 3° and the lateral speed under 0.01 m/s, then closes at `:speed` to contact.
+- End: latched (the claws closed, 2 s) or berthed: rate damping on, fine control off, done. A missed capture (a bounce, "NO CAPTURE: …"): back to 20 m and again, up to `:tries`; then it fails with the last reason. Out of time after 2 h of game time, or a contact over 1.0 m/s (death): fails.
+- Spinning loads (Derelict K-17 0.3°/s, 2040 BQ7 0.4°/s) turn about their fixture axis, so the pin stands still and the relative rotation stays under 0.5°/s; nothing changes. With 100 m at 0.1 m/s an approach takes ~20 min of game time, 77,000 fine steps.
+
+#### Running scripts
+- `flights.lisp` (milestone 2; simulation only): reads a script, applies its actions at their steps, and runs the simulation headless as fast as steps allow (`run-flight`), returning a record (`t`, altitude, apoapsis, periapsis, speed, propellant, crash state, quest step) at each `:screenshot` and `:expect`, every autopilot burn, every failure, and the end state. The same function drives a live game frame by frame (`fly`), so `./sly eval '(fly "raise-orbit")' --package LUV-IN-SPACE` shows the flight in the window. It loads last among the simulation files, after `saves.lisp` ("Files in load order"), since its actions call the autopilot, places, quests and saves; in `milestone 2` that is right after `prediction.lisp`.
+- Headless, warp sets only the step (fine at ×1 and ×4, coarse above), the thrust limits, the refusals and the drop-outs; "3 s of real time" in the drop-out rule is 3 s at the nominal level. Nothing reads a wall clock.
+- Screenshots: `capture.lisp` renders each `:screenshot` checkpoint's state in one frame on a hidden canvas (as `capture-scene`, with the state set rather than flown, "GPU tests"); `scripts/fly <name> <out-dir> [--from <save file>]` (milestone 2; added to `AGENTS.md` "Commands" by its task) runs a script (and, for `:start :after`, the chain before it), writes `<out-dir>/<n>-<label>.png` per checkpoint and `<out-dir>/<name>.end.sexp`, prints one line per checkpoint and burn, and exits 1 on a failure; `--from` replaces the script's `:start`.
+
+#### Scripts by milestone
+- `milestone 2`:
   - `burn`: a 10 s prograde burn from the start orbit; screenshots before and during the burn.
   - `raise-orbit`: a Hohmann-like raise from the start orbit to a higher circular one, two burns at periapsis and apoapsis; expects both apsides raised by the planned amount within 1%.
-  - `deorbit`: a retrograde burn that lowers periapsis below the crash radius, then waits for the impact; expects a crash at the predicted time and shows the crash and what follows (`docs/design.md`).
-- Tests: `tests/flights.lisp` runs the three scripts headless (no screenshots) and checks their `:expect`s and determinism; screenshots are not part of `scripts/test`, which keeps one GPU frame.
-- Demonstrating `milestone 2: Flight core: Newtonian flight in near-Earth orbit`'s "Done when": from a clean clone, `nix build` and `nix run` (window opens; the agent stops it by PID), `scripts/test` passes, then `scripts/fly raise-orbit /tmp/m2` and `scripts/fly deorbit /tmp/m2` write the screenshots; the agent looks at each PNG (Earth, the ship, the readout's altitude, apoapsis and periapsis) and reports them with the checkpoint lines. Flying by hand is shown in the live image: `./sly play`, `./sly eval '(fly "raise-orbit")'`, `./sly screenshot`.
-- The same scripts serve later milestones: the autopilot's presets in `milestone 3` are checked by scripts that only engage a preset and wait.
+  - `deorbit`: a retrograde burn that lowers periapsis below the crash radius, then waits for the impact; expects a crash at the predicted time and shows the crash and what follows (`docs/design.md`); `(:expect :lost :crash)`.
+- `milestone 3`: `preset-<place>` for each Earth-orbit place (`tern-station`, `fulmar-depot`, `k-17`, `highport`, `skua-yard`) from the start state: engage "Rendezvous: <place>", `(:wait :autopilot-done)`, expect on station and Δv within 3 % of `docs/design.md` "Earth-orbit points of interest" plus 20 m/s of terminal phase; `approach-tern` (from `(:on-axis (:tern-station :berth) 100)`: berthed) and `approach-k-17` (from `(:on-axis :k-17 100)`: latched, the stack's mass the ship's plus K-17's 2,500 kg); and the rendezvous checks of `docs/design.md` "Rendezvous: search, phasing and the approach", "Scripted runs":
+
+| Script | `:start :state` | Flies | Expects |
+|---|---|---|---|
+| `rendezvous-fulmar-phasing` | `:date "2040-01-01"`, `:orbit (:circular 400e3 :lead (:fulmar-depot 297.96))`: 296° beyond the Hohmann's phase angle 1.96° (180° less Fulmar Depot's motion over the 2,807.6 s transfer) | `(:autopilot :rendezvous (:fulmar-depot :a))` | `:on-station (:fulmar-depot :a)`, `:elapsed-below 175620` (48 h 47 min), `:dv-below 113` |
+| `rendezvous-skua-yard` | `:date (:periapsis :highport :before 3600)`, `:berthed (:highport :plant)`; then `(:release)`, `(:translate :aft :dv 0.2)`, `(:after 300)` | `(:autopilot :rendezvous :skua-yard-5)` | `:on-station :skua-yard-5`, `:elapsed-below 93600` (one phasing revolution of 23.7 h, the wait for perigee and the terminal phase: 26 h), `:dv-below 21`, `:clearance-above 500 :except (:skua-yard-5)` |
+| `skua-yard-apogee-approach` | `:date (:apoapsis :highport)`, `:orbit (:near :skua-yard-5 :behind 1000)` | `(:autopilot :rendezvous :skua-yard-5)` | `:aim-point 2`, `:clearance-above 560 :except (:skua-yard-5)`, `:on-station :skua-yard-5` |
+
+- `milestone 4`:
+
+| Script | `:start :state` | Flies | Expects |
+|---|---|---|---|
+| `rendezvous-peary` | `:date "2040-01-19"`, `:orbit (:near :pod-14 :at-slot)`, `:grappled :pod-14` | `(:autopilot :rendezvous (:peary-depot :berth))` | `:burn :departure :between "2040-01-20T05:01" "2040-01-20T07:01"`, `:since-burn :capture :below 18000` (2 Peary periods of 7,067 s and 1 h of terminal phase), `:since-burn :departure :below 561600` (6.5 days), `:dv-below 1342`, `:on-station (:peary-depot :berth)` |
+| `return-highport` | `:date "2040-01-26T12:00:00"`, `:berthed (:peary-depot :berth)`, `:removed ((:skua-yard-3 :delivered) (:pod-14 :delivered))`; then `(:release)`, `(:translate :aft :dv 0.2)`, `(:after 300)` | `(:autopilot :rendezvous (:highport :plant))` | `:since-burn :capture :below 170640` (47.4 h), `:dv-below 1345` (1,273 + 30 + 2 m/s of phasing, + 3 %), `:on-station (:highport :plant)` |
+| `intercept-bq7` ("should") | `:date "2040-03-05"`, `:orbit (:near :highport :behind 1000)` | `(:autopilot :rendezvous :bq7)`, then `(:approach :bq7)`, `(:autopilot :rendezvous :skua-yard)` | first leg: `:burn :departure :between "2040-03-05T15:56" "2040-03-05T16:56"`, `:date-between "2040-03-10T20:00" "2040-03-11T02:00"` at `:autopilot-done`, `:dv-below 2101`, `:on-station :bq7`; then `:latched :bq7`; second leg: `:dv-below 536` (the capture's 495, ≤ 5 of phasing over it and 20 of terminal phase, + 3 %), `:date-between "2040-03-12T12:00" "2040-03-13T15:00"` at `:autopilot-done` |
+
+- `milestone 5`: the quest play-through below.
+
+#### The quest play-through
+`milestone 5`'s Done when, "a headless test plays through the whole quest line", is nine scripts `flights/quest-1.sexp` … `flights/quest-9.sexp`, one per quest of `docs/story.md` "The quest line", each starting from the previous one's end state, and a test that chains them to the ending. Every script flies its quest as a pilot would, by the keys, the autopilot and `:approach`; no step is completed by setting state ("no shortcuts around piloting", `milestone 5`).
+
+- Each script starts `(:start :after "quest-<n−1>")` (quest 1: `:new-game`), expects the quest's first step, flies the steps, and ends when the next quest's first step is given (quest 9: `:quest-line-done`), with expectations on the end state: the berth or the orbit `docs/story.md` gives as the next quest's "Expected state at start", and propellant at least the "Running checks" "At end" less 560 kg (2 % of 28 t).
+- Quest 1, written out (the manual parts: turns by keys, burns cut by a condition):
+
+```lisp
+((:start :new-game)
+ (:ack)                                ; 1.1: CAIRN OPS at t = 10 s, Y
+ (:expect :quest-step "1.2")
+ (:hold nil)                           ; T: release the start's prograde hold
+ (:keys (:a) :for 18)                  ; yaw left 90° at 5°/s: the nose to the orbit normal (−y in FRD)
+ (:wait :rate-below 0.1)
+ (:wait :quest-step "1.3")
+ (:hold :prograde)
+ (:wait :quest-step "1.4")
+ (:throttle 0.1)                       ; 10,180 N: 2.83 m/s in ~10 s
+ (:wait :apoapsis-above 410e3)
+ (:throttle 0)
+ (:wait :quest-step "1.5")
+ (:hold :retrograde)
+ (:wait :settled)
+ (:throttle 0.1)
+ (:wait :apoapsis-below 404e3)
+ (:throttle 0)
+ (:wait :quest-step "1.6")
+ (:screenshot "one-orbit")
+ (:warp :coast)
+ (:wait :quest-step "2.1")
+ (:expect :periapsis-above 395e3)
+ (:expect :propellant-above 27359))
+```
+
+- Quest 3, written out (the push below the autopilot's floor by hand, `docs/story.md` 3.3–3.5):
+
+```lisp
+((:start :after "quest-2")             ; berthed at Tern, 3.1 given
+ (:release)
+ (:translate :aft :dv 0.2)
+ (:after 300)
+ (:target :k-17)
+ (:autopilot :rendezvous :k-17)
+ (:warp :coast)
+ (:wait :quest-step "3.2")           ; on station at K-17's fixture
+ (:approach :k-17)
+ (:wait :quest-step "3.3")           ; latched; 800 km circular
+ (:hold :retrograde)
+ (:wait :settled)
+ (:throttle 1.0)                       ; 196 m/s with the 36 t stack, ~70 s
+ (:wait :periapsis-below 90e3)
+ (:throttle 0)
+ (:expect :periapsis-above 80e3)
+ (:wait :rate-below 0.1)
+ (:release)                            ; 3.4: at apogee
+ (:translate :aft :dv 0.3)
+ (:wait :quest-step "3.5")
+ (:hold :prograde)
+ (:wait :settled)
+ (:throttle 1.0)
+ (:wait :periapsis-above 160e3)
+ (:throttle 0)
+ (:wait :quest-step "3.6")
+ (:autopilot :hohmann 400e3)
+ (:warp :coast)
+ (:wait :removed :k-17)
+ (:expect :removed :k-17 :burned-up)
+ (:wait :autopilot-done)
+ (:wait :quest-step "4.1")
+ (:expect :periapsis-above 395e3)
+ (:expect :apoapsis-below 405e3)
+ (:expect :propellant-above 22333))
+```
+
+- The others, as their action sequences (`wait n.m` is `(:wait :quest-step "n.m")`; `coast` is `(:warp :coast)`, `leave` is `(:release) (:translate :aft :dv 0.2) (:after 300)`; `close-in` is `(:wait :autopilot-done) (:autopilot :off) (:translate :fwd :dv 0.05) (:after 200) (:translate :aft :dv 0.05)`, 10 m nearer, the load's CoM ≤ 93 m from the pin and still within 0.05 m/s; `let-go` is `(:wait :rate-below 0.1) (:release) (:translate :aft :dv 0.1)`):
+
+| Script | Steps | Ends with |
+|---|---|---|
+| `quest-2` | `(:target :tern-station)`, `(:autopilot :rendezvous :tern-station)`, coast, wait 2.3, `(:ack)`, `(:approach (:tern-station :berth))`, wait 3.1 | `:berthed (:tern-station :berth)`, propellant > 27,105 |
+| `quest-4` | `(:target :fulmar-depot)`, `(:autopilot :rendezvous (:fulmar-depot :a))`, coast, wait 4.2, `(:ack)`, `(:approach (:fulmar-depot :a))`, wait 4.3, `(:transfer :on)`, wait 5.1 | berthed at A, `:propellant-full` |
+| `quest-5` | leave, `(:target :highport)`, `(:autopilot :rendezvous (:highport :plant))`, coast, wait 5.2, `(:approach (:highport :plant))`, wait 5.3, `(:transfer :on)`, wait 6.1 | berthed at the plant, full |
+| `quest-6` | leave, `(:target :skua-yard-3)`, `(:autopilot :rendezvous :skua-yard-3)`, coast, wait 6.2, `(:approach :skua-yard-3)`, wait 6.3, `(:autopilot :rendezvous (:highport :plant))`, coast, close-in, wait 6.4, let-go, wait 6.5, `(:approach (:highport :plant))`, `(:transfer :on)`, wait 7.1 | `:removed :skua-yard-3 :delivered`, berthed, full |
+| `quest-7` | leave, `(:target :pod-14)`, `(:autopilot :rendezvous :pod-14)`, coast, `(:wait :autopilot-done)`, `(:approach :pod-14)`, wait 7.2, `(:target :peary-depot)`, `(:autopilot :rendezvous (:peary-depot :berth))`, coast, wait 7.3, close-in, let-go, wait 7.4, `(:approach (:peary-depot :berth))`, `(:transfer :on)`, wait 7.5, leave, `(:target :highport)`, `(:autopilot :rendezvous (:highport :plant))`, coast, `(:wait :autopilot-done)`, `(:approach (:highport :plant))`, wait 8.1 | `:burn :departure :between "2040-01-20T05:01" "2040-01-20T07:01"` on the way out; `:removed :pod-14 :delivered`; berthed at the plant before 2040-02-03 |
+| `quest-8` | as `quest-6` with `:skua-yard-5`, from wait 8.1 to wait 9.1 | `(:expect :quest-step "8.1")` at the start (not skipped); `:removed :skua-yard-5 :delivered`, berthed, full |
+| `quest-9` | coast, `(:wait :date "2040-03-03")`, wait 9.2, `(:ack)`, leave, `(:target :bq7)`, `(:autopilot :rendezvous :bq7)`, coast, wait 9.3, `(:approach :bq7)`, wait 9.4, `(:autopilot :rendezvous :skua-yard)`, coast, wait 9.5, `(:wait :autopilot-done)`, `(:autopilot :off)`, let-go, wait 9.6, `(:target :highport)`, `(:autopilot :rendezvous (:highport :plant))`, coast, `(:wait :autopilot-done)`, `(:approach (:highport :plant))`, wait 9.7 | `:burn :departure :between "2040-03-03" "2040-03-06"`, the meeting between 2040-03-10 20:00 and 2040-03-11 02:00, `:quest-line-done` before 2040-03-16, propellant > 5,308 |
+
+- If the passing rock is dropped (`docs/story.md` "If a 'should' is dropped"), `quest-9.sexp` is only `(:start :after "quest-8")` and `(:expect :quest-line-done)`; the departure and meeting expectations go with it.
+- The test: `tests/flights.lisp`, test `play-through`, runs `quest-1` … `quest-9` in one fresh image through `:start :after`, each end state round-tripped through `saves.lisp` as above, and passes when every script ends without a failure and the quest line is done; it asserts that no quest was skipped, no death happened and no stranded offer was sent. A command `scripts/play-through` (`milestone 5`; added to `AGENTS.md` "Commands" by its task) runs it, prints one line per quest (script, game date at its end, propellant, Δv used, steps, run time) and exits 1 on the first failure; `nix flake check` runs it after `scripts/test`. It is not part of `scripts/test`, whose budget is ~15 s ("Rules for tests").
+- Expected run time, headless at warp: the line covers ~74 days of game time (2040-01-01 to ~2040-03-15) in ~5×10^6 fine steps (the ×1 and ×4 parts, ~21 h of game time: approaches, deliveries, terminal phases, drifting away from a berth within 1 km, quest 1's manual flying) and ~5×10^5 coarse steps (coasts and berthed waits); at ~0.4 µs per fine step and ~2 µs per coarse step with promoted objects, contact tests and the prediction (from "Integrator"'s 180 ns per ship step), that is ~3 s of stepping, plus ~20 autopilot plans at 0.1–2 s each (the lunar chains and the hyperbolic search the dearest): **~15 s** in all on the developer's machine (x86_64 i5-12500H), an average warp of ~×400,000. Per quest: 1 ~0.1 s; 2, 4, 5 ~0.5 s each; 3 ~0.6 s; 6 and 8 ~1.3 s each; 7 ~5.5 s; 9 ~4 s. The task that writes it measures and records the time in `AGENTS.md`; over 60 s, it profiles before going on.
+- Every quest has been played once in the running game, with screenshots (`milestone 5`'s second Done when): `scripts/fly quest-<n> <out-dir>` gives a quest's screenshots from its `:screenshot` steps, and `./sly eval '(fly "quest-6")'` flies one in the window from the chain's end state.

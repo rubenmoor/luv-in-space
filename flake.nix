@@ -40,6 +40,17 @@
         ];
       };
 
+      # The test check's sources: the game's plus tests/ and scripts/test.
+      testSource = nixpkgs.lib.fileset.toSource {
+        root = ./.;
+        fileset = nixpkgs.lib.fileset.unions [
+          ./luv-in-space.asd
+          ./src
+          ./tests
+          ./scripts/test
+        ];
+      };
+
       # luv's root systems (luv, luv/test-support, …) from the input.
       luvRegistry = "${luv}/";
 
@@ -151,6 +162,28 @@
           program = "${self.packages.${system}.luv-in-space}/bin/luv-in-space";
           meta.description = "Start Luv in Space";
         };
+      });
+
+      # scripts/test in the sandbox: no display, no GPU, so the frame renders
+      # on lavapipe (decision 2: Screenshots and GPU test: offscreen capture
+      # on a hidden canvas, headless on lavapipe). luv's slim environment.
+      checks = forAll (system: environment: {
+        default = environment.pkgs.runCommand "luv-in-space-tests"
+          (environment.slimDevelopmentEnvironment // {
+            nativeBuildInputs = environment.slimDevelopmentPackages;
+          }) ''
+          cp -R ${testSource} source
+          chmod -R u+w source
+          cd source
+          export HOME="$TMPDIR/home" LUV_PROJECT_ROOT="$PWD" LUV_DEV_SHELL=slim
+          mkdir -p "$HOME"
+          export CL_SOURCE_REGISTRY="${luvRegistry}:$CL_SOURCE_REGISTRY"
+          unset LD_LIBRARY_PATH DISPLAY WAYLAND_DISPLAY
+          ${environment.slimDevelopmentEnvironmentHook}
+          luv_activate_native_environment
+          bash scripts/test
+          touch "$out"
+        '';
       });
 
       # luv's default dev shell (its environment, packages and hook), with

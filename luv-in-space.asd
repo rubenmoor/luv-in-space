@@ -17,3 +17,16 @@
   :build-operation "program-op"
   :build-pathname "build/luv-in-space"
   :entry-point "luv-in-space:main")
+
+(defsystem "luv-in-space/tests"
+  :description "Tests of luv-in-space, run by scripts/test."
+  :depends-on ("luv-in-space" "luv/test-support" "parachute")
+  :serial t
+  :pathname "tests/"
+  :components ((:file "package")
+               (:file "scene")
+               (:file "capture"))
+  :perform (test-op (operation component)
+             (declare (ignore operation component))
+             (uiop:symbol-call '#:luv.test-support '#:test-package
+                               '#:luv-in-space.tests)))

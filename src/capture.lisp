@@ -7,11 +7,11 @@
   "Frames drawn before the capture; the scene is static, so a few suffice.")
 
 (defun screenshot (pathname &key (game *game*))
-  "Write a PNG of GAME's scene at its canvas size; returns PATHNAME, width, height."
-  (multiple-value-bind (path pixels width height)
+  "Write a PNG of GAME's scene at its canvas size; returns PATHNAME, width,
+height, the packed pixels and their colour format."
+  (multiple-value-bind (path pixels width height format)
       (luv:capture-application-screenshot game pathname :label "luv-in-space screenshot")
-    (declare (ignore pixels))
-    (values path width height)))
+    (values path width height pixels format)))
 
 (defun wait-for-frames (game count &key (timeout 60))
   (loop with deadline = (+ (get-internal-real-time)

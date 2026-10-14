@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# scripts/test: runs luv-in-space/tests (Parachute); non-zero exit on failure.
+# Enters the dev shell itself if needed. The GPU test renders one frame on a
+# hidden canvas; without a display, on lavapipe.
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+if [ -z "${LUV_DEV_SHELL:-}" ]; then
+  exec nix develop --accept-flake-config "$root" -c "$root/scripts/test"
+fi
+
+cd "$root"
+exec sbcl --noinform --non-interactive \
+  --eval '(require :asdf)' \
+  --eval '(setf *compile-verbose* nil *compile-print* nil)' \
+  --eval '(handler-bind ((warning (function muffle-warning))) (asdf:load-system "luv-in-space/tests"))' \
+  --eval '(handler-case (asdf:test-system "luv-in-space/tests")
+            (error (condition)
+              (format *error-output* "~&~A~%" condition)
+              (uiop:quit 1)))' \
+  --eval '(uiop:quit 0)'

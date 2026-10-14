@@ -160,3 +160,193 @@
                     (- (sb-ext:get-bytes-consed) before))))
       ;; The returned sum is one boxed double.
       (true (<= consed 16) "~D bytes" consed))))
+
+;;; The RK4 step (docs/architecture.md "Integrator", "Drift bounds").
+
+(defparameter *test-inertia* (lis::mat3 1d4 0 0  0 2d4 0  0 0 3d4))
+
+(defun step! (state h time &key (model :point) (force (lis::make-vec3))
+                                (torque (lis::make-vec3)) (mdot 0d0) (m-dry 8000d0)
+                                (inertia *test-inertia*) attitude-fn)
+  (lis::rk4-step! state h time model force torque mdot m-dry inertia
+                  (lis::mat3-inverse-symmetric inertia) attitude-fn))
+
+(defun drift-orbit (e)
+  "The test orbit of \"Drift bounds\": periapsis 6,778 km, i 51.6°, Ω 30°,
+ω 40°, at periapsis at the start date."
+  (lis::make-elliptic-orbit lis::+mu-earth+ (/ 6778d3 (- 1 e)) e (deg 51.6) (deg 30) (deg 40)
+                            0d0 (lis::start-t)))
+
+(defun specific-energy (r v)
+  (- (/ (lis::vec3-dot v v) 2) (/ lis::+mu-earth+ (lis::vec3-norm r))))
+
+(defun drift-run (e orbits coarse)
+  "Integrate the drift orbit for ORBITS periods at the fine step or the
+coarse step rule; (values ΔE/E ΔL/L position-error) as maxima at whole
+periods."
+  (declare (type double-float e) (type fixnum orbits) (inline lis::rk4-step!))
+  (let* ((orbit (drift-orbit e))
+         (period (lis::orbit-period orbit))
+         (t0 (lis::start-t))
+         (inertia *test-inertia*)
+         (inverse (lis::mat3-inverse-symmetric inertia))
+         (zero (lis::make-vec3))
+         (state (multiple-value-bind (r v) (lis::orbit-state orbit t0)
+                  (lis::make-ship-state r v (lis::quat-from-axis-angle (lis::vec3 1 2 3) 0.7d0)
+                                        (lis::make-vec3) 0d0)))
+         (r (lis::ship-state-r state))
+         (v (lis::ship-state-v state))
+         (e0 (specific-energy r v))
+         (l0 (lis::vec3-cross r v))
+         (time t0) (next 1) (de 0d0) (dl 0d0) (dr 0d0))
+    (declare (type double-float time de dl dr) (type fixnum next))
+    (loop while (<= next orbits)
+          do (let ((h (if coarse (lis::coarse-step r time nil) lis::+fine-step+)))
+               (declare (type double-float h))
+               (lis::rk4-step! state h time :point zero zero 0d0 1000d0 inertia inverse)
+               (setf time (+ time h)))
+             (when (>= time (+ t0 (* next period)))
+               (setf de (max de (relative-error (specific-energy r v) e0))
+                     dl (max dl (/ (lis::vec3-norm (lis::vec3-sub (lis::vec3-cross r v) l0))
+                                   (lis::vec3-norm l0)))
+                     dr (max dr (lis::vec3-norm (lis::vec3-sub r (lis::orbit-state orbit time)))))
+               (incf next)))
+    (values de dl dr)))
+
+(defmacro define-drift-test (name e orbits coarse de dl dr)
+  `(define-test ,name
+     (multiple-value-bind (de dl dr) (drift-run ,e ,orbits ,coarse)
+       (true (< de ,de) "ΔE/E ~,2E" de)
+       (true (< dl ,dl) "ΔL/L ~,2E" dl)
+       (true (< dr ,dr) "position ~,3F m" dr))))
+
+;; The table of docs/architecture.md "Drift bounds". The fine rows run 5
+;; circular orbits and 1 at e = 0.5 instead of 10 and 2, bounds unchanged:
+;; the whole table took 2.3 s, over the ~2 s of plan 14 (measured 2026-10-14:
+;; ΔE/E 1.5e-13, ΔL/L 1.1e-13 and 3e-5 m over 10 circular orbits).
+(define-drift-test drift-fine-circular 0d0 5 nil 1d-11 1d-11 0.05d0)
+(define-drift-test drift-fine-e0.5 0.5d0 1 nil 1d-11 1d-11 0.05d0)
+(define-drift-test drift-coarse-circular 0d0 1000 t 1d-10 1d-10 5d0)
+(define-drift-test drift-coarse-e0.5 0.5d0 1000 t 1d-9 1d-9 100d0)
+(define-drift-test drift-coarse-e0.9 0.9d0 200 t 1d-8 1d-9 5000d0)
+
+(defun rotation-run (inertia)
+  "1,000 s of torque-free rotation at the fine step from |ω| = 0.1 rad/s
+off the principal axes; (values ΔT/T Δ|Iω|/|Iω| max ||q| − 1|), the
+angular momentum compared in inertial axes."
+  (let* ((inverse (lis::mat3-inverse-symmetric inertia))
+         (zero (lis::make-vec3))
+         (state (lis::make-ship-state (lis::vec3 1d8 0 0) (lis::make-vec3) (lis::quat 1 0 0 0)
+                                      (lis::vec3-scale (lis::vec3-normalize (lis::vec3 1 0.5d0 -0.7d0))
+                                                       0.1d0)
+                                      0d0))
+         (time 0d0) (dt 0d0) (dl 0d0) (dq 0d0))
+    (flet ((energy ()
+             (let ((w (lis::ship-state-w state)))
+               (/ (lis::vec3-dot w (lis::mat3*vec3 inertia w)) 2)))
+           (momentum ()
+             (lis::quat-rotate (lis::ship-state-q state)
+                               (lis::mat3*vec3 inertia (lis::ship-state-w state)))))
+      (let ((t0 (energy)) (l0 (momentum)))
+        (dotimes (i (* 1000 64))
+          (lis::rk4-step! state lis::+fine-step+ time :none zero zero 0d0 1000d0 inertia inverse)
+          (incf time lis::+fine-step+)
+          (when (zerop (mod (1+ i) 640))
+            (let ((q (lis::ship-state-q state)))
+              (setf dt (max dt (relative-error (energy) t0))
+                    dl (max dl (rel-diff (momentum) l0))
+                    dq (max dq (abs (- 1 (sqrt (loop for x across q sum (* x x))))))))))
+        (values dt dl dq)))))
+
+(define-test rotation-torque-free
+  (let ((tilted (let ((rot (lis::mat3-from-quat (lis::quat-from-axis-angle (lis::vec3 0 1 0)
+                                                                           (deg 10)))))
+                  (lis::mat3* rot (lis::mat3* *test-inertia* (lis::mat3-transpose rot))))))
+    (true (/= 0d0 (aref tilted 2)))
+    (dolist (inertia (list *test-inertia* tilted))
+      (multiple-value-bind (dt dl dq) (rotation-run inertia)
+        (true (< dt 1d-9) "ΔT/T ~,2E" dt)
+        (true (< dl 1d-9) "Δ|Iω| ~,2E" dl)
+        (true (< dq 1d-12) "|q| − 1 ~,2E" dq)))))
+
+(define-test rk4-exhaustion
+  ;; ṁ h = 2 m_p: the step is scaled by ½ and empties the tanks exactly.
+  (let* ((force 101800d0) (mdot 23.08d0) (m-p (* 0.5d0 mdot)) (m-dry 7961d0)
+         (state (lis::make-ship-state (lis::make-vec3) (lis::make-vec3) (lis::quat 1 0 0 0)
+                                      (lis::make-vec3) m-p)))
+    (step! state 1d0 0d0 :model :none :force (lis::vec3 force 0 0) :mdot mdot :m-dry m-dry
+                         :torque (lis::vec3 0 100 0))
+    (is = 0d0 (lis::ship-state-m-p state))
+    (let ((rocket (* (/ force mdot) (log (/ (+ m-dry m-p) m-dry)))))
+      (true (< (relative-error (lis::ship-state-dv state) rocket) 1d-12))
+      (true (< (relative-error (aref (lis::ship-state-v state) 0) rocket) 1d-6)))
+    ;; Dry: force, torque and ṁ are zero.
+    (let ((before (lis::copy-ship-state state)))
+      (step! state 1d0 1d0 :model :none :force (lis::vec3 force 0 0) :mdot mdot :m-dry m-dry
+                           :torque (lis::vec3 0 100 0))
+      (is equalp (lis::ship-state-v before) (lis::ship-state-v state))
+      (is equalp (lis::ship-state-w before) (lis::ship-state-w state))
+      (is = 0d0 (lis::ship-state-m-p state))
+      (is = (lis::ship-state-dv before) (lis::ship-state-dv state)))))
+
+(defun prograde-attitude (q-out w-out time-cell r v)
+  "Body x along v, z towards −r (orthogonalised), the frame's rate r × v / r²."
+  (declare (ignore time-cell))
+  (let* ((x (lis::vec3-normalize v))
+         (z (lis::vec3-normalize (lis::vec3-add-scaled (lis::vec3-scale r -1d0) x
+                                                       (lis::vec3-dot r x))))
+         (y (lis::vec3-cross z x)))
+    (replace q-out (lis::quat-from-basis x y z))
+    (lis::vec3-scale! w-out (lis::vec3-cross r v) (/ (lis::vec3-dot r r)))))
+
+(define-test rk4-kinematic-attitude
+  (let* ((orbit (drift-orbit 0d0))
+         (time (lis::start-t))
+         (state (multiple-value-bind (r v) (lis::orbit-state orbit time)
+                  (lis::make-ship-state r v (lis::quat 1 0 0 0) (lis::make-vec3) 28000d0))))
+    (dotimes (i 100)
+      (let ((h (lis::coarse-step (lis::ship-state-r state) time t)))
+        (step! state h time :force (lis::vec3 101800d0 0 0) :mdot 23.08d0 :m-dry 7961d0
+                            :attitude-fn #'prograde-attitude)
+        (incf time h)))
+    (let* ((q (lis::ship-state-q state))
+           (x (lis::quat-rotate q (lis::vec3 1 0 0)))
+           (vn (lis::vec3-normalize (lis::ship-state-v state))))
+      (true (< (lis::vec3-norm (lis::vec3-cross x vn)) 1d-12))
+      (true (plusp (lis::vec3-dot x vn)))
+      ;; ω in body axes is the orbit rate about body −y.
+      (let ((w (lis::ship-state-w state))
+            (rate (/ (lis::vec3-norm (lis::vec3-cross (lis::ship-state-r state)
+                                                      (lis::ship-state-v state)))
+                     (lis::vec3-dot (lis::ship-state-r state) (lis::ship-state-r state)))))
+        (true (< (relative-error (- (aref w 1)) rate) 1d-9)))
+      ;; The burn followed v: 100 s of thrust, all along track.
+      (true (< (relative-error (lis::ship-state-dv state)
+                               (* (/ 101800d0 23.08d0) (log (/ 35961d0 (- 35961d0 2308d0)))))
+               1d-12)))))
+
+(defun full-steps (state n)
+  "N fine steps from the start date with :full gravity, thrust and torque."
+  (declare (type fixnum n) (inline lis::rk4-step!))
+  (let ((force (lis::vec3 1000d0 0 0))
+        (torque (lis::vec3 10d0 -20d0 5d0))
+        (inertia *test-inertia*)
+        (inverse (lis::mat3-inverse-symmetric *test-inertia*))
+        (time (lis::start-t)))
+    (declare (type double-float time))
+    (dotimes (i n state)
+      (lis::rk4-step! state lis::+fine-step+ time :full force torque 0.3d0 8000d0 inertia inverse)
+      (setf time (+ time lis::+fine-step+)))))
+
+(defun leo-state ()
+  (multiple-value-bind (r v) (lis::orbit-state (drift-orbit 0d0) (lis::start-t))
+    (lis::make-ship-state r v (lis::quat 1 0 0 0) (lis::vec3 0.01d0 0 0) 28000d0)))
+
+(define-test rk4-cons-nothing-and-deterministic
+  (let ((a (full-steps (leo-state) 10000))
+        (b (leo-state)))
+    (let ((consed (let ((before (sb-ext:get-bytes-consed)))
+                    (full-steps b 10000)
+                    (- (sb-ext:get-bytes-consed) before))))
+      (true (< consed 1024) "~D bytes" consed))
+    (is equalp a b)))

@@ -85,13 +85,18 @@ into a. MODEL: :none, :point (μ⊕), :j2 (with J2, pole along ICRF z),
 (declaim (type double-float *coarse-eta* *coarse-step-min* *coarse-step-max*
                *thrust-step-max*))
 
+(defconstant +moon-distance-min+ 3.5d8
+  "m, below the Moon's least distance from Earth (perigee ≥ 356,000 km).")
+(defconstant +sun-distance-min+ 1.4d11
+  "m, below the Sun's least distance from Earth (perihelion 1.471×10¹¹ m).")
+
 (declaim (inline coarse-step))
 
 (defun coarse-step (r time thrusting &optional (central :earth))
   "h = η min over the frame's bodies of √(d³/μ), down to a power of two,
 clamped to [*coarse-step-min*, *coarse-step-max*], ≤ *thrust-step-max*
 when THRUSTING."
-  (declare (type vec3 r) (type double-float time))
+  (declare (optimize speed) (type vec3 r) (type double-float time))
   (let ((tau 0d0))
     (declare (type double-float tau))
     (flet ((dynamical-time (d2 mu)
@@ -99,15 +104,22 @@ when THRUSTING."
              (sqrt (the (double-float 0d0) (/ (* d2 (sqrt d2)) mu)))))
       (ecase central
         (:earth
-         (let ((d (make-vec3)) (dv (make-vec3)))
+         (let* ((d (make-vec3)) (dv (make-vec3))
+                (r2 (vec3-dot r r))
+                (rn (sqrt (the (double-float 0d0) r2))))
            (declare (dynamic-extent d dv))
-           (setf tau (dynamical-time (vec3-dot r r) +mu-earth+))
-           (body-state-into d dv :moon time :earth)
-           (vec3-sub! d d r)
-           (setf tau (min tau (dynamical-time (vec3-dot d d) +mu-moon+)))
-           (body-state-into d dv :sun time :earth)
-           (vec3-sub! d d r)
-           (setf tau (min tau (dynamical-time (vec3-dot d d) +mu-sun+)))))))
+           (setf tau (dynamical-time r2 +mu-earth+))
+           ;; A body is read only if its least possible distance could
+           ;; lower tau; skipping it leaves the result unchanged.
+           (flet ((third-body (key distance-min mu)
+                    (let ((low (- distance-min rn)))
+                      (unless (and (> low 0d0) (>= (dynamical-time (* low low) mu) tau))
+                        (body-state-into d dv key time :earth)
+                        (vec3-sub! d d r)
+                        (setf tau (min tau (dynamical-time (vec3-dot d d) mu)))))))
+             (declare (inline third-body))
+             (third-body :moon +moon-distance-min+ +mu-moon+)
+             (third-body :sun +sun-distance-min+ +mu-sun+))))))
     ;; Halving from the upper clamp, a power of two, rounds down exactly.
     (let ((h (* *coarse-eta* tau))
           (p *coarse-step-max*))
@@ -115,3 +127,121 @@ when THRUSTING."
       (loop while (and (> p h) (> p *coarse-step-min*))
             do (setf p (* 0.5d0 p)))
       (if thrusting (min p *thrust-step-max*) p))))
+
+;;; The RK4 step (docs/architecture.md "Integrator"; decision 69). The state
+;;; vector y: r 0–2, v 3–5, q 6–9, ω 10–12, m_p 13.
+
+(deftype state-vector () '(simple-array double-float (14)))
+
+(declaim (inline state-vector-axpy!))
+
+(defun state-vector-axpy! (out y k s)
+  "out = y + s k."
+  (declare (type state-vector out y k) (type double-float s))
+  (dotimes (i 14 out)
+    (setf (aref out i) (+ (aref y i) (* s (aref k i))))))
+
+;; Hot callers declare it inline: a full call boxes the double-float time.
+(declaim (sb-ext:maybe-inline rk4-step!))
+
+(defun rk4-step! (state h time model force-body torque-body mdot m-dry
+                  inertia inertia-inverse &optional attitude-fn)
+  "Advance STATE by h from TIME: classical RK4 on r, v, q, ω and m_p, the
+body force (N), torque (N m) and mass flow (kg/s) held over the step, the
+mass m-dry + m_p, the inertia tensor about the CoM and its inverse (body
+axes) held over the step; conses nothing. When ṁ h > m_p the inputs are
+scaled so the tanks empty exactly at the step's end. With ATTITUDE-FN,
+called as (attitude-fn q-out w-out time-cell r v) to write the attitude and
+the frame's rate (inertial axes) at the time in time-cell (a one-element
+double array, so nothing is boxed), attitude is kinematic: q comes from it
+at each stage, torque is ignored, q and ω are set from it at t + h."
+  (declare (optimize speed) (type ship-state state) (type double-float h time mdot m-dry)
+           (type vec3 force-body torque-body) (type mat3 inertia inertia-inverse)
+           (type keyword model) (type (or null function) attitude-fn))
+  (let* ((m-p0 (ship-state-m-p state))
+         (scale (cond ((<= m-p0 0d0) 0d0)
+                      ((> (* mdot h) m-p0) (/ m-p0 (* mdot h)))
+                      (t 1d0)))
+         (exhausted (< scale 1d0))
+         (mdot (* scale mdot))
+         (y (make-array 14 :element-type 'double-float))
+         (ys (make-array 14 :element-type 'double-float))
+         (k1 (make-array 14 :element-type 'double-float))
+         (k2 (make-array 14 :element-type 'double-float))
+         (k3 (make-array 14 :element-type 'double-float))
+         (k4 (make-array 14 :element-type 'double-float))
+         (f (make-vec3)) (tau (make-vec3))
+         (r (make-vec3)) (v (make-vec3)) (w (make-vec3)) (a (make-vec3))
+         (iw (make-vec3)) (tmp (make-vec3)) (q (make-quat)) (dq (make-quat))
+         (time-cell (make-array 1 :element-type 'double-float)))
+    (declare (dynamic-extent y ys k1 k2 k3 k4 f tau r v w a iw tmp q dq time-cell)
+             (type double-float scale mdot))
+    (vec3-scale! f force-body scale)
+    (vec3-scale! tau torque-body scale)
+    (replace y (ship-state-r state))
+    (replace y (ship-state-v state) :start1 3)
+    (replace y (ship-state-q state) :start1 6)
+    (replace y (ship-state-w state) :start1 10)
+    (setf (aref y 13) m-p0)
+    (flet ((derivative! (k y time)
+             (declare (type state-vector k y) (type double-float time))
+             (vec3-set! r (aref y 0) (aref y 1) (aref y 2))
+             (vec3-set! v (aref y 3) (aref y 4) (aref y 5))
+             (gravity-into! a r time model)
+             (if attitude-fn
+                 (progn (setf (aref time-cell 0) time)
+                        (funcall attitude-fn q tmp time-cell r v))
+                 (quat-set! q (aref y 6) (aref y 7) (aref y 8) (aref y 9)))
+             ;; v̇ = gravity + q (F / m) q*
+             (quat-rotate! tmp q f)
+             (vec3-add-scaled! a a tmp (/ (+ m-dry (aref y 13))))
+             (setf (aref k 0) (aref y 3) (aref k 1) (aref y 4) (aref k 2) (aref y 5)
+                   (aref k 3) (aref a 0) (aref k 4) (aref a 1) (aref k 5) (aref a 2)
+                   (aref k 13) (- mdot))
+             (if attitude-fn
+                 (fill k 0d0 :start 6 :end 13)
+                 (progn
+                   (vec3-set! w (aref y 10) (aref y 11) (aref y 12))
+                   (quat-derivative! dq q w)
+                   (replace k dq :start1 6)
+                   ;; I ω̇ = τ − ω × I ω
+                   (mat3*vec3! iw inertia w)
+                   (vec3-cross! tmp w iw)
+                   (vec3-sub! tmp tau tmp)
+                   (mat3*vec3! tmp inertia-inverse tmp)
+                   (replace k tmp :start1 10)))
+             k))
+      (declare (inline derivative!))
+      (let ((h/2 (* 0.5d0 h)))
+        (derivative! k1 y time)
+        (derivative! k2 (state-vector-axpy! ys y k1 h/2) (+ time h/2))
+        (derivative! k3 (state-vector-axpy! ys y k2 h/2) (+ time h/2))
+        (derivative! k4 (state-vector-axpy! ys y k3 h) (+ time h))
+        (dotimes (i 14)
+          (setf (aref y i)
+                (+ (aref y i)
+                   (* (/ h 6) (+ (aref k1 i) (* 2 (aref k2 i)) (* 2 (aref k3 i))
+                                 (aref k4 i))))))))
+    (let* ((m-p1 (if exhausted 0d0 (max 0d0 (aref y 13))))
+           (m0 (+ m-dry m-p0))
+           (m1 (+ m-dry m-p1))
+           (fn (vec3-norm f)))
+      (vec3-set! (ship-state-r state) (aref y 0) (aref y 1) (aref y 2))
+      (vec3-set! (ship-state-v state) (aref y 3) (aref y 4) (aref y 5))
+      (if attitude-fn
+          (let ((q (ship-state-q state)) (w (ship-state-w state)))
+            ;; ω in body axes: q* ω_t q
+            (setf (aref time-cell 0) (+ time h))
+            (funcall attitude-fn q tmp time-cell (ship-state-r state) (ship-state-v state))
+            (quat-conjugate! dq q)
+            (quat-rotate! w dq tmp))
+          (progn
+            (quat-set! (ship-state-q state) (aref y 6) (aref y 7) (aref y 8) (aref y 9))
+            (quat-normalize! (ship-state-q state) (ship-state-q state))
+            (vec3-set! (ship-state-w state) (aref y 10) (aref y 11) (aref y 12))))
+      (setf (ship-state-m-p state) m-p1)
+      (incf (ship-state-dv state)
+            (if (> mdot 0d0)
+                (* (/ fn mdot) (log (the (double-float (0d0)) (/ m0 m1))))
+                (/ (* fn h) m0)))
+      state)))

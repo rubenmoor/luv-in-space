@@ -120,7 +120,7 @@ What one tank reaches from the start orbit (6,650 m/s):
 ### Inertia
 - From the parts: each as a point mass with its own moment (solid or thin-walled cylinder, box, rods for the truss) and the parallel-axis rule I = Σ (I_i + m_i (|d|² 𝟙 − d dᵀ)), d from the CoM.
 - Propellant: a solid cylinder of 0.95 × the tank radius filling each tank from its aft end in proportion to the load, as under thrust; both tanks drain at the mixture ratio. Slosh is not modelled.
-- The cab on top makes the tensor non-diagonal in body axes: I_xz up to 2.7×10⁴ kg m², tilting the principal axes up to 11° in the xz-plane (dry). `ship.lisp` hands the integrator the full symmetric tensor about the current CoM, with its inverse; Euler's equations I ω̇ = τ − ω × I ω (`decision 16: Integrator and simulation clock`) hold unchanged with it. The wording in `docs/architecture.md` "Integrator" ("principal axes") is adjusted by `task 45: Architecture: the integrator takes the full inertia tensor`.
+- The cab on top makes the tensor non-diagonal in body axes: I_xz up to 2.7×10⁴ kg m², tilting the principal axes up to 11° in the xz-plane (dry). `ship.lisp` hands the integrator the full symmetric tensor about the current CoM, with its inverse; Euler's equations I ω̇ = τ − ω × I ω (`decision 16: Integrator and simulation clock`) hold unchanged with it. `docs/architecture.md` "Integrator" says the same (`task 45: Architecture: the integrator takes the full inertia tensor`).
 - `ship.lisp` recomputes CoM and tensor from the current propellant mass (and load) once per step, held over the step as the architecture says.
 
 | State | Mass (kg) | CoM (m) | I_xx | I_yy | I_zz | I_xz (kg m²) | Principal tilt |

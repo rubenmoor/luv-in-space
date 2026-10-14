@@ -24,7 +24,7 @@ The game is its own renderer and simulation on luv's HAL, shader language, SDL3 
 - Known candidates, not yet dependencies:
   - `luv/production`: a latest-value worker for trajectory prediction off the frame thread; not used: prediction runs on the frame thread (`decision 20: Trajectory prediction on the frame thread`).
   - `luv/arithmetic` quantity declarations at boundaries (save files, instruments); it is already loaded through `luv`, so using it needs no new dependency, only a rule; the integrator stays on plain `double-float`.
-  - `luv/ghostty`: only if `docs/design.md` keeps a real terminal screen; needs the full dev shell, not `slim`.
+  - `luv/ghostty`: not used: `docs/design.md` cuts the terminal screen (`decision 36: Cockpit instruments: Slug screens, dot-matrix strip, gauges and lamps; Ghostty out`); it would need the full dev shell, not `slim`.
 
 ### What the game uses from luv and what it writes
 - From luv:
@@ -42,7 +42,7 @@ The game is its own renderer and simulation on luv's HAL, shader language, SDL3 
   - Stars from a catalogue as instanced quads at infinity ("Starfield").
   - HDR target, bloom, tone map, exposure ("Sun glare and brightness").
   - Screen-space ribbons and markers ("Orbit lines and markers").
-  - Text runs (a copy of Luvcraft's `text.lisp`) and cockpit screen textures ("HUD and instruments"); dot-matrix placeholder labels until then (`decision 7: Placeholder labels: dot-matrix overlay quads`).
+  - Text runs (a copy of Luvcraft's `text.lisp`) and cockpit screens: Slug text and ribbons drawn on the screens' planes, the grapple camera the only render target ("HUD and instruments"; `decision 36: Cockpit instruments: Slug screens, dot-matrix strip, gauges and lamps; Ghostty out`); dot-matrix placeholder labels until then (`decision 7: Placeholder labels: dot-matrix overlay quads`).
   - Instanced meshes for ships and asteroids ("Instancing many objects").
   - Physics: clock, warp, integrator, Kepler propagation, ephemerides ("Fixed physics step and time warp"; "Physics and SIMD").
   - Audio mixer and synthesised voices ("Audio"); saves ("Save files"); gamepad polling ("Gamepad and joystick").
@@ -104,7 +104,7 @@ In brackets: the milestone that first creates the file; later milestones extend 
 - `post.lisp` (milestone 2): HDR target, bloom, tone map, exposure; needs gpu.
 - `overlay.lisp` (milestone 2): screen-space 2D pass: dot-matrix labels (`decision 7`) and the minimal flight readout; needs gpu.
 - `text.lisp` (milestone 3): Slug text runs (adapted copy of Luvcraft's `text.lisp`, attributed in its header); needs gpu.
-- `cockpit.lisp` (milestone 3): the DIY cockpit: geometry, screens rendered to textures, switches, instruments; needs text, ship, prediction.
+- `cockpit.lisp` (milestone 3): the DIY cockpit: geometry, screens (Slug text on their planes), the grapple camera's render target, dot-matrix strip, gauges, lamps, buttons and picking, messages; needs text, ship, prediction.
 - `render.lisp` (milestone 2): the frame: passes in order, encoding everything above into the canvas or a capture; needs all rendering files.
 - `input.lisp` (milestone 2): canvas events to `controls`; key map; gamepad polling later; needs controls.
 - `audio.lisp` (milestone 6 by default; earlier if `docs/design.md` says so): `audio-sink`, the Lisp mixer, synthesised voices; silent when no device; needs ship, controls.

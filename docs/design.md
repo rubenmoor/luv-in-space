@@ -172,7 +172,7 @@ Built from the tug's parts so they read as the same technology, and all on Keple
 - The player's Mule as a parts list (the parts table gives positions):
   - Truss: 4 longerons Ø 0.076 × 15.0; 11 square frames of 4 tubes Ø 0.060 × 3.6; 40 face diagonals Ø 0.060 × 3.9.
   - LH2 tank Ø 3.2 × 8.86 and LOX tank Ø 3.2 × 3.73, hemispherical domes, foil-wrapped, visible through the open truss.
-  - Cab: cylinder Ø 3.0 × 4.5 on four short struts on the truss top, a flat front with a rectangular window ~1.2 × 0.6 m looking forward along +x over the grapple, a side hatch at +y.
+  - Cab: cylinder Ø 3.0 × 4.5 on four short struts on the truss top, a flat front with a rectangular window ~1.2 × 0.6 m looking forward along +x over the grapple, a side hatch at +y, two portholes Ø 0.35 m low in the side walls ("The cockpit").
   - Engine: bell (frustum) Ø 1.45 at the exit, Ø 0.3 at the throat, 1.6 long; chamber and turbopumps as a cylinder Ø 0.5 × 0.6 and two boxes, on a 4-strut thrust frame.
   - Grapple: cone Ø 1.6 × 0.8 on a cylinder Ø 0.6 × 0.8; three claws as boxes 0.1 × 0.1 × 0.6.
   - RCS blocks: boxes 0.4 × 0.4 × 0.3 with three small cones (nozzles) each.
@@ -219,11 +219,13 @@ Keyboard and mouse through luv's canvas events (`docs/luv-capabilities.md` "Wind
 | Target next / previous / clear | ] / [ / \ | 3 |
 | Autopilot: open the preset list; choose; engage; disengage | O; Up/Down; Return; Backspace | 3 |
 | Grapple (arm, release; "Grappling and berthing") | G | 3 |
+| Propellant transfer on/off, berthed at a depot (`decision 26: Refuelling and economy`) | B | 3 |
+| Acknowledge: the master alarm; radio messages read ("The cockpit") | Y | 3 |
 | Controls help | F1 | 6 (before: the window title lists the main keys, as luv's games do) |
 | Quit | Escape, Control+Q | 2; from 6 Escape pauses and opens the menu (resume, controls, credits, quit) |
 
 - Pressing the key of the active hold again releases it to rate damping; pitch or yaw keys release any hold; roll keys during a hold turn the ship about the hold's axis and the hold keeps the new roll.
-- Free keys kept for later parts: Space, B, Y, F2–F12; U is sound on/off ("Sound"); there is no save key ("Saving").
+- Free keys kept for later parts: Space, F2–F12; B and Y are the cockpit's (`decision 36: Cockpit instruments: Slug screens, dot-matrix strip, gauges and lamps; Ghostty out`); U is sound on/off ("Sound"); there is no save key ("Saving").
 - Mouse:
   - Right button held: look (cockpit: head look; outside and map: orbit the camera); luv's relative pointer mode while held, so the pointer stays put.
   - Wheel: cockpit field of view; outside camera distance; map zoom (×1.2 per notch).
@@ -260,7 +262,7 @@ Three views of one scene, drawn by one renderer (reversed-Z, `decision 4: Depth 
   - Its axes in the orbital frame, so Earth stays below as the ship goes round (default), or locked to the ship's body axes (a chase camera; C toggles).
   - Shows the ship, its engine glow and lights, the target and other objects in range, Earth, Moon, Sun and stars, and the minimal readout ("Instruments").
 - Cockpit (`milestone 3`): the pilot's seat in the cab.
-  - Eye point (14.1, 0, −3.6) m from R in FRD: in the cab (cylinder Ø 3.0 × 4.5, x 10.5–15.0, axis at z = −3.5), 0.9 m behind the flat front wall, 0.1 m above the cab's axis, facing +x. The 1.2 × 0.6 m window centred at (15.0, 0, −3.6) spans ±34° horizontally and ±18° vertically from it. "The cockpit" (task 41) may move the eye point with its panel layout and says so.
+  - Eye point (14.1, 0, −3.6) m from R in FRD: in the cab (cylinder Ø 3.0 × 4.5, x 10.5–15.0, axis at z = −3.5), 0.9 m behind the flat front wall, 0.1 m above the cab's axis, facing +x. The 1.2 × 0.6 m window centred at (15.0, 0, −3.6) spans ±34° horizontally and ±18° vertically from it. "The cockpit" keeps the eye point and lays its panels out around it; Home recentres the head to 16° below the nose line.
   - Field of view 70° vertical (96° horizontal) by default, so the window and the panels around it are both in view; the wheel zooms between 20° and 90°.
   - Head look by mouse: yaw ±150°, pitch −60° to +80°, no translation (the pilot is strapped in); Home recentres.
   - The grapple's tip sits 55° below the line of sight (atan(3.6 / 2.5)), outside the window: close work uses the grapple camera on a cockpit screen ("Grappling and berthing", "The cockpit").
@@ -269,7 +271,7 @@ Three views of one scene, drawn by one renderer (reversed-Z, `decision 4: Depth 
   - Opening the map frames the ship's orbit: focus the dominant body, distance 2.5 × the apoapsis radius (or the body's radius, if larger), viewed 30° above the orbit plane from the normal side.
   - Bodies are drawn as their impostors at true size; below 6 px they become a marker with a label, so the Moon and the planets stay findable. The ship and targets are markers at every zoom.
   - Lines, as screen-space ribbons (`docs/luv-capabilities.md` "Orbit lines and markers"; `ribbons.lisp`): `milestone 2` the ship's osculating orbit (2 px) with apoapsis and periapsis markers and an impact marker where the orbit meets the crash sphere; `milestone 3` the predicted trajectory (`decision 20: Trajectory prediction on the frame thread`, two periods in the map) in place of the osculating orbit, the target's orbit, closest approach, relative ascending and descending nodes, and the planned burns ("The autopilot"); `milestone 4` the Moon's and planets' orbits (1 px), SOI changes on the trajectory, focus on the Moon, the Sun and the planets.
-  - Colours: the ship's line cyan, the target's orange, bodies' orbits grey, the part of a trajectory after a planned burn dashed, impacts red; labels as the readout's text.
+  - Colours: the ship's line cyan, the target's magenta (the colour rules of "The cockpit", "Readability"), bodies' orbits grey, the part of a trajectory after a planned burn dashed, impacts red; labels as the readout's text.
   - The exposure is fixed in the map, so stars stay visible next to a lit Earth.
 
 ### Instruments
@@ -298,7 +300,7 @@ What the pilot reads, and from which milestone; how each is drawn and where it s
 | Body and SOI | the dominant body's name, time to the next SOI change | 4 |
 | Sun | distance (AU), flux, hull temperature with warning and danger marks ("Dying and what follows") | 4 |
 | Life support | consumables in days left at the current crew ("Dying and what follows") | 4 |
-| Radio and messages | the quest line's messages (task 41's channel, `milestone 5`'s quests) | 5 |
+| Radio and messages | the quest line's messages: RADIO and JOB on the COMMS screen ("The cockpit", "Messages and radio") | 5 |
 
 ### Time warp
 Within `decision 19: Time-warp rules` and `docs/architecture.md` "Time warp"; the design's choices are `decision 31: Warp choices within the time-warp rules`. Code: `clock.lisp`, events from `prediction.lisp`.
@@ -313,7 +315,7 @@ Within `decision 19: Time-warp rules` and `docs/architecture.md` "Time warp"; th
   - a scheduled burn, at its start minus the lead time: 60 s or the estimated slew to the burn attitude plus 10 s, whichever is longer. The slew rule ("Control modes") turns 180° in 40 s wet and 59 s with 100 t, so 60 s covers almost every case;
   - entering the Sun's warning zone, inside 0.551 AU ("Dying and what follows"); and the life-support alarms at 30 and 7 days.
 - Refusals (`decision 19`): warp up is refused while thrusting above the limit, while rotating faster than 0.01 rad/s without a hold, or with an event under 3 s of real time away at the new level.
-- Shown: the readout's warp field (nominal level; actual rate in amber when below 90 % of nominal; "PAUSED"); a refusal or drop-out writes a message with its reason for 3 s, e.g. "WARP REFUSED: ENGINE ON, LIMIT ×10", "WARP REFUSED: ROTATING, SET A HOLD", "WARP ×1: PERIAPSIS BELOW 100 KM IN 3 S". From `milestone 3` the cockpit's warp lamp flashes with it ("The cockpit"); from `milestone 6` a short tone ("Sound").
+- Shown: the readout's warp field (nominal level; actual rate in amber when below 90 % of nominal; "PAUSED"); a refusal or drop-out writes a message with its reason for 3 s, e.g. "WARP REFUSED: ENGINE ON, LIMIT ×10", "WARP REFUSED: ROTATING, SET A HOLD", "WARP ×1: PERIAPSIS BELOW 100 KM IN 3 S". From `milestone 3` the cockpit's WARP lamp flashes with it ("The cockpit"); from `milestone 6` a short tone ("Sound").
 - Pause (P) is apart from warp: no steps run, every view, the camera and the map still work, flight inputs are ignored; resuming restores the warp level.
 - Warp is allowed while grappled and coasting, e.g. while refuelling (`decision 26: Refuelling and economy`), under the same rules.
 
@@ -426,7 +428,7 @@ Only what travels through the hull and the cab's air: there is no sound in vacuu
   - RCS: a short noise burst per thruster pulse (gain by duty cycle), panned by the thruster's y relative to the eye point; the front blocks louder (nearer the cab).
   - Valves and mechanisms: clicks on throttle steps and hold changes, the grapple's motor whine and the claws' clunk, the propellant transfer's hiss while refuelling.
   - Contact: a dull thud by impact speed.
-  - Alarms: a two-tone chime for warnings (amber), a fast beep for danger (red), a short tone for warp refused or dropped; each alarm sounds once per onset, the danger beep repeats until acknowledged (a click on the lamp or U).
+  - Alarms: a two-tone chime for warnings (amber), a fast beep for danger (red), a short tone for warp refused or dropped; each alarm sounds once per onset, the danger beep repeats until acknowledged (Y or a click on the MSTR lamp).
   - Radio: static and a chirp when a message arrives (`milestone 5`'s messages); voices are not recorded (text only, "The cockpit").
 - Under warp above ×4 the RCS is off and so is its sound; the engine's sound plays at any warp it runs under (up to ×100); ambience plays always, paused included.
 - Key: U toggles sound on and off (from the free keys of "Controls"); the state is kept in the resume file.
@@ -437,9 +439,112 @@ Only what travels through the hull and the cab's air: there is no sound in vacuu
 
 ## The cockpit
 
-The home-made cockpit inside the cab: its layout, each instrument and how it is drawn, and how messages reach the pilot.
+The home-made cockpit inside the cab: its layout, each instrument and how it is drawn, and how messages reach the pilot. Mismatched screens, a dot-matrix strip, needle gauges and lamps are bolted to a welded rack below and beside the window; together they carry every instrument of "Flight", "Instruments", so the pilot can fly from the cockpit alone (`milestone 3`). The lasting choices are `decision 36: Cockpit instruments: Slug screens, dot-matrix strip, gauges and lamps; Ghostty out` and `decision 37: Message channels the story may use`. Code: `cockpit.lisp` (geometry, panels, picking, instrument logic), `text.lisp` (Slug text), `ribbons.lisp` (plot lines), the dot-matrix glyphs of `overlay.lisp` (`docs/architecture.md` "Files in load order"); all drawn in the scene's pass with reversed-Z, near 0.1 m (`decision 4: Depth strategy`), camera-relative from the ship's double state (`decision 5: Precision of positions`), through live pipelines (`decision 11: Render pipelines are luv live shader pipelines`).
 
-PLACEHOLDER(41): `task 41: Design: the cockpit`.
+### The DIY look
+- The cab's inside: a cylinder of 1.40 m inner radius (the Ø 3.0 m shell less frames and lining), painted off-white, with ring frames of steel angle every 0.5 m and stringers between; a flat deck of tread plate; the flat front wall with the window; the aft wall with the ECLSS rack (boxes with fan grilles), a stowage net with bags, a red extinguisher; the side hatch (Ø 0.8 m, a handwheel) in the +y wall; a folded jump seat aft at −y.
+- The console: a rack of slotted steel channel (41 × 41 mm, bolted and welded) from the deck to the front wall; each screen hangs on L-brackets in its own bezel: black plastic, grey ruggedised with four bolts, green military surplus, beige office monitor, a bare panel with taped edges; a cardboard or sheet-metal sun hood taped over two of them. Nothing is flush, nothing matches.
+- Cables: one to three per panel, tubes Ø 15–25 mm sagging in a few segments to a cable tray on the rack and on to a conduit along the ceiling, aft; zip ties every 0.2 m; black and grey, one red and one yellow run; amber Kapton tape on the joints.
+- Labels: strips of grey gaffer tape (50 mm) under each panel and switch, hand-lettered in white marker (Iosevka Aile, rotated ±2° at random, ragged ends cut in the fragment shader), each with its key in brackets ("PRO [1]"), so the cockpit teaches the key map; duct-tape patches on the lining.
+- The window: the 1.2 × 0.6 m opening in the front wall (`decision 30: Views and cameras`), a welded frame of steel angle 50 × 50 × 5 mm, outer 1.30 × 0.70 m, with bolts Ø 12 mm every 0.1 m; glass as one transparent quad (95 % transmission, a faint green tint, darker at the edges); a boresight cross of white tape (two strips 0.10 × 0.012 m) on the glass at its centre, which marks the ship's +x from the eye point, since eye and window share y and z. The ship's name, stencilled on a plate above the window (`docs/story.md` names it).
+- Two portholes, Ø 0.35 m, low in the side walls: at the start's prograde hold (cab radial out) Earth's horizon lies 19.8° below the nose line (acos(R⊕ / (R⊕ + 400 km))), just under the window's lower edge at 18.4°, so the window shows space and the portholes show Earth (head look about 90° right or left, 40° down). The outside meshes ("How they look") get the same portholes.
+- Light: two LED strips on the ceiling (warm white, `dz` −1.25, `dy` ±0.4, the cab's length); the screens' and lamps' own glow; sunlight through the window and portholes as a sharp patch, found per fragment by intersecting the ray towards the Sun with the openings' rectangles (an analytic test, no shadow map), so the patch wanders through the cab as the ship turns. Earthlight is cut (a second light for little).
+- Seen from outside, the window is dark glass with the screens' faint glow behind it.
+
+### Layout
+Positions are panel centres relative to the eye point, (14.1, 0, −3.6) m from R (`decision 30`), in ship body axes FRD (`decision 15: Coordinate frames`): `dx` forward, `dy` right, `dz` down; the absolute position is the eye point plus these. Every panel faces the eye (its normal points at the eye point) unless the table says otherwise; directions are azimuth (right +) and elevation (down +) from the nose line. The front wall is at `dx` = 0.90, the cab's axis at `dz` = +0.10, the deck at `dz` = +1.15; every panel lies inside the 1.40 m radius. The numbers come from a throwaway layout script (panel rectangles checked for overlap as seen from the eye; not committed).
+
+| Panel | Centre (dx, dy, dz) m | Direction | Size w × h (m) | Text grid | Contents |
+|---|---|---|---|---|---|
+| Window | (0.90, 0, 0) | 0°, 0° | 1.20 × 0.60 | — | the view forward; spans ±33.7° by ±18.4° |
+| Caution lamps | (0.90, −0.72, 0) | −38.7°, 0° | 0.08 × 0.58, five lamps 0.08 × 0.05 at `dz` −0.22, −0.11, 0, 0.11, 0.22 | 4 characters each | MSTR, PERI, PROP, TEMP, LIFE; on the front wall, turned 30° towards the eye |
+| Status lamps | (0.90, +0.72, 0) | +38.7°, 0° | as the caution lamps | 4 characters each | WARP, RCS, AUTO, GRPL, MSG; as the caution lamps |
+| ORBIT screen | (0.60, −0.28, +0.35) | −25°, 27.5° | 0.30 × 0.20 | 24 × 8 | orbital readout |
+| ATTITUDE screen | (0.67, 0, +0.35) | 0°, 27.5° | 0.24 × 0.20 | 19 × 8 | attitude plot, mode, rates |
+| TARGET screen | (0.60, +0.28, +0.35) | +25°, 27.5° | 0.30 × 0.20 | 24 × 8 | target data, or the grapple camera when armed |
+| Dot-matrix strip | (0.55, 0, +0.44) | 0°, 38.5° | 0.30 × 0.08 | 19 × 3 | clock, warp, ship messages |
+| Button block | (0.46, 0, +0.52) | 0°, 48.5° | 0.26 × 0.13, 18 buttons 0.036 m square at 0.042 m pitch | 4 characters per button | holds, modes, grapple, transfer, autopilot, warp |
+| AUTOPILOT screen | (0.42, −0.26, +0.49) | −32°, 45° | 0.26 × 0.19 | 22 × 8 | orbit plot, preset menu, plan and burns |
+| SHIP screen | (0.42, +0.26, +0.49) | +32°, 45° | 0.26 × 0.19 | 22 × 8 | propellant, Δv, mass, throttle, load, consumables, Sun |
+| COMMS screen | (0.34, −0.60, +0.12) | −60°, 10° | 0.30 × 0.24 | 26 × 11 | job card, radio and ship message log |
+| Throttle quadrant | (0.17, −0.24, +0.52) | −55°, 61° | 0.14 × 0.16 | — | throttle lever, ENG lamp, PROP gauge (Ø 0.10) |
+| Hull temperature gauge | (0.17, +0.24, +0.52) | +55°, 61° | Ø 0.12 | — | needle gauge, 150–500 K |
+| Portholes | (−0.30, ±1.07, +1.00) | ±90°, 42° | Ø 0.35 | — | Earth below; in the wall, facing outward |
+
+- The default head direction (Home) is 16° below the nose line: with the 70° field of view (`decision 30`) it shows the whole window, the lamp columns and the console down to 51° (the button block's lowest row and the side screens' bottom edge are cut by 2°); the throttle quadrant, the hull gauge and the COMMS screen need a glance (head look by right drag).
+- The pilot's seat is not drawn beyond its headrest edges; the eye point stays where `decision 30` puts it.
+
+### Instruments and how each is drawn
+Five kinds of device, drawn in the scene's pass (the grapple camera's image in its own small pass before it):
+- **Screens**: a dark quad (the panel's face) with Slug text drawn on its plane 1 mm in front, as Luvcraft's world-text runs do (`text.lisp`), and plot lines and markers as ribbons on the same plane (`ribbons.lisp`). Text is resolution-independent, so a screen stays sharp at the 20° zoom and needs no render target or mipmaps; this replaces the screen textures that `docs/luv-capabilities.md` "HUD and instruments" assumed. Monospace (Monaspace Neon) on a fixed character grid: values right-aligned in fixed columns, so digits do not jump. Text and plots update at 10 Hz of real time (values sampled from the interpolated state), mode changes at once; the ATTITUDE plot every frame.
+- **Grapple camera**: the only render target: the scene (without the cockpit) from a camera on the grapple's tip, (16.6, 0, 0) m from R, looking along +x, 50° field of view, 480 × 320 pixels, every frame while the grapple is armed, greyscale with a little noise; shown on the TARGET screen's quad with the grapple values as Slug text over it.
+- **Dot-matrix strip**: three lines of 19 characters of 5 × 7 amber LED dots (the glyph table of `decision 7: Placeholder labels: dot-matrix overlay quads`, moved to `overlay.lisp`, extended with `×`, `°` and the punctuation messages use), drawn as instanced dot quads in the world at a 2.45 mm pitch; unlit dots show faintly. Every frame.
+- **Needle gauges**: a disc with a printed scale (Slug text and arcs on its face), a needle as a thin box rotated about the centre; the needle follows its value with a first-order lag of 0.3 s, so it swings like a real one. Every frame.
+- **Lamps and buttons**: a lens quad with an engraved label (Slug text), unlit a dark coloured lens, lit an emissive colour; flashing at 2 Hz (warning, red) or 1 Hz (caution, amber), in real time, so they flash while paused. The 18 buttons are illuminated push-buttons: lit while their function is on. The throttle lever is a box on a pivot, turned 0–60° with 0–100 % throttle, −10° at off.
+- Fonts: Monaspace Neon (screens) and Iosevka Aile (tape labels, lamp engravings), both shipped in luv's `fonts/` under the SIL Open Font License 1.1; copied with their licence files to `assets/fonts/` with a `SOURCE.md` and credited in `CREDITS.md` (`decision 13: Asset storage and attribution`). luv's `fonts/equity/` is private and never used.
+
+| Instrument ("Flight") | Where | Drawn as | Milestone |
+|---|---|---|---|
+| Altitude, speed, vertical speed | ORBIT lines 2–4 | screen text: "ALT  400.00 km", "SPD 7.669 km/s", "VS  +0.0 m/s" | 3 |
+| Apoapsis and periapsis, times | ORBIT lines 5–6 | "AP 400.0 km T-45:12"; red, inverted, when below the crash radius | 3 |
+| Inclination, eccentricity, period | ORBIT lines 7–8 | "INC 51.60° ECC 0.0001", "PER 92.6 min" | 3 |
+| Body and SOI | ORBIT line 1 | "EARTH  SOI --:--" (the time to the next SOI change) | 3 (body); 4 (SOI) |
+| Attitude indicator | ATTITUDE | a plot of the whole sky in body axes, centred on the nose (+x), −z up, azimuthal equidistant (the rim is the tail, 180°): prograde ○ with a tick, retrograde ⊗, normal and anti-normal ▲ ▼, radial out and in ■ □, the target ◆, the hold's direction as a cyan cross; the dominant body as a filled disc of angular radius asin(R / r) about the nadir, so its limb is a curve; 10° rings faint | 3 |
+| Angular rates | ATTITUDE right edge | three bars (pitch, yaw, roll), full scale ±5°/s, green within the warp limit (0.01 rad/s) | 3 |
+| Attitude mode | ATTITUDE bottom line; buttons | "HOLD PRO  SETTLED", "DAMP", "DIRECT", "FINE"; the active hold's button lit amber while slewing, green settled | 3 |
+| Throttle | quadrant | lever, ENG lamp (white while firing); SHIP line 4 "THR 100 %  ENG ON" | 3 |
+| Propellant | quadrant gauge; SHIP line 1 | needle 0–100 % with a red arc below 5 %; "PROP 27,547 kg 98 %" | 3 |
+| Δv remaining | SHIP line 2 | "DV 6.61 km/s" (rocket equation at the stack's mass) | 3 |
+| Mass and thrust-to-weight | SHIP line 3 | "MASS 35.5 t  ACC 2.87 m/s²" | 3 |
+| Load or berth | SHIP line 5 | "LOAD 50.0 t", "BERTHED <place>", "XFER 10 kg/s" while refuelling | 3 |
+| Warp | dot-matrix line 2; WARP lamp | "WARP ×1000 ACT ×490", "PAUSED"; the lamp steady white above ×1 | 3 |
+| Clock and date | dot-matrix line 1 | "2040-01-01 00:00:00" (UTC) | 3 |
+| Alarms and messages | lamps; dot-matrix line 3; COMMS log | the lamp of the alarm and MSTR; the message's text scrolling on line 3 (marquee, 12 characters per second) and logged on COMMS | 3 |
+| Burn | AUTOPILOT, plan mode | "BURN 1/2 T-12:30", "DV 56.2 m/s  20 s", "TOTAL 112 m/s 905 kg", "LEFT 27.1 t  ARR 02:14" | 3 |
+| Target | TARGET, grapple stowed | name; "RNG 12.345 km"; "CLS +10.2 m/s" (closing positive); relative velocity in body axes "F +1.2 R −0.3 D +0.0"; "CA T-03:12 0.84 km" | 3 |
+| Grapple range and alignment | TARGET, grapple armed | the camera image with a crosshair and the fixture's pin marked; over it "RNG 12.4 m CLS 0.12 m/s", "OFF Y+0.05 Z−0.10", "ANG 2.1° ROT 0.1°/s", each green inside its capture tolerance, amber outside (`decision 33: Grapple tolerances, contact and berthing`); "LATCHED" | 3 |
+| Orbit plot | AUTOPILOT, plot mode | the orbit in its plane seen from its normal side: the body's disc, the predicted trajectory cyan with Ap/Pe marks, the ship's mark, the target's orbit projected into the plane in magenta, burns as marks and the path after them dashed; scaled to the apoapsis | 3 |
+| Autopilot presets | AUTOPILOT, menu mode | the list and goal values of "The autopilot" ("Picking a preset"), the selection inverted | 3 |
+| More alarms | lamps PROP, WARP, RCS, AUTO | low propellant amber; warp refused or dropped: WARP flashes 3 s; rotation over the warp limit and RCS off above ×4: RCS amber; autopilot abort: AUTO flashes red | 3 |
+| Sun | SHIP lines 7–8; hull gauge; TEMP lamp | "SUN 0.98 AU 1410 W/m²", "HULL 268 K"; the gauge with an amber arc 350–400 K, red 400–450 K, hatched beyond; TEMP amber at 350 K, red at 400 K, the time to 450 K on line 8 then | 4 |
+| Life support | SHIP line 6; LIFE lamp | "LIFE 176 d"; amber at 30 days, red at 7 | 4 |
+| Radio and messages | COMMS; MSG lamp | the channels of "Messages and radio" | 5 (`milestone 3` shows the job card empty and ship messages only) |
+
+- Lamps in detail: MSTR flashes red with any red alarm and lights amber with any amber one, until acknowledged (a click on it or Y); PERI red while a periapsis below the crash radius or an impact is predicted (the alarms of "Dying and what follows"); PROP amber below 5 % or below the planned burns' need; TEMP and LIFE from `milestone 4` (unlit before); WARP, RCS and AUTO as in the table; GRPL white armed, green latched, flashing amber 3 s on a missed capture; MSG flashing white while a radio message is unread.
+- In `milestone 3` the TEMP and LIFE lamps and the hull gauge are fitted but dark (the gauge's needle at its stop), so the cockpit mesh does not change in `milestone 4`.
+- Cost, roughly: the cockpit's meshes and layout ~400 lines; the screens' contents ~500; picking and buttons ~150; the grapple camera ~100 (a second, small scene pass); text and ribbons are shared with the overlay and the map.
+
+### Ghostty
+- Cut (`decision 36`). The terminal look stays: the COMMS screen is a monospace grid with a block cursor, lines typed out at 60 characters per second and scrolling, drawn with the same Slug text as every screen.
+- Why: no screen runs a program or a shell, so a VT engine has nothing to emulate; the game generates every line itself. The cost is real: `luv/ghostty` needs libghostty-vt and the full dev shell, not the `slim` one the sandbox test is built with (`decision 2: Screenshots and GPU test: offscreen capture on a hidden canvas, headless on lavapipe`); drawing its grid in the world means copying Luvcraft's terminal wall (~2,150 lines, `docs/luv-capabilities.md` "HUD and instruments"); and `decision 3: luv ASDF systems the game depends on` would need extending. `milestone 3`'s "terminal screens" are an example of the look, which the COMMS screen gives.
+
+### Interaction
+- Every function is a key ("Controls", `decision 29: Control scheme: key map, control modes, gamepad`); the cockpit mirrors the ones a pilot reaches for as buttons, pressed with the left mouse button. The pointer's ray from the eye is intersected on the CPU (double) with every clickable rectangle in eye coordinates; the nearest hit wins; the button under the pointer gets a thin outline. While the right button is held (head look), clicks are ignored.
+- The button block, three rows of six:
+  - PRO [1], RETRO [2], NML [3], ANML [4], RAD+ [5], RAD− [6];
+  - TGT [7], ATGT [8], RPRO [9], RRET [0], INRT [R], DAMP [T];
+  - FINE [F], GRPL [G], XFER [B], AP [Return / Backspace: engages a shown plan, disengages a running one], WRP− [,], WRP+ [.].
+- Two keys join the map in "Controls" (from its free keys): B, propellant transfer on/off while berthed at a depot (the switch of `decision 26: Refuelling and economy`); Y, acknowledge (the master alarm, and marks radio messages read).
+- Screens: a click on a line of the AUTOPILOT menu selects it (as Up/Down); the wheel over the COMMS screen scrolls its log (the last 200 lines) instead of zooming; a click on the COMMS screen marks messages read.
+- Not clickable: the throttle lever (Shift/Control, Z, X; dragging it is cut), the warp ×1 (slash), the targets (] [ \), view keys.
+- Flying from the cockpit alone (`milestone 3`): every instrument of "Flight", "Instruments" has a place in the table above; the ATTITUDE plot replaces seeing the ship from outside, the AUTOPILOT plot replaces the map for orbits around one body, the grapple camera replaces the outside view for the last 100 m (the grapple's tip is 55° below the window's line of sight). `tests/cockpit.lisp` checks that every instrument of the "Flight" table maps to a cockpit field; `milestone 3`'s screenshots include a rendezvous and capture flown in the cockpit view.
+- What the outside view adds: the stack and its load seen whole, the approach's geometry (the fixture against the station's other parts), the Earth below; it keeps the minimal readout of `milestone 2` and adds, from `milestone 3`, the latest message line and the autopilot panel in the overlay. The map adds the predicted trajectory at true scale, targets far away, and other bodies.
+
+### Readability at 1280 × 800
+- At the default 70° vertical field of view a unit of size at 1 m covers 400 / tan 35° = 571 pixels; the rules are set there (at 90° everything is 30 % smaller; zooming in makes it larger).
+- Text: cap height ≥ 10 px, so ≥ 0.0175 × d metres at distance d (13 mm at 0.75 m, 20 mm on the lamps at 1.15 m); cells 0.86 × cap wide and 1.6 × cap high; the grids of the layout table follow from this and the panel sizes with 10 mm margins. Text never shrinks to fit: a long value is cut with "…".
+- Lines and plot strokes ≥ 2 px, markers ≥ 8 px; dot-matrix dot pitch ≥ 2 px (2.45 mm at 0.70 m).
+- Contrast, measured on the final tone-mapped image: screen text ≥ 7:1 against its background, lamp lit against unlit ≥ 5:1, tape labels ≥ 4.5:1 in Earth's shadow (lit by the ceiling strips). Screens, lamps and LEDs are emissive with their output divided by the current exposure ("Sun glare and brightness" in `docs/luv-capabilities.md`), like screens with a light sensor, so they read the same in sunlight and shadow; sunlight on a screen adds a wash of at most 1/7 of the text's luminance (the hoods). The sunlit patch on the lining may blow out; it never covers a screen fully, thanks to the hoods and the angles.
+- Colour, with the same meaning on screens, lamps, the overlay and the map: normal text paper white (#E8E4D8) on near-black (#0A0C0C), labels grey (#8A8A80); green (#40D040) in tolerance, engaged, latched; amber (#FFB000) caution; red (#FF3030) danger; cyan (#40D0FF) the own ship; magenta (#E040E0) the target. The dot-matrix strip is one colour (amber LEDs) and carries no colour meaning.
+- Never colour alone: a caution value carries "!", a danger value is inverted (red block, dark text) and flashes at 2 Hz, every lamp has its label, every marker its shape.
+
+### Messages and radio
+How the world talks to the pilot; `docs/story.md` uses these channels by name (`decision 37: Message channels the story may use`). Code: `cockpit.lisp` draws them, `quests.lisp` (`milestone 5`) writes RADIO and JOB.
+- **RADIO**: a message from a person or station: sender (call sign), game time, text of any length. It appears in the COMMS log (newest at the bottom, typed out at 60 characters per second, the sender in cyan for the pilot's own employer or white for others), MSG flashes until read (Y, a click on COMMS, or COMMS in the middle of the view for 1 s), dot-matrix line 3 shows "MSG <SENDER>", the overlay of the outside and map views shows the first line; from `milestone 6` static and a chirp ("Sound"). Arrival is delayed by the light time from the sender's position, so Earth's messages reach the Moon 1.3 s and Mars minutes late; text only, no reply choices (a linear quest line).
+- **JOB**: the current quest step's orders, the job card: a title and up to three lines (goal, place, deadline if any) at the top of COMMS, kept until the step is done or replaced; a one-line form in the overlay. A quest step may require Y to acknowledge its RADIO message before it counts as given.
+- **SHIP**: the flight computer's own messages (alarms, warp refusals and drop-outs, autopilot notices, "NO CAPTURE …") on dot-matrix line 3 and in the COMMS log in amber; written by the game, not by the story.
+- **Static texts**: the ship's name above the window, and up to three tape notes on the console (e.g. a previous owner's warnings), chosen in `docs/story.md`, fixed for the game.
+- Cut, with the reason: a printer strip for orders (a 58 mm till roll at 0.6 m holds about six readable characters per line at 1280 × 800, so it could be read only zoomed in); recorded voices ("Sound"); faces on video calls (portrait art costs far more than it shows, pillar "small and finished"); an inbox with folders (the log and the job card are enough for a linear quest line).
 
 ## The places
 

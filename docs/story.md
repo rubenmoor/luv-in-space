@@ -151,14 +151,14 @@ How `quests.lisp` runs the line; per-quest sections only add what differs.
   - **Grappled X**: the grapple state is latched and the load is object X.
   - **Settled in hold H**: controls' hold mode is H, the nose within 0.1° of H's direction and the angular rate under 0.02°/s (`docs/design.md` "Control modes").
   - **Ap, Pe**: apoapsis and periapsis altitude above the dominant body's sphere (R, not the crash radius) of the osculating orbit of the ship or stack (`orbits.lisp`), as the instruments show them.
-  - **Removed X by C**: X is in the removed objects with cause C (`docs/architecture.md` "Re-entry of objects"): `:burned-up` (Earth's crash sphere) or `:delivered` (below).
-  - **Delivered**: a load released with its CoM within 100 m of the receiving fixture's pin and moving at most 0.05 m/s relative to the receiving object, still within 150 m 600 s later, is taken in by the place's handling gear (told by RADIO): removed with cause `:delivered` at that moment. New to the design: `task 55: Design: deliveries, the stranded offer, checkpoint floors and POD 14 for the quest line` adds it to `docs/design.md` and `docs/architecture.md`, reusing the removal of "Re-entry of objects".
+  - **Removed X by C**: X is in the removed objects with cause C (`docs/architecture.md` "Removal of objects"): `:burned-up` (Earth's crash sphere) or `:delivered` (below).
+  - **Delivered**: a load released with its CoM within 100 m of the receiving fixture's pin and moving at most 0.05 m/s relative to the receiving object, still within 150 m 600 s later, is taken in by the place's handling gear (told by RADIO): removed with cause `:delivered` at that moment (`docs/design.md` "Towing", the removal of `docs/architecture.md` "Removal of objects"). Receiving fixtures: `(:highport :plant)`, `(:peary-depot :berth)`.
   - **Propellant full**: at least 27,720 kg (99 % of 28 t) of propellant, berthed at a depot (`decision 26: Refuelling and economy`; 10 kg/s, 47 min for all 28 t).
   - **Time**: `t` against a UTC date, or the step's start time plus a duration.
 - Proposed ids for `places.lisp` and `quests.lisp`: places `:tern-station`, `:fulmar-depot`, `:k-17`, `:highport`, `:skua-yard`, `:peary-depot`, `:bq7`; fixtures `(:tern-station :berth)`, `(:fulmar-depot :a)`, `(:highport :plant)`, `(:peary-depot :berth)`; loads `:k-17`, `:skua-yard-3`, `:skua-yard-5`, `:skua-yard-6`, `:pod-14`, `:bq7` (each with its one fixture).
-- Checkpoints (`decision 35: Saving and audio`): at the start of every step, when the state is safe (coasting, no impact or contact predicted, hull below the warning; `docs/design.md` "Saving") and the ship's Δv remaining with its load is at least the step's **floor** below; a step whose start is unsafe keeps the previous checkpoint. The floor also vetoes the berthing and plan-complete checkpoints during the quest, so a checkpoint never holds a ship that cannot finish its job. Floors not named are 0.
+- Checkpoints (`decision 35: Saving and audio`): at the start of every step, when the state is safe (coasting, no impact or contact predicted, hull below the warning; `docs/design.md` "Saving") and the ship's Δv remaining with its load is at least the step's **floor** below; a step whose start is unsafe keeps the previous checkpoint. The floor (`docs/design.md` "Saving") also vetoes the berthing and plan-complete checkpoints during the quest, so a checkpoint never holds a ship that cannot finish its job. Floors not named are 0.
 - Death never fails a quest (`decision 34: How death works`): Return on the LOST panel restores the last checkpoint, with the quest state and every object as they were; the step is flown again.
-- The stranded offer: if, outside a berth, the ship's Δv remaining with its load falls below the current step's floor, or the ship is outbound on an escape path (osculating e ≥ 1 around Earth past perigee, or the Sun as its dominant body), or the step's own object can no longer be reached (named per quest), then after 10 min of game time CAIRN OPS sends the offer (draft: "Patience, Cairn Ops. You're not making it. TANKER 3 will fetch you. We fly it again from the last good point. Y when ready."); **Y** restores the last checkpoint exactly as the LOST panel's Return does. Until Y the pilot may fly on; the offer stays in the log. No tanker flies in view; it is told. Added to the design by `task 55`.
+- The stranded offer: if, outside a berth, the ship's Δv remaining with its load falls below the current step's floor, or the ship is outbound on an escape path (osculating e ≥ 1 around Earth past perigee, or the Sun as its dominant body), or the step's own object can no longer be reached (named per quest), then after 10 min of game time CAIRN OPS sends the offer (draft: "Patience, Cairn Ops. You're not making it. TANKER 3 will fetch you. We fly it again from the last good point. Y when ready."); **Y** restores the last checkpoint exactly as the LOST panel's Return does. Until Y the pilot may fly on; the offer stays in the log. No tanker flies in view; it is told (`docs/design.md` "Dying and what follows").
 - Running out of propellant does not kill (`docs/design.md` "Dying and what follows"); with the offer, no state of the line is a dead end.
 - Messages sent by date, whatever quest is running (only if the passing rock is built): CAIRN OPS on 2040-01-19 12:00 (the find), 2040-02-10 (BAGGER 3 launched from Highport), 2040-03-01 (BAGGER 3 has netted BQ7); TERN on 2040-03-03 (Boreal's objection).
 
@@ -212,7 +212,7 @@ How `quests.lisp` runs the line; per-quest sections only add what differs.
 
 - If K-17 is released with its Pe at or above 100 km (steps 3.3–3.5), the quest returns to 3.2 with LINDGREN: "It's still up there. Please grab it again." K-17 drifts at the release speed, metres per second at most, and stays a target; a rendezvous by autopilot works while its Pe is ≥ 150 km, below that the pilot closes by hand.
 - RADIO: at 3.1, LINDGREN: "Patience, Lindgren Debris. Seventeen is yours. Fixture is new, the stage is not. Perigee 90, release at apogee, and please don't follow it." At 3.3, CAIRN OPS: "The autopilot won't go under 150. Your hands, your PERI lamp." On the release with Pe < 100 km, LINDGREN: "Released! Now you, Patience. Up." At the burn-up, LINDGREN: "It's gone. Seventeen of forty. Thank you. Really."
-- Checkpoints: 3.1 (berthed), 3.2 (on station), 3.3 (latched, 800 km circular). 3.4 and 3.5 begin with an impact predicted, so death there restarts at 3.3 with K-17 latched. 3.6 begins safe: a checkpoint with K-17 on its rails to its burn-up, which a restore replays bit for bit (`docs/architecture.md` "Re-entry of objects").
+- Checkpoints: 3.1 (berthed), 3.2 (on station), 3.3 (latched, 800 km circular). 3.4 and 3.5 begin with an impact predicted, so death there restarts at 3.3 with K-17 latched. 3.6 begins safe: a checkpoint with K-17 on its rails to its burn-up, which a restore replays bit for bit (`docs/architecture.md` "Removal of objects").
 - Floor: 3.3 and later: 300 m/s with the load (the push's 196 m/s and margin; ~4,000 m/s on hand).
 
 ### 4. Topping off
@@ -342,7 +342,7 @@ Propellant and stores carried from quest to quest, on the nominal path (Δv budg
 - Night lights, clouds, the sunlit patch, the moving ships, sound: none is a completion condition.
 
 ### Follow-ups
-- `task 55: Design: deliveries, the stranded offer, checkpoint floors and POD 14 for the quest line` (`plan 10: game design`): delivered loads removed with cause `:delivered`; the stranded offer restoring the last checkpoint on Y; quest floors vetoing checkpoints; POD 14 placed in Skua Yard.
+- `task 55: Design: deliveries, the stranded offer, checkpoint floors and POD 14 for the quest line` (`plan 10: game design`): delivered loads removed with cause `:delivered`; the stranded offer restoring the last checkpoint on Y; quest floors vetoing checkpoints; POD 14 placed in Skua Yard. Done.
 - `task 56: Design: autopilot rendezvous for the quest line: phasing, Peary Depot's plane, a hyperbolic target` (`plan 10`): phasing orbits for co-altitude targets; TLI aimed at Peary Depot's plane and phase; transfer times for a target on a hyperbola.
 - `task 57: Architecture: flight-script actions for the quest play-through` (`plan 10`): the actions `milestone 5`'s headless play-through needs (target, grapple, approach to a fixture, transfer, release, acknowledge) and one `flights/quest-<n>.sexp` per quest.
 
@@ -383,7 +383,7 @@ Every name the story fixes, for `places.lisp`, `quests.lisp`, `meshes.lisp` and 
 - AURORA 11: Boreal's crew capsule.
 - GRINDSTONE: Cairn's rock mover.
 - BAGGER 3: Cairn's bagger probe, with 2040 BQ7.
-- POD 14: a standard 12 t cargo pod of electrolyser spares, parked in Skua Yard, carried to Peary Depot in quest 7.
+- POD 14: a standard 12 t cargo pod of electrolyser spares, parked in Skua Yard between Skua Yard 3 and 5 (`docs/design.md` "Earth-orbit points of interest"), carried to Peary Depot in quest 7.
 
 ### Quests
 - 1 Shakedown, 2 Home port, 3 Seventeen, 4 Topping off, 5 The long climb, 6 Rock three, 7 The January window, 8 The big one, 9 BQ7; the final job card: THE LONG HAUL.

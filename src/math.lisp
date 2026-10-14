@@ -149,9 +149,11 @@
                     sum (* (aref a (+ (* 3 i) k)) (aref b (+ (* 3 k) j)))
                       of-type double-float))))))
 
-(defun mat3-inverse-symmetric (m)
+(declaim (inline mat3-inverse-symmetric!))
+
+(defun mat3-inverse-symmetric! (out m)
   "Inverse of a symmetric 3x3 matrix (the inertia tensor) by its adjugate."
-  (declare (type mat3 m))
+  (declare (type mat3 out m))
   (let* ((a (aref m 0)) (b (aref m 1)) (c (aref m 2))
          (d (aref m 4)) (e (aref m 5)) (f (aref m 8))
          (c00 (- (* d f) (* e e)))
@@ -161,9 +163,12 @@
          (c12 (- (* b c) (* a e)))
          (c22 (- (* a d) (* b b)))
          (s (/ (+ (* a c00) (* b c01) (* c c02)))))
-    (mat3 (* s c00) (* s c01) (* s c02)
-          (* s c01) (* s c11) (* s c12)
-          (* s c02) (* s c12) (* s c22))))
+    (setf (aref out 0) (* s c00) (aref out 1) (* s c01) (aref out 2) (* s c02)
+          (aref out 3) (* s c01) (aref out 4) (* s c11) (aref out 5) (* s c12)
+          (aref out 6) (* s c02) (aref out 7) (* s c12) (aref out 8) (* s c22))
+    out))
+
+(defun mat3-inverse-symmetric (m) (mat3-inverse-symmetric! (make-mat3) m))
 
 ;;; Quaternions
 

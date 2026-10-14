@@ -55,7 +55,7 @@ The player flies one ship, a Mule-class tug: a long welded steel truss carrying 
 | Radiators (2) | 120 | 4.0 × 1.5 fins under the truss | (8.0, ±1.2, 2.55) | 10 kg/m² |
 | Solar wings (2) | 140 | 2.0 × 6.0 each on a 0.5 m boom | (5.0, ±5.3, 0) | 4 kg/m² blanket + 22 kg boom and drive each |
 | Equipment bay | 270 | 1.0 × 1.6 × 0.8, under the truss | (10.0, 0, 2.3) | battery 20 kWh at 150 Wh/kg (133 kg) + power electronics and avionics |
-| Cabling and plumbing | 200 | along the truss top | (7.5, 0, −1.8) | estimate |
+| Cabling and plumbing | 199 | along the truss top | (7.5, 0, −1.8) | estimate, 199 kg so the parts sum to the dry 7,961 kg (`decision 71: The Mule's mass model in ship.lisp`) |
 | **Dry** | **7,961** | | CoM (9.46, 0, −0.99) | sum |
 | Propellant (LH2 + LOX) | 28,000 | 4,308 kg LH2 (62.7 m³), 23,692 kg LOX (21.4 m³) | in the tanks | mixture ratio 5.5; volumes with 3 % ullage |
 | **Wet** | **35,961** | | CoM (10.34, 0, −0.22) | |
@@ -122,6 +122,7 @@ What one tank reaches from the start orbit (6,650 m/s):
 - Propellant: a solid cylinder of 0.95 × the tank radius filling each tank from its aft end in proportion to the load, as under thrust; both tanks drain at the mixture ratio. Slosh is not modelled.
 - The cab on top makes the tensor non-diagonal in body axes: I_xz up to 2.7×10⁴ kg m², tilting the principal axes up to 11° in the xz-plane (dry). `ship.lisp` hands the integrator the full symmetric tensor about the current CoM, with its inverse; Euler's equations I ω̇ = τ − ω × I ω (`decision 16: Integrator and simulation clock`) hold unchanged with it. `docs/architecture.md` "Integrator" says the same (`task 45: Architecture: the integrator takes the full inertia tensor`).
 - `ship.lisp` recomputes CoM and tensor from the current propellant mass (and load) once per step, held over the step as the architecture says.
+- Shapes in `ship.lisp` (`decision 71`): the truss as thin rods (longerons, frames, face diagonals), cab and tanks as thin-walled cylinders, engine, grapple and propellant as solid cylinders, every other part as a solid box of its listed size; the dry sums are precomputed, only the propellant is added per step.
 
 | State | Mass (kg) | CoM (m) | I_xx | I_yy | I_zz | I_xz (kg m²) | Principal tilt |
 |---|---|---|---|---|---|---|---|

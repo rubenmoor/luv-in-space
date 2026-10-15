@@ -1,17 +1,31 @@
 (in-package #:luv-in-space)
 
+;;; The game: the window, the sim and its clock, the camera and the frame
+;;; (decision 77: The frame in main.lisp: render state, capture of a given
+;;; sim, part 4's placeholders and first asset). The sim, the clock and the
+;;; render state are touched only on the canvas thread.
+
 (defclass game ()
   ((canvas :initarg :canvas :reader game-canvas)
    (device :initarg :device :reader game-device)
    (context :initarg :context :reader game-context)
-   (scene :initarg :scene :reader game-scene)
+   (renderer :initarg :renderer :reader game-renderer)
+   (sim :initarg :sim :reader game-sim)
+   (clock :initarg :clock :reader game-clock)
+   (start-checkpoint :initarg :start-checkpoint :reader game-start-checkpoint)
+   (camera :initform (make-camera) :reader game-camera)
+   (camera-fn :initform nil :accessor game-camera-fn
+              :documentation "nil or (fn camera render-state), after the default pose.")
+   (render-state :initform (make-render-state) :reader game-render-state)
+   (frame-time :initform nil :accessor game-frame-time
+               :documentation "luv's time of the last frame, nil before the first.")
    (frame-count :initform 0 :accessor game-frame-count)
    (quit-requested-p :initform nil :accessor game-quit-requested-p)))
 
 (defvar *game* nil)
 
 (defmethod luv:application-live-artifacts ((game game))
-  (renderer-live-artifacts (game-scene game)))
+  (renderer-live-artifacts (game-renderer game)))
 
 (defun failed-live-artifacts (&optional (game *game*))
   (and game
@@ -28,6 +42,28 @@ A failed artifact keeps drawing its last good build."
               (luv:live-artifact-diagnostic artifact)))
     (length failed)))
 
+(defun frame-elapsed! (game time)
+  "Real seconds since the last frame by luv's frame TIME; 0 on the first."
+  (let ((previous (game-frame-time game))
+        (time (float time 1d0)))
+    (setf (game-frame-time game) time)
+    (if previous (max 0d0 (- time previous)) 0d0)))
+
+(defun update-view! (game)
+  "The render state from the clock and the sim, the default outside camera
+on it, then the game's camera-fn."
+  (let ((state (game-render-state game))
+        (camera (game-camera game)))
+    (render-state-update! state (game-clock game) (game-sim game))
+    (outside-camera-default! camera (render-state-r state) (render-state-v state))
+    (when (game-camera-fn game)
+      (funcall (game-camera-fn game) camera state))))
+
+(defun encode-game-frame (game encoder target extent)
+  (update-view! game)
+  (encode-frame (game-renderer game) encoder target extent
+                (game-render-state game) (game-camera game)))
+
 (defun draw (game)
   (let ((context (game-context game)))
     (incf (game-frame-count game))
@@ -36,13 +72,30 @@ A failed artifact keeps drawing its last good build."
     (luv:present-canvas-frame
      context
      (lambda (texture encoder time)
-       (declare (ignore time))
-       (encode-scene (game-scene game) encoder texture (luv:canvas-extent context))))))
+       (clock-frame! (game-clock game) (game-sim game) (frame-elapsed! game time))
+       (encode-game-frame game encoder texture (luv:canvas-extent context))))))
 
 (defmethod luv:capture-canvas ((game game)) (game-canvas game))
+
+;; The current state, not stepped.
 (defmethod luv:encode-capture-frame ((game game) capture encoder target extent)
   (declare (ignore capture))
-  (encode-scene (game-scene game) encoder target extent))
+  (luv:refresh-application-live-artifacts game)
+  (encode-game-frame game encoder target extent))
+
+(defmethod luv:cleanup-capture ((game game) capture)
+  (let ((target (luv:capture-target capture)))
+    (when (and target (eq :open (luv:canvas-state (game-canvas game))))
+      (call-on-canvas-thread game (lambda () (forget-target (game-renderer game) target))))))
+
+(defun call-on-canvas-thread (game function)
+  "Call FUNCTION on GAME's canvas thread, between frames; its first value."
+  (let ((result nil))
+    (luv:request-canvas-frame (game-canvas game)
+                              (lambda (timestamp)
+                                (declare (ignore timestamp))
+                                (setf result (funcall function))))
+    result))
 
 ;; Runs on the canvas thread: only flag the quit; STOP runs on the caller's.
 (defun handle-event (game event)
@@ -51,8 +104,9 @@ A failed artifact keeps drawing its last good build."
             (typep event 'luv:canvas-window-close-request-event))
     (setf (game-quit-requested-p game) t)))
 
-(defun start (&key (visible t) (width 1280) (height 800))
-  "Open the game window and start drawing; returns the game."
+(defun start (&key (visible t) (width 1280) (height 800) (sim (new-game-sim)) paused)
+  "Open the game window on SIM (used as is, the start checkpoint taken of
+it) and start drawing; PAUSED starts with the clock paused. Returns the game."
   (let* ((canvas (luv:make-sdl-canvas :title "Luv in Space" :width width :height height
                                       :visible-p visible))
          (_ (luv:open-canvas canvas))
@@ -62,9 +116,13 @@ A failed artifact keeps drawing its last good build."
                                            (luv:make-canvas-configuration
                                             :device device
                                             :usage '(:render-attachment :copy-dst))))
+         (clock (new-clock sim))
          (game (make-instance 'game :canvas canvas :device device :context context
-                                    :scene (make-scene device (luv:canvas-format context)))))
+                                    :renderer (make-frame-renderer device context)
+                                    :sim sim :clock clock
+                                    :start-checkpoint (take-checkpoint sim))))
     (declare (ignore _))
+    (setf (clock-paused clock) (and paused t))
     (setf (luv:canvas-event-handler canvas)
           (lambda (canvas event) (declare (ignore canvas)) (handle-event game event)))
     (setf (luv:canvas-clock canvas)
@@ -87,7 +145,7 @@ A failed artifact keeps drawing its last good build."
         (setf (luv:canvas-clock canvas) (luv:make-demand-clock)
               (luv:canvas-event-handler canvas) nil))
       (luv:close-canvas canvas)
-      (destroy-renderer (game-scene game))
+      (destroy-frame-renderer (game-renderer game))
       (luv:destroy (game-device game)))
     (when (eq game *game*)
       (setf *game* nil)))

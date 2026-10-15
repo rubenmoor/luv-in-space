@@ -234,23 +234,28 @@
         (s (sin (* 0.5d0 angle))))
     (quat (cos (* 0.5d0 angle)) (* s (aref u 0)) (* s (aref u 1)) (* s (aref u 2)))))
 
-(defun quat-slerp (a b s)
-  "Spherical interpolation from a (s = 0) to b (s = 1) along the shortest arc."
-  (declare (type quat a b) (type double-float s))
+(declaim (inline quat-slerp!))
+(defun quat-slerp! (out a b s)
+  "Spherical interpolation from a (s = 0) to b (s = 1) along the shortest
+arc, into OUT."
+  (declare (type quat out a b) (type double-float s))
   (let* ((d (loop for i below 4 sum (* (aref a i) (aref b i)) of-type double-float))
          (sign (if (minusp d) -1d0 1d0))
-         (d (abs d)))
+         (d (min (abs d) 1d0)))
+    (declare (type (double-float 0d0 1d0) d))
     (multiple-value-bind (ka kb)
         (if (> d 0.9995d0)
             (values (- 1 s) (* sign s))
-            (let* ((theta (acos (min d 1d0)))
+            (let* ((theta (acos d))
                    (sin-theta (sin theta)))
               (values (/ (sin (* (- 1 s) theta)) sin-theta)
                       (* sign (/ (sin (* s theta)) sin-theta)))))
-      (let ((out (make-quat)))
-        (dotimes (i 4)
-          (setf (aref out i) (+ (* ka (aref a i)) (* kb (aref b i)))))
-        (quat-normalize! out out)))))
+      (declare (type double-float ka kb))
+      (dotimes (i 4)
+        (setf (aref out i) (+ (* ka (aref a i)) (* kb (aref b i)))))
+      (quat-normalize! out out))))
+
+(defun quat-slerp (a b s) (quat-slerp! (make-quat) a b s))
 
 (defun mat3-from-quat (q)
   "The rotation matrix of q: (mat3*vec3 m v) = (quat-rotate q v)."

@@ -95,6 +95,13 @@ Returns the view and the texture."
             (luv:create (renderer-device renderer)
                         (luv:make-texture-view-descriptor :texture texture)))))
 
+(defun forget-color-view (renderer texture)
+  "Destroy TEXTURE's cached view, before TEXTURE itself goes."
+  (let ((view (gethash texture (renderer-color-views renderer))))
+    (when view
+      (luv:destroy view)
+      (remhash texture (renderer-color-views renderer)))))
+
 (defun texture-from-pixels (renderer pixels label)
   "Upload PIXELS, a rank-2 (unsigned-byte 32) array rows x columns of RGBA
 bytes (R lowest), as an :rgba8-unorm-srgb texture. Returns the texture, its

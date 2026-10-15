@@ -19,7 +19,8 @@
                (:file "shaders")
                (:file "gpu")
                (:file "camera")
-               (:file "scene")
+               (:file "overlay")
+               (:file "render")
                (:file "main")
                (:file "capture")))
 
@@ -47,7 +48,7 @@
                (:file "hazards")
                (:file "prediction")
                (:file "camera")
-               (:file "scene")
+               (:file "render")
                (:file "capture"))
   :perform (test-op (operation component)
              (declare (ignore operation component))

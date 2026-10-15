@@ -91,6 +91,7 @@ double, truncating it to whole seconds is the caller's."
   "The grid time of *start-date*."
   (apply #'utc->grid-t *start-date*))
 
+(declaim (inline t->ut1-days))
 (defun t->ut1-days (time)
   "JD_UT1 - 2451545.0, for Earth's rotation angle."
   (declare (type double-float time))

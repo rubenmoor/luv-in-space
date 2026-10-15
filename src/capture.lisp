@@ -1,10 +1,12 @@
 (in-package #:luv-in-space)
 
-;;; Offscreen screenshots through luv's capture path (decision 2: Screenshots
-;;; and GPU test: offscreen capture on a hidden canvas, headless on lavapipe).
+;;; Offscreen screenshots of a given state through luv's capture path
+;;; (decision 2: Screenshots and GPU test: offscreen capture on a hidden
+;;; canvas, headless on lavapipe; decision 77: The frame in main.lisp: render
+;;; state, capture of a given sim, part 4's placeholders and first asset).
 
 (defparameter *screenshot-frames* 10
-  "Frames drawn before the capture; the scene is static, so a few suffice.")
+  "Frames drawn before the capture; the clock is paused, so a few suffice.")
 
 (defun screenshot (pathname &key (game *game*))
   "Write a PNG of GAME's scene at its canvas size; returns PATHNAME, width,
@@ -14,22 +16,53 @@ height, the packed pixels and their colour format."
     (values path width height pixels format)))
 
 (defun wait-for-frames (game count &key (timeout 60))
-  (loop with deadline = (+ (get-internal-real-time)
+  "Wait until GAME has drawn COUNT more frames."
+  (loop with target = (+ (game-frame-count game) count)
+        with deadline = (+ (get-internal-real-time)
                            (* timeout internal-time-units-per-second))
-        until (>= (game-frame-count game) count)
+        until (>= (game-frame-count game) target)
         do (when (> (get-internal-real-time) deadline)
              (error "Only ~D of ~D frames drawn in ~D s."
-                    (game-frame-count game) count timeout))
+                    (- count (- target (game-frame-count game))) count timeout))
            (sleep 0.01)))
 
-(defun capture-scene (pathname &key (frames *screenshot-frames*) (width 1280) (height 800))
-  "Open a hidden canvas, draw FRAMES frames, write a PNG and close it again.
+(defun game-load-state! (game sim)
+  "GAME's sim becomes a copy of SIM, its clock restarted on it and paused."
+  (call-on-canvas-thread game (lambda ()
+                                (clock-restart! (game-clock game) (game-sim game) sim)
+                                (setf (clock-paused (game-clock game)) t))))
+
+(defmacro with-capture-game ((game &key (width 1280) (height 800) sim) &body body)
+  "Run BODY with GAME on a hidden canvas of WIDTH x HEIGHT, its clock paused
+on a copy of SIM (default the start state); one canvas for several captures.
 Call on luv's SDL main thread (LUV:CALL-WITH-SDL-MAIN-THREAD)."
-  (let ((game (start :visible nil :width width :height height)))
-    (unwind-protect
-         (progn (wait-for-frames game frames)
-                (screenshot pathname :game game))
-      (stop game))))
+  (let ((state (gensym "SIM")))
+    `(let* ((,state ,sim)
+            (,game (start :visible nil :width ,width :height ,height
+                          :sim (if ,state (copy-sim ,state) (new-game-sim)) :paused t)))
+       (unwind-protect (progn ,@body)
+         (stop ,game)))))
+
+(defun capture-game-state (game pathname &key sim camera-fn (frames *screenshot-frames*))
+  "Write a PNG of GAME showing SIM (default its current state) after FRAMES
+frames; CAMERA-FN (fn camera render-state) sets a pose other than the
+default outside view. Returns as SCREENSHOT."
+  (when sim
+    (game-load-state! game sim))
+  (setf (game-camera-fn game) camera-fn)
+  (wait-for-frames game frames)
+  (screenshot pathname :game game))
+
+(defun capture-state (pathname sim &key camera-fn (frames *screenshot-frames*)
+                                       (width 1280) (height 800))
+  "A PNG showing exactly SIM's state (a copy, the clock paused) on a hidden
+canvas. Call on luv's SDL main thread."
+  (with-capture-game (game :width width :height height :sim sim)
+    (capture-game-state game pathname :camera-fn camera-fn :frames frames)))
+
+(defun capture-scene (pathname &key (frames *screenshot-frames*) (width 1280) (height 800))
+  "The start state from the outside view: scripts/screenshot's picture."
+  (capture-state pathname (new-game-sim) :frames frames :width width :height height))
 
 (defun screenshot-main (pathname &key (frames *screenshot-frames*))
   "Entry point of scripts/screenshot: write the PNG, report it, exit 0; exit 1 on error."

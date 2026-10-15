@@ -58,6 +58,7 @@
   (let ((c (cos angle)) (s (sin angle)))
     (mat3 1 0 0 0 c s 0 (- s) c)))
 
+(declaim (inline earth-rotation-revolutions))
 (defun earth-rotation-revolutions (time)
   "Earth Rotation Angle in revolutions, [0, 1) (IERS Conventions 2010):
 0.7790572732640 + 1.00273781191135448 D_U, the whole days of D_U dropped
@@ -91,6 +92,17 @@ terms (Archinal et al. 2018), no periodic terms."
                                     (mod (+ 38.3213d0 (* 13.17635815d0 d) (* -1.4d-12 d d))
                                          360d0)))
       (:sun (iau-body-fixed-matrix 286.13d0 63.87d0 (mod (+ 84.176d0 (* 14.1844000d0 d)) 360d0))))))
+
+(declaim (inline earth-fixed-matrix!))
+(defun earth-fixed-matrix! (out time)
+  "Earth's body-fixed-matrix at TIME into OUT, consing nothing."
+  (declare (type mat3 out) (type double-float time))
+  (let* ((angle (* 2 pi (earth-rotation-revolutions time)))
+         (c (cos angle)) (s (sin angle)))
+    (setf (aref out 0) c (aref out 1) s (aref out 2) 0d0
+          (aref out 3) (- s) (aref out 4) c (aref out 5) 0d0
+          (aref out 6) 0d0 (aref out 7) 0d0 (aref out 8) 1d0)
+    out))
 
 (defun latitude-longitude (body r time)
   "(values latitude longitude) in radians of a body-centred inertial position;

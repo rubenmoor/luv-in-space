@@ -3054,6 +3054,13 @@ INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, crea
 - Look at the new PNGs (`scripts/fly deorbit /tmp/x`, `scripts/fly raise-orbit /tmp/y`): the red arc and IMPACT marker, and "AP 8xx KM", visible; delete the directories after.
 - Keep the scripts'' tests green (`tests/flights.lisp` `flights-scripts`: records equal twice, every expectation passing; any test counting checkpoints); `scripts/test`.
 - Docs: `docs/architecture.md` "Scripts by milestone" → `milestone 2` lists the new screenshots; `AGENTS.md` "Commands" (the PNG count for `raise-orbit`: "four PNGs" becomes five) and the time if it changes.', '2026-10-15T05:55:44Z', '2026-10-15T05:57:28Z', 138, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (155, 2, 'post-milestone cleanup of milestone 2: Flight core: Newtonian flight in near-Earth orbit', 'cleanup', 'open', NULL, NULL, 'After `milestone 2: Flight core: Newtonian flight in near-Earth orbit`, for the whole project:
+* rewrite top-level .md files to reflect the current state of the project
+* remove files that have become redundant
+* suggest entirely new files, if necessary
+* delete code that isn''t actually used
+* check pending decisions if they are still relevant and really pending
+* check other milestones if their contents are up-to-date; raise a decision for each change they need', '2026-10-15T05:57:34Z', NULL, NULL, 0);
 
 INSERT INTO decision (id, subject, status, options, body, answer, reason, created_at, closed_at, created_by_task, signoff, kind, decided_by_task, consequences) VALUES (1, 'How the game consumes luv', 'answered', '[]', 'Findings of `task 17: Build and run luv''s programs and test suite; record the runs` (docs/luv-capabilities.md, Packaging and Runs).
 - luv''s flake exports apps, devShells, packages and lib; lib has only environmentFor, which returns everything the packaging needs (pkgs, lisp, applicationEnvironment/Packages, developmentEnvironmentHook, slynkSource, swashPackage, …). No overlays.

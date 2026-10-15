@@ -283,6 +283,142 @@ last, then the labels in *marker-label-colour*, rows centred on the marker
                    (coerce (map-marker-y marker) 'single-float)
                    *marker-label-colour*)))))
 
+;;; The minimal readout (decision 85: Minimal readout: layout, formats,
+;;; colours and alarms): lines of runs, a pure function of the render
+;;; state, the clock and the real time.
+
+(defparameter *readout-label-colour* #x8A8A80 "Row labels, grey, sRGB; decision 85.")
+(defparameter *readout-value-colour* #xE8E4D8 "Values, paper white, sRGB; decision 85.")
+(defparameter *readout-caution-colour* #xFFB000 "Cautions, amber, with \"!\"; decision 85.")
+(defparameter *readout-danger-colour* #xFF3030 "Danger, red, inverted, flashing; decision 85.")
+(defparameter *readout-flash-period* 0.5d0 "s of real time, on in the first half; decision 85.")
+(defparameter *readout-messages* 3 "Clock messages shown at most, newest last; decision 85.")
+(defparameter *readout-message-chars* 40 "A message longer than this is cut, \"…\" last; decision 85.")
+(defparameter *readout-act-fraction* 0.9d0
+  "The actual rate shows below this fraction of the nominal level; decision 85.")
+
+(defun readout-run (text colour &optional (style :plain) flash)
+  "A run of the readout: TEXT upcased, sRGB COLOUR, STYLE :plain or
+:inverted (a COLOUR block, the text in *label-backing-colour*), FLASH nil
+(steady) or the phase now, :on or :off."
+  (list (string-upcase text) colour style flash))
+
+(defun run-text (run) (first run))
+(defun run-colour (run) (second run))
+(defun run-style (run) (third run))
+(defun run-flash (run) (fourth run))
+
+(defun line-text (line)
+  "The runs' texts of LINE, joined."
+  (apply #'concatenate 'string (mapcar #'run-text line)))
+
+(defun format-fixed (x decimals)
+  "X with DECIMALS decimals, rounded half away from zero."
+  (let* ((scale (expt 10 decimals))
+         (n (round (* (abs x) scale)))
+         (sign (if (and (minusp x) (plusp n)) "-" "")))
+    (if (zerop decimals)
+        (format nil "~A~D" sign n)
+        (multiple-value-bind (whole fraction) (floor n scale)
+          (format nil "~A~D.~v,'0D" sign whole decimals fraction)))))
+
+(defun format-significant (x digits)
+  "Positive X to DIGITS significant digits, no exponent."
+  (let ((decimals (- digits 1 (floor (log x 10)))))
+    (if (<= decimals 0)
+        (let ((scale (expt 10 (- decimals))))
+          (format nil "~D" (* scale (round x scale))))
+        (format-fixed x decimals))))
+
+(defun format-speed (speed)
+  "m/s with one decimal below 1,000 m/s, else km/s with three; decision 85."
+  (if (< speed 1000d0)
+      (format nil "~A M/S" (format-fixed speed 1))
+      (format nil "~A KM/S" (format-fixed (m/s->km/s speed) 3))))
+
+(defun format-km (metres) (format nil "~A KM" (format-fixed (m->km metres) 1)))
+
+(defparameter *hold-names*
+  '((:prograde . "PROGRADE") (:retrograde . "RETROGRADE") (:normal . "NORMAL")
+    (:anti-normal . "ANTI-NORMAL") (:radial-out . "RADIAL OUT") (:radial-in . "RADIAL IN")
+    (:inertial . "INERTIAL")))
+
+(defun mode-text (controls)
+  (format nil "~A~:[~; FINE~]"
+          (ecase (controls-attitude-mode controls)
+            (:direct "DIRECT")
+            (:rate-damping "RATE DAMP")
+            (:hold (format nil "HOLD ~A ~:[SLEWING~;SETTLED~]"
+                           (cdr (assoc (controls-hold controls) *hold-names*))
+                           (controls-settled controls))))
+          (controls-fine controls)))
+
+(defun cut-text (text &optional (chars *readout-message-chars*))
+  "TEXT, or its first CHARS − 1 characters and \"…\"."
+  (if (> (length text) chars)
+      (concatenate 'string (subseq text 0 (1- chars)) "…")
+      text))
+
+(defun readout-lines (render-state clock real-time)
+  "The milestone-2 readout (decision 85): a list of lines, each a list of
+runs (see readout-run). Rows ALT, SPD, AP, PE, THR, PROP, MODE, WARP, UTC
+from RENDER-STATE at its t_r and CLOCK; the alarms, the impact's from CLOCK's
+prediction (decision 84, decision 75), flashing by REAL-TIME, the game's
+summed seconds; then CLOCK's live messages."
+  (let* ((r (render-state-r render-state)) (v (render-state-v render-state))
+         (time (render-state-t render-state))
+         (controls (render-state-controls render-state))
+         (m-p (render-state-m-p render-state))
+         (earth (body :earth))
+         (orbit (state->orbit r v +mu-earth+ time))
+         (apoapsis (orbit-apoapsis-radius orbit))
+         (periapsis (orbit-periapsis-radius orbit))
+         (throttle (controls-throttle controls))
+         (level (clock-level clock))
+         (rate (clock-actual-rate clock))
+         (paused (clock-paused clock))
+         (flash (if (< (mod real-time *readout-flash-period*) (* 0.5d0 *readout-flash-period*))
+                    :on :off)))
+    (flet ((row (label &rest values)
+             ;; values after the first lead with a space
+             (cons (readout-run (format nil "~A " label) *readout-label-colour*)
+                   (loop for value in (remove nil values)
+                         for space = "" then " "
+                         collect (if (stringp value)
+                                     (readout-run (concatenate 'string space value)
+                                                  *readout-value-colour*)
+                                     (funcall value space)))))
+           (caution (text &optional (space ""))
+             (readout-run (format nil "~A! ~A" space text) *readout-caution-colour*)))
+      (append
+       (list (row "ALT" (format-km (- (vec3-norm r) +radius-earth+)))
+             (row "SPD" (format-speed (vec3-norm v)))
+             (row "AP" (if apoapsis (format-km (- apoapsis +radius-earth+)) "ESCAPE"))
+             (row "PE" (format-km (- periapsis +radius-earth+)))
+             (row "THR" (format nil "~D% ~:[OFF~;ON~]" (round (* 100 throttle))
+                                (and (> throttle 0d0) (> m-p 0d0))))
+             (row "PROP" (format nil "~D KG ~D%" (round m-p) (round (* 100 m-p) *propellant-full*)))
+             (row "MODE" (mode-text controls))
+             (row "WARP" (format nil "×~D" level)
+                  (and (not paused) (null (render-state-loss render-state))
+                       (> rate 0d0) (< rate (* *readout-act-fraction* level))
+                       (lambda (space)
+                         (caution (format nil "ACT ×~A" (format-significant rate 3)) space)))
+                  (and paused "PAUSED"))
+             (row "UTC" (format-utc time)))
+       (when (< periapsis (body-crash-radius earth))
+         (list (list (caution (format nil "PE BELOW ~D KM"
+                                      (round (- (body-crash-radius earth) (body-radius earth))
+                                             1000))))))
+       (multiple-value-bind (impact loss) (prediction-event (clock-prediction clock) :impact)
+         (when impact
+           (list (list (readout-run (format nil "~A IMPACT IN ~A"
+                                            (if (eq (loss-body loss) :moon) "MOON" "EARTH")
+                                            (format-duration (- impact time)))
+                                    *readout-danger-colour* :inverted flash)))))
+       (mapcar (lambda (text) (list (caution (cut-text text))))
+               (last (clock-messages clock) *readout-messages*))))))
+
 (defun quad (anchor-x anchor-y left top size color)
   "Two triangles of overlay vertices: a SIZE-pixel square at pixel offset
 LEFT, TOP from the clip-space anchor."

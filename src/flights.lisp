@@ -37,7 +37,7 @@
 
 (defparameter *flight-actions*
   '(:start :warp :hold :throttle :after-dv :keys :fine :screenshot :restart
-    :target :grapple :release :transfer :translate))
+    :target :grapple :release :transfer :translate :autopilot))
 
 (defparameter *flight-conditions*
   '((:apoapsis :event) (:periapsis :event) (:impact :event)
@@ -48,16 +48,26 @@
     (:drop-out :wait :drop-out)
     (:lost :any :cause) (:impact-as-predicted :expect :real) (:start-state :expect)
     (:latched :any &optional :object) (:berthed :any :fixture) (:on-station :any :station)
-    (:removed :any :object &optional :removal) (:date-between :expect :date :date))
+    (:removed :any :object &optional :removal) (:date-between :expect :date :date)
+    (:autopilot-done :any) (:dv-below :expect :real) (:elapsed-below :expect :real)
+    (:burn :expect :label :between :date :date) (:since-burn :expect :label :below :real)
+    (:clearance-above :expect :real) (:aim-point :expect :aim))
   "(condition where argument-type … [&optional type …]); where is :event (a
 wait on the prediction), :wait, :expect or :any.")
 
+(defparameter *flight-condition-options*
+  '((:clearance-above :except :only :until))
+  "Options an expectation takes beyond its arguments, kept as a plist after them.")
+
+(defparameter *burn-labels*
+  '(:departure :circularise :apsis :plane :mcc :capture :phasing :arrival :terminal :trim)
+  "The autopilot's burn labels (docs/architecture.md \"Waits and expectations\").")
+
 (defparameter *later-vocabulary*
-  '((:action (:autopilot . 3) (:approach . 3) (:ack . 5))
+  '((:action (:approach . 3) (:ack . 5))
     (:condition (:soi . 4) (:dominant . 4) (:sun-distance-below . 4) (:sun-distance-above . 4)
-     (:hull-above . 4) (:hull-below . 4) (:autopilot-done . 3) (:quest-step . 5)
-     (:quest-skipped . 5) (:quest-line-done . 5) (:dv-below . 3) (:elapsed-below . 3)
-     (:burn . 3) (:since-burn . 3) (:clearance-above . 3) (:aim-point . 3) (:offer . 5))
+     (:hull-above . 4) (:hull-below . 4) (:quest-step . 5)
+     (:quest-skipped . 5) (:quest-line-done . 5) (:offer . 5))
     (:start (:after . 5) (:file . 5))
     (:state-key (:consumables . 4) (:quest . 5))
     (:body (:moon . 4) (:sun . 4))
@@ -614,9 +624,92 @@ new-game-sim."
              (let ((dv (script-real (third args) line :translate)))
                (unless (plusp dv)
                  (script-error line ":TRANSLATE WANTS A Δv ABOVE 0, NOT ~S" (third args)))
-               (list (first args) dv)))))))
+               (list (first args) dv)))
+            (:autopilot (parse-autopilot args line))))))
+
+(defun parse-autopilot (args line)
+  "(:autopilot …)'s arguments in normal form: (:off), or (preset goal range
+limit) as autopilot-request! takes them, metres, radians and seconds."
+  (when (equal args '(:off))
+    (return-from parse-autopilot args))
+  (let ((preset (first args)))
+    (check-not-later :preset preset line)
+    (flet ((altitude (x)
+             (let ((m (script-real x line preset)))
+               (unless (plusp m)
+                 (script-error line "~S WANTS AN ALTITUDE ABOVE 0, NOT ~S" preset x))
+               m))
+           (no-options (rest)
+             (when rest
+               (script-error line "~S TAKES NO OPTIONS, NOT ~S" preset rest))))
+      (case preset
+        (:circularise
+         (no-options (cddr args))
+         (unless (member (second args) '(:ap :pe))
+           (script-error line ":CIRCULARISE :AP OR :PE, NOT ~S" (second args)))
+         (list :circularise (if (eq (second args) :ap) :apoapsis :periapsis) nil nil))
+        ((:set-ap :set-pe)
+         (unless (rest args)
+           (script-error line "WRITE (:AUTOPILOT ~S <ALT>)" preset))
+         (no-options (cddr args))
+         (list (if (eq preset :set-ap) :set-apoapsis :set-periapsis) (altitude (second args)) nil nil))
+        (:hohmann
+         (unless (rest args)
+           (script-error line "WRITE (:AUTOPILOT :HOHMANN <ALT> [:INC <°>])"))
+         (let ((inc (getf (parse-options (cddr args) '(:inc) line :hohmann) :inc)))
+           (list :change-orbit (list (altitude (second args))
+                                     (and inc (deg->rad (script-real inc line :inc))))
+                 nil nil)))
+        (:plane
+         (no-options (cddr args))
+         (let ((x (second args)))
+           (list :change-plane
+                 (if (eq x :target) :target (deg->rad (script-real x line :plane)))
+                 nil nil)))
+        (:rendezvous
+         (let ((spec (second args))
+               (options (parse-options (cddr args) '(:range :limit) line :rendezvous)))
+           (unless (and (keywordp spec) (target-key-p spec))
+             (state-fixture spec line))
+           (let ((range (getf options :range))
+                 (limit (getf options :limit)))
+             (when range
+               (setf range (script-real range line :range))
+               (unless (<= 100d0 range 1000d0)
+                 (script-error line ":RANGE 100 TO 1,000 M, NOT ~S" (getf options :range))))
+             (when limit
+               (setf limit (script-real limit line :limit))
+               (unless (and (<= *rendezvous-limit-step* limit *rendezvous-limit-max*)
+                            (zerop (mod limit *rendezvous-limit-step*)))
+                 (script-error line ":LIMIT IN STEPS OF ~D S FROM ~D TO ~D, NOT ~S"
+                               (round *rendezvous-limit-step*) (round *rendezvous-limit-step*)
+                               (round *rendezvous-limit-max*) (getf options :limit))))
+             (list :rendezvous spec range limit))))
+        (t (script-error line "UNKNOWN PRESET ~S" preset))))))
 
 ;;; Waits and expectations
+
+(defun clearance-options (options line)
+  "(:clearance-above …)'s OPTIONS checked: :except and :only lists of
+objects (a place for its object), not both; :until :aim-point."
+  (when (and (getf options :except) (getf options :only))
+    (script-error line ":CLEARANCE-ABOVE TAKES :EXCEPT OR :ONLY, NOT BOTH"))
+  (let ((until (getf options :until)))
+    (when (and until (not (eq until :aim-point)))
+      (script-error line ":UNTIL :AIM-POINT, NOT ~S" until))
+    (flet ((objects (x)
+             (unless (and (listp x) x (null (cdr (last x))))
+               (script-error line "WRITE (<ID> …), NOT ~S" x))
+             (mapcar (lambda (key)
+                       (let ((place (and (keywordp key) (find key *places* :key #'place-key))))
+                         (cond ((and place (place-object place)))
+                               (place (script-error line "~S IS NO OBJECT" key))
+                               ((and (keywordp key) (find key *objects* :key #'object-def-key)) key)
+                               (t (script-error line "UNKNOWN OBJECT ~S" key)))))
+                     x)))
+      (list :except (and (getf options :except) (objects (getf options :except)))
+            :only (and (getf options :only) (objects (getf options :only)))
+            :until until))))
 
 (defun parse-condition (step kind args line)
   (let* ((name (first args))
@@ -631,9 +724,11 @@ new-game-sim."
                 (and (eq kind :expect) (member where '(:wait :event))))
         (script-error line "~S IS NOT ~:[AN EXPECTATION~;A WAIT~]" name (eq kind :wait)))
       (let* ((given (rest args))
-             (allowed (cond ((eq kind :expect) nil)
-                            ((eq where :event) '(:within :before))
-                            (t '(:within))))
+             (extra (rest (assoc name *flight-condition-options*)))
+             (allowed (append extra
+                              (cond ((eq kind :expect) nil)
+                                    ((eq where :event) '(:within :before))
+                                    (t '(:within)))))
              (required (ldiff spec-types (member '&optional spec-types)))
              ;; An optional argument is there unless an option's key stands in its place.
              (types (append required
@@ -673,8 +768,23 @@ new-game-sim."
                               (:station
                                (unless (station-point-p x)
                                  (state-fixture x line))
+                               x)
+                              (:label
+                               (unless (member x *burn-labels*)
+                                 (script-error line "UNKNOWN BURN ~S: ONE OF ~{~S~^ ~}" x *burn-labels*))
+                               x)
+                              ((:between :below)
+                               (unless (eq x type)
+                                 (script-error line "~S WANTS ~S, NOT ~S" name type x))
+                               x)
+                              (:aim
+                               (unless (member x '(1 2 3))
+                                 (script-error line ":AIM-POINT 1, 2 OR 3, NOT ~S" x))
                                x))))
         (let ((options (parse-options (nthcdr (length types) given) allowed line kind)))
+          (when extra
+            (setf (flight-step-args step)
+                  (append (flight-step-args step) (list (clearance-options options line)))))
           (when (eq kind :wait)
             (setf (flight-step-within step)
                   (script-duration (getf options :within *flight-default-within*) line :within))
@@ -837,7 +947,7 @@ whatever the prediction says.")
 
 (defstruct (flight-entry (:copier nil))
   (kind :end :type (member :screenshot :expect :burn :failure :end))
-  (label nil)                                   ; screenshot label, condition or reason
+  (label nil)                                   ; screenshot label, condition, reason or burn label
   (pass nil)                                    ; :expect
   (value nil)                                   ; :expect: what it measured, as text
   (view nil)                                    ; :screenshot
@@ -876,7 +986,102 @@ whatever the prediction says.")
   (failure nil)                                 ; the failure entry
   (done nil)
   (restart nil)                                 ; live: (:restart)'s function, else clock-restart!
-  (cache nil))                                  ; (t steps . until) of the last hook
+  (cache nil)                                   ; (t steps . until) of the last hook
+  (headless nil)                                ; run-flight: planning jobs run at once
+  (request nil)                                 ; a running (:autopilot …): its snapshot's t
+  (engage nil)                                  ; the last engage's flight-engage
+  (plan-burn nil))                              ; an open plan burn: (what label start . odometer)
+
+;;; The last engage (decision 122): the reference of the record's
+;;; expectations, and the clearance kept since.
+
+(defstruct (flight-engage (:constructor %make-flight-engage (time dv plan mark least frozen previous flags))
+                          (:copier nil))
+  (time 0d0 :type double-float)
+  (dv 0d0 :type double-float)                   ; the odometer
+  (plan nil)                                    ; the plan engaged, then its replans
+  (mark nil)                                    ; the SHIP log's newest entry before it
+  (least nil :type (simple-array double-float (*))) ; per object: the least CoM distance
+  (frozen nil)                                  ; least at the :arrival burn's start, or nil
+  (previous nil :type (simple-array double-float (*))) ; the last hook's ship, then objects: r v
+  (flags nil :type simple-vector)               ; per object: promoted at the last hook
+  (previous-t nil))                             ; that hook's t, or nil
+
+(defun make-flight-engage (clock sim)
+  "SIM's plan just engaged under CLOCK: the reference t, odometer, plan and
+SHIP-log mark, no clearance yet."
+  (let ((n (length (sim-objects sim))))
+    (%make-flight-engage (sim-t sim) (ship-state-dv (sim-ship sim)) (sim-plan sim)
+                         (first (clock-log clock))
+                         (make-array n :element-type 'double-float
+                                       :initial-element most-positive-double-float)
+                         nil
+                         (make-array (* 6 (1+ n)) :element-type 'double-float :initial-element 0d0)
+                         (make-array n :initial-element nil))))
+
+(defun clearance-skipped-p (sim object)
+  "OBJECT counts for no clearance: removed or the latched load."
+  (or (object-removed-p object) (eq object (sim-held-object sim))))
+
+(defun flight-clearance-update! (engage sim)
+  "At a hook: ENGAGE's least distances lowered over the step since the last
+hook, per object promoted at both ends (not removed nor the load) on the
+relative Hermite of the two states (hermite-least); the states kept for the
+next. Objects on rails stay ≥ 100 km away (promotion's invariant): not
+measured. Conses nothing."
+  (let* ((objects (sim-objects sim))
+         (n (length objects))
+         (previous (flight-engage-previous engage))
+         (flags (flight-engage-flags engage))
+         (least (flight-engage-least engage))
+         (t0 (flight-engage-previous-t engage))
+         (ship (sim-ship sim)))
+    (when (and t0 (> (sim-t sim) t0))
+      (let ((h (- (sim-t sim) t0))
+            (c (make-array 12 :element-type 'double-float))
+            (p0 (make-vec3)) (u0 (make-vec3)) (p1 (make-vec3)) (u1 (make-vec3)))
+        (declare (dynamic-extent c p0 u0 p1 u1))
+        (dotimes (i n)
+          (let ((object (svref objects i)))
+            (when (and (svref flags i) (object-promoted-p object)
+                       (not (clearance-skipped-p sim object)))
+              (let ((k (* 6 (1+ i)))
+                    (state (object-state object)))
+                (dotimes (j 3)
+                  (setf (aref p0 j) (- (aref previous (+ k j)) (aref previous j))
+                        (aref u0 j) (- (aref previous (+ k 3 j)) (aref previous (+ 3 j)))
+                        (aref p1 j) (- (aref (ship-state-r state) j) (aref (ship-state-r ship) j))
+                        (aref u1 j) (- (aref (ship-state-v state) j) (aref (ship-state-v ship) j))))
+                (hermite-set! c p0 u0 p1 u1 h)
+                (setf (aref least i) (min (aref least i) (hermite-least c 0d0 1d0)))))))))
+    (flet ((keep! (k state)
+             (replace previous (ship-state-r state) :start1 k)
+             (replace previous (ship-state-v state) :start1 (+ k 3))))
+      (keep! 0 ship)
+      (dotimes (i n)
+        (let* ((object (svref objects i))
+               (promoted (and (object-promoted-p object) t)))
+          (setf (svref flags i) promoted)
+          (when promoted
+            (keep! (* 6 (1+ i)) (object-state object))))))
+    (setf (flight-engage-previous-t engage) (sim-t sim))
+    engage))
+
+(defun flight-engage-update! (flight sim)
+  "At a hook before any step begins: the clearance since the last hook; the
+:arrival burn's start freezes a copy for :until :aim-point; a replan's plan
+kept."
+  (let ((engage (flight-engage flight)))
+    (when engage
+      (flight-clearance-update! engage sim)
+      (let ((plan (sim-plan sim)))
+        (when plan
+          (setf (flight-engage-plan engage) plan))
+        (when (and plan (eq plan (flight-engage-plan engage)) (null (flight-engage-frozen engage))
+                   (or (plan-terminal-p sim)
+                       (let ((burn (plan-burn-due sim)))
+                         (and burn (eq (planned-burn-label burn) :arrival)))))
+          (setf (flight-engage-frozen engage) (copy-seq (flight-engage-least engage))))))))
 
 (defun new-flight (steps sim)
   "A flight of STEPS (flight-steps) from SIM, its start state."
@@ -915,10 +1120,44 @@ whatever the prediction says.")
     (push entry (flight-entries flight))
     entry))
 
+(defun plan-running-part (sim)
+  "What SIM's plan flies now for the record (decision 122): its current
+planned-burn from its start (plan-burn-due) until the cursor leaves it, its
+rendezvous-part while :terminal; else nil."
+  (let ((plan (sim-plan sim)))
+    (when plan
+      (case (sim-plan-phase sim)
+        (:terminal (burn-plan-rendezvous plan))
+        ((:holding :burning)
+         (let ((burn (svref (burn-plan-burns plan) (sim-plan-index sim))))
+           (and (or (eq (sim-plan-phase sim) :burning)
+                    (> (sim-plan-resume sim) 0d0)
+                    (>= (sim-t sim) (planned-burn-start burn)))
+                burn)))))))
+
+(defun flight-plan-burn-check! (flight sim end)
+  "While a plan is engaged, one :burn entry per planned burn with its
+label (its start, the cursor leaving it, Δv by the odometer) and one
+:terminal from the :arrival cut to on station; closed at a loss or END."
+  (let ((open (flight-plan-burn flight))
+        (part (and (not end) (not (sim-loss sim)) (plan-running-part sim)))
+        (dv (ship-state-dv (sim-ship sim))))
+    (when (and open (not (eq part (first open))))
+      (destructuring-bind (label start . odometer) (rest open)
+        (flight-entry-at flight sim :burn :label label :start start :dv (- dv odometer)))
+      (setf (flight-plan-burn flight) nil))
+    (when (and part (not (flight-plan-burn flight)))
+      (setf (flight-plan-burn flight)
+            (if (typep part 'planned-burn)
+                (list* part (planned-burn-label part) (sim-t sim) dv)
+                (list* part :terminal (sim-plan-terminal-t sim) dv))))))
+
 (defun flight-burn-check! (flight sim &optional end)
   "Open a burn at the throttle going on, close it at its going off, a loss
-or the flight's END."
-  (let ((on (and (not end) (> (controls-throttle (sim-controls sim)) 0d0)))
+or the flight's END; while a plan is engaged its burns instead
+(flight-plan-burn-check!)."
+  (flight-plan-burn-check! flight sim end)
+  (let ((on (and (not end) (null (sim-plan sim)) (> (controls-throttle (sim-controls sim)) 0d0)))
         (burn (flight-burn flight))
         (dv (ship-state-dv (sim-ship sim))))
     (cond ((and on (not burn) (not (sim-loss sim)))
@@ -956,8 +1195,14 @@ or the flight's END."
 
 (defun condition-value-text (name x)
   "X, an argument or a measure of condition NAME, in display units."
-  (cond ((not (realp x)) (format nil "~A" x))
-        ((member name '(:date :date-between)) (format-utc x))
+  (cond ((and (consp x) (eq name :clearance-above))
+         (format nil "~{~S ~S~^ ~}" (loop for (key value) on x by #'cddr
+                                           when value collect key and collect value)))
+        ((not (realp x)) (format nil "~A" x))
+        ((member name '(:date :date-between :burn)) (format-utc x))
+        ((eq name :aim-point) (format nil "~D" x))
+        ((eq name :dv-below) (format nil "~,3F M/S" x))
+        ((eq name :clearance-above) (format nil "~,1F M" x))
         ((member name '(:altitude-below :periapsis-below :periapsis-above
                         :apoapsis-below :apoapsis-above))
          (km-text x))
@@ -969,7 +1214,8 @@ or the flight's END."
   "The condition of STEP as written, its numbers in display units."
   (let ((name (flight-step-name step)))
     (format nil "~A~{ ~A~}" name
-            (mapcar (lambda (x) (condition-value-text name x)) (flight-step-args step)))))
+            (remove "" (mapcar (lambda (x) (condition-value-text name x)) (flight-step-args step))
+                    :test #'string=))))
 
 (defun flight-apsis-altitude (clock sim kind)
   "The next :apoapsis or :periapsis above the body from CLOCK's prediction,
@@ -1022,6 +1268,105 @@ without a fixture (Skua Yard) the stack's CoM against its stop point
                                                     arm)))
                      (frame-v (vec3-add v-o (vec3-cross (quat-rotate q-o w-o) (vec3-sub tip r-o)))))
                 (values (vec3-norm (vec3-sub tip pin)) (vec3-norm (vec3-sub tip-v frame-v))))))))))
+
+(defun engage-log (flight clock)
+  "CLOCK's SHIP log entries since the last engage's mark, oldest first."
+  (let* ((log (clock-log clock))
+         (mark (flight-engage-mark (flight-engage flight)))
+         (end (and mark (position mark log :test #'eq))))
+    (reverse (if end (subseq log 0 end) log))))
+
+(defun autopilot-outcome (flight clock sim)
+  "(values outcome text) of the plan engaged last, from the SHIP log since
+the engage (decision 122): :done at \"AUTOPILOT: PLAN COMPLETE\" or, after
+\"ON STATION: …\", while it keeps station; :failed at its abort, \"AUTOPILOT:
+GOAL MISSED\" or a disengage, or with nothing engaged; else nil."
+  (unless (flight-engage flight)
+    (return-from autopilot-outcome (values :failed "NOTHING ENGAGED")))
+  (let ((station nil))
+    (loop for (nil key text) in (engage-log flight clock)
+          do (cond ((and (eq key :autopilot) (string= text "AUTOPILOT: PLAN COMPLETE"))
+                    (return-from autopilot-outcome (values :done text)))
+                   ((and (eq key :autopilot)
+                         (or (string= text "AUTOPILOT: GOAL MISSED")
+                             (eql 0 (search "AUTOPILOT ABORT" text))
+                             (eql 0 (search "AUTOPILOT OFF" text))))
+                    (return-from autopilot-outcome (values :failed text)))
+                   ((eq key :station) (setf station text))))
+    (if (and station (sim-plan sim) (eq (sim-plan-phase sim) :station))
+        (values :done station)
+        (values nil station))))
+
+(defun record-plan-burn (flight label)
+  "(values start entry) of the first burn of LABEL since the last engage:
+in the record, else the open one."
+  (let* ((since (flight-engage-time (flight-engage flight)))
+         (entry (find-if (lambda (e) (and (eq (flight-entry-kind e) :burn)
+                                          (eq (flight-entry-label e) label)
+                                          (>= (flight-entry-start e) since)))
+                         (flight-entries flight) :from-end t))
+         (open (flight-plan-burn flight)))
+    (cond (entry (values (flight-entry-start entry) entry))
+          ((and open (eq (second open) label)) (values (third open) nil)))))
+
+(defun clearance-least (flight sim options)
+  "(values distance key) of the least clearance since the last engage over
+the objects OPTIONS (:except, :only, :until) admit; nil distance when none
+was measured (every object stayed on rails, ≥ 100 km)."
+  (destructuring-bind (&key except only until) options
+    (let* ((engage (flight-engage flight))
+           (least (if (eq until :aim-point) (flight-engage-frozen engage) (flight-engage-least engage)))
+           (best nil) (key nil))
+      (when least
+        (loop for object across (sim-objects sim)
+              for d across least
+              for id = (object-key object)
+              do (when (and (< d most-positive-double-float)
+                            (not (member id except))
+                            (or (null only) (member id only))
+                            (not (clearance-skipped-p sim object))
+                            (or (null best) (< d best)))
+                   (setf best d key id))))
+      (values best key))))
+
+(defun record-condition (flight sim step)
+  "(values holds measured) of an expectation on the record since the last
+engage (decision 122); failed with \"NOTHING ENGAGED\" before any."
+  (let ((engage (flight-engage flight))
+        (args (flight-step-args step)))
+    (unless engage
+      (return-from record-condition (values nil "NOTHING ENGAGED")))
+    (ecase (flight-step-name step)
+      (:dv-below
+       (let ((dv (- (ship-state-dv (sim-ship sim)) (flight-engage-dv engage))))
+         (values (< dv (first args)) (format nil "~,3F M/S" dv))))
+      (:elapsed-below
+       (let ((elapsed (- (sim-t sim) (flight-engage-time engage))))
+         (values (< elapsed (first args)) (format-duration elapsed))))
+      (:burn
+       (destructuring-bind (label between from to) args
+         (declare (ignore between))
+         (let ((start (record-plan-burn flight label)))
+           (if start
+               (values (<= from start to) (format-utc start))
+               (values nil (format nil "NO ~A BURN" label))))))
+      (:since-burn
+       (destructuring-bind (label below s) args
+         (declare (ignore below))
+         (let ((start (record-plan-burn flight label)))
+           (if start
+               (values (< (- (sim-t sim) start) s) (format-duration (- (sim-t sim) start)))
+               (values nil (format nil "NO ~A BURN" label))))))
+      (:clearance-above
+       (destructuring-bind (m options) args
+         (if (and (eq (getf options :until) :aim-point) (null (flight-engage-frozen engage)))
+             (values nil "NO ARRIVAL BURN")
+             (multiple-value-bind (d key) (clearance-least flight sim options)
+               (values (or (null d) (> d m))
+                       (if d (format nil "~A ~,3F M" key d) "NONE PROMOTED"))))))
+      (:aim-point
+       (let ((aim (rendezvous-plan-aim-point (flight-engage-plan engage))))
+         (values (eql aim (first args)) (if aim (format nil "~D" aim) "NO RENDEZVOUS")))))))
 
 (defun condition-holds (flight clock sim step)
   "(values holds measured) of STEP's condition now."
@@ -1081,7 +1426,12 @@ without a fixture (Skua Yard) the stack's CoM against its stop point
          (let ((late (and loss (flight-impact-time flight)
                           (- (loss-time loss) (flight-impact-time flight)))))
            (values (and late (<= (abs late) x)) late)))
-        (:start-state (values (equalp sim (flight-start flight)) nil))))))
+        (:start-state (values (equalp sim (flight-start flight)) nil))
+        (:autopilot-done
+         (multiple-value-bind (outcome text) (autopilot-outcome flight clock sim)
+           (values (eq outcome :done) text)))
+        ((:dv-below :elapsed-below :burn :since-burn :clearance-above :aim-point)
+         (record-condition flight sim step))))))
 
 ;;; Steps
 
@@ -1223,6 +1573,16 @@ second value), a wait set up. True when STEP is over at once."
                                                   :view (flight-step-view step)
                                                   :sim (copy-sim sim))
           t)
+         (:autopilot
+          (let ((model (clock-autopilot clock)))
+            (if (equal args '(:off))
+                (progn (autopilot-key! model clock sim :backspace) t)
+                (destructuring-bind (preset goal range limit) args
+                  (autopilot-request! model clock sim preset goal :range range :limit limit)
+                  (setf (flight-request flight) now)
+                  (multiple-value-bind (over until reason) (flight-autopilot-step flight clock sim)
+                    (declare (ignore until))
+                    (if reason (values nil reason) over))))))
          (:restart
           (if (sim-loss sim)
               (progn (if (flight-restart flight)
@@ -1231,9 +1591,42 @@ second value), a wait set up. True when STEP is over at once."
                      (setf (flight-loss-seen flight) nil
                            (flight-coast flight) nil
                            (flight-burn flight) nil
-                           (flight-translate flight) nil)
+                           (flight-translate flight) nil
+                           (flight-request flight) nil
+                           (flight-engage flight) nil
+                           (flight-plan-burn flight) nil)
                      t)
               (values nil "(:RESTART): NOT LOST"))))))))
+
+(defun flight-autopilot-step (flight clock sim)
+  "A requested (:autopilot …) (decision 122): (values over until reason).
+Headless its job runs to completion at once, live over frames; once the plan
+is shown and t ≥ the snapshot's + *plan-barrier* the second Return engages
+it, and the flight keeps the engage (flight-engage). A refusal fails with
+the game's text."
+  (let* ((model (clock-autopilot clock))
+         (barrier (+ (flight-request flight) *plan-barrier*)))
+    (when (and (flight-headless flight) (autopilot-planning-p model))
+      (autopilot-job-work! (autopilot-model-job model) most-positive-fixnum)
+      (autopilot-job-poll! model clock sim))
+    (when (and (eq (autopilot-model-state model) :shown) (>= (sim-t sim) barrier))
+      (autopilot-confirm! model clock sim)
+      (when (and (flight-headless flight) (autopilot-planning-p model))
+        ;; stale: re-planned from now, engaged once shown
+        (autopilot-job-work! (autopilot-model-job model) most-positive-fixnum)
+        (autopilot-job-poll! model clock sim)))
+    (case (autopilot-model-state model)
+      (:refused
+       (setf (flight-request flight) nil)
+       (values nil nil (format nil "PLAN REFUSED: ~A" (autopilot-model-text model))))
+      ((:planning :shown) (values nil (and (< (sim-t sim) barrier) barrier)))
+      (:engaged
+       (setf (flight-request flight) nil
+             (flight-engage flight) (make-flight-engage clock sim))
+       t)
+      (t
+       (setf (flight-request flight) nil)
+       (values nil nil "(:AUTOPILOT): NOTHING PLANNED")))))
 
 (defun flight-running! (flight clock sim step)
   "A begun STEP: (values over until reason), REASON a failure."
@@ -1243,6 +1636,7 @@ second value), a wait set up. True when STEP is over at once."
     (ecase (flight-step-kind step)
       (:action
        (ecase (flight-step-name step)
+         (:autopilot (flight-autopilot-step flight clock sim))
          (:keys
           (cond ((>= now until)
                  (controls-apply-held-keys! (sim-controls sim) nil)
@@ -1260,6 +1654,11 @@ second value), a wait set up. True when STEP is over at once."
                 ((>= now deadline) (values nil nil "(:AFTER-DV): NO CUT-OFF"))
                 (t (values nil deadline))))))
       (:wait
+       (when (eq (flight-step-name step) :autopilot-done)
+         (multiple-value-bind (outcome text) (autopilot-outcome flight clock sim)
+           (when (eq outcome :failed)
+             (return-from flight-running!
+               (values nil nil (format nil "(:WAIT ~A): ~A" (condition-text step) text))))))
        (let ((over (case (flight-step-name step)
                      ((:apoapsis :periapsis) (>= now until))
                      (:impact (or (sim-loss sim) (>= now until)))
@@ -1366,6 +1765,7 @@ runs once."
   (let ((cache (flight-cache flight)))
     (when (and cache (= (first cache) (sim-t sim)) (= (second cache) (sim-steps sim)))
       (return-from flight-step-hook (cddr cache))))
+  (flight-engage-update! flight sim)
   (flight-dropout-check! flight clock sim)
   (let ((until (flight-advance! flight clock sim)))
     (unless (flight-done flight)
@@ -1374,6 +1774,9 @@ runs once."
         (flight-coast! flight clock sim))
       (clock-check-level! clock sim)
       (flight-dropout-check! flight clock sim))
+    (let ((engage (flight-engage flight)))
+      (when (and engage (null (flight-engage-previous-t engage)))
+        (flight-clearance-update! engage sim)))
     (setf (flight-cache flight) (list* (sim-t sim) (sim-steps sim) until))
     until))
 
@@ -1401,6 +1804,7 @@ record end-sim flight clock)."
     (let* ((flight (new-flight steps sim))
            (clock (new-clock sim))
            (predicted nil))
+      (setf (flight-headless flight) t)
       (setf (clock-hook clock) (lambda (clock sim) (flight-step-hook flight clock sim)))
       (loop
         (when (or (null predicted)
@@ -1449,7 +1853,8 @@ record end-sim flight clock)."
                 (:expect (format nil "EXPECT ~A: ~:[FAIL~;PASS~]~@[ (~A)~]: ~A"
                                  (flight-entry-label e) (flight-entry-pass e)
                                  (flight-entry-value e) state))
-                (:burn (format nil "BURN FROM T+~,3F S: ~,3F M/S IN ~,3F S: ~A"
+                (:burn (format nil "BURN ~@[~A ~]FROM T+~,3F S: ~,3F M/S IN ~,3F S: ~A"
+                               (flight-entry-label e)
                                (- (flight-entry-start e) (- (flight-entry-t e)
                                                              (flight-entry-elapsed e)))
                                (flight-entry-dv e)

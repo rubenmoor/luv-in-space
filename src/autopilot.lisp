@@ -3609,6 +3609,8 @@ point (its offset from the target at the :arrival node), PASSES."
   (replan nil :type (or null burn-plan))        ; the plan it re-plans, nil once installed
   (replan-t 0d0 :type double-float)             ; its cut
   (row nil :type (or null keyword))             ; the row the job plans, or the plan's
+  (preset nil :type (or null keyword))          ; the job's preset and goal
+  (goal nil)
   (plan nil :type (or null burn-plan))          ; the plan shown
   (flown nil :type (or null burn-plan))         ; the plan last engaged: the map's, grey after
   (engage nil :type boolean)                    ; engage the job's plan once shown
@@ -3691,21 +3693,49 @@ abandoned); :off back to the menu."
     (autopilot-set-state! model (if (sim-plan sim) :engaged :menu)))
   model)
 
+(defun autopilot-start-job! (model clock sim preset goal engage)
+  "A job for PRESET and GOAL (autopilot-job-start!'s) from SIM now, kept as
+MODEL's request: :planning \"PLANNING…\"; ENGAGE: engaged once shown. A
+refusal at the start shows at once."
+  (let ((job (or (autopilot-model-job model)
+                 (setf (autopilot-model-job model) (new-autopilot-job sim)))))
+    (autopilot-job-start! job sim preset goal)
+    (setf (autopilot-model-preset model) preset
+          (autopilot-model-goal model) goal
+          (autopilot-model-row model) nil
+          (autopilot-model-plan model) nil
+          (autopilot-model-engage model) engage)
+    (autopilot-set-state! model :planning "PLANNING…")
+    (autopilot-job-poll! model clock sim))
+  model)
+
 (defun autopilot-plan! (model clock sim &optional engage)
-  "A job for the selected row from SIM now: :planning \"PLANNING…\"; ENGAGE:
-engaged once shown. A refusal at the start shows at once."
+  "A job for the selected row from SIM now (autopilot-start-job!)."
   (let ((row (autopilot-selected-row model sim)))
     (when row
       (multiple-value-bind (preset goal) (funcall (autopilot-row-goal row) model)
-        (let ((job (or (autopilot-model-job model)
-                       (setf (autopilot-model-job model) (new-autopilot-job sim)))))
-          (autopilot-job-start! job sim preset goal)
-          (setf (autopilot-model-row model) (autopilot-row-key row)
-                (autopilot-model-plan model) nil
-                (autopilot-model-engage model) engage)
-          (autopilot-set-state! model :planning "PLANNING…")
-          (autopilot-job-poll! model clock sim)))))
+        (autopilot-start-job! model clock sim preset goal engage)
+        (setf (autopilot-model-row model) (autopilot-row-key row)))))
   model)
+
+(defun autopilot-request! (model clock sim preset goal &key range limit)
+  "The menu's Return on PRESET with GOAL, as a flight script asks for it
+(decision 122): a job on a snapshot of SIM now; a :rendezvous's GOAL its
+target spec, RANGE and LIMIT its stop range and time limit. MODEL."
+  (autopilot-start-job! model clock sim preset
+                        (if (eq preset :rendezvous)
+                            (list* goal (append (and range (list :range range))
+                                                (and limit (list :limit limit))))
+                            goal)
+                        nil))
+
+(defun autopilot-confirm! (model clock sim)
+  "The second Return (decision 122): MODEL's shown plan engaged
+(autopilot-engage-shown!: when stale, re-planned and engaged once shown).
+True when it was shown."
+  (when (eq (autopilot-model-state model) :shown)
+    (autopilot-engage-shown! model clock sim)
+    t))
 
 (defun autopilot-plan-stale-p (model sim)
   "MODEL's shown plan is stale for SIM (decision 117): its first hold-at −
@@ -3726,7 +3756,10 @@ the job's final shot at SIM's t."
 job engaged once shown."
   (if (autopilot-plan-stale-p model sim)
       (progn (clock-message! clock :autopilot "PLAN STALE: REPLANNING")
-             (autopilot-plan! model clock sim t))
+             (let ((row (autopilot-model-row model)))
+               (autopilot-start-job! model clock sim (autopilot-model-preset model)
+                                     (autopilot-model-goal model) t)
+               (setf (autopilot-model-row model) row)))
       (autopilot-engage! clock sim (autopilot-model-plan model))))
 
 (defun autopilot-job-poll! (model clock sim)

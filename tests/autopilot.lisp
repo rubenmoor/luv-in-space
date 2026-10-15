@@ -856,22 +856,23 @@ Skua Yard 5 on its rails, at its velocity."
 (define-test rendezvous-plan-tern
   ;; From the start state, 18 h (the same plan as 48 h at a third of the
   ;; time): :departure and :arrival to aim point (1), the shot path ≥ 239.8 m
-  ;; from Tern's CoM; :point ≤ 23.5 m/s (22.36), :j2 ≤ 30 m/s (28.45),
-  ;; against the search's 11.52. Tern is promoted 100 km out, hours before
-  ;; the slow arrival, and leaves its rails along track (:point ~11 m/s: its
-  ;; rails carry J2's secular rates; :j2 up to ~15 m/s: they take its
-  ;; elements as mean ones); the shot chases it with the burns' times fixed.
-  ;; Promoted only within 500 m: 11.52 and 19.1 (J2's short-period terms
-  ;; over the transfer, which the search's secular coasts do not see).
+  ;; from Tern's CoM. Tern is promoted 100 km out, hours before the slow
+  ;; arrival, and leaves its rails; the transfer is re-timed to it (decision
+  ;; 161): :point within 3 % of the search's 11.52 (11.76; 22.36 with the
+  ;; search's times), :j2 ≤ 20 m/s (19.35; 28.45 with the search's times;
+  ;; the search's 11.41 is a Kepler figure J2's physics does not reach).
   (dolist (model '(:point :j2))
     (let ((sim (model-sim model)))
       (multiple-value-bind (plan job) (rendezvous-now sim '(:tern-station :limit 64800d0))
         (when plan
           (is equal '(:departure :arrival) (plan-labels plan))
           (is = 1 (lis::rendezvous-plan-aim-point plan))
+          (true (plusp (lis::autopilot-job-retimes job)))
           (check-arrival job)
           (check-pass plan :tern-station 239.8d0)
-          (true (<= (plan-dv plan) (if (eq model :point) 23.5d0 30d0))
+          (true (if (eq model :point)
+                    (< (relative-error (plan-dv plan) (job-search-total job)) 0.03)
+                    (<= (plan-dv plan) 20d0))
                 "~A ~,2F m/s, search ~,2F" model (plan-dv plan) (job-search-total job))
           (let ((part (lis::burn-plan-rendezvous plan)))
             (is eq :tern-station (lis::rendezvous-part-target part))

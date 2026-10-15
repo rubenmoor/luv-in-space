@@ -214,6 +214,24 @@ Hermite between nodes; nil outside it."
 outside it."
   (path-position! out pred time nil))
 
+(defun prediction-state! (r v pred time)
+  "R, V: the stored path's position and velocity at TIME, the Hermite
+between nodes; nil outside it."
+  (declare (type vec3 r v) (type prediction pred) (type double-float time))
+  (let ((i (node-interval pred time)))
+    (when i
+      (let ((c (make-array 12 :element-type 'double-float))
+            (nodes (prediction-nodes pred)))
+        (declare (dynamic-extent c))
+        (if (or (= time (node-t nodes i)) (>= (1+ i) (prediction-count pred)))
+            (let ((k (* +node-size+ i)))
+              (replace r nodes :start2 (+ k 1) :end2 (+ k 4))
+              (replace v nodes :start2 (+ k 4) :end2 (+ k 7)))
+            (let ((h (interval-hermite! c pred i)))
+              (hermite-point! r v c (/ (- time (node-t nodes i)) h))
+              (vec3-scale! v v (/ h))))
+        r))))
+
 (defun prediction-target-position! (out pred time)
   "OUT: the target's stored position at TIME (the Hermite between its
 nodes); nil outside them or without a target."

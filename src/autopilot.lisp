@@ -436,12 +436,14 @@ SHOT: SIM's coast shot (autopilot-coast-shot) if already run."
 1/64 s tick at full throttle, 0.044 m/s wet).")
 (defparameter *plan-max-burns* 4 "Burns a job refines.")
 (defparameter *plan-max-residuals* 6 "Goal residuals a job measures: a rendezvous's position and velocity.")
+(defparameter *retime-pool* 8 "A re-timing's cheapest scan points, refined and checked in order.")
 (defparameter *shot-cap-margin* 600d0
   "s: a shot whose plan never ends (no propellant) stops this after its last burn's planned end.")
 (declaim (type double-float *plan-floor-margin* *plan-moon-margin* *goal-altitude-max*
                *apsis-tolerance-fraction* *apsis-tolerance-min* *plane-tolerance*
                *shot-perturbation* *shot-cap-margin*)
-         (type fixnum *plan-iterations* *rendezvous-halvings* *plan-max-burns* *plan-max-residuals*))
+         (type fixnum *plan-iterations* *rendezvous-halvings* *plan-max-burns* *plan-max-residuals*
+               *retime-pool*))
 
 (defun apsis-tolerance (radius)
   "m: max(0.1 % of RADIUS, 1 km); decision 117."
@@ -612,7 +614,7 @@ pivoting; a singular J J ᵀ is regularised. OUT."
   (shot nil :type prediction)                   ; the last shot, the final plan's at the end
   (preset nil :type (or null keyword))
   (goal nil)
-  (stage :done :type (member :coast :search :guess :lead :iterate :check :done :refused))
+  (stage :done :type (member :coast :search :guess :lead :retime :iterate :check :done :refused))
   (search nil)                                  ; a rendezvous-search, run after :coast
   ;; A replan (decision 117): the plan flown and its first burn left to re-shoot.
   (base nil :type (or null burn-plan))
@@ -628,6 +630,22 @@ pivoting; a singular J J ᵀ is regularised. OUT."
   (aim 1 :type fixnum)
   (side 1 :type fixnum)
   (fixed 0 :type fixnum)                        ; leading burns Newton keeps (:plane, :phasing)
+  ;; The re-timing (job-retime-start!): the reference coast's first t
+  ;; within *promotion-distance* of the target, nil if none.
+  (retime-approach nil :type (or null double-float))
+  (retimes 0 :type fixnum)
+  (retime-cursor 0 :type fixnum)                ; −1 while the reference coast runs
+  (retime-gap 0d0 :type double-float)           ; s from the :departure's hold-at to its node
+  (retime-centre (make-array 3 :element-type 'double-float :initial-element 0d0)
+   :type (simple-array double-float (3)))       ; the departure, transfer time and period scanned about
+  ;; the scan's cheapest points, (total departure transfer-time) each, in order
+  (retime-pool (make-array (* 3 *retime-pool*) :element-type 'double-float :initial-element 0d0)
+   :type (simple-array double-float (*)))
+  (retime-count 0 :type fixnum)
+  (retime-point (make-array 3 :element-type 'double-float :initial-element 0d0)
+   :type (simple-array double-float (3)))       ; the one refined, then the one chosen
+  (retime-chosen nil :type boolean)
+  (retime-own 0d0 :type double-float)           ; m/s the candidate's own times cost in the model
   (last-largest 0d0 :type double-float)         ; a rendezvous: the accepted shot's largest residual
   (fraction 1d0 :type double-float)             ; of the last step applied
   (halvings 0 :type fixnum)
@@ -709,6 +727,7 @@ stop point (job-rendezvous-start!). JOB."
           (autopilot-job-aim job) 1
           (autopilot-job-side job) 1
           (autopilot-job-fixed job) 0
+          (autopilot-job-retimes job) 0
           (autopilot-job-researched job) nil
           (autopilot-job-lead-cuts job) '()
           (autopilot-job-lead-abort job) nil
@@ -1004,7 +1023,8 @@ after the fixed ones (autopilot-job-fixed)."
     (if (< column 0)
         (multiple-value-bind (m largest) (job-shot-residuals! job (autopilot-job-residuals job))
           (setf (autopilot-job-residual-count job) m)
-          (cond ((and (eq (autopilot-job-preset job) :rendezvous)
+          (cond ((job-retime-due-p job) (job-retime-start! job))
+                ((and (eq (autopilot-job-preset job) :rendezvous)
                       (> (autopilot-job-iteration job) 0)
                       (> largest (autopilot-job-last-largest job))
                       (< (autopilot-job-halvings job) *rendezvous-halvings*))
@@ -1171,6 +1191,9 @@ stage: :coast, with a search :search (rendezvous-search-work!), :guess,
           (:lead (multiple-value-bind (done units) (job-lead-advance! job left)
                    (decf left units)
                    (if done (job-lead-done! job) (return))))
+          (:retime (multiple-value-bind (done units) (job-retime-advance! job left)
+                     (decf left units)
+                     (if done (job-retime-done! job) (return))))
           (:iterate (if (advance (autopilot-job-shot job))
                         (job-shot-done! job)
                         (return)))
@@ -2813,12 +2836,444 @@ none, or costs over *transfer-guess-ratio* times the search's plus
                                  (aref params (+ (* 3 i) 2)) (vec3-dot dv ra))))))))))
     job))
 
+;;; Re-timing (decision 161, refining decision 158): the target, promoted
+;;; 100 km out, leaves its rails while the transfer flies (its rails carry
+;;; J2's secular rates at the mean motion, the integration moves on); the
+;;; shot's burn times are fixed, so the transfer is re-timed to the target
+;;; as the flight meets it.
+
+(defparameter *retime-residual* 10d0
+  "A candidate's first shot missing its largest residual by more (in
+tolerances) re-times the transfer.")
+(defparameter *retime-max* 2 "Re-timings per candidate.")
+(defparameter *retime-departures* 16
+  "Departures each side of the candidate's, 1/(2 × this) of the ship's period apart.")
+(defparameter *retime-transfers* 4 "Transfer times each side of the candidate's …")
+(defparameter *retime-transfer-step* (/ 1d0 16) "… this fraction of it apart.")
+(defparameter *retime-approach-samples* 32
+  "Samples of a transfer for its promotion of the target, then bisection.")
+(declaim (type double-float *retime-residual* *retime-transfer-step*)
+         (type fixnum *retime-max* *retime-departures* *retime-transfers* *retime-approach-samples*))
+
+(defun job-arrival-aim (job time &optional epoch)
+  "(values r v): JOB's aim point at TIME: the target's planning state
+(job-planning-sim), or from EPOCH on its coast from its planning state there
+(state-rails at the planning sim's model, as a promoted object moves), plus
+the aim point's offset (job-aim-offset)."
+  (let ((planning (job-planning-sim job))
+        (target (autopilot-job-target job))
+        (r (make-vec3)) (v (make-vec3)))
+    (if epoch
+        (progn (stop-target-state-into! r v planning target :drop-point epoch)
+               (rails-state-into! r v (first (state-rails r v epoch :j2 (model-coast-j2 planning))) time))
+        (stop-target-state-into! r v planning target :drop-point time))
+    (multiple-value-bind (dr dv) (job-aim-offset job time)
+      (values (vec3-add! r r dr) (vec3-add! v v dv)))))
+
+(defun job-retime-due-p (job)
+  "True when JOB's first shot of the candidate (a :departure and an
+:arrival left) misses by more than *retime-residual*, at most *retime-max*
+times."
+  (let ((n (autopilot-job-burn-count job))
+        (d (autopilot-job-fixed job))
+        (labels (autopilot-job-burn-labels job)))
+    (and (eq (autopilot-job-preset job) :rendezvous)
+         (= (autopilot-job-iteration job) 0)
+         (< (autopilot-job-retimes job) *retime-max*)
+         (= n (+ d 2)) (eq (svref labels d) :departure) (eq (svref labels (1+ d)) :arrival)
+         (> (loop for i below (autopilot-job-residual-count job)
+                  maximize (abs (aref (autopilot-job-residuals job) i)))
+            *retime-residual*))))
+
+(defun job-retime-start! (job)
+  "Stage :retime: first the reference coast, the lead's ship coasting on
+JOB's shot (no plan) past the latest arrival scanned; then the transfer's
+departure and transfer time scanned about the candidate's,
+*retime-departures* each side over half the ship's period,
+*retime-transfers* each side; the cheapest *retime-pool* refined by golden
+section and checked in order (job-retime-advance!)."
+  (let* ((lead (autopilot-job-lead job))
+         (ship (sim-ship lead))
+         (d (autopilot-job-fixed job))
+         (times (autopilot-job-node-times job))
+         (centre (autopilot-job-retime-centre job))
+         (period (or (orbit-period (state->orbit (ship-state-r ship) (ship-state-v ship) +mu-earth+
+                                                 (sim-t lead)))
+                     0d0))
+         (tof (- (aref times (1+ d)) (aref times d))))
+    (setf (aref centre 0) (aref times d)
+          (aref centre 1) tof
+          (aref centre 2) period
+          (autopilot-job-retime-count job) 0
+          (autopilot-job-retime-chosen job) nil
+          (autopilot-job-retime-gap job)
+          (- (aref times d) (planned-burn-hold-at (svref (burn-plan-burns (autopilot-job-candidate job)) d)))
+          (autopilot-job-retime-cursor job) -1
+          (autopilot-job-stage job) :retime)
+    (prediction-shoot! (autopilot-job-shot job)
+                       (shot-sim-assign! (autopilot-job-scratch job) lead nil)
+                       (+ (aref times d) (* 0.5d0 period)
+                          (* tof (+ 1d0 (* *retime-transfers* *retime-transfer-step*)))
+                          *shot-cap-margin*))
+    (incf (autopilot-job-retimes job))
+    job))
+
+(defun retime-earliest (job)
+  "The earliest :departure node of a re-timing: *plan-min-lead* +
+*search-node-lead* after the snapshot or the last fixed burn's cut, and
+its hold-at after the lead's t (the reference coast's start)."
+  (let ((d (autopilot-job-fixed job)))
+    (max (+ (if (> d 0)
+                (aref (autopilot-job-node-times job) (1- d))
+                (sim-t (autopilot-job-snapshot job)))
+            *plan-min-lead* *search-node-lead*)
+         (+ (autopilot-job-lead-t job) (autopilot-job-retime-gap job) 1d0))))
+
+(defun coast-approach (job)
+  "The first t JOB's reference coast comes within *promotion-distance* of
+the target, or nil."
+  (let ((coast (autopilot-job-shot job))
+        (r (make-vec3)) (rt (make-vec3)))
+    (loop for i from (prediction-head coast) below (prediction-count coast)
+          for k = (* +node-size+ i)
+          do (replace r (prediction-nodes coast) :start2 (+ k 1) :end2 (+ k 4))
+          when (and (prediction-target-node coast (- i (prediction-head coast)) rt)
+                    (<= (vec3-norm (vec3-sub! r r rt)) *promotion-distance*))
+            return (node-t (prediction-nodes coast) i))))
+
+(defun transfer-approach (job r-d v1 t-d t-a)
+  "The first t the transfer from R-D, V1 at T-D (coast-rails) comes within
+*promotion-distance* of the target on its planning rails: sampled, then
+bisected; T-A if not before."
+  (let* ((planning (job-planning-sim job))
+         (target (autopilot-job-target job))
+         (rails (first (coast-rails r-d v1 t-d)))
+         (r (make-vec3)) (v (make-vec3)) (rt (make-vec3)) (vt (make-vec3)))
+    (flet ((near-p (time)
+             (rails-state-into! r v rails time)
+             (stop-target-state-into! rt vt planning target :drop-point time)
+             (<= (vec3-norm (vec3-sub! r r rt)) *promotion-distance*)))
+      (let ((step (/ (- t-a t-d) *retime-approach-samples*)))
+        (loop for k from 1 to *retime-approach-samples*
+              for hi = (+ t-d (* k step))
+              when (near-p hi)
+                do (let ((lo (- hi step)))
+                     (dotimes (i 12)
+                       (let ((mid (* 0.5d0 (+ lo hi))))
+                         (if (near-p mid) (setf hi mid) (setf lo mid))))
+                     (return hi))
+              finally (return t-a))))))
+
+(defun model-error-into! (dr dv coast t1 t2 j2)
+  "DR, DV: the state of the reference COAST at T2 less its coast
+(state-rails, J2's secular rates if J2) from its state at T1 (clamped to
+COAST's start): what the planning model misses over T1 to T2 near this
+orbit. DR."
+  (let ((r (make-vec3)) (v (make-vec3))
+        (t1 (max t1 (prediction-now coast))))
+    (prediction-state! r v coast t1)
+    (rails-state-into! r v (first (state-rails r v t1 :j2 j2)) t2)
+    (prediction-state! dr dv coast t2)
+    (vec3-sub! dr dr r)
+    (vec3-sub! dv dv v)
+    dr))
+
+(defun retime-aim (job t-d t-a epoch)
+  "(values r v): JOB's aim point at T-A as the flight meets it, for a
+transfer leaving at T-D: job-arrival-aim from the target's EPOCH (its
+promotion, or the planning sim's t when promoted there; nil on rails), under
+J2 corrected by the model's error near this orbit (model-error-into!) from
+EPOCH less from T-D, so the transfer's and the target's misses cancel."
+  (multiple-value-bind (r v) (job-arrival-aim job t-a epoch)
+    (let ((j2 (model-coast-j2 (job-planning-sim job)))
+          (coast (autopilot-job-shot job))
+          (dr (make-vec3)) (dv (make-vec3)))
+      (when j2
+        (when epoch
+          (model-error-into! dr dv coast epoch t-a j2)
+          (vec3-add! r r dr)
+          (vec3-add! v v dv))
+        (model-error-into! dr dv coast t-d t-a j2)
+        (vec3-sub! r r dr)
+        (vec3-sub! v v dv))
+      (values r v))))
+
+(defun retime-evaluate (job t-d tof)
+  "The transfer from JOB's reference coast at T-D for TOF s to its aim
+point (retime-aim), in the ship's plane (job-transfer-guess!): a target on
+rails is promoted where the coast or the transfer (transfer-approach, once
+more after the first solve) first comes within *promotion-distance*.
+(values total r-d v-d dv1 r-a v2 dv2 epoch), or nil (before retime-earliest,
+past the limit or the coast, no solution, below the floor)."
+  (let* ((planning (job-planning-sim job))
+         (coast (autopilot-job-shot job))
+         (object (target-object planning (autopilot-job-target job)))
+         (t-d (grid-round t-d))
+         (t-a (+ t-d tof)))
+    (when (and (> tof 0d0) (>= t-d (retime-earliest job))
+               (<= t-a (min (node-t (prediction-nodes coast) (1- (prediction-count coast)))
+                            (+ (sim-t (autopilot-job-snapshot job))
+                               (nth-value 3 (rendezvous-goal-parts (autopilot-job-goal job) planning))))))
+      (let* ((*coast-j2* (model-coast-j2 planning))
+             (*coast-delta* nil)
+             (approach (autopilot-job-retime-approach job))
+             (r-d (make-vec3)) (v-d (make-vec3)) (v1 (make-vec3)) (v2 (make-vec3))
+             (normal (make-vec3))
+             (epoch (cond ((null object) nil)
+                          ((eq (object-status object) :promoted) (sim-t planning))
+                          ((and approach (<= approach t-d)) approach)
+                          (t t-d))))
+        (prediction-state! r-d v-d coast t-d)
+        (vec3-normalize! normal (vec3-cross! normal r-d v-d))
+        (flet ((solve ()
+                 (multiple-value-bind (r-a v-a) (retime-aim job t-d t-a epoch)
+                   (vec3-add-scaled! r-a r-a normal (- (vec3-dot r-a normal)))
+                   (and (coast-lambert-into! v1 v2 r-d t-d r-a tof normal
+                                             (make-coast-group (coast-rails r-d v-d t-d)))
+                        (list r-a v-a)))))
+          (let ((aim (solve)))
+            (when (and aim object (eq (object-status object) :rails) (= epoch t-d))
+              (setf epoch (transfer-approach job r-d v1 t-d t-a)
+                    aim (solve)))
+            (when aim
+              (destructuring-bind (r-a v-a) aim
+                (let ((dv1 (vec3-sub v1 v-d)) (dv2 (vec3-sub v-a v2)))
+                  (values (+ (vec3-norm dv1) (vec3-norm dv2)) r-d v-d dv1 r-a v2 dv2 epoch))))))))))
+
+(defparameter *retime-check-samples* 64
+  "Samples of a re-timed transfer's distance from the target, the least then refined.")
+(defparameter *retime-check-work* 40 "Units per clearance check of a re-timed transfer.")
+(defparameter *retime-gain* 1d0
+  "m/s a re-timed transfer must save, in the model, over the candidate's own times.")
+(defparameter *retime-clearance-margin* 50d0
+  "m a re-timed transfer keeps beyond the clearance, for its model's error (the shot checks).")
+(declaim (type fixnum *retime-check-samples* *retime-check-work*)
+         (type double-float *retime-gain* *retime-clearance-margin*))
+
+(defun retime-margin (job t-d tof)
+  "m the re-timed transfer at T-D, TOF keeps from the target's CoM beyond
+its bound + *object-clearance* (decision 59), as retime-aim models both
+(under J2 each corrected by the reference coast's model error from its
+epoch); nil if infeasible. Sampled, the least refined by golden section."
+  (multiple-value-bind (total r-d v-d dv1 r-a v2 dv2 epoch) (retime-evaluate job t-d tof)
+    (declare (ignore r-a v2 dv2))
+    (when total
+      (let* ((planning (job-planning-sim job))
+             (target (autopilot-job-target job))
+             (object (target-object planning target))
+             (coast (autopilot-job-shot job))
+             (j2 (model-coast-j2 planning))
+             (*coast-j2* j2)
+             (*coast-delta* nil)
+             (t-d (grid-round t-d))
+             (t-a (+ t-d tof))
+             (ship (first (coast-rails r-d (vec3-add v-d dv1) t-d)))
+             (r (make-vec3)) (v (make-vec3)) (p (make-vec3)) (q (make-vec3)))
+        (unless object
+          (return-from retime-margin most-positive-double-float))
+        (flet ((reference (time)
+                 (let ((time (max time (prediction-now coast))))
+                   (prediction-state! r v coast time)
+                   (first (state-rails r v time :j2 j2)))))
+          (let* ((ship-ref (and j2 (reference t-d)))
+                 (target-model (and epoch (progn (stop-target-state-into! r v planning target :drop-point epoch)
+                                                 (first (state-rails r v epoch :j2 j2)))))
+                 (target-ref (and j2 epoch (reference epoch))))
+            (flet ((distance (time)
+                     ;; ship less target, each with its model's error added
+                     (rails-state-into! p q ship time)
+                     (if (and epoch (>= time epoch))
+                         (rails-state-into! r v target-model time)
+                         (stop-target-state-into! r v planning target :drop-point time))
+                     (vec3-sub! p p r)
+                     (when j2
+                       (prediction-state! r v coast time)
+                       (vec3-add! p p r)
+                       (rails-state-into! r v ship-ref time)
+                       (vec3-sub! p p r)
+                       (when (and epoch (>= time epoch))
+                         (prediction-state! r v coast time)
+                         (vec3-sub! p p r)
+                         (rails-state-into! r v target-ref time)
+                         (vec3-add! p p r)))
+                     (vec3-norm p)))
+              (let* ((step (/ tof *retime-check-samples*))
+                     (k (loop with best = 0 with least = most-positive-double-float
+                              for i from 0 to *retime-check-samples*
+                              for d = (distance (+ t-d (* i step)))
+                              when (< d least) do (setf least d best i)
+                              finally (return best)))
+                     (a (+ t-d (* (max 0 (1- k)) step)))
+                     (b (min t-a (+ t-d (* (1+ k) step))))
+                     (c (- b (* +golden+ (- b a)))) (e (+ a (* +golden+ (- b a))))
+                     (fc (distance c)) (fe (distance e)))
+                (dotimes (i (golden-steps (- b a) *scan-time-tolerance*))
+                  (if (< fc fe)
+                      (setf b e e c fe fc c (- b (* +golden+ (- b a))) fc (distance c))
+                      (setf a c c e fc fe e (+ a (* +golden+ (- b a))) fe (distance e))))
+                (- (min fc fe (distance t-d) (distance t-a))
+                   (object-def-bound (object-def-of object)) *object-clearance*)))))))))
+
+(defun retime-pool-insert! (job total t-d tof)
+  "TOTAL at T-D, TOF into JOB's pool of the cheapest, in order."
+  (let* ((pool (autopilot-job-retime-pool job))
+         (count (autopilot-job-retime-count job))
+         (at (loop for i below count
+                   when (< total (aref pool (* 3 i))) return i
+                   finally (return count))))
+    (when (< at *retime-pool*)
+      (replace pool pool :start1 (* 3 (1+ at)) :start2 (* 3 at)
+                         :end2 (* 3 (min count (1- *retime-pool*))))
+      (setf (aref pool (* 3 at)) total
+            (aref pool (+ (* 3 at) 1)) t-d
+            (aref pool (+ (* 3 at) 2)) tof
+            (autopilot-job-retime-count job) (min *retime-pool* (1+ count))))))
+
+(defun retime-golden! (job departure)
+  "Golden section of the point being refined (retime-point) in its
+DEPARTURE (else its transfer time) over one scan step each side, to
+*search-time-tolerance*; the point moved to the least found."
+  (let* ((centre (autopilot-job-retime-centre job))
+         (point (autopilot-job-retime-point job))
+         (width (if departure
+                    (/ (aref centre 2) (* 2 *retime-departures*))
+                    (* (aref centre 1) *retime-transfer-step*)))
+         (x0 (aref point (if departure 1 2)))
+         (a (- x0 width)) (b (+ x0 width)))
+    (flet ((f (x)
+             (let* ((t-d (if departure x (aref point 1)))
+                    (tof (if departure (aref point 2) x))
+                    (total (retime-evaluate job t-d tof)))
+               (when (and total (< total (aref point 0)))
+                 (setf (aref point 0) total (aref point 1) t-d (aref point 2) tof))
+               (or total most-positive-double-float))))
+      (let* ((c (- b (* +golden+ (- b a)))) (d (+ a (* +golden+ (- b a))))
+             (fc (f c)) (fd (f d)))
+        (dotimes (i (golden-steps (- b a) *search-time-tolerance*))
+          (if (< fc fd)
+              (setf b d d c fd fc c (- b (* +golden+ (- b a))) fc (f c))
+              (setf a c c d fc fd d (+ a (* +golden+ (- b a))) fd (f d))))))))
+
+(defun retime-rows () (1+ (* 2 *retime-departures*)))
+
+(defun retime-item-units (job)
+  "The units of JOB's next re-timing item: a scan row's, a golden
+section's or a check's."
+  (let ((cursor (autopilot-job-retime-cursor job))
+        (centre (autopilot-job-retime-centre job)))
+    (if (< cursor (retime-rows))
+        (* *aim-work* (1+ (* 2 *retime-transfers*)))
+        (case (mod (- cursor (retime-rows)) 3)
+          (0 (* *aim-work* (+ 2 (golden-steps (/ (aref centre 2) *retime-departures*)
+                                              *search-time-tolerance*))))
+          (1 (* *aim-work* (+ 2 (golden-steps (* 2 (aref centre 1) *retime-transfer-step*)
+                                              *search-time-tolerance*))))
+          (t (* 2 *retime-check-work*))))))
+
+(defun retime-item! (job)
+  "JOB's re-timing item at its cursor: a scan row into the pool; per pool
+point its golden sections in departure and transfer time, then the check:
+the refined point, else the scan's, chosen when clear by
+*retime-clearance-margin* and *retime-gain* cheaper than the candidate's
+own times (retime-own); the pool ends at the first that is not cheaper."
+  (let* ((cursor (autopilot-job-retime-cursor job))
+         (centre (autopilot-job-retime-centre job))
+         (point (autopilot-job-retime-point job))
+         (pool (autopilot-job-retime-pool job)))
+    (if (< cursor (retime-rows))
+        (let ((t-d (+ (aref centre 0) (* (- cursor *retime-departures*)
+                                         (/ (aref centre 2) (* 2 *retime-departures*))))))
+          (loop for j from (- *retime-transfers*) to *retime-transfers*
+                for tof = (* (aref centre 1) (+ 1d0 (* j *retime-transfer-step*)))
+                for total = (retime-evaluate job t-d tof)
+                when total do (retime-pool-insert! job total t-d tof)))
+        (multiple-value-bind (k phase) (floor (- cursor (retime-rows)) 3)
+          (case phase
+            (0 (replace point pool :start2 (* 3 k) :end2 (+ (* 3 k) 3))
+               (retime-golden! job t))
+            (1 (retime-golden! job nil))
+            (t (let ((margin (retime-margin job (aref point 1) (aref point 2))))
+                 (unless (and margin (>= margin *retime-clearance-margin*))
+                   (replace point pool :start2 (* 3 k) :end2 (+ (* 3 k) 3))
+                   (setf margin (retime-margin job (aref point 1) (aref point 2))))
+                 (cond ((>= (aref point 0) (- (autopilot-job-retime-own job) *retime-gain*))
+                        ;; the rest cost more: keep the candidate's times
+                        (setf (autopilot-job-retime-count job) k))
+                       ((and margin (>= margin *retime-clearance-margin*))
+                        (setf (autopilot-job-retime-chosen job) t))))))))
+    (incf (autopilot-job-retime-cursor job))))
+
+(defun job-retime-advance! (job budget)
+  "JOB's re-timing within BUDGET units: the reference coast as a shot
+extends; then the candidate's own times in the model (retime-own), and
+unless they cost no more than its guess and *retime-gain*, items while
+their units fit (a call that fits none takes one) until a clear point is
+chosen or the pool is spent. (values done units)."
+  (let ((units 0)
+        (coast (autopilot-job-shot job)))
+    (when (< (autopilot-job-retime-cursor job) 0)
+      (prediction-extend! coast budget)
+      (setf units (prediction-last-work coast))
+      (unless (prediction-complete-p coast)
+        (return-from job-retime-advance! (values nil units)))
+      (let ((centre (autopilot-job-retime-centre job))
+            (d (autopilot-job-fixed job)))
+        (setf (autopilot-job-retime-cursor job) 0
+              (autopilot-job-retime-approach job) (coast-approach job)
+              (autopilot-job-retime-own job)
+              (or (retime-evaluate job (aref centre 0) (aref centre 1)) most-positive-double-float))
+        ;; the model prices the candidate's own times at its guess: no scan
+        (when (<= (autopilot-job-retime-own job) (+ (job-params-dv job d (+ d 2)) *retime-gain*))
+          (setf (autopilot-job-retime-cursor job) (retime-rows)))))
+    (flet ((done-p ()
+             (or (autopilot-job-retime-chosen job)
+                 (>= (autopilot-job-retime-cursor job)
+                     (+ (retime-rows) (* 3 (autopilot-job-retime-count job)))))))
+      (loop until (done-p)
+            do (let ((most (retime-item-units job)))
+                 (when (and (> (+ units most) budget) (> units 0))
+                   (return))
+                 (retime-item! job)
+                 (incf units most)))
+      (values (done-p) units))))
+
+(defun job-retime-done! (job)
+  "The chosen re-timed transfer as JOB's :departure and :arrival (their
+nodes, states and LVLH Δv), then shot; none chosen, the candidate shot as
+it was, not re-timed again."
+  (let ((point (autopilot-job-retime-point job))
+        (d (autopilot-job-fixed job)))
+    (multiple-value-bind (total r-d v-d dv1 r-a v2 dv2)
+        (and (autopilot-job-retime-chosen job)
+             (retime-evaluate job (aref point 1) (aref point 2)))
+      (when total
+        (let ((times (autopilot-job-node-times job))
+              (states (autopilot-job-node-states job))
+              (params (autopilot-job-params job)))
+          (setf (aref times d) (grid-round (aref point 1))
+                (aref times (1+ d)) (+ (aref times d) (aref point 2)))
+          (loop for i in (list d (1+ d))
+                for r in (list r-d r-a)
+                for v in (list v-d v2)
+                for dv in (list dv1 dv2)
+                do (replace states r :start1 (* 6 i))
+                   (replace states v :start1 (+ (* 6 i) 3))
+                   (multiple-value-bind (ta na ra) (lvlh-axes r v)
+                     (setf (aref params (* 3 i)) (vec3-dot dv ta)
+                           (aref params (+ (* 3 i) 1)) (vec3-dot dv na)
+                           (aref params (+ (* 3 i) 2)) (vec3-dot dv ra))))))))
+  (unless (autopilot-job-retime-chosen job)
+    (setf (autopilot-job-retimes job) *retime-max*))
+  (setf (autopilot-job-stage job) :iterate)
+  (job-shoot! job))
+
 (defun job-next-candidate! (job reason)
   "JOB's current candidate dropped: the next one guessed and shot, past the
 last \"NO CLEAR TRANSFER\"; a replan (one plan only) refused with REASON."
   (if (and (null (autopilot-job-base job))
            (< (1+ (autopilot-job-index job)) (length (autopilot-job-candidates job))))
       (setf (autopilot-job-index job) (1+ (autopilot-job-index job))
+            (autopilot-job-retimes job) 0
             (autopilot-job-iteration job) 0
             (autopilot-job-column job) -1
             (autopilot-job-stage job) :guess)

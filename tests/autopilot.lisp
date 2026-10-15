@@ -753,8 +753,8 @@ Skua Yard 5 on its rails, at its velocity."
 
 (define-test rendezvous-search-highport
   ;; From Fulmar Depot's 500 km at phases 0 and 4/8 of Highport's period:
-  ;; ≤ 2,758 m/s. Two of the plan's eight (~70 ms each); all eight for task
-  ;; 162's slow command: (dotimes (k 8) …).
+  ;; ≤ 2,758 m/s. Two of the plan's eight (~70 ms each); the odd ones in
+  ;; tests/slow-flights.lisp, 2 and 6 for task 275.
   (dolist (k '(0 4))
     (let* ((sim (highport-phase-sim k))
            (candidates (search-now sim :highport)))
@@ -1061,10 +1061,9 @@ search's Kepler, decision 161)."
   ;; 15.4 h transfer's arrival (430 ms against 390 at the same load), the
   ;; plan unchanged. Before decision 165 the :departure's 718 s burn missed
   ;; the aim point by 24,000 km and its cut's tick 7-13 km: "NEEDS 35774
-  ;; KG". All five places for task 162's slow command, measured (ms): Tern
+  ;; KG". The other four in tests/slow-flights.lisp, measured (ms): Tern
   ;; Station 160 (19.35 m/s), Fulmar Depot 198 (62.63), Highport 359, K-17
-  ;; 242 (228.37), Skua Yard 217 (2,850.78):
-  ;; (rendezvous-places '(:tern-station :fulmar-depot :highport :k-17 :skua-yard)).
+  ;; 242 (228.37), Skua Yard 217 (2,850.78).
   (rendezvous-places '(:highport)))
 
 (define-test rendezvous-menu-rows

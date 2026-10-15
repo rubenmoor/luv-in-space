@@ -42,7 +42,7 @@
         ];
       };
 
-      # The test check's sources: the game's plus tests/ and scripts/test.
+      # The test checks' sources: the game's plus tests/ and the test scripts.
       testSource = nixpkgs.lib.fileset.toSource {
         root = ./.;
         fileset = nixpkgs.lib.fileset.unions [
@@ -52,6 +52,7 @@
           ./flights
           ./tests
           ./scripts/test
+          ./scripts/test-slow
         ];
       };
 
@@ -208,24 +209,29 @@
       # scripts/test in the sandbox: no display, no GPU, so the frame renders
       # on lavapipe (decision 2: Screenshots and GPU test: offscreen capture
       # on a hidden canvas, headless on lavapipe). luv's slim environment.
-      checks = forAll (system: environment: {
-        default = environment.pkgs.runCommand "luv-in-space-tests"
-          (environment.slimDevelopmentEnvironment // {
-            nativeBuildInputs = environment.slimDevelopmentPackages;
-          }) ''
-          cp -R ${testSource} source
-          chmod -R u+w source
-          cd source
-          export HOME="$TMPDIR/home" LUV_PROJECT_ROOT="$PWD" LUV_DEV_SHELL=slim LIS_DEV_SHELL=1
-          mkdir -p "$HOME"
-          ${copyLuv environment "$TMPDIR/luv"}export CL_SOURCE_REGISTRY="${luvRegistryIn environment "$TMPDIR/luv"}:$CL_SOURCE_REGISTRY"
-          unset LD_LIBRARY_PATH DISPLAY WAYLAND_DISPLAY
-          ${environment.slimDevelopmentEnvironmentHook}
-          luv_activate_native_environment
-          bash scripts/test
-          touch "$out"
-        '';
-      });
+      # `slow` runs scripts/test-slow, milestone 3's flight scripts (decision 123).
+      checks = forAll (system: environment:
+        let
+          check = name: script: environment.pkgs.runCommand name
+            (environment.slimDevelopmentEnvironment // {
+              nativeBuildInputs = environment.slimDevelopmentPackages;
+            }) ''
+            cp -R ${testSource} source
+            chmod -R u+w source
+            cd source
+            export HOME="$TMPDIR/home" LUV_PROJECT_ROOT="$PWD" LUV_DEV_SHELL=slim LIS_DEV_SHELL=1
+            mkdir -p "$HOME"
+            ${copyLuv environment "$TMPDIR/luv"}export CL_SOURCE_REGISTRY="${luvRegistryIn environment "$TMPDIR/luv"}:$CL_SOURCE_REGISTRY"
+            unset LD_LIBRARY_PATH DISPLAY WAYLAND_DISPLAY
+            ${environment.slimDevelopmentEnvironmentHook}
+            luv_activate_native_environment
+            bash ${script}
+            touch "$out"
+          '';
+        in {
+          default = check "luv-in-space-tests" "scripts/test";
+          slow = check "luv-in-space-slow-tests" "scripts/test-slow";
+        });
 
       # luv's default dev shell (its environment, packages and hook), with
       # this repo and luv's sources on CL_SOURCE_REGISTRY, plus pm and git.

@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# scripts/test-slow: runs luv-in-space/slow-tests (Parachute), milestone 3's
+# flight scripts flown twice and plan 27's long runs (decision 123); one line
+# per script; non-zero exit on failure. Enters the dev shell itself.
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Always this flake's shell (AGENTS.md "Commands").
+if [ "${LIS_DEV_SHELL:-}" != 1 ]; then
+  LIS_DEV_SHELL=1 exec nix develop --accept-flake-config "$root" -c "$root/scripts/test-slow"
+fi
+
+cd "$root"
+exec sbcl --noinform --non-interactive \
+  --eval '(require :asdf)' \
+  --eval '(setf *compile-verbose* nil *compile-print* nil)' \
+  --eval '(handler-bind ((warning (function muffle-warning))) (asdf:load-system "luv-in-space/slow-tests"))' \
+  --eval '(handler-case (asdf:test-system "luv-in-space/slow-tests")
+            (error (condition)
+              (format *error-output* "~&~A~%" condition)
+              (uiop:quit 1)))' \
+  --eval '(uiop:quit 0)'

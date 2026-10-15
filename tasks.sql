@@ -4867,9 +4867,9 @@ tasks for what the plan asks beyond them. A task that writes a plan gets `--kind
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (176, 29, 'create tasks for plan 29: Meshes of the places, other ships and the grapple', 'split', 'done', 1000, '2026-10-15, tasks.sql: tasks 219-223 for the five pieces; no new decisions (decision 124 holds the open numbers)', 'Split `plan 29: Meshes of the places, other ships and the grapple` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
 done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
 tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-15T06:57:17Z', '2026-10-15T07:46:50Z', 163, 0);
-INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (177, 30, 'create tasks for plan 30: The map of milestone 3', 'split', 'open', 1000, NULL, 'Split `plan 30: The map of milestone 3` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (177, 30, 'create tasks for plan 30: The map of milestone 3', 'split', 'done', 1000, '2026-10-15, tasks.sql: tasks 224-229 for the six pieces, task 230 for the plan''s Done when; no new decisions (decision 125 covers the open choices)', 'Split `plan 30: The map of milestone 3` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
 done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
-tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-15T07:05:46Z', NULL, 164, 0);
+tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-15T07:05:46Z', '2026-10-15T07:48:23Z', 164, 0);
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (178, 31, 'create tasks for plan 31: Text and the cockpit''s structure and view', 'split', 'open', 1000, NULL, 'Split `plan 31: Text and the cockpit''s structure and view` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
 done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
 tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-15T07:15:53Z', NULL, 165, 0);
@@ -5665,6 +5665,135 @@ INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, crea
 - `nix build` and `scripts/test` pass, `scripts/test` near ~15 s.
 - `docs/design.md` "How they look" (lights) and "Grappling and berthing" (claws, floodlight, range finder) as built, citing `decision 124`; the "come with the grapple in `milestone 3`" sentence replaced by what was built; `docs/architecture.md` "Files in load order", "GPU tests" and "Testing" as built; `AGENTS.md` "Layout" names the grapple''s lights in `meshes.lisp`.
 - The plan''s Done when checked by captures (`capture-state` with a sim set beside each place): each place reads as the design describes it with its scenery ships and lights; a latched rock rides on the nose with the claws closed; armed in Earth''s shadow the floodlight lights the fixture ahead. Fix what is off or add a follow-up task to this plan.', '2026-10-15T07:46:47Z', NULL, 176, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (224, 30, 'Map line styles, one map-lines buffer and the target''s orbit', 'work', 'open', NULL, NULL, 'Piece 1 of `plan 30: The map of milestone 3` (read its "Lines" section) following `decision 125: Map in milestone 3: the trajectory line, line styles, plan display, markers, labels, click and focus`, `decision 84: Map ribbons and markers: osculating orbit, adaptive segments, overlay markers and visibility`, `decision 102: Overlay colours: sRGB integers, linear vertices, encoded in the overlay fragment`, `decision 11: Render pipelines are luv live shader pipelines`. Needs `task 195: Targets and the relative values` (the render state''s target r, v at t_r) and `task 184: The places: the twelve object definitions and the five presets` (Tern Station). Files: `src/ribbons.lisp`, `src/shaders.lisp`, `src/render.lisp`, `tests/ribbons.lisp`, `tests/render.lisp`, `docs/architecture.md`, `docs/design.md`.
+
+## What
+- Ribbon instance of 16 floats: from (x y z 1), to (x y z 1), colour (r g b 1), style (dash phase at from in px or −1 for solid, dash phase at to, width in px, radiance factor).
+- `shaders.lisp`: `ribbon-vertex` and `ribbon-fragment` read the style vec4; width per instance replaces `screen.z`; the fragment drops pixels whose interpolated phase mod 14 lies in [8, 14) (8 px on, 6 off); radiance colour × factor × `*ribbon-radiance*` ÷ exposure.
+- Dash phases summed on the CPU in double along a ribbon from its dash start over the endpoints'' projected pixel positions (`camera-clip-rows!`''s projection); an endpoint behind the eye adds nothing.
+- `map-lines`: one preallocated single-float instance array of `*map-lines-capacity*` 32,768 segments; ribbons append; `encode-map-lines` replaces `encode-ribbon`''s draw with one draw in the scene pass after the meshes.
+- `orbit-ribbon-instances!` takes colour and style; the milestone-2 osculating orbit goes through it unchanged.
+- The target''s orbit: the osculating conic about Earth from the render state''s target r, v via `orbit-ribbon-points!`, magenta #E040E0, 2 px, solid (red below the crash radius).
+- All numbers defparameters.
+
+## Tests
+- CPU: phases equal the summed projected pixel lengths within 1e-3 px and continue across segments; solid segments carry −1; the milestone-2 orbit''s instances keep their endpoints bit for bit; a full map-lines fill conses nothing.
+- GPU (`render-frames`, 320 × 200): a dashed test ribbon across the frame alternates lit and dark (runs 8 ± 1 and 6 ± 1 px); 1 px and 2 px widths measured across the line; the milestone-2 ring checks still pass; with Tern Station targeted, magenta pixels on its orbit at a pose where it lies apart from the ship''s.
+- The plan''s CPU tests together stay under ~0.8 s, GPU checks under ~0.5 s (`docs/architecture.md` "Rules for tests").
+
+## Done when
+- `nix build` and `scripts/test` pass; `docs/architecture.md` "Files in load order" (`ribbons.lisp`, `shaders.lisp`), "Rendering precision" (dash phases on the CPU, one buffer), "GPU tests", "Testing"; `docs/design.md` "Views" (line styles as built).', '2026-10-15T07:47:34Z', NULL, 177, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (225, 30, 'The predicted trajectory on the map', 'work', 'open', NULL, NULL, 'Piece 2 of `plan 30: The map of milestone 3` (read "Lines" → "Ship''s trajectory") following `decision 125: Map in milestone 3: the trajectory line, line styles, plan display, markers, labels, click and focus`, `decision 116: Prediction in milestone 3: horizon, target nodes, closest approach, relative nodes, budget`, `decision 20: Trajectory prediction on the frame thread`. Needs `task 198: The prediction of milestone 3: horizons, the plan, the target buffer and the budget` and `task 224: Map line styles, one map-lines buffer and the target''s orbit`. Files: `src/ribbons.lisp`, `src/render.lisp`, `src/capture.lisp`, `tests/ribbons.lisp`, `tests/render.lisp`, `docs/architecture.md`, `docs/design.md`.
+
+## What
+- `render.lisp`: the render state holds references (not copies) to the clock''s prediction and autopilot model, set by `render-state-update!`; rendering only reads them.
+- `trajectory-ribbon-points!`: the render state''s r at t_r, then along the Hermite of the stored interval holding t_r (a chord when none holds it) to each stored node after t_r, up to the horizon or the impact.
+  - Merging: node intervals in aligned runs of up to 64 nodes while the run''s sagitta seen from the eye (chord² / 8ρ, ρ = |v|³ / |v × a|, point-mass a at the run''s first node) stays within 0.25 px and no break falls inside (dash start, crash-radius crossing, a burn''s start or cut).
+  - Splitting: single intervals over the error into 2^k Hermite pieces (k ≤ 8).
+  - Budget: k lowered farthest first, then the merge tolerance doubled, until the pieces fit 8,192; report the bound reached.
+  - Cyan #40D0FF 2 px, red below the crash radius.
+  - Fallback: under two stored nodes after t_r, the milestone-2 osculating orbit.
+- The impact marker at the prediction''s impact when the trajectory is drawn, the osculating one in the fallback.
+- `capture.lisp`: a `:map` capture runs `prediction-run!` to completion before its frame.
+
+## Tests (predictions at `:point` or `:j2`)
+- Every ribbon point on `prediction-position!` at its time within 1e-6 m relative; the first point equals the render state''s r bit for bit.
+- Each piece''s error ≤ 0.25 px sampled at 8 points against its chord, unless the budget lowered it; then the reported bound holds.
+- A two-period LEO prediction and a 20,000-node one both fit 8,192 segments.
+- From `deorbit`''s burn state the line turns red at the crash radius; the impact marker within 1 m of the copy''s loss point.
+- An empty prediction draws the osculating orbit; the fill conses nothing after the first.
+- A benchmark form in the test file''s comment for the 20,000-node worst case per frame (aim < 1 ms), measured and recorded in "Testing", not run by `scripts/test`.
+- GPU: the map at opening shows the line where the osculating ring was (the milestone-2 checks hold with the prediction).
+
+## Done when
+- `nix build` and `scripts/test` pass; `docs/design.md` "Views" (the trajectory replaces the osculating orbit); `docs/architecture.md` "Trajectory prediction" (the ribbon''s reading of the nodes), "Files in load order" (`render.lisp`, `capture.lisp`), "Testing" (with the measured time).', '2026-10-15T07:47:34Z', NULL, 177, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (226, 30, 'Map markers: target, places, closest approach, relative nodes and map-pick', 'work', 'open', NULL, NULL, 'Piece 3 of `plan 30: The map of milestone 3` (read "Markers") following `decision 125: Map in milestone 3: the trajectory line, line styles, plan display, markers, labels, click and focus`, `decision 84: Map ribbons and markers: osculating orbit, adaptive segments, overlay markers and visibility`, `decision 103: Map labels: placement order and overlap`, `decision 104: Map labels on a near-black backing`. Needs `task 195: Targets and the relative values`, `task 199: Closest approach and relative nodes`, `task 221: Objects and the grapple in the render state` and `task 225: The predicted trajectory on the map` (the render state''s prediction reference). Files: `src/ribbons.lisp`, `src/overlay.lisp`, `tests/ribbons.lisp`, `tests/overlay.lisp`, `docs/design.md`.
+
+## What
+- `overlay.lisp`: new shapes in `marker-vertices!` (`:box`, `:triangle`, `:plus`; sizes by kind); `*marker-label-order*` extended: Earth, Sun, Moon, ship, target, impact, burns, CA, AIM, PE, AP, AN, DN, then the candidates in `target-candidates` order; the side rule and backing unchanged; glyphs for the new labels if missing.
+- `ribbons.lisp`, `map-markers` (capacity 48, each label string preallocated, conses nothing), taking the prediction:
+  - Target: magenta #E040E0 12 px box with its display name, always drawn, even behind Earth.
+  - Candidates (`target-candidates` but the target) whose bound projects below 6 px: grey #8A8A80 8 px box with their names, hidden behind Earth or the Moon.
+  - Closest approach (`prediction-closest-approach`): cyan 10 px triangle at the ship''s point, "CA 340 M" / "CA 12.3 KM" / "CA 2370 KM"; a magenta unlabelled one at the target''s point.
+  - Next AN and DN: magenta 9 px diamonds, "AN <angle>" / "DN <angle>" (two decimals below 1°, one below 10°, whole above).
+  - Kept: ship''s ring, AP and PE (osculating), body dots, impact.
+- `(map-pick markers x y)`: the clickable marker (target, candidate, ship, Earth) whose centre is nearest within `*map-pick-px*` 10 px, or nil.
+
+## Tests
+- The target''s box is drawn behind Earth; a candidate''s box is hidden there; a candidate whose bound projects ≥ 6 px has no box.
+- The CA pair at `prediction-position!` and `prediction-target-position!` of the closest approach''s time within 1e-6 m; labels "CA 340 M", "CA 12.3 KM", "CA 2370 KM" from crafted distances.
+- A target turned 1° in Ω (`plan 25: Predicted trajectories, targets and target holds`'' case): AN and DN at the relative node events, "AN 1.0°" / "DN 1.0°".
+- Skua Yard''s cluster in one pixel: no label overlap, the target''s label kept.
+- Every new label''s glyphs exist; `map-pick` the nearest within 10 px, nil beyond; conses nothing.
+
+## Done when
+- `nix build` and `scripts/test` pass; `docs/design.md` "Views" (markers as built); `docs/architecture.md` "Files in load order" (`overlay.lisp`, `ribbons.lisp`), "Testing".', '2026-10-15T07:47:59Z', NULL, 177, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (227, 30, 'Planned burns on the map: the dashed path, burn markers, the goal orbit and the kept plan', 'work', 'open', NULL, NULL, 'Piece 4 of `plan 30: The map of milestone 3` (read "Lines" → "Plan" and "Goal orbit", "Markers" → burns) following `decision 125: Map in milestone 3: the trajectory line, line styles, plan display, markers, labels, click and focus`, `decision 115: Planned burns as scheduled controls in the sim`, `decision 117: Autopilot in milestone 3: planning jobs, goal measures, burns, execution rules in the step, trims`. Needs `task 201: Autopilot burns and first guesses`, `task 202: Autopilot planning job, shooting and the orbit manoeuvres`, `task 203: Autopilot execution and safety in the step`, `task 204: Autopilot menu, input and frame-spread planning`, and `task 226: Map markers: target, places, closest approach, relative nodes and map-pick`. Files: `src/autopilot.lisp`, `src/ribbons.lisp`, `src/overlay.lisp`, `tests/autopilot.lisp`, `tests/ribbons.lisp`, `tests/render.lisp`, `docs/design.md`.
+
+## What
+- `autopilot.lisp` (only where `plan 26: Autopilot: planner, orbit manoeuvres, execution and safety` did not already keep them): `autopilot-model-shot`, a preallocated prediction filled once per plan when its job is done; `(autopilot-map-plan model sim)` → plan, shot, mode (`:shown`, `:engaged`, `:kept`) or nil.
+- Lines:
+  - `:shown`: the clock''s prediction solid; the shot dashed from its first burn''s start.
+  - `:engaged`: the prediction solid until the start of the first burn not yet started, then dashed; past the prediction''s end, the shot dashed to its end.
+  - `:kept`: the remaining burns (start > t_r) and the shot from the first of them, grey #8A8A80 dashed.
+  - Goal orbit: `burn-plan`''s, cyan 1 px solid (grey when kept); none for a rendezvous.
+- Burn markers: cyan 12 px plus at each burn''s centre time ((start + the shot''s post-cut t) / 2) on the drawn path, "BURN <n> <dv> M/S" (dv whole ≥ 100 m/s, one decimal from 1, two below); grey when kept.
+
+## Tests (the Hohmann 400 → 800 km plan of plan 26, `:point`)
+- `:shown`: solid follows the coast prediction; dashes start at the first burn''s start on the shot. `:engaged`: dashes start at the next burn''s start.
+- After the first cut: its marker gone, the line solid to the second burn. After a disengage: grey.
+- Burn markers at the centre times on the drawn path within 1e-6 m; labels with the plan''s Δv in the stated format.
+- Goal orbit''s points at 800 km altitude within 1 m; the shot kept equals the job''s final shot.
+- GPU, a crafted pose: cyan solid pixels on the coast orbit, alternating lit and dark along the transfer, a 1 px cyan goal orbit, the plus marker''s colour at its pixel.
+
+## Done when
+- `nix build` and `scripts/test` pass; `docs/design.md` "The autopilot" ("Showing the plan", the kept plan), "Views"; `docs/architecture.md` "Files in load order" (`autopilot.lisp`), "GPU tests", "Testing".', '2026-10-15T07:48:00Z', NULL, 177, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (228, 30, 'The rendezvous aim point and terminal path on the map', 'work', 'open', NULL, NULL, 'Piece 5 of `plan 30: The map of milestone 3` (read "Lines" → "Terminal path", "Markers" → aim point) following `decision 125: Map in milestone 3: the trajectory line, line styles, plan display, markers, labels, click and focus` and `decision 119: Rendezvous planning in milestone 3: Lambert, search, aim and stop points, checks, shooting, burns`. Needs `task 208: Rendezvous stop points, aim points and the terminal check` (`terminal-frame-into!`, `stop-point-into!`), `task 210: The rendezvous job: plane burn, shooting to the aim point, shot-path check and the RDV rows` (the plan''s aim point number, offset and arrival time) and `task 227: Planned burns on the map: the dashed path, burn markers, the goal orbit and the kept plan`. Files: `src/ribbons.lisp`, `tests/ribbons.lisp`, `tests/render.lisp`, `docs/design.md`.
+
+## What
+- While a rendezvous plan''s arrival lies ahead:
+  - AIM marker: magenta 9 px ring "AIM" at the target''s position at t_r plus the plan''s aim offset turned by `terminal-frame-into!` at t_r.
+  - Terminal path: the straight segment from the aim point to `stop-point-into!`''s stop point, both at t_r relative to the target, cyan dashed (grey when kept).
+
+## Tests
+- "Rendezvous: Tern Station" planned from the start state (`:j2`): AIM equals the target at t_r plus the turned offset within 1e-6 m; the segment ends at the stop point within 1e-6 m.
+- Flown to the `:arrival` cut: the ship within 100 m of the AIM point; after the arrival the marker and the segment are gone.
+- GPU, the masterplan''s image check: "Rendezvous: K-17" (its orbit apart from the ship''s) at a crafted pose: magenta on K-17''s orbit, cyan solid then dashed on the ship''s path, burn pluses at their pixels.
+
+## Done when
+- `nix build` and `scripts/test` pass; `docs/design.md` "Views", "The terminal path and crowded targets" (what the map shows); `docs/architecture.md` "GPU tests", "Testing".', '2026-10-15T07:48:19Z', NULL, 177, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (229, 30, 'Map click, double click, Tab with the target and focus :target', 'work', 'open', NULL, NULL, 'Piece 6 of `plan 30: The map of milestone 3` (read "Click, double click, Tab and focus") following `decision 125: Map in milestone 3: the trajectory line, line styles, plan display, markers, labels, click and focus`, `decision 114: Targets and target holds in the sim` (the gating of `] [ \`), `decision 83: Map camera: framing on opening, focus, zoom, drag and exposure`, `decision 81: Input in milestone 2: held keys per frame, taps, gating and the shared key map`. Needs `task 226: Map markers: target, places, closest approach, relative nodes and map-pick` and `task 186: Removal and re-entry of objects` (K-17''s removal). Files: `src/input.lisp`, `src/camera.lisp`, `tests/input.lisp`, `tests/camera.lisp`, `docs/design.md`, `docs/architecture.md`, `AGENTS.md`.
+
+## What
+- `input.lisp`: a left press in `:map` (no drag; right drag stays the camera''s) runs `map-pick` on the frame''s markers:
+  - On a candidate: `sim-set-target!`, gated as `] [ \`: acts paused and at every warp, not while lost, not while a flight runs.
+  - Clicks ≥ 2 (`canvas-pointer-event-clicks`): also focuses (ship `:ship`, Earth `:earth`, a candidate `:target`), gated as Tab: acts paused, lost and during a flight.
+  - Moon and Sun: nothing until `milestone 4`.
+- `camera.lisp`: Tab cycles `:ship` → `:earth` → `:target` → `:ship`, `:target` only with a target; angles and distance kept, distance clamped to the new focus''s least distance, max(50 m, 2 × the target''s bound) for `:target`. `camera-anchor-position!` for `:target` gives the render state''s target r at t_r. Target cleared or removed: focus `:ship`.
+
+## Tests (synthetic events at a marker''s pixel from `map-markers`)
+- One click targets Fulmar Depot; a press with clicks 2 also focuses it and the anchor equals the render state''s target r.
+- A click on empty space changes nothing; a click on the ship''s ring does not target.
+- Lost and during a flight a click does not target, a double click still focuses; paused, both act.
+- Tab cycles with and without a target; the least distance clamps to max(50 m, 2 × bound).
+- Clearing the target (`\`) or K-17''s removal while focused gives `:ship` with angles kept.
+
+## Done when
+- `nix build` and `scripts/test` pass; `docs/design.md` "Controls" (Tab with the target, the click, the gating), "Views" (focus); `docs/architecture.md` "Files in load order" (`input.lisp`, `camera.lisp`), "Testing" → "Rails, orbits and frames" (the map''s focus); `AGENTS.md` "Commands" → "Run" (a click on a map marker targets it, a double click focuses it, Tab reaches the target) and "Layout" (`ribbons.lisp`''s trajectory, plan lines and new markers).', '2026-10-15T07:48:20Z', NULL, 177, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (230, 30, 'Plan 30''s Done when: the map of milestone 3 live and headless', 'work', 'open', NULL, NULL, 'The "Done when" of `plan 30: The map of milestone 3`, after `task 224: Map line styles, one map-lines buffer and the target''s orbit` through `task 229: Map click, double click, Tab with the target and focus :target`. Check, fix what falls short (or add a follow-up task in the plan it belongs to), and record the results.
+
+## What
+- `nix build` and `scripts/test` pass; `scripts/test` near its ~15 s; the plan''s CPU tests under ~0.8 s and GPU checks under ~0.5 s; the map''s GPU checks pass headless on lavapipe.
+- In the running game (`./sly start`, `./sly play`, `./sly eval`, `./sly screenshot`; stop by PID, close every window) the map (M) shows, each with a screenshot looked at:
+  - the predicted trajectory;
+  - Tern Station''s magenta orbit and box after `]`;
+  - closest approach and the relative nodes;
+  - a shown, then engaged Hohmann plan with its burns, dashed path and thin goal orbit, grey after Backspace.
+- A click on Fulmar Depot''s marker targets it, a double click focuses it, Tab cycles ship, Earth and target (events through `handle-event` in the live image are fine where a real mouse is not available).
+- `docs/architecture.md`, `docs/design.md` and `AGENTS.md` match what was built (the plan''s "Docs and `AGENTS.md`" list).
+
+## Done when
+- All the above hold; the task''s note lists the screenshots'' findings. Screenshots are not committed.', '2026-10-15T07:48:20Z', NULL, 177, 0);
 
 INSERT INTO decision (id, subject, status, options, body, answer, reason, created_at, closed_at, created_by_task, signoff, kind, decided_by_task, consequences) VALUES (1, 'How the game consumes luv', 'answered', '[]', 'Findings of `task 17: Build and run luv''s programs and test suite; record the runs` (docs/luv-capabilities.md, Packaging and Runs).
 - luv''s flake exports apps, devShells, packages and lib; lib has only environmentFor, which returns everything the packaging needs (pkgs, lisp, applicationEnvironment/Packages, developmentEnvironmentHook, slynkSource, swashPackage, …). No overlays.
@@ -6009,6 +6138,7 @@ INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, b
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (173, 174, '2026-10-15T07:42:59Z', '2026-10-15T07:44:22Z', 'done', NULL, 0, '2e85061017979676a77e0f24662fa9d0d59b8508', 'claude-opus-5-5[1m]', '788557a6-c247-42cf-9c2b-546b1169d1a0', 8, 16, 10244, 361252, 48044, 0.6615464000000002, 2373073);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (174, 175, '2026-10-15T07:44:22Z', '2026-10-15T07:45:40Z', 'done', NULL, 0, 'a873cd010296591e0d3f03c44cd2ec56806322a9', 'claude-opus-5-5[1m]', '1de55748-2e9b-4a01-83ab-2fecb7f5d23d', 8, 14, 9038, 312783, 51004, 0.6514046, 2373073);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (175, 176, '2026-10-15T07:45:40Z', '2026-10-15T07:46:57Z', 'done', NULL, 0, '98cc9676e6f4b403ad1f2e52a39751b94c468858', 'claude-opus-5-5[1m]', 'd7fa8bc4-e93b-4d88-ac60-3ad23fa03546', 9, 18, 8883, 386018, 43963, 0.60663960000000006, 2373073);
+INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (176, 177, '2026-10-15T07:46:57Z', '2026-10-15T07:48:28Z', 'done', NULL, 0, 'a4335d4ff95e0530a0efbdc1db115c7b7dca5ba4', 'claude-opus-5-5[1m]', '693107d2-eb72-4e39-9b92-e4fa1df6bf4b', 11, 22, 10298, 508664, 48886, 0.69886880000000007, 2373073);
 
 INSERT INTO task_decision (task_id, decision_id) VALUES (44, 28);
 INSERT INTO task_decision (task_id, decision_id) VALUES (44, 45);

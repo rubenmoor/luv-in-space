@@ -242,10 +242,6 @@ to its horizon; without it a fresh one, prediction.lisp)."
   "Above ×4: attitude kinematic, rotation and translation keys ignored (decision 31)."
   (> (clock-level clock) *fine-levels-max*))
 
-(defun clock-previous-state (clock)
-  "(values ship-state t) before the last step, for interpolation."
-  (values (clock-previous clock) (clock-previous-t clock)))
-
 ;;; Messages (decision 31, decision 73): text and a real-time stamp from the
 ;;; summed elapsed; a new one replaces the live one of its key.
 

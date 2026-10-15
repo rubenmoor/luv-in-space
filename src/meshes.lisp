@@ -204,11 +204,6 @@ and v along z from and to UV, by default metres from the centre."
 
 ;;; Instances (decision 80): unit primitives drawn per instance.
 
-(defparameter *unit-primitives*
-  '((:tube . "8-sided tube, x 0 to 1, radius 1, closed")
-    (:box . "cube, centred, side 1")
-    (:cone . "nozzle cone, x 0 to 1, radius 0.3 to 1, closed at 0")))
-
 (defun unit-primitive (kind)
   (let ((out (make-float-buffer)) (xf (xform '(0 0 0))))
     (ecase kind

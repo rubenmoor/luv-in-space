@@ -237,18 +237,6 @@ into OUT and return it. Conses nothing."
       (values (vec3-add (vec3-scale pv x) (vec3-scale qv y))
               (vec3-add (vec3-scale pv vx) (vec3-scale qv vy))))))
 
-(defun orbit-points (orbit t-start t-end n)
-  "A simple-vector of n ≥ 2 positions (vec3, ICRF about the body) at even
-times from t-start to t-end: the map's ribbon."
-  (multiple-value-bind (pv qv)
-      (perifocal-axes (orbit-i orbit) (orbit-raan orbit) (orbit-argp orbit))
-    (let ((points (make-array n)))
-      (dotimes (k n points)
-        (let ((time (+ t-start (* (- t-end t-start) (/ k (float (1- n) 1d0))))))
-          (multiple-value-bind (x y) (perifocal-state orbit time)
-            (setf (svref points k)
-                  (vec3-add (vec3-scale pv x) (vec3-scale qv y)))))))))
-
 ;;; Events
 
 (defun orbit-next-apsis (orbit time kind)

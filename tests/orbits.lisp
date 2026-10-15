@@ -271,19 +271,3 @@ hyperbolas at their anomalies."
                                       *mu* 0d0)))
         (true (= (lis::orbit-e orbit) (+ 1 (* side 1d-6))))))))
 
-(define-test orbit-points
-  (dolist (elements (list (fourth *test-orbits*) (fifth *test-orbits*)))
-    (let* ((orbit (test-orbit elements 0.3d0 0d0))
-           (p (lis::vec3-normalize (lis::orbit-state orbit (lis::orbit-tp orbit))))
-           (points (lis::orbit-points orbit 0d0 (* 1.3d0 (lis::orbit-period orbit)) 97))
-           (worst 0d0))
-      (true (= (length points) 97))
-      (loop for point across points
-            for rn = (lis::vec3-norm point)
-            for c = (/ (lis::vec3-dot point p) rn)
-            do (setf worst (max worst (abs (- rn (/ (lis::orbit-semi-latus orbit)
-                                                    (+ 1 (* (lis::orbit-e orbit) c))))))))
-      (true (< worst 1d-6))))
-  (let* ((orbit (test-hyperbola (second *test-hyperbolas*) 0d0 0d0))
-         (points (lis::orbit-points orbit -1d3 1d3 3)))
-    (true (< (rel-diff (svref points 1) (lis::orbit-state orbit 0d0)) 1d-15))))

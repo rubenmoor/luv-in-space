@@ -293,8 +293,6 @@ arc, into OUT."
       (dotimes (i 4) (setf (aref out i) (- (aref out i)))))
     (quat-normalize! out out)))
 
-(defun quat-from-mat3 (m) (quat-from-mat3! (make-quat) m))
-
 (defun quat-from-basis! (out x y z)
   "Write into OUT the attitude whose body axes x, y, z (unit, orthogonal,
 right-handed) are the given inertial vectors."

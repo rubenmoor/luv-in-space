@@ -4849,9 +4849,9 @@ Done when: the plan exists with priority 250 and the body above.', '2026-10-15T0
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (170, 23, 'create tasks for plan 23: Objects on rails and the Earth-orbit places', 'split', 'done', 1000, '2026-10-15, tasks.sql: tasks 183–186 for plan 23''s four pieces; no new decisions (decision 110, decision 111 cover them)', 'Split `plan 23: Objects on rails and the Earth-orbit places` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
 done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
 tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-15T06:08:37Z', '2026-10-15T07:38:12Z', 157, 0);
-INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (171, 24, 'create tasks for plan 24: Grapple, contact, berthing, towing, deliveries and refuelling', 'split', 'open', 1000, NULL, 'Split `plan 24: Grapple, contact, berthing, towing, deliveries and refuelling` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (171, 24, 'create tasks for plan 24: Grapple, contact, berthing, towing, deliveries and refuelling', 'split', 'done', 1000, '2026-10-15, tasks.sql: tasks 187-194; no new decisions (decision 112 and decision 113 cover the open points)', 'Split `plan 24: Grapple, contact, berthing, towing, deliveries and refuelling` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
 done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
-tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-15T06:14:24Z', NULL, 158, 0);
+tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-15T06:14:24Z', '2026-10-15T07:39:46Z', 158, 0);
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (172, 25, 'create tasks for plan 25: Predicted trajectories, targets and target holds', 'split', 'open', 1000, NULL, 'Split `plan 25: Predicted trajectories, targets and target holds` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
 done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
 tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-15T06:22:33Z', NULL, 159, 0);
@@ -4960,6 +4960,139 @@ INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, crea
 ## Done when
 - Tests pass, `nix build` and `scripts/test` pass (`scripts/test` near its ~15 s); `docs/architecture.md` "Removal of objects" names the functions and tests, "Files in load order" the extension of `hazards.lisp`, "Testing" the tests.
 - The plan''s Done when holds: every object has a state at any t up to 2050 except after removal; flying near promotes, leaving demotes, deterministically.', '2026-10-15T07:38:08Z', NULL, 170, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (187, 24, 'The stack and the ship''s collision shapes', 'work', 'open', NULL, NULL, 'Piece 1 of `plan 24: Grapple, contact, berthing, towing, deliveries and refuelling` (read its "The ship''s shapes and the stack" section). Needs `plan 23: Objects on rails and the Earth-orbit places` for `object-def` and the places (`task 183: Rails and attitude modes of the objects`, `task 184: The places: the twelve object definitions and the five presets`). Files: `src/ship.lisp`, `tests/ship.lisp`, `docs/architecture.md`.
+
+## What
+- `*ship-collision-boxes*` (FRD from R): truss 17.0 × 3.6 × 3.6 at (6.5, 0, 0); cab 4.5 × 3.0 × 3.0 at (12.75, 0, −3.5); grapple cone 1.6 × 1.6 × 1.6 at (15.8, 0, 0); `*grapple-tip*` (16.6, 0, 0) (`docs/design.md` "Grappling and berthing").
+- `ship-mass-properties` takes an optional latched load (object def, CoM p in ship axes from R, relative quaternion): first moment += m p, tensor += R I Rᵀ + m (|p|² 𝟙 − p pᵀ); conses nothing (`decision 112: Grapple, stack and berth in the sim: state, notices to the clock, the latest checkpoint`).
+- `stack-design-pose` ("Inertia": fixture plate at the tip, rock centre at 16.9 + r), for tests.
+- `stack-bound`: largest distance from the stack''s CoM to the ship boxes'' 24 corners and the load''s bound sphere.
+- `(grapple-range-into! out sim)` → nil or a preallocated `grapple-reading` (object, fixture, range, closing speed, offset y and z, angle, relative rotation, an in-tolerance flag per value) for the nearest free fixture ahead within 500 m, as `decision 113: Grapple and contact details the design leaves open` defines the quantities; pure, conses nothing. If the sim''s grapple fields (piece 2) do not exist yet, treat every promoted object as unlatched.
+
+## Tests (`tests/ship.lisp`)
+- Wet + 50 t, dry + 50 t, wet + 100 t at the design pose against "Inertia": mass exact, CoM within 0.005 m, I_xx/I_yy/I_zz within 0.5 %, I_xz within 1×10³ kg m².
+- No load: today''s values bit for bit.
+- A load turned 90° about x equals its turned tensor added by hand within 1e-12 relative.
+- Conses nothing with a load.
+- Range finder before Skua Yard 3''s fixture at 50 m, 0.2 m off, 5°, 0.3°/s: values within 1e-9, each tolerance edge flagged; a fixture behind the tip or beyond 500 m gives nil.
+
+## Done when
+- Tests pass, `nix build` and `scripts/test` pass; `docs/architecture.md` "Files in load order" (`ship.lisp`) and "Testing" list them as built.', '2026-10-15T07:38:57Z', NULL, 171, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (188, 24, 'The sim''s grapple fields, notices, the SHIP log, the latest checkpoint and G, B, Y', 'work', 'open', NULL, NULL, 'Piece 2 of `plan 24: Grapple, contact, berthing, towing, deliveries and refuelling` (read "The sim", "Input, the panel and the flash"). Needs piece 1 (`The stack and the ship''s collision shapes`) and `plan 23: Objects on rails and the Earth-orbit places`'' sim with objects (`task 185: The sim holds the objects: promotion, demotion and stepping`, `task 186: Removal and re-entry of objects`). Files: `src/clock.lisp`, `src/places.lisp`, `src/input.lisp`, `src/overlay.lisp`, `src/main.lisp`, their tests, `docs/architecture.md`, `docs/design.md`, `AGENTS.md`.
+
+## What (`decision 112: Grapple, stack and berth in the sim: state, notices to the clock, the latest checkpoint`, `decision 113: Grapple and contact details the design leaves open`)
+- Sim fields: `grapple` (state `:stowed`/`:armed`/`:closing`/`:latched`, object index, fixture index, relative pose vec3 + quaternion, closing end time), `berthed`, `transfer`, `excluded`, `delivery` (nil or an immutable list), `notices` (list of (key text)), `checkpoint-request`; copied by `copy-sim` and `sim-assign!` (conses nothing), `equalp` bit for bit.
+- `clock-step!` after each step: notices to `clock-message!` (key per kind) and to `clock-log` (last 200 (t text) entries, every `clock-message!` too; `clock-log-read` read mark), then cleared; a checkpoint request becomes `clock-checkpoint` when `checkpoint-safe-p` (throttle off, not lost, no impact predicted; piece 7 adds contact), then cleared. The prediction''s copy clears notices and requests after each step. `clock-restart!` keeps `clock-checkpoint`; a new game clears it.
+- `places.lisp`: a `depot` flag on `object-def` (Fulmar Depot, Highport).
+- `(grapple-key! sim)` → nil or refusal text: stowed ↔ armed; "RELEASE LOCKED: CLAWS CLOSING" while closing (release itself comes in piece 5). `(transfer-key! sim)`: refusals "NOT BERTHED", "NO PROPELLANT HERE" (transfer itself in piece 5).
+- `object-remove!` writes the notice "<NAME> BURNED UP" for `:burned-up`.
+- `input.lisp`: G (`:grapple`), B (`:transfer`) unpaused and not lost at every warp level, ignored while a flight runs (`decision 87`''s gate); refusals to `clock-message!`; Y (`:acknowledge`) at any time but lost sets `clock-log-read`; title gains "G grapple · B refuel · Y ack".
+- `overlay.lisp`: `lost-panel-lines` adds "RETURN  RESTART FROM CHECKPOINT" when the clock holds one. `main.lisp`: Return restores `clock-checkpoint` (else the start), N the start and clears it.
+
+## Tests
+- `copy-sim` `equalp` with every field set; `sim-assign!` conses nothing.
+- A notice written in a step shows in `clock-messages` and the log with the step''s t, and not from the prediction''s copy.
+- A request takes a checkpoint when safe, not with the throttle on; Return after a death restores it bit for bit, N the start; `lost-panel-lines` reads "RESTART FROM CHECKPOINT".
+- G, B, Y through synthetic events: gating while paused, lost, a flight running.
+- K-17''s removal writes "K-17 BURNED UP" once.
+
+## Done when
+- Tests pass, `nix build` and `scripts/test` pass; `docs/architecture.md` "Checkpoints" (the fields), "The clock" (notices, the log), "Files in load order", "Testing"; `docs/design.md` "Controls" (title, G B Y gating); `AGENTS.md` "Commands" ("Run") names G, B, Y and Return''s checkpoint.', '2026-10-15T07:38:57Z', NULL, 171, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (189, 24, 'Contact: detection, bounce and death', 'work', 'open', NULL, NULL, 'Piece 3 of `plan 24: Grapple, contact, berthing, towing, deliveries and refuelling` (read "Contact" and "Input, the panel and the flash"). Needs `task 187: The stack and the ship''s collision shapes` and `task 188: The sim''s grapple fields, notices, the SHIP log, the latest checkpoint and G, B, Y`. Files: `src/hazards.lisp`, `src/clock.lisp`, `src/overlay.lisp`, `src/main.lisp`, `tests/hazards.lisp`, `tests/overlay.lisp`, `docs/architecture.md`, `docs/design.md`.
+
+## What (`decision 44: Contact, capture and berthing in the simulation`, `decision 112: Grapple, stack and berth in the sim: state, notices to the clock, the latest checkpoint`, `decision 113: Grapple and contact details the design leaves open`)
+- After the crash tests, against every promoted object not latched, not the berth station while berthed, not excluded; only ship (stack) against object.
+- Broad phase: the relative Hermite (`hermite-set!`, `hermite-sag`) against `stack-bound` + the object''s bound.
+- Narrow phase: substeps of ≤ 0.25 m relative motion (translation + |ω| × bound per body), attitudes by slerp; boxes and spheres (15 separating axes box–box, closest point box–sphere); first overlap bisected to 1e-4 s; normal of least penetration, contact point the midpoint of the deepest points; approaching contacts only. (The grapple tip test is piece 4.)
+- Response: restore the step''s start from a preallocated scratch outside the sim (saved only when a sphere is within reach) and redo the step `until` the grid point g at or before t_c; then ≤ 1.0 m/s normal speed: impulse with restitution 0.3 to both bodies'' v and ω (berth or fixed objects'' terms zero; while berthed the ship is part of the station); above: death at t_c from the Hermite, `loss` cause `:contact` with the new `object` slot and the normal speed. `t` stays on the grid after every response but death.
+- `lost-panel-lines` for `:contact`: "LOST: CONTACT", "<OBJECT NAME>  <UTC>", "SPEED <normal speed>". `main.lisp`: `*contact-flash-colour*` #FFFFFF in the emissive slot, radiance 1.0 ÷ exposure, full 0.1 s real time, linear to 0 at 1 s.
+- Test helper in `tests/hazards.lisp`: objects placed promoted by hand in a 500 km orbit; `:point` gravity unless J2 or the Moon matters.
+
+## Tests ("Contact" in `docs/architecture.md` "Testing")
+- Truss box head-on into a 50 t sphere at 0.50 m/s: normal speed after = 0.3 × before within 1e-9 relative; linear and angular momentum within 1e-12.
+- Against Tern Station: the ship reverses to 0.15 m/s, the station''s state bit for bit its own run''s.
+- 0.99 m/s bounces; 1.01 m/s kills with t_c within 1e-4 s of straight-line motion.
+- No tunnelling: the cone''s box past a 2.7 m sphere at 100 m/s, 1.0 m off centre, caught at the fine step and in one 2 s coarse step.
+- Touching or receding: no impulse; every response leaves `t` on the grid; 10,000 steps beside an out-of-reach promoted object cons nothing.
+- The contact panel''s lines.
+
+## Done when
+- Tests pass, `nix build` and `scripts/test` pass; `docs/architecture.md` "Collisions and the Sun" says "as built" with the functions, "Files in load order", "Testing"; `docs/design.md` "Dying and what follows" the contact panel and flash.', '2026-10-15T07:39:24Z', NULL, 171, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (190, 24, 'Capture, the stack and berthing', 'work', 'open', NULL, NULL, 'Piece 4 of `plan 24: Grapple, contact, berthing, towing, deliveries and refuelling` (read "Contact": the grapple tip and the capture responses). Needs `task 189: Contact: detection, bounce and death`. Files: `src/hazards.lisp`, `src/clock.lisp`, `src/input.lisp` (locked engine message), `tests/hazards.lisp`, `docs/design.md`, `docs/architecture.md`.
+
+## What (`decision 44: Contact, capture and berthing in the simulation`, `decision 112: Grapple, stack and berth in the sim: state, notices to the clock, the latest checkpoint`, `decision 113: Grapple and contact details the design leaves open`)
+- Grapple tip first while armed: a free `:towable` or `:berth` fixture''s plate crossed within 0.8 m of the pin; checks in `decision 113`''s order (rating > 100 t, TOO FAST > 0.30 m/s, TOO SLOW < 0.01 m/s, OFF AXIS, MISALIGNED, ROTATING); a failure bounces along the fixture axis with its message as a notice (death above 1.0 m/s as any contact).
+- Towable capture: perfectly inelastic coupling (mass, CoM, v by mass; L about the new CoM kept, ω = I_stack⁻¹ L in ship axes); object status `:latched` at the pose of the moment (not stepped, not demoted, its stored state written from the stack after each step); grapple `:closing` until t + 2 s, then `:latched`; notice "LATCHED <NAME>"; `flight-step!` uses `ship-mass-properties` with the load; r, v stay the stack''s CoM.
+- Berth capture: the ship takes the fixture point''s velocity and the station''s rotation, `berthed`, throttle cut, rate damping on, transfer off; notice "BERTHED <NAME>"; checkpoint request.
+- Berthed step: no `flight-step!`; after the objects'' steps r = r_s + q_s p, v = v_s + ω_s × (q_s p), q = q_s ⊗ q_rel, ω in ship axes from the station''s.
+- `input.lisp`: throttle or RCS keys while berthed give "ENGINE LOCKED: BERTHED" once per press and change nothing.
+
+## Tests
+- Capture inside tolerance (50 t, fixture axis, 0.10 m/s, 0.1 m, 5°): stack mass 85,961 kg, CoM and tensor equal `ship-mass-properties` at the capture pose within 1e-9.
+- Momentum (0.2 m off, 0.25 m/s, both rotating 0.3°/s): linear and angular momentum about the system''s CoM within 1e-12 relative; kinetic energy falls.
+- Just outside each tolerance (0.31 m/s, 0.31 m, 10.5°, 0.6°/s), 0.005 m/s, and Skua Yard 6 (150 t): a bounce with its message, no capture.
+- Berthed at Tern Station, one orbit at ×1,000: pose relative to the fixture within 1e-6 m and 1e-9 rad; throttle and keys change nothing.
+- A latched load''s `object-state-into!` follows the stack within 1e-9 m; G while closing refused.
+
+## Done when
+- Tests pass, `nix build` and `scripts/test` pass; `docs/design.md` "Grappling and berthing" and `docs/architecture.md` "Collisions and the Sun", "Testing" as built.', '2026-10-15T07:39:24Z', NULL, 171, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (191, 24, 'Release, propellant transfer and the berth checkpoint', 'work', 'open', NULL, NULL, 'Piece 5 of `plan 24: Grapple, contact, berthing, towing, deliveries and refuelling` (read "Contact": release and transfer). Needs `task 190: Capture, the stack and berthing`. Files: `src/hazards.lisp`, `src/clock.lisp`, `tests/hazards.lisp`, `tests/clock.lisp`, `docs/design.md`, `docs/architecture.md`.
+
+## What (`decision 112: Grapple, stack and berth in the sim: state, notices to the clock, the latest checkpoint`, `decision 113: Grapple and contact details the design leaves open`, `decision 26: Refuelling and economy`)
+- `grapple-key!` when latched or berthed: refused "RELEASE REFUSED: ROTATING" above 0.5°/s, "RELEASE REFUSED: ENGINE ON"; else both bodies take the stack''s motion at their CoMs (v + ω × (r_i − r_cm), same ω); the load back to `:promoted` (or the ship back to integration with the fixture point''s velocity, rate damping kept); grapple `:armed`; the object `excluded` until its shapes and the stack''s no longer overlap (separating axes each step while excluded). A towable release is where piece 6 starts the delivery check (leave a clear hook).
+- Transfer (`transfer-key!`, B): on only berthed at a depot fixture; m_p += min(10 h, 28,000 − m_p) per berthed step, exactly; off at full ("TANKS FULL" notice) and at release.
+
+## Tests
+- Towable release: both bodies'' v equal the stack''s at their CoMs within 1e-12 relative and share ω.
+- Berth release: the ship''s v equals the station''s at the fixture point within 1e-12 relative; coasting 100 s it stays within 1 cm of the held pose''s path.
+- No contact with the released object until the shapes separate, then contact again.
+- Refused at 0.6°/s and with the engine on.
+- Transfer at Fulmar Depot: m_p rises 10 kg/s × t exactly to 28,000 kg and stops with "TANKS FULL"; the same at ×1,000 on the grid; refused at Tern Station and unberthed.
+- Berthing at Fulmar Depot takes a checkpoint; a death after it restores it bit for bit through Return.
+
+## Done when
+- Tests pass, `nix build` and `scripts/test` pass; `docs/design.md` "Refuelling and resupply" as built; `docs/architecture.md` "Collisions and the Sun", "Testing".', '2026-10-15T07:39:24Z', NULL, 171, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (192, 24, 'Deliveries at Highport''s plant', 'work', 'open', NULL, NULL, 'Piece 6 of `plan 24: Grapple, contact, berthing, towing, deliveries and refuelling` (read "Contact": deliveries). Needs `task 191: Release, propellant transfer and the berth checkpoint`. Files: `src/hazards.lisp`, `src/clock.lisp`, `tests/hazards.lisp`, `docs/architecture.md`.
+
+## What (`docs/architecture.md` "Removal of objects", `decision 53: Deliveries, the stranded offer, checkpoint floors and Skua Yard''s layout`, `decision 112: Grapple, stack and berth in the sim: state, notices to the clock, the latest checkpoint`)
+- At a towable release: the load''s CoM within 100 m of a receiving fixture''s pin and ≤ 0.05 m/s relative to the receiver''s velocity at the pin → `delivery` pending (load, receiver, fixture, release time).
+- After each step: the load within 150 m (its `object-state-into!`, rails or promoted), else cleared; cleared too by a new grapple of the load or the receiver''s removal.
+- The due time (release + 600 s) is a landing time for `step-h`, like the Δv cut-off (`decision 72: Simulation state and the one step function in clock.lisp`).
+- At the due time `object-remove!` with `:delivered`; notice "<NAME> DELIVERED".
+
+## Tests ("Delivery" in `docs/architecture.md` "Testing")
+- A 50 t load released by a wet Mule beside a promoted Highport (two-body), 80 m from the plant''s pin at 0.04 m/s: removed `:delivered` at release + 600 s exactly, the same `t` at the fine step and at ×1,000.
+- At 0.06 m/s, 110 m out, a drift across 150 m before 600 s, or grappled again at 300 s: never removed.
+- A checkpoint restored before the removal gives the same `t` bit for bit.
+- "SKUA YARD 3 DELIVERED" once.
+
+## Done when
+- Tests pass, `nix build` and `scripts/test` pass; `docs/architecture.md` "Removal of objects" and "Testing" as built.', '2026-10-15T07:39:43Z', NULL, 171, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (193, 24, 'The contact drop-out of time warp', 'work', 'open', NULL, NULL, 'Piece 7 of `plan 24: Grapple, contact, berthing, towing, deliveries and refuelling` (read "The contact drop-out"). Needs `task 189: Contact: detection, bounce and death` (the broad phase) and the berth/latch/exclusion states of `task 190: Capture, the stack and berthing` and `task 191: Release, propellant transfer and the berth checkpoint`. Files: `src/prediction.lisp`, `src/clock.lisp`, `tests/prediction.lisp`, `tests/clock.lisp`, `docs/architecture.md`.
+
+## What (`decision 43: Warp drop-outs for contact and life support`, `decision 113: Grapple and contact details the design leaves open`)
+- After each step of its copy the prediction finds the first time the stack''s and a promoted object''s bounding spheres come to meet on the step''s relative Hermite (the broad phase''s function and its sag bound), excluding the berth station while berthed, the latched load and the excluded object; not an overlap at the prediction''s start. Kept as a `:contact` event (object, time) beside `:impact`; `prediction-dropout-event` returns the earlier.
+- Objects on rails come in as the copy promotes them.
+- The clock''s lowering message "WARP ×L: CONTACT IN <duration>" (`format-duration`).
+- `checkpoint-safe-p` also requires no `:contact` event.
+
+## Tests
+- A ship coasting at 2 m/s towards a promoted 50 t sphere 5 km away at ×1,000 through `clock-frame!`: every step above ×1 at least 3 s × level from the event (less 0.05 s), ×1 at it, messages at each lowering; warp up refused within 3 s of it.
+- Berthed, latched and just released: no event; an overlap at the prediction''s start: no event.
+- A rails object promoted on the copy is seen.
+- A checkpoint request with a contact predicted takes no checkpoint.
+
+## Done when
+- Tests pass, `nix build` and `scripts/test` pass; `docs/architecture.md` "Time warp", "Trajectory prediction" and "Testing" as built.', '2026-10-15T07:39:43Z', NULL, 171, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (194, 24, 'Plan 24''s Done when: a headless round at every place', 'work', 'open', NULL, NULL, 'The "Done when" of `plan 24: Grapple, contact, berthing, towing, deliveries and refuelling`, after its seven pieces (`task 187` … `task 193`). Files: `tests/hazards.lisp` (or `tests/clock.lisp`), `docs/architecture.md` "Testing", `AGENTS.md` "Layout".
+
+## What
+- One test, from hand-placed starts beside each place (promoted, `:point` gravity unless J2 matters), driving the sim only through its controls, `grapple-key!` and `transfer-key!`: grapple Skua Yard 3, tow it to Highport''s plant, release and see it delivered; berth at Tern Station, Fulmar Depot and Highport; refuel at Fulmar Depot and Highport (refused at Tern); bounce off and die against an object by the design''s numbers; a checkpoint from a berth restored after the death replays the same states bit for bit.
+- Whatever this round finds missing or wrong in pieces 1–7 is fixed here if small, else a follow-up task in this plan.
+- Check the plan''s docs list: `docs/architecture.md` ("Files in load order", "Collisions and the Sun", "Removal of objects", "Time warp", "Trajectory prediction", "Checkpoints", "The clock", "Testing" with measured times), `docs/design.md` ("Controls", "Grappling and berthing", "Refuelling and resupply", "Dying and what follows", citing `decision 112: Grapple, stack and berth in the sim: state, notices to the clock, the latest checkpoint` and `decision 113: Grapple and contact details the design leaves open`), `AGENTS.md` ("Run": G, B, Y, Return''s checkpoint; "Layout": `ship.lisp`''s stack and grapple, `hazards.lisp`''s contact).
+
+## Done when
+- The round passes within the plan''s budget (this plan''s tests together ≲ 1.5 s; `scripts/test` near ~15 s, measured and recorded in "Testing"); `nix build` and `scripts/test` pass; the docs above match what was built.', '2026-10-15T07:39:43Z', NULL, 171, 0);
 
 INSERT INTO decision (id, subject, status, options, body, answer, reason, created_at, closed_at, created_by_task, signoff, kind, decided_by_task, consequences) VALUES (1, 'How the game consumes luv', 'answered', '[]', 'Findings of `task 17: Build and run luv''s programs and test suite; record the runs` (docs/luv-capabilities.md, Packaging and Runs).
 - luv''s flake exports apps, devShells, packages and lib; lib has only environmentFor, which returns everything the packaging needs (pkgs, lisp, applicationEnvironment/Packages, developmentEnvironmentHook, slynkSource, swashPackage, …). No overlays.
@@ -5298,6 +5431,7 @@ INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, b
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (167, 168, '2026-10-15T07:27:29Z', '2026-10-15T07:30:23Z', 'done', NULL, 0, '373dd4cbfc22e9a9fd3c1f8074c4306396a8556c', 'claude-opus-5-5[1m]', '56a5c580-5484-424e-b519-a5fd3177dde3', 17, 34, 13451, 915657, 71801, 1.0266954, 2373073);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (168, 169, '2026-10-15T07:30:23Z', '2026-10-15T07:37:26Z', 'done', NULL, 0, '5603b1a1ca1f3575fa838dd6e01bc771fb859ac6', 'claude-opus-5-5[1m]', '71bcd4ce-94cc-4ce6-a921-79b0f250029e', 26, 52, 37151, 2427227, 133456, 2.2963214000000005, 2373073);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (169, 170, '2026-10-15T07:37:26Z', '2026-10-15T07:38:18Z', 'done', NULL, 0, '367bd2dee5c50663b9c121831def2a53df9137b5', 'claude-opus-5-5[1m]', 'ac8ce3bb-fec5-4743-bc85-a0c0b3cbe639', 5, 10, 5800, 176251, 36668, 0.4446342, 2373073);
+INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (170, 171, '2026-10-15T07:38:18Z', '2026-10-15T07:39:52Z', 'done', NULL, 0, '22463ffb3bc5ffdfa18868694d2eb3a9b6af7eb7', 'claude-opus-5-5[1m]', '49053538-c4cf-44f1-ac82-270517344bde', 9, 18, 10268, 432561, 52316, 0.7104722, 2373073);
 
 INSERT INTO task_decision (task_id, decision_id) VALUES (44, 28);
 INSERT INTO task_decision (task_id, decision_id) VALUES (44, 45);

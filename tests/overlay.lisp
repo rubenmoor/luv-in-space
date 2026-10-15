@@ -402,7 +402,7 @@ top, or nil."
 (define-test death-glow-radiance
   (let ((earth (lis::make-loss :crash :earth 0d0 7800d0 0d0 0d0))
         (moon (lis::make-loss :crash :moon 0d0 2400d0 0d0 0d0)))
-    (loop for (seconds expected) in '((0 4d0) (1 4d0) (2 2d0) (3 0d0) (10 0d0))
+    (loop for (seconds expected) in '((0 1d0) (1 1d0) (2 0.5d0) (3 0d0) (10 0d0))
           do (true (< (abs (- (lis::death-glow-radiance earth seconds) expected)) 1d-12)
                    "~A s" seconds))
     (dolist (seconds '(0 1 2))

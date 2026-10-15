@@ -102,8 +102,8 @@ change of view (decision 83)."
 ;;; Death and restart (decision 86: Death view, LOST panel and restart in
 ;;; milestone 2; decision 34: How death works).
 
-(defparameter *death-glow-radiance* 4d0
-  "The entry glow's peak on the radiance scale of decision 76; decision 86.")
+(defparameter *death-glow-radiance* 1d0
+  "The entry glow's peak on the radiance scale of decision 76; decision 86, retuned by decision 107.")
 (defparameter *death-glow-full* 1d0 "Real seconds at the peak; decision 86.")
 (defparameter *death-glow-end* 3d0 "Real seconds when the glow is out; decision 86.")
 (defparameter *death-glow-colour* #xFF6A1A "sRGB of the entry glow; decision 86.")

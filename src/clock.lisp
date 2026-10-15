@@ -83,6 +83,15 @@ nothing; OUT."
         (sim-checkpoint-request out) (sim-checkpoint-request sim))
   out)
 
+(defparameter *delivery-wait* 600d0 "s from a delivery's release to the removal; decision 53.")
+(declaim (type double-float *delivery-wait*))
+
+(declaim (inline sim-delivery-due))
+(defun sim-delivery-due (sim)
+  "The pending delivery's due time, release + *delivery-wait* (on the grid), or nil."
+  (let ((delivery (sim-delivery sim)))
+    (and delivery (+ (the double-float (fourth delivery)) *delivery-wait*))))
+
 (defun sim-notice! (sim key text)
   "A notice for the clock (decision 112): KEY its message's kind."
   (setf (sim-notices sim) (append (sim-notices sim) (list (list key text)))))
@@ -215,7 +224,8 @@ controls-attitude-fn's, without a closure per step."
 (declaim (inline step-h))
 (defun step-h (sim level until)
   "The h of SIM's next step at LEVEL with UNTIL, and whether the Δv cut-off
-ends it; changes nothing (a cut due before the step counts as made)."
+ends it; it lands on a pending delivery's due time as on UNTIL; changes
+nothing (a cut due before the step counts as made)."
   (declare (type sim sim) (type fixnum level) (type (or null double-float) until))
   (let* ((ship (sim-ship sim))
          (controls (sim-controls sim))
@@ -248,6 +258,9 @@ ends it; changes nothing (a cut due before the step counts as made)."
             (setf h h-cut cut-after t))))
       (when (and until (> until time) (< (- until time) h))
         (setf h (- until time) cut-after nil))
+      (let ((due (sim-delivery-due sim)))
+        (when (and due (> due time) (< (- due time) h))
+          (setf h (- due time) cut-after nil)))
       (values h cut-after))))
 
 (defvar *contact-redo* nil
@@ -256,7 +269,7 @@ ends it; changes nothing (a cut due before the step counts as made)."
 (declaim (ftype (function (sim fixnum (or null double-float)) (values null &optional))
                 contact-save!)
          (ftype (function (sim) (values sim &optional))
-                berth-hold! latched-load-update! exclusion-update!)
+                berth-hold! latched-load-update! exclusion-update! delivery-update!)
          (ftype (function (sim double-float) (values sim &optional)) transfer-step!)
          (ftype (function (sim fixnum fixnum) (values (or null fixnum) &optional))
                 contact-test!))
@@ -342,6 +355,8 @@ contact answered at the step's start) or nil."
               (progn (unless lost
                        (when (sim-excluded sim)
                          (exclusion-update! sim))
+                       (when (sim-delivery sim)
+                         (delivery-update! sim))
                        (sim-update-objects! sim))
                      ticks)))))))
 
@@ -362,7 +377,8 @@ leaves SIM lost at the impact, hazards.lisp), the objects' crash tests and
 rails removals (object-crash-tests!), contact with promoted objects
 (contact-test!: a bounce redoes the step to the grid point before it, a
 fast one kills), then, unless lost, the excluded object's check
-(exclusion-update!), promotion and demotion.
+(exclusion-update!), a pending delivery's (delivery-update!: the step
+lands on its due time), promotion and demotion.
 Returns h (0 for a contact answered at the step's start), or nil for a
 lost sim. Hot callers declare it inline: a full
 call boxes h."

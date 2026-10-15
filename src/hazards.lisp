@@ -969,7 +969,8 @@ v_s + ω_s × (r − r_s), ω the station's in ship axes. SIM; conses nothing."
   "A towable capture (decision 44): SIM's INDEXth object latched at its
 pose of the moment and coupled perfectly inelastically: the stack's CoM and
 v by mass, its angular momentum about the new CoM kept, ω = I_stack⁻¹ L in
-ship axes; the grapple closing; the notice \"LATCHED <NAME>\". SIM."
+ship axes; the grapple closing; the notice \"LATCHED <NAME>\"; a pending
+delivery of it cleared. SIM."
   (let* ((ship (sim-ship sim))
          (object (svref (sim-objects sim) index))
          (def (object-def-of object))
@@ -980,6 +981,8 @@ ship axes; the grapple closing; the notice \"LATCHED <NAME>\". SIM."
          (m-s (mass-properties-mass before))
          (m-o (object-def-mass def))
          (grapple (grapple-attach! sim index fixture)))
+    (when (eql index (first (sim-delivery sim)))
+      (setf (sim-delivery sim) nil))
     ;; The pose: its CoM in ship axes from R, its axes to the ship's.
     (replace (grapple-com grapple)
              (vec3-add (mass-properties-com before)
@@ -1132,6 +1135,8 @@ step took."
                                  (contact-r-o contact))))
         (latched-load-update! sim)
         (when (= g ticks)
+          (when (sim-delivery sim)
+            (delivery-update! sim))
           (sim-update-objects! sim)))
       g)))
 
@@ -1175,11 +1180,82 @@ Conses nothing without a contact."
 (defparameter *transfer-rate* 10d0 "kg/s; decision 26.")
 (declaim (type double-float *release-rotation-max* *transfer-rate*))
 
+;;; Deliveries (docs/architecture.md "Removal of objects"; decision 53:
+;;; Deliveries, the stranded offer, checkpoint floors and Skua Yard's
+;;; layout): a towable load released beside a receiving fixture, removed
+;;; *delivery-wait* later if it stayed near.
+
+(defparameter *delivery-reach* 100d0 "m from the pin at the release; decision 53.")
+(defparameter *delivery-speed* 0.05d0 "m/s relative to the pin's motion at the release; decision 53.")
+(defparameter *delivery-range* 150d0 "m from the pin the load stays within; decision 53.")
+(declaim (type double-float *delivery-reach* *delivery-speed* *delivery-range*))
+
+(defun fixture-pin-into! (p v object fixture time)
+  "P, V: OBJECT's FIXTURE's pin at TIME and its velocity; true, or nil
+without a state (object-state-into!). Conses nothing."
+  (declare (type vec3 p v) (type object object) (type fixture fixture) (type double-float time))
+  (let ((q (make-quat)) (w (make-vec3)) (x (make-vec3)))
+    (declare (dynamic-extent q w x))
+    (when (object-state-into! p v q w object time)
+      (quat-rotate! x q (fixture-pin fixture))
+      (quat-rotate! w q w)
+      (vec3-add! p p x)
+      (vec3-add! v v (vec3-cross! w w x))
+      t)))
+
 (defun delivery-start! (sim index)
-  "A towable release of SIM's INDEXth object: where the delivery check
-starts. PLACEHOLDER(192)."
-  (declare (ignore sim index))
-  nil)
+  "A towable release of SIM's INDEXth object: a pending delivery (load,
+receiver, fixture, release t) when its CoM lies within *delivery-reach* of a
+receiving fixture's pin and moves at most *delivery-speed* relative to it;
+else none. SIM."
+  (let* ((time (sim-t sim))
+         (state (object-state (svref (sim-objects sim) index)))
+         (p (make-vec3)) (v (make-vec3)))
+    (setf (sim-delivery sim) nil)
+    (loop for receiver across (sim-objects sim)
+          for i from 0
+          do (loop for fixture in (object-def-fixtures (object-def-of receiver))
+                   for k from 0
+                   when (and (fixture-receiving fixture)
+                             (eq (object-status receiver) :promoted)
+                             (fixture-pin-into! p v receiver fixture time)
+                             (<= (vec3-norm (vec3-sub! p (ship-state-r state) p)) *delivery-reach*)
+                             (<= (vec3-norm (vec3-sub! v (ship-state-v state) v)) *delivery-speed*))
+                     do (setf (sim-delivery sim) (list index i k time))
+                        (return-from delivery-start! sim)))
+    sim))
+
+(defun delivery-update! (sim)
+  "After a step with a delivery pending: cleared when the load is not free
+(grappled again, removed), the receiver removed or the load beyond
+*delivery-range* of the pin; at its due time (sim-delivery-due) the load
+removed :delivered with the notice \"<NAME> DELIVERED\". SIM; conses
+nothing until the removal."
+  (declare (optimize speed) (type sim sim))
+  (destructuring-bind (index receiver fixture release) (sim-delivery sim)
+    (declare (type fixnum index receiver fixture) (ignore release))
+    (let* ((time (sim-t sim))
+           (objects (sim-objects sim))
+           (load (svref objects index))
+           (station (svref objects receiver))
+           (r (make-vec3)) (v (make-vec3)) (q (make-quat)) (w (make-vec3))
+           (p (make-vec3)) (dp (make-vec3)))
+      (declare (dynamic-extent r v q w p dp) (type object load station))
+      (if (and (member (object-status load) '(:promoted :rails))
+               (object-state-into! r v q w load time)
+               (fixture-pin-into! p dp station
+                                  (nth fixture (object-def-fixtures (object-def-of station))) time)
+               (<= (vec3-norm (vec3-sub! p r p)) *delivery-range*))
+          (when (>= time (the double-float (sim-delivery-due sim)))
+            (setf (sim-delivery sim) nil)
+            (let ((def (object-def-of station)))
+              (object-remove! sim load time :delivered
+                              (list (object-def-key def)
+                                    (fixture-name (nth fixture (object-def-fixtures def))))))
+            (sim-notice! sim :delivery
+                         (format nil "~A DELIVERED" (object-def-name (object-def-of load)))))
+          (setf (sim-delivery sim) nil))))
+  sim)
 
 (defun grapple-release! (sim)
   "The release (decision 112): a latched load takes the stack's motion at

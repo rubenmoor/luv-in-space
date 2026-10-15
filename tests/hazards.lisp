@@ -1037,3 +1037,113 @@ object), the notices cleared: (values sim index)."
         (lis::clock-restart! clock sim (lis::clock-checkpoint clock))
         (true (equalp sim checkpoint))
         (true (lis::sim-berthed sim))))))
+
+;;; Deliveries (docs/architecture.md "Testing" → "Delivery", "Removal of
+;;; objects"; decision 53: Deliveries, the stranded offer, checkpoint floors
+;;; and Skua Yard's layout). Skua Yard 3 latched to a wet Mule (radially
+;;; above it), Highport promoted by hand ahead of it along the track, its
+;;; plant's pin DISTANCE m from the load, the load falling back at SPEED.
+
+(defun along-track (state)
+  (let* ((r (lis::ship-state-r state))
+         (n (lis::vec3-normalize (lis::vec3-cross r (lis::ship-state-v state)))))
+    (lis::vec3-normalize (lis::vec3-cross n r))))
+
+(defun delivery-scene (distance speed)
+  "(values sim load-index highport-index), released, the notices cleared."
+  (multiple-value-bind (sim index) (attached-scene :skua-yard-3)
+    (let* ((highport (lis::sim-object sim :highport))
+           (h-index (position highport (lis::sim-objects sim)))
+           (load (lis::object-state (svref (lis::sim-objects sim) index)))
+           (u (along-track load))
+           (up (lis::vec3-normalize (lis::ship-state-r load)))
+           (q (lis::quat-from-basis u up (lis::vec3-cross u up)))
+           (pin (lis::fixture-pin (first (lis::object-def-fixtures (lis::object-def-of highport)))))
+           (r (lis::vec3-sub (lis::vec3-add-scaled (lis::ship-state-r load) u distance)
+                             (lis::quat-rotate q pin)))
+           (v (lis::vec3-add-scaled (lis::ship-state-v load) u speed)))
+      (setf (lis::object-status highport) :promoted)
+      (lis::ship-state-assign! (lis::object-state highport)
+                               (lis::make-ship-state r v q (lis::make-vec3) 0d0))
+      (false (lis::grapple-key! sim))
+      (setf (lis::sim-notices sim) nil)
+      (values sim index h-index))))
+
+(defun delivered-notices (sim)
+  (count :delivery (lis::sim-notices sim) :key #'first))
+
+(define-test delivery-removed
+  ;; 80 m out at 0.04 m/s: removed at release + 600 s exactly, at the fine
+  ;; step and at ×1,000, with the notice once.
+  (let ((times '()))
+    (dolist (level '(1 1000))
+      (multiple-value-bind (sim index h-index) (delivery-scene 80d0 0.04d0)
+        (let ((t0 (lis::sim-t sim))
+              (load (svref (lis::sim-objects sim) index)))
+          (is equal (list index h-index 0 t0) (lis::sim-delivery sim))
+          (loop until (or (eq (lis::object-status load) :removed) (> (lis::sim-t sim) (+ t0 700)))
+                do (lis::sim-step! sim level)
+                   (true (on-grid-p (lis::sim-t sim))))
+          (let ((removal (lis::object-removal load)))
+            (true removal "×~D" level)
+            (is eq :delivered (lis::removal-cause removal))
+            (is = (+ t0 600) (lis::removal-time removal))
+            (is equal '(:highport "plant") (lis::removal-point removal))
+            (push (lis::removal-time removal) times))
+          (false (lis::sim-delivery sim))
+          (step-sim sim 64 level)
+          (is equal '((:delivery "SKUA YARD 3 DELIVERED")) (lis::sim-notices sim) "×~D" level)
+          (false (lis::sim-lost-p sim)))))
+    (is = (first times) (second times))))
+
+(define-test delivery-not-removed
+  ;; Too fast, too far, drifting past 150 m, grappled again at 300 s.
+  (flet ((never-removed (sim index label)
+           (let ((load (svref (lis::sim-objects sim) index)))
+             (step-sim sim most-positive-fixnum 1000 (+ (lis::sim-t sim) 700))
+             (false (lis::sim-delivery sim) label)
+             (false (eq (lis::object-status load) :removed) label)
+             (is = 0 (delivered-notices sim) label))))
+    (multiple-value-bind (sim index) (delivery-scene 80d0 0.06d0)
+      (false (lis::sim-delivery sim))
+      (never-removed sim index "0.06 m/s"))
+    (multiple-value-bind (sim index) (delivery-scene 110d0 0.04d0)
+      (false (lis::sim-delivery sim))
+      (never-removed sim index "110 m"))
+    (multiple-value-bind (sim index) (delivery-scene 80d0 0.04d0)
+      (true (lis::sim-delivery sim))
+      (step-sim sim most-positive-fixnum 1000 (+ (lis::sim-t sim) 60))
+      ;; Pushed 0.15 m/s more away from the pin: past 150 m before 600 s.
+      (let ((load (lis::object-state (svref (lis::sim-objects sim) index))))
+        (lis::vec3-add-scaled! (lis::ship-state-v load) (lis::ship-state-v load)
+                               (along-track load) -0.15d0))
+      (step-sim sim most-positive-fixnum 1000 (+ (lis::sim-t sim) 250))
+      (true (lis::sim-delivery sim))
+      (step-sim sim most-positive-fixnum 1000 (+ (lis::sim-t sim) 250))
+      (false (lis::sim-delivery sim))
+      (never-removed sim index "drifted"))
+    (multiple-value-bind (sim index) (delivery-scene 80d0 0.04d0)
+      (step-sim sim most-positive-fixnum 1000 (+ (lis::sim-t sim) 300))
+      (true (lis::sim-delivery sim))
+      (lis::grapple-capture! sim index 0)
+      (false (lis::sim-delivery sim))
+      (setf (lis::sim-notices sim) nil)
+      (never-removed sim index "grappled again")
+      (is eq :latched (lis::object-status (svref (lis::sim-objects sim) index))))))
+
+(define-test delivery-checkpoint
+  ;; A checkpoint at release + 300 s restored: the same removal bit for bit.
+  (multiple-value-bind (sim index) (delivery-scene 80d0 0.04d0)
+    (let ((t0 (lis::sim-t sim)))
+      (step-sim sim most-positive-fixnum 1000 (+ t0 300))
+      (let ((checkpoint (lis::take-checkpoint sim)))
+        (step-sim sim most-positive-fixnum 1000 (+ t0 700))
+        (let ((first-run (lis::copy-sim sim)))
+          (true (lis::object-removal (svref (lis::sim-objects sim) index)))
+          (lis::restore-checkpoint! sim checkpoint)
+          (is eq :promoted (lis::object-status (svref (lis::sim-objects sim) index)))
+          (true (lis::sim-delivery sim))
+          (step-sim sim most-positive-fixnum 1000 (+ t0 700))
+          (is = (lis::removal-time (lis::object-removal (svref (lis::sim-objects first-run) index)))
+              (lis::removal-time (lis::object-removal (svref (lis::sim-objects sim) index))))
+          (true (equalp sim first-run)))))))

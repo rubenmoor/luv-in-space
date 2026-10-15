@@ -1,5 +1,5 @@
 -- pm database. Change it with pm; after a hand edit run `pm validate`.
-PRAGMA user_version = 20;
+PRAGMA user_version = 21;
 
 CREATE TABLE milestone (
     id             INTEGER PRIMARY KEY,
@@ -106,6 +106,28 @@ CREATE TABLE summary (                                     -- an executive summa
     body        TEXT NOT NULL CHECK (trim(body) <> ''),     -- Markdown
     head_commit TEXT,                                      -- git HEAD when written: the next summary's delta starts here
     created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+) STRICT;
+
+CREATE TABLE resource_use_report (                         -- where the effort went, by category; by an exec task
+    id          INTEGER PRIMARY KEY,
+    task_id     INTEGER NOT NULL REFERENCES task (id),
+    head_commit TEXT,                                      -- git HEAD when written
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+) STRICT;
+
+CREATE TABLE resource_use_category (                       -- one of a report's mutually exclusive categories
+    id        INTEGER PRIMARY KEY,
+    report_id INTEGER NOT NULL REFERENCES resource_use_report (id),
+    name      TEXT NOT NULL CHECK (trim(name) <> ''),
+    criteria  TEXT NOT NULL CHECK (trim(criteria) <> ''),  -- one sentence: which tasks belong here
+    UNIQUE (report_id, name)
+) STRICT;
+
+CREATE TABLE resource_use_task (                           -- each task done when the report was written, in one category
+    report_id   INTEGER NOT NULL REFERENCES resource_use_report (id),
+    task_id     INTEGER NOT NULL REFERENCES task (id),
+    category_id INTEGER NOT NULL REFERENCES resource_use_category (id),
+    PRIMARY KEY (report_id, task_id)
 ) STRICT;
 
 CREATE INDEX plan_milestone ON plan (milestone_id);

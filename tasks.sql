@@ -4943,7 +4943,7 @@ INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, crea
 
 ## Done when
 - Tests pass, `nix build` and `scripts/test` pass; `docs/architecture.md` "Checkpoints" lists the sim''s new fields, "The clock" the step order, "Files in load order" the extensions of `clock.lisp`/`physics.lisp`, "Testing" the tests.', '2026-10-15T07:38:08Z', '2026-10-15T08:36:54Z', 170, 0);
-INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (186, 23, 'Removal and re-entry of objects', 'work', 'open', NULL, NULL, 'Piece 4 of `plan 23: Objects on rails and the Earth-orbit places` (read its "The sim and the step" and removal bullets). Needs pieces 1–3. Files: `src/hazards.lisp`, `src/clock.lisp`, `tests/hazards.lisp`, `docs/architecture.md` "Removal of objects".
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (186, 23, 'Removal and re-entry of objects', 'work', 'done', NULL, '2026-10-15, src/hazards.lisp, src/clock.lisp, tests/hazards.lisp, docs/architecture.md', 'Piece 4 of `plan 23: Objects on rails and the Earth-orbit places` (read its "The sim and the step" and removal bullets). Needs pieces 1–3. Files: `src/hazards.lisp`, `src/clock.lisp`, `tests/hazards.lisp`, `docs/architecture.md` "Removal of objects".
 
 ## What
 - Factor the ship''s swept crash test on the step''s Hermite (`hermite-set!`, `hermite-sag`, `hermite-crossing`) into one function called for the ship and each promoted object; a crossing removes the object at that time.
@@ -4960,7 +4960,7 @@ INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, crea
 
 ## Done when
 - Tests pass, `nix build` and `scripts/test` pass (`scripts/test` near its ~15 s); `docs/architecture.md` "Removal of objects" names the functions and tests, "Files in load order" the extension of `hazards.lisp`, "Testing" the tests.
-- The plan''s Done when holds: every object has a state at any t up to 2050 except after removal; flying near promotes, leaving demotes, deterministically.', '2026-10-15T07:38:08Z', NULL, 170, 0);
+- The plan''s Done when holds: every object has a state at any t up to 2050 except after removal; flying near promotes, leaving demotes, deterministically.', '2026-10-15T07:38:08Z', '2026-10-15T08:45:03Z', 170, 0);
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (187, 24, 'The stack and the ship''s collision shapes', 'work', 'open', NULL, NULL, 'Piece 1 of `plan 24: Grapple, contact, berthing, towing, deliveries and refuelling` (read its "The ship''s shapes and the stack" section). Needs `plan 23: Objects on rails and the Earth-orbit places` for `object-def` and the places (`task 183: Rails and attitude modes of the objects`, `task 184: The places: the twelve object definitions and the five presets`). Files: `src/ship.lisp`, `tests/ship.lisp`, `docs/architecture.md`.
 
 ## What
@@ -6520,6 +6520,7 @@ INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, b
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (182, 183, '2026-10-15T07:54:50Z', '2026-10-15T08:18:53Z', 'done', NULL, 0, '38c8bfeb32f81d218b1d2b6db6c7e29af8143e79', 'claude-opus-5-5[1m]', '2239f7f9-bcbc-444e-a4e1-c64b66d5e1e3', 32, 54, 39707, 2891018, 141883, 2.5076236, 2373073);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (183, 184, '2026-10-15T08:18:53Z', '2026-10-15T08:26:39Z', 'done', NULL, 0, '9feb6f4ecb91a69ad04d617c6f73871612db3ed5', 'claude-opus-5-5[1m]', 'ca0e3b58-a0f7-4610-8c54-ba9e2c84b524', 50, 82, 42150, 5050764, 167420, 3.1928407999999995, 2373073);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (184, 185, '2026-10-15T08:26:39Z', '2026-10-15T08:37:09Z', 'done', NULL, 0, '39cb16f783b7b352cbc8e47bc67963b5c1851fd4', 'claude-opus-5-5[1m]', 'f46b495e-7ad9-4007-ae09-6c7454f63333', 55, 92, 52847, 6970264, 195010, 4.0114408, 2373073);
+INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (185, 186, '2026-10-15T08:37:09Z', '2026-10-15T08:45:13Z', 'done', NULL, 0, '57b80c16d57e75dd01aae47f9ca5a7a1e166067f', 'claude-opus-5-5[1m]', '227ab3da-d1e0-465b-86b1-a5df5ff89ed1', 38, 72, 30240, 3684878, 117881, 2.2851116000000005, 2373073);
 
 INSERT INTO task_decision (task_id, decision_id) VALUES (44, 28);
 INSERT INTO task_decision (task_id, decision_id) VALUES (44, 45);

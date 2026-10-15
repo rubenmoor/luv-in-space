@@ -134,29 +134,18 @@ parameter (endpoints included), then the crossing by bracketed Newton."
 
 ;;; The test after each step, and death
 
-(declaim (ftype (function (sim vec3 vec3 quat fixnum) (values boolean &optional))
-                crash-test!))
-
-(defun crash-test! (sim r0 v0 q0 ticks)
-  "Test SIM's last step, of TICKS 1/64 s from R0, V0, Q0 at (sim-t sim) − h
-to its state now, against the central body's crash sphere and the Moon's
-(decision 74); the earliest crossing kills: the ship at the crossing's
-Hermite state, t the impact time, the loss record. True if it did. Conses
-nothing when nothing is hit."
-  (declare (optimize speed) (type sim sim) (type vec3 r0 v0) (type quat q0)
-           (type fixnum ticks))
-  (let* ((ship (sim-ship sim))
-         (r1 (ship-state-r ship)) (v1 (ship-state-v ship))
-         (h (* ticks +fine-step+))
-         (t1 (sim-t sim))
-         (t0 (- t1 h))
-         (central (body (sim-body sim)))
-         (earth (make-array 12 :element-type 'double-float))
-         (moon (make-array 12 :element-type 'double-float))
-         (earth-sag 0d0)
-         (s-earth -1d0) (s-moon -1d0))
-    (declare (dynamic-extent earth moon) (type body central)
-             (type double-float h t1 t0 earth-sag s-earth s-moon))
+(declaim (inline swept-crash))
+(defun swept-crash (earth moon r0 v0 r1 v1 h t1 central)
+  "The swept test of one step of H from R0, V0 to R1, V1 at T1 (CENTRAL's
+frame) against CENTRAL's crash sphere and, from Earth, the Moon's (decision
+74): (values s moon-p), s in [0, 1] the earliest crossing (−1 for none),
+MOON-P true when it is the Moon's. EARTH gets the path, MOON the path
+relative to the Moon when it was tested. Shared by the ship and the
+promoted objects; conses nothing."
+  (declare (type hermite earth moon) (type vec3 r0 v0 r1 v1) (type body central)
+           (type double-float h t1))
+  (let ((earth-sag 0d0) (s-earth -1d0) (s-moon -1d0))
+    (declare (type double-float earth-sag s-earth s-moon))
     (hermite-set! earth r0 v0 r1 v1 h)
     (setf earth-sag (hermite-sag earth)
           s-earth (hermite-crossing earth (body-crash-radius central) earth-sag))
@@ -169,22 +158,46 @@ nothing when nothing is hit."
         (when (> (+ reach radius) +moon-distance-min+)
           (let ((m0 (make-vec3)) (mv0 (make-vec3)) (m1 (make-vec3)) (mv1 (make-vec3)))
             (declare (dynamic-extent m0 mv0 m1 mv1))
-            (body-state-into m0 mv0 :moon t0 :earth)
+            (body-state-into m0 mv0 :moon (- t1 h) :earth)
             (body-state-into m1 mv1 :moon t1 :earth)
             (vec3-sub! m0 r0 m0) (vec3-sub! mv0 v0 mv0)
             (vec3-sub! m1 r1 m1) (vec3-sub! mv1 v1 mv1)
             (hermite-set! moon m0 mv0 m1 mv1 h)
             (setf s-moon (hermite-crossing moon radius (hermite-sag moon)))))))
-    (when (and (< s-earth 0d0) (< s-moon 0d0))
-      (return-from crash-test! nil))
-    ;; The crossing goes in a cell: a double argument would be boxed on
-    ;; every step.
-    (let ((moon-first (and (>= s-moon 0d0) (or (< s-earth 0d0) (< s-moon s-earth))))
-          (s-cell (make-array 1 :element-type 'double-float)))
-      (declare (dynamic-extent s-cell))
-      (setf (aref s-cell 0) (if moon-first s-moon s-earth))
-      (die! sim (if moon-first (body :moon) central) (if moon-first moon earth) earth
-            q0 ticks s-cell))
+    (if (and (>= s-moon 0d0) (or (< s-earth 0d0) (< s-moon s-earth)))
+        (values s-moon t)
+        (values s-earth nil))))
+
+(declaim (ftype (function (sim vec3 vec3 quat fixnum) (values boolean &optional))
+                crash-test!))
+
+(defun crash-test! (sim r0 v0 q0 ticks)
+  "Test SIM's last step, of TICKS 1/64 s from R0, V0, Q0 at (sim-t sim) − h
+to its state now, against the central body's crash sphere and the Moon's
+(swept-crash); the earliest crossing kills: the ship at the crossing's
+Hermite state, t the impact time, the loss record. True if it did. Conses
+nothing when nothing is hit."
+  (declare (optimize speed) (type sim sim) (type vec3 r0 v0) (type quat q0)
+           (type fixnum ticks))
+  (let* ((ship (sim-ship sim))
+         (h (* ticks +fine-step+))
+         (central (body (sim-body sim)))
+         (earth (make-array 12 :element-type 'double-float))
+         (moon (make-array 12 :element-type 'double-float)))
+    (declare (dynamic-extent earth moon) (type body central) (type double-float h))
+    (multiple-value-bind (s moon-p)
+        (swept-crash earth moon r0 v0 (ship-state-r ship) (ship-state-v ship) h
+                     (sim-t sim) central)
+      (declare (type double-float s))
+      (when (< s 0d0)
+        (return-from crash-test! nil))
+      ;; The crossing goes in a cell: a double argument would be boxed on
+      ;; every step.
+      (let ((s-cell (make-array 1 :element-type 'double-float)))
+        (declare (dynamic-extent s-cell))
+        (setf (aref s-cell 0) s)
+        (die! sim (if moon-p (body :moon) central) (if moon-p moon earth) earth
+              q0 ticks s-cell)))
     t))
 
 (defun die! (sim body relative path q0 ticks s-cell)
@@ -208,4 +221,67 @@ impact time; the loss record."
         (replace (ship-state-q ship) (quat-slerp q0 (ship-state-q ship) s))
         (setf (sim-t sim) time
               (sim-loss sim) loss)))
+    sim))
+
+;;; Removal of objects (docs/architecture.md "Removal of objects"; decision
+;;; 46: Rails across spheres, hyperbolas and re-entry). No SHIP message here
+;;; (task 158: Grapple, contact, berthing, towing and deliveries' queue).
+
+(defun object-remove! (sim object time cause &optional point (body (sim-body sim)))
+  "OBJECT removed from SIM at TIME: status :removed and its record (TIME,
+BODY, CAUSE :burned-up, :delivered or :impact, POINT: (latitude longitude)
+of a crash in radians, a delivery's receiving object and fixture). From
+then it is never stepped, promoted, crash-tested or given a state; a
+checkpoint from before brings it back. OBJECT."
+  (declare (ignorable sim))
+  (setf (object-status object) :removed
+        (object-removal object) (make-removal (float time 1d0) body cause point))
+  object)
+
+(defun crash-point (body p time)
+  "(latitude longitude) of BODY-centred P at TIME."
+  (multiple-value-list (latitude-longitude body p time)))
+
+(defun object-crash-tests! (sim before ticks)
+  "After SIM's step of TICKS 1/64 s: each promoted object's swept crash test
+(BEFORE: the step's end t, then each object's r and v at the step's start
+by its index, 6 doubles), a crossing removing it at that time; then each
+rails object whose segment ends :crash at or before the step's end removed
+at that end. Conses nothing unless an object is removed."
+  (declare (optimize speed) (type sim sim) (type (simple-array double-float (*)) before)
+           (type fixnum ticks))
+  (let* ((t1 (aref before 0))
+         (h (* ticks +fine-step+))
+         (central (body (sim-body sim)))
+         (earth (make-array 12 :element-type 'double-float))
+         (moon (make-array 12 :element-type 'double-float))
+         (r0 (make-vec3)) (v0 (make-vec3)) (p (make-vec3)) (dp (make-vec3)))
+    (declare (dynamic-extent earth moon r0 v0 p dp) (type body central) (type double-float h t1))
+    (loop for object across (sim-objects sim)
+          for i of-type fixnum from 1 by 6
+          do (case (object-status object)
+               (:promoted
+                (let ((state (object-state object)))
+                  (dotimes (k 3)
+                    (setf (aref r0 k) (aref before (+ i k))
+                          (aref v0 k) (aref before (+ i 3 k))))
+                  (multiple-value-bind (s moon-p)
+                      (swept-crash earth moon r0 v0 (ship-state-r state) (ship-state-v state)
+                                   h t1 central)
+                    (declare (type double-float s))
+                    (when (>= s 0d0)
+                      (let ((body (if moon-p (body :moon) central))
+                            (time (+ (- t1 h) (* s h))))
+                        (hermite-point! p dp (if moon-p moon earth) s)
+                        (object-remove! sim object time (if moon-p :impact :burned-up)
+                                        (crash-point body p time) (body-key body)))))))
+               (:rails
+                (let ((segment (rails-segment-at (object-rails object) t1)))
+                  (when (and (eq (rails-segment-end-kind segment) :crash)
+                             (<= (rails-segment-end segment) t1))
+                    (let ((body (body (rails-segment-body segment)))
+                          (end (rails-segment-end segment)))
+                      (rails-state-into! p dp segment end)
+                      (object-remove! sim object end :burned-up (crash-point body p end)
+                                      (body-key body))))))))
     sim))

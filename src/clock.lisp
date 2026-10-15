@@ -217,10 +217,13 @@ ends it; changes nothing (a cut due before the step counts as made)."
          (time (sim-t sim))
          (coarse (> level *fine-levels-max*))
          (model (sim-model sim))
+         (objects (sim-objects sim))
          (r0 (make-vec3)) (v0 (make-vec3)) (q0 (make-quat))
-         (third-bodies (make-array 18 :element-type 'double-float)))
+         (third-bodies (make-array 18 :element-type 'double-float))
+         ;; The step's end t, then each object's r and v at its start.
+         (before (make-array (1+ (* 6 (length objects))) :element-type 'double-float)))
     (declare (type double-float time) (type keyword model)
-             (dynamic-extent r0 v0 q0 third-bodies))
+             (dynamic-extent r0 v0 q0 third-bodies before))
     (flet ((cut! ()
              (controls-throttle-cut controls)
              (setf (sim-cutoff sim) nil)))
@@ -244,16 +247,23 @@ ends it; changes nothing (a cut due before the step counts as made)."
             (let ((*hold-controls* controls))
               (flight-step! ship controls h time model #'kinematic-hold-attitude third-bodies))
             (flight-step! ship controls h time model nil third-bodies))
-        (loop for object across (sim-objects sim)
+        (loop for object across objects
+              for i of-type fixnum from 1 by 6
               when (eq (object-status object) :promoted)
-                do (object-step! object h time model third-bodies))
+                do (let ((state (object-state object)))
+                     (replace before (ship-state-r state) :start1 i)
+                     (replace before (ship-state-v state) :start1 (+ i 3))
+                     (object-step! object h time model third-bodies)))
         (setf (sim-t sim) (+ time h))
         (incf (sim-steps sim))
         (let ((cutoff (sim-cutoff sim)))
           (when (or cut-after (and cutoff (>= (ship-state-dv ship) cutoff)))
             (cut!)))
-        (let ((ticks (truncate (* h (/ +fine-step+)))))
-          (unless (crash-test! sim r0 v0 q0 ticks)
+        (setf (aref before 0) (sim-t sim))
+        (let* ((ticks (truncate (* h (/ +fine-step+))))
+               (lost (crash-test! sim r0 v0 q0 ticks)))
+          (object-crash-tests! sim before ticks)
+          (unless lost
             (sim-update-objects! sim))
           ticks)))))
 
@@ -265,7 +275,9 @@ ends it; changes nothing (a cut due before the step counts as made)."
 (a grid time; one not ahead is ignored) and on the Δv cut-off, then
 flight-step! with SIM's model and each promoted object's object-step!
 (the Moon and the Sun read once for all), then the crash test (a crash
-leaves SIM lost at the impact, hazards.lisp), then promotion and demotion.
+leaves SIM lost at the impact, hazards.lisp), the objects' crash tests and
+rails removals (object-crash-tests!), then, unless lost, promotion and
+demotion.
 Returns h, or nil for a lost sim. Hot callers declare it inline: a full
 call boxes h."
   (let ((ticks (sim-step-ticks! sim level until)))

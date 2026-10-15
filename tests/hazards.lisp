@@ -202,3 +202,144 @@ periapsis radius Q: b v = q √(2ε + 2μ/q)."
     (multiple-value-bind (consed sim) (run)
       (false (lis::sim-lost-p sim))
       (true (< consed 1024) "~D bytes" consed))))
+
+;;; Re-entry and removal of objects (docs/architecture.md "Testing" →
+;;; "Re-entry", "Removal of objects"; decision 46: Rails across spheres,
+;;; hyperbolas and re-entry).
+
+(defun k-17-sim (perigee-altitude)
+  "The start's sim, two-body, Derelict K-17 on two-body rails of 800 ×
+PERIGEE-ALTITUDE from apogee at the start; the ship far away."
+  (let ((sim (lis::new-game-sim)))
+    (setf (lis::sim-model sim) :point
+          (lis::object-rails (lis::sim-object sim :k-17))
+          (lis::make-rails (k-17-orbit perigee-altitude) (lis::start-t) :j2 nil))
+    (lis::sim-recheck-objects! sim)
+    sim))
+
+(defun k-17-crash-end (sim)
+  (lis::rails-segment-end (first (lis::object-rails (lis::sim-object sim :k-17)))))
+
+(defun k-17-promoted (perigee-altitude start)
+  "K-17-SIM at START (a grid time), the ship on two-body 800 × 130 km from
+the same apogee, K-17 promoted."
+  (let ((sim (k-17-sim perigee-altitude)))
+    (setf (lis::sim-t sim) start)
+    (multiple-value-bind (r v)
+        (rails-point (lis::make-rails (k-17-orbit 130d3) (lis::start-t) :j2 nil) start)
+      (place-ship! sim r v))))
+
+(defun removal-point (sim)
+  "The closed form's crash point of K-17 on its rails: (latitude longitude)."
+  (let ((end (k-17-crash-end sim)))
+    (multiple-value-list
+     (lis::latitude-longitude (lis::body :earth) (rails-point (lis::object-rails (lis::sim-object sim :k-17)) end)
+                              end))))
+
+(defun k-17-removal (sim) (lis::object-removal (lis::sim-object sim :k-17)))
+
+(define-test reentry-on-rails
+  (let* ((t0 (lis::start-t))
+         (sim (k-17-sim 90d3))
+         (end (k-17-crash-end sim))
+         (point (removal-point sim))
+         (reference (rails-crossing (lis::object-rails (lis::sim-object sim :k-17))
+                                    (+ t0 2500) (+ t0 2700) *earth-crash-radius*)))
+    (step-sim sim most-positive-fixnum 1000 (+ t0 2700))
+    (let ((removal (k-17-removal sim)))
+      (true (lis::object-removed-p (lis::sim-object sim :k-17)))
+      (is eq :burned-up (lis::removal-cause removal))
+      (is eq :earth (lis::removal-body removal))
+      (is = end (lis::removal-time removal))
+      (true (< (abs (- end reference)) 1d-6) "~,9F s off" (- end reference))
+      (true (< (abs (- end t0 2603.07d0)) 0.005d0) "~,3F s" (- end t0))
+      (is equal point (lis::removal-point removal)))))
+
+(define-test reentry-promoted
+  ;; Two-body from apogee at the coarse step (×1,000) and the fine step.
+  (let* ((probe (k-17-sim 90d3))
+         (end (k-17-crash-end probe))
+         (point (removal-point probe)))
+    (dolist (level '(1000 1))
+      (let ((sim (k-17-promoted 90d3 (lis::start-t))))
+        (is equal '(:k-17) (promoted-keys sim))
+        (step-sim sim most-positive-fixnum level (+ end 60))
+        (false (lis::sim-lost-p sim))
+        (let ((removal (k-17-removal sim)))
+          (true removal "×~D" level)
+          (when removal
+            (is eq :burned-up (lis::removal-cause removal))
+            (true (< (abs (- (lis::removal-time removal) end)) 1d-2)
+                  "×~D: ~,6F s off" level (- (lis::removal-time removal) end))
+            (destructuring-bind (lat lon) (lis::removal-point removal)
+              (true (< (deg-diff lat (first point)) 0.01d0) "×~D" level)
+              (true (< (deg-diff lon (second point)) 0.01d0) "×~D" level))))))))
+
+(define-test reentry-after-removal
+  ;; No state, no promotion with the ship at the crash point, no new test.
+  (let* ((sim (k-17-sim 90d3))
+         (k-17 (lis::sim-object sim :k-17))
+         (end (k-17-crash-end sim)))
+    (step-sim sim most-positive-fixnum 1000 (+ (lis::start-t) 2700))
+    (let ((removal (k-17-removal sim)))
+      (true removal)
+      (dolist (time (list end (lis::sim-t sim) lis::*rails-horizon*))
+        (false (lis::object-state-into! (lis::make-vec3) (lis::make-vec3) (lis::make-quat)
+                                        (lis::make-vec3) k-17 time)))
+      (multiple-value-bind (r v) (rails-point (lis::object-rails k-17) end)
+        ;; 50 km above the crash point.
+        (place-ship! sim (lis::vec3-scale r (+ 1 (/ 50d3 *earth-crash-radius*))) v))
+      (is eq :removed (lis::object-status k-17))
+      (false (member :k-17 (promoted-keys sim)))
+      (step-sim sim 100 1)
+      (is eq :removed (lis::object-status k-17))
+      (is eq removal (lis::object-removal k-17)))))
+
+(define-test reentry-checkpoint
+  ;; Restored before t_c, K-17 is back and burns up at the same t_c, on
+  ;; rails and promoted.
+  (dolist (make (list (lambda () (k-17-sim 90d3))
+                      (lambda () (k-17-promoted 90d3 (lis::start-t)))))
+    (let* ((sim (funcall make))
+           (checkpoint (lis::take-checkpoint sim))
+           (end (+ (lis::start-t) 2700)))
+      (step-sim sim most-positive-fixnum 1000 end)
+      (let ((flown (lis::copy-sim sim)))
+        (true (k-17-removal flown))
+        (lis::restore-checkpoint! sim checkpoint)
+        (false (k-17-removal sim))
+        (false (lis::object-removed-p (lis::sim-object sim :k-17)))
+        (step-sim sim most-positive-fixnum 1000 end)
+        (true (equalp sim flown))
+        (is = (lis::removal-time (k-17-removal flown))
+            (lis::removal-time (k-17-removal sim)))))))
+
+(define-test reentry-perigee-above
+  ;; Perigee 1 m above the crash radius: on rails past perigee, and
+  ;; promoted at the fine step through it.
+  (let* ((t0 (lis::start-t))
+         (perigee (+ t0 (* 0.5d0 (lis::orbit-period (k-17-orbit (+ 100d3 1)))))))
+    (let ((sim (k-17-sim (+ 100d3 1))))
+      (step-sim sim most-positive-fixnum 1000 (+ perigee 100))
+      (is eq :rails (lis::object-status (lis::sim-object sim :k-17))))
+    (let ((sim (k-17-promoted (+ 100d3 1) (/ (floor (* 64 (- perigee 60))) 64d0))))
+      (is equal '(:k-17) (promoted-keys sim))
+      (step-sim sim most-positive-fixnum 1 (+ perigee 60))
+      (is eq :promoted (lis::object-status (lis::sim-object sim :k-17)))
+      (false (k-17-removal sim)))))
+
+(define-test object-remove-delivered
+  ;; A delivery's record has the crash's shape: time, body, cause, point.
+  (let* ((sim (lis::new-game-sim))
+         (pod (lis::sim-object sim :pod-14))
+         (time (+ (lis::sim-t sim) 600)))
+    (is eq pod (lis::object-remove! sim pod time :delivered '(:highport "PLANT")))
+    (let ((removal (lis::object-removal pod)))
+      (is eq :removed (lis::object-status pod))
+      (true (typep removal 'lis::removal))
+      (is = time (lis::removal-time removal))
+      (is eq :earth (lis::removal-body removal))
+      (is eq :delivered (lis::removal-cause removal))
+      (is equal '(:highport "PLANT") (lis::removal-point removal)))
+    (step-sim sim 10 1)
+    (is eq :removed (lis::object-status pod))))

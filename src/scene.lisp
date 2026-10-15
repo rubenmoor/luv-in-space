@@ -129,100 +129,47 @@ Earth relative to the eye, the sun, and clip units per pixel."
 
 ;;; GPU resources.
 
-(defclass scene ()
-  ((device :initarg :device :reader scene-device)
-   (earth-vertices :initarg :earth-vertices :reader scene-earth-vertices)
+(defclass scene (renderer)
+  ((earth-vertices :initarg :earth-vertices :reader scene-earth-vertices)
    (earth-count :initarg :earth-count :reader scene-earth-count)
    (overlay-vertices :initarg :overlay-vertices :reader scene-overlay-vertices)
    (star-count :initarg :star-count :reader scene-star-count)
    (label-count :initarg :label-count :reader scene-label-count)
    (uniforms :initarg :uniforms :reader scene-uniforms)
-   (bind-group :initarg :bind-group :reader scene-bind-group)
-   (earth-pipeline :initarg :earth-pipeline :reader scene-earth-pipeline)
-   (overlay-pipeline :initarg :overlay-pipeline :reader scene-overlay-pipeline)
-   (depth-target :initform nil :accessor scene-depth-target)
-   (color-views :initform (make-hash-table :test #'eq) :reader scene-color-views)))
-
-(defun vertex-buffer (device data label)
-  (let ((buffer (luv:create device (luv:make-buffer-descriptor
-                                    :label label :size (* 4 (length data))
-                                    :usage '(:vertex :copy-dst)))))
-    (luv:write-buffer buffer data)
-    buffer))
-
-(defun live-pipeline (role device layout format vertex-buffers depth-stencil)
-  "A luv live shader pipeline for ROLE: rebuilt when its shaders are
-redefined, the last good one kept when a rebuild fails."
-  (luv:make-live-shader-pipeline
-   :role role :vertex-role role :label (string-downcase role)
-   :device device :layout layout :vertex-buffers vertex-buffers
-   :target-format format :primitive '(:topology :triangle-list)
-   :depth-stencil depth-stencil))
+   (bind-group :initarg :bind-group :reader scene-bind-group)))
 
 (defun make-scene (device format)
   "The scene's buffers and pipelines on DEVICE, drawing into FORMAT."
-  (let* ((earth (uv-sphere))
-         (layout (luv:create device (luv:make-bind-group-layout-descriptor
-                                     :entries '((:binding 0 :type :uniform-buffer)))))
-         (uniforms (luv:create device (luv:make-buffer-descriptor
-                                       :label "frame" :size (* 4 28) :usage '(:uniform)))))
+  (let* ((scene (make-instance 'scene :device device :format format))
+         (earth (uv-sphere))
+         (layout (gpu-create scene (luv:make-bind-group-layout-descriptor
+                                    :entries '((:binding 0 :type :uniform-buffer)))))
+         (uniforms (uniform-buffer scene 28 "frame")))
     (multiple-value-bind (overlay star-count label-count) (overlay-vertices)
-      (make-instance
-       'scene
-       :device device
-       :earth-vertices (vertex-buffer device earth "earth")
+      (reinitialize-instance
+       scene
+       :earth-vertices (vertex-buffer scene earth "earth")
        :earth-count (/ (length earth) 3)
-       :overlay-vertices (vertex-buffer device overlay "overlay")
+       :overlay-vertices (vertex-buffer scene overlay "overlay")
        :star-count star-count :label-count label-count
        :uniforms uniforms
-       :bind-group (luv:create device (luv:make-bind-group-descriptor
-                                       :layout layout
-                                       :entries `((:binding 0 :resource ,uniforms))))
-       :earth-pipeline
-       (live-pipeline :earth device layout format
-                      '((:array-stride 12
-                         :attributes ((:shader-location 0 :offset 0 :format :float32x3))))
-                      ;; decision 4: Depth strategy
-                      '(:format :depth32-float :depth-write-enabled t
-                        :depth-compare :greater))
-       :overlay-pipeline
-       (live-pipeline :overlay device layout format
-                      '((:array-stride 28
-                         :attributes ((:shader-location 0 :offset 0 :format :float32x2)
-                                      (:shader-location 1 :offset 8 :format :float32x2)
-                                      (:shader-location 2 :offset 16 :format :float32x3))))
-                      '(:format :depth32-float :depth-write-enabled nil
-                        :depth-compare :always))))))
-
-(defun scene-live-artifacts (scene)
-  (list (scene-earth-pipeline scene) (scene-overlay-pipeline scene)))
-
-(defun destroy-scene (scene)
-  "Release what the device would otherwise reclaim only by garbage collection."
-  (mapc #'luv:release-live-artifact (scene-live-artifacts scene)))
-
-(defun depth-view (scene extent)
-  "A depth32-float view of EXTENT, remade when the size changes."
-  (let ((cached (scene-depth-target scene)))
-    (if (and cached (equal (first cached) extent))
-        (third cached)
-        (let* ((device (scene-device scene))
-               (texture (luv:create device (luv:make-texture-descriptor
-                                            :label "depth" :size extent
-                                            :dimensions :2d :format :depth32-float
-                                            :usage '(:render-attachment))))
-               (view (luv:create device (luv:make-texture-view-descriptor
-                                         :texture texture))))
-          ;; The old target may still be in flight; the skeleton leaks it.
-          (setf (scene-depth-target scene) (list extent texture view))
-          view))))
-
-;; A view must outlive the submit; one per swapchain or capture texture.
-(defun color-view (scene texture)
-  (or (gethash texture (scene-color-views scene))
-      (setf (gethash texture (scene-color-views scene))
-            (luv:create (scene-device scene)
-                        (luv:make-texture-view-descriptor :texture texture)))))
+       :bind-group (gpu-create scene (luv:make-bind-group-descriptor
+                                      :layout layout
+                                      :entries `((:binding 0 :resource ,uniforms))))))
+    (live-pipeline scene :earth layout
+                   '((:array-stride 12
+                      :attributes ((:shader-location 0 :offset 0 :format :float32x3))))
+                   ;; decision 4: Depth strategy
+                   :depth-stencil '(:format :depth32-float :depth-write-enabled t
+                                    :depth-compare :greater))
+    (live-pipeline scene :overlay layout
+                   '((:array-stride 28
+                      :attributes ((:shader-location 0 :offset 0 :format :float32x2)
+                                   (:shader-location 1 :offset 8 :format :float32x2)
+                                   (:shader-location 2 :offset 16 :format :float32x3))))
+                   :depth-stencil '(:format :depth32-float :depth-write-enabled nil
+                                    :depth-compare :always))
+    scene))
 
 (defun encode-scene (scene encoder target extent)
   "Draw stars, Earth and the label into TARGET of EXTENT (width height)."
@@ -238,14 +185,12 @@ redefined, the last good one kept when a rebuild fails."
                   :depth-load-op :clear :depth-store-op :store
                   :depth-clear-value 0.0)))))
     (flet ((overlay (first count)
-             (luv:set-pipeline pass (luv:live-shader-pipeline-native-pipeline
-                                     (scene-overlay-pipeline scene)))
+             (luv:set-pipeline pass (renderer-pipeline scene :overlay))
              (luv:set-bind-group pass 0 (scene-bind-group scene))
              (luv:set-vertex-buffer pass 0 (scene-overlay-vertices scene))
              (luv:draw pass count 1 first)))
       (overlay 0 (scene-star-count scene))
-      (luv:set-pipeline pass (luv:live-shader-pipeline-native-pipeline
-                                   (scene-earth-pipeline scene)))
+      (luv:set-pipeline pass (renderer-pipeline scene :earth))
       (luv:set-bind-group pass 0 (scene-bind-group scene))
       (luv:set-vertex-buffer pass 0 (scene-earth-vertices scene))
       (luv:draw pass (scene-earth-count scene))

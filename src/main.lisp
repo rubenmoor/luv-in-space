@@ -11,7 +11,7 @@
 (defvar *game* nil)
 
 (defmethod luv:application-live-artifacts ((game game))
-  (scene-live-artifacts (game-scene game)))
+  (renderer-live-artifacts (game-scene game)))
 
 (defun failed-live-artifacts (&optional (game *game*))
   (and game
@@ -87,7 +87,7 @@ A failed artifact keeps drawing its last good build."
         (setf (luv:canvas-clock canvas) (luv:make-demand-clock)
               (luv:canvas-event-handler canvas) nil))
       (luv:close-canvas canvas)
-      (destroy-scene (game-scene game))
+      (destroy-renderer (game-scene game))
       (luv:destroy (game-device game)))
     (when (eq game *game*)
       (setf *game* nil)))

@@ -96,8 +96,8 @@ In brackets: the milestone that first creates the file; later milestones extend 
 - `flights.lisp` (milestone 2; 3: pilot actions, stated starts; 5: quests, chained starts): flight scripts: read a script, write its actions to `controls` per step, the terminal approach, start states, run it headless or in the live game ("Scripted runs"); the last simulation file, so new simulation files go before it; needs controls, clock, prediction, and from their milestones autopilot, places, quests, saves.
 - `shaders.lisp` (skeleton): all `define-shader`s and `shader-specification-for` methods (package `luv-in-space.shaders`); split into `shaders-<pass>.lisp` after it when it grows; needs package.
 - `assets.lisp` (milestone 2): locating and loading assets: textures through `sdl3-image`, the star table; needs package.
-- `gpu.lisp` (milestone 2): HAL helpers: buffers, live pipelines, views and size-cached targets (from the skeleton's `scene.lisp`); needs shaders.
-- `camera.lisp` (milestone 2; 3: cockpit view): camera state, the one projection function (reversed-Z, infinite far, clip-y flip), camera-relative conversion; needs math, gpu.
+- `gpu.lisp` (milestone 2): HAL helpers (from the skeleton's `scene.lisp`): `vertex-buffer`, `uniform-buffer`, `live-pipeline` (kept per role), `render-target` (size-cached per name, remade on a change of extent or format, the old one through luv's deferred `destroy`), `depth-view`, `color-view`, `texture-from-pixels`; the `renderer` class owning them, `renderer-live-artifacts`, `destroy-renderer`; needs shaders.
+- `camera.lisp` (milestone 2; 3: cockpit view): the `camera` struct (anchor, double offset, FRD orientation, vertical field of view, near), `camera-clip-rows!` the one projection function (reversed-Z, infinite far, clip-y sign), `camera-eye`, `eye-relative-single`, `sphere-offset-term`, `outside-camera-default!`; needs math, gpu.
 - `stars.lisp` (milestone 2): star table to instanced quads at infinity; needs assets, camera.
 - `impostors.lisp` (milestone 2; 3: Earth's night lights and clouds; 4: the Moon's textures, planets): sphere impostors for the Sun, planets and moons; Earth's texture; needs bodies, assets, camera.
 - `meshes.lisp` (milestone 2: ship; 3: places and other ships; 4: asteroids): generated meshes (ship frame, modules, stations, depots, other ships, asteroids) and their instanced draws; needs ship, camera.
@@ -114,7 +114,7 @@ In brackets: the milestone that first creates the file; later milestones extend 
 - `capture.lisp` (skeleton): screenshots and `capture-scene`; needs main.
 
 - The simulation files (`math` to `flights`) never call the HAL or SDL, so tests load and run them without a canvas; rendering files read simulation state and never change it.
-- `scene.lisp` stays until `render.lisp` and its parts replace it; `PLACEHOLDER(23)` and `tests/scene.lisp` go with it (its checks move to `tests/render.lisp`).
+- `scene.lisp` (a `renderer` subclass drawing through `gpu.lisp`) stays until `render.lisp` and its parts replace it; `PLACEHOLDER(23)` and `tests/scene.lisp` go with it (its checks move to `tests/render.lisp`).
 - Tests mirror modules: `tests/<module>.lisp` for each file with logic (`tests/orbits.lisp`, `tests/physics.lisp`, `tests/clock.lisp`, …), listed in `luv-in-space/tests` in the same order; `tests/package.lisp` and `tests/capture.lisp` stay; GPU tests only in `tests/render.lisp` and `tests/capture.lisp`.
 - A file named above may be merged into a neighbour if it stays under ~100 lines; a new file is added to this list by the task that creates it.
 
@@ -193,7 +193,7 @@ Where each frame is used:
 - Camera-relative, then single (`decision 5: Precision of positions`): each frame, for every drawn thing, `(position − camera position)` in double, in the frame of integration (or through the heliocentric frame for bodies, see the pitfalls), then converted to `single-float`. The GPU gets offsets in ICRF axes and the clip rows; no world-space positions, no world matrices.
 - One projection function in `camera.lisp` (`decision 4: Depth strategy`): from the camera quaternion and the vertical field of view f = 1 / tan(fov/2), it returns four clip rows applied to a camera-relative point p (ICRF axes):
   - clip x = (f / aspect) (p · right), clip y = s f (p · down), clip z = near, clip w = p · forward; near = 0.1 m, so depth = near / (p · forward): reversed-Z with an infinite far plane, `:depth32-float`, compare `:greater`, clear 0.0.
-  - s = +1 on Vulkan, where clip y points down (luv's Vulkan path; `docs/luv-capabilities.md` "Other findings"); s = −1 for a backend with y up. The sign is in this function only. The skeleton's `uniform-data` in `src/scene.lisp` is this function in its first form (right/up/forward, y flipped by negating `up`); `camera.lisp` replaces it in `milestone 2`.
+  - s = +1 on Vulkan, where clip y points down (luv's Vulkan path; `docs/luv-capabilities.md` "Other findings"); s = −1 for a backend with y up. The sign is in this function only: `+clip-y-sign+` in `camera-clip-rows!` (`src/camera.lisp`), which writes the four rows as 16 singles.
   - Clip rows go to the GPU as single floats; they hold only directions and the focal scale, so single precision is enough.
 - Draw order in one pass, reversed-Z throughout:
   1. Stars at infinity: directions only (no translation), clip z = 0 so depth is 0, compare `:always`, no depth write, additive.

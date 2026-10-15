@@ -1843,6 +1843,264 @@ Each piece is one task: code, its tests, its docs; `nix build` and `scripts/test
 - The five pieces are done; `nix build` and `scripts/test` pass, `scripts/test` near its ~15 s.
 - Headless, from the start orbit, each `milestone 3` orbit manoeuvre is planned, flown by the sim through the clock and meets its goal within the tolerances, with Δv within 3 % of the impulsive figure; plans below the 150 km floor or beyond the propellant are refused; every abort rule fires at its step.
 - In the running game (`nix run` or `./sly play`) O opens the presets, Return plans and engages, the ship slews, burns and cuts by itself while the player warps, and Backspace or a flight key gives control back.', '2026-10-15T06:31:14Z', 160);
+INSERT INTO plan (id, milestone_id, subject, priority, body, created_at, created_by_task) VALUES (27, 3, 'Autopilot: rendezvous, phasing, clear approaches and station-keeping', 660, 'Part 5 of `plan 3: masterplan`: "Rendezvous: <place>" for every Earth-orbit place and towable load. The planner searches Lambert transfers and phasing orbits in Kepler, refines the best clear candidate by shooting, and picks an aim point whose approach is clear. The sim then flies the burns, the terminal phase to the stop point and station-keeping, all in the one step function. It stands on these plans:
+- `plan 26: Autopilot: planner, orbit manoeuvres, execution and safety`: the job and its stages, `finite-burn`, the shot, Newton with the minimum-norm step, refusals, execution checks, measurement and replans, the menu model, `autopilot-plan-now`.
+- `plan 25: Predicted trajectories, targets and target holds`: `sim-target`, `sim-set-target!`, `target-state-into!`, the controls'' target scratch, holds `:target` and `:relative-retrograde`, `sim-plan` and its cursor, `plan-step-controls!`, the relative nodes, `*prediction-work-per-frame*`.
+- `plan 24: Grapple, contact, berthing, towing, deliveries and refuelling`: notices, `checkpoint-request`, the stack''s mass properties, `*grapple-tip*`, the fixtures'' free or occupied flags.
+- `plan 23: Objects on rails and the Earth-orbit places`: `*objects*`, `*places*`, `object-state-into!`, `place-target-state-into!`, `rails-state-into!`, promotion within 100 km.
+
+Later parts read it: `:autopilot :rendezvous`, `:on-station`, `:aim-point`, `:clearance-above` and the preset scripts (`task 162`); the map''s burn markers and aim point (`task 164`); the AUTOPILOT and TARGET screens (`task 166`); the overlay''s panel (`task 167`).
+
+The specification: `docs/design.md` "The autopilot" (the rendezvous manoeuvre, "Picking a preset", the safety rules), "Rendezvous: search, phasing and the approach" ("The search", "The quest line''s rendezvous", "The terminal path and crowded targets", "Scripted runs"), "Earth-orbit points of interest", "Rigid bodies: attitude, mass, shapes and fixtures", "RCS forces, torques and accelerations", "Time warp"; `docs/story.md` "Rules for every quest" ("On station at F"); `docs/architecture.md` "The clock", "Time warp", "Trajectory prediction", "Checkpoints", "Determinism", "Testing", "Scripted runs" (`:range`, fixtures, labels).
+
+Decisions:
+- `decision 32: Autopilot scope and safety rules`, `decision 54: Autopilot rendezvous: phasing, lunar chain, hyperbolic targets, clear approaches`, `decision 58: Story ships'' slots at Fulmar Depot and Peary Depot, schedules and clear plans` (the plan check), `decision 59: Rendezvous transfers pass the target clear`.
+- `decision 53: Deliveries, the stranded offer, checkpoint floors and Skua Yard''s layout`, `decision 63: POD 14 and Skua Yard''s layout from milestone 3`, `decision 111: Fixture axes of Derelict K-17 and Skua Yard''s rocks`, `decision 33: Grapple tolerances, contact and berthing`.
+- `decision 19: Time-warp rules`, `decision 20: Trajectory prediction on the frame thread`, `decision 31: Warp choices within the time-warp rules`, `decision 70: Flight computer: per-step control laws, holds and the RCS mixer`, `decision 72: Simulation state and the one step function in clock.lisp`.
+- `decision 56: Flight-script actions, start states and the quest play-through` (labels `:phasing`, `:departure`, `:arrival`, `:terminal`; `:range`), `decision 112: Grapple, stack and berth in the sim: state, notices to the clock, the latest checkpoint`, `decision 114: Targets and target holds in the sim`, `decision 115: Planned burns as scheduled controls in the sim`, `decision 116: Prediction in milestone 3: horizon, target nodes, closest approach, relative nodes, budget`, `decision 117: Autopilot in milestone 3: planning jobs, goal measures, burns, execution rules in the step, trims`, `decision 118: Autopilot preset menu and input in milestone 3`.
+- This plan''s own: `decision 119: Rendezvous planning in milestone 3: Lambert, search, aim and stop points, checks, shooting, burns`, `decision 120: Rendezvous terminal phase and station-keeping in the step`, `decision 121: Skua Yard''s stop point while the drop point is occupied`.
+
+## Scope and limits
+- In:
+  - The Lambert solver.
+  - Stop points, the terminal frame and aim points (1)–(3).
+  - Fixture choice and the rendezvous refusals.
+  - The Kepler search: families A and B, the close grid, the clearance filter, refinement, the limit and the tie rule, work units.
+  - The plane burn first.
+  - Rendezvous shooting to the aim point, the shot-path check and the fallback to the next candidate.
+  - The terminal allowance in the propellant check.
+  - The `RDV` menu rows.
+  - The terminal phase and station-keeping in the step, with their warp rules, aborts and on-station notice and checkpoint, and the prediction while they run.
+- Out, to later parts:
+  - The script vocabulary (`:autopilot :rendezvous`, `:range`, `:limit`, `:on-station`, `:aim-point`, `:clearance-above`) and the `preset-<place>` and rendezvous scripts: `task 162`. It calls `autopilot-plan-now` and reads `rendezvous-plan-aim-point` and the cursor.
+  - Drawing the aim point and the terminal path on the map: `task 164`.
+  - Screens, lamps and the overlay: `task 166`, `task 167`.
+  - The pilot''s last 100 m (`:approach`): `task 162`; the autopilot never grapples (`decision 32`).
+- Out, to `milestone 4`: TLI, captures, the lunar chain, B merged into a capture, the LOI or an existing apsis burn, hyperbolic targets (absolute-time search), mid-course corrections. The code leaves room for them, not stubs:
+  - the families are a list of generators;
+  - the aim point and the arrival are computed per target kind;
+  - the job''s stages take a chain.
+- Out, to `milestone 5`: TANKER 3''s and THRIFT''s slots. The plan check covers every object in `sim-objects`, so they join it when they exist.
+
+## Files, in load order
+- `src/orbits.lisp`: `lambert-into!`.
+- `src/places.lisp`: the terminal frame, stop points, Skua Yard''s front.
+- `src/controls.lisp`: the terminal and station-keeping law; the stop point in the target scratch.
+- `src/clock.lisp`: the cursor''s `:terminal` and `:station` phases, the law''s glue in the step, the warp rules, the aborts, the on-station notice and checkpoint request.
+- `src/prediction.lisp`: terminal and station-keeping treated as thrust.
+- `src/autopilot.lisp`: aim points, the terminal check, the search, the rendezvous job, the refusals, the menu rows, `rendezvous-plan-aim-point`.
+- `src/input.lisp`: nothing new. The menu keys are `plan 26`''s; the window title is unchanged.
+- Tests: `tests/orbits.lisp`, `tests/places.lisp`, `tests/controls.lisp`, `tests/clock.lisp`, `tests/prediction.lisp`, `tests/autopilot.lisp`. No new file.
+
+## The Lambert solver (`orbits.lisp`, `decision 119`)
+- `(lambert-into! v1 v2 r1 r2 tof mu normal)`: a single-revolution universal-variable solver (Vallado, *Fundamentals of Astrodynamics and Applications*, "Lambert''s problem, universal variables"). It writes v1 and v2 and returns t, or nil when it has no solution or skips the case.
+  - Prograde in the sense of `normal`: the ship''s angular momentum.
+  - The transfer angle comes from r1 × r2 against `normal`.
+  - Within 0.5° of 180° it returns nil: the plane is undefined there, and the grid steps around it.
+- Newton on the universal variable z, safeguarded by bisection within its bracket; at most 50 iterations; converged at a time-of-flight error of 1e-9 relative.
+- Plain doubles, conses nothing; no wall clock.
+
+## Stop points, the terminal frame and aim points (`places.lisp`, `autopilot.lisp`; `decision 119`, `decision 121`)
+- Terminal frame (`places.lisp`): `(terminal-frame-into! q w object time)` gives the object''s attitude with any `:spin` about its fixture axis removed (q₀ for a spinning rock or K-17), and the frame''s angular velocity.
+  - Tern: LVLH, 0.065°/s.
+  - Fulmar, Highport: Sun-pointing.
+  - POD 14, the rock mover: inertial.
+  - The drop point: its rails'' LVLH.
+- Stop point (`places.lisp`): `(stop-point-into! r v sim target fixture range time)`. The controlled point is the grapple cone''s tip; the drop point has no fixture, so there the stack''s CoM is controlled.
+  - Position: the pin plus `range` (default 100 m, allowed 100–1,000 m) along the outward axis, turned by the terminal frame.
+  - Velocity: v_T + ω × offset.
+- Fixture choice: a named fixture, else the target''s first free berth or towable fixture.
+  - Fulmar Depot: A.
+  - Highport: the plant.
+  - Tern Station: its berth.
+  - K-17, the rocks and POD 14: their one fixture.
+- Skua Yard (`decision 121`): the stop point is the drop point while it is clear. While any object''s bound + 200 m reaches it, the stop point is the yard''s front: the drop point''s rails 1.043 s ahead, 1 km at apogee. The choice is made at planning and kept for the plan.
+- Planning refusals:
+  - The target removed or latched: "NO TARGET".
+  - The fixture occupied or missing: "NO FREE FIXTURE".
+  - The stop point under 100 m from the target''s CoM: "RANGE TOO SHORT".
+- Aim points (`autopilot.lisp`):
+  - (1) The target''s rails state at t_arr − 1,000 m / |v_T|: on the target''s orbit, co-orbital under J2 by construction.
+  - (2) 1 km from the stop point along the local radius in the terminal frame: outward, inward when the fixture axis points inward.
+  - (3) 1 km out of plane, the clearer side first.
+  - (2) and (3) move with the frame: velocity v_T + ω × offset.
+- `(terminal-path-clear-p sim target stop aim t-arr)`: the straight segment from the aim point to the stop point, in the terminal frame, must keep:
+  - ≥ 100 m from the target''s CoM;
+  - ≥ bound + 200 m from every other object that is not removed, with the objects'' positions relative to the target at t_arr and every 300 s up to t_arr + 1,800 s.
+- The first clear candidate wins; none clear: "NO CLEAR APPROACH". `rendezvous-plan-aim-point` returns its number for `:aim-point`.
+
+## The search (`autopilot.lisp`, `decision 119`)
+Kepler only: the ship''s coast is two-body; the target and the other objects are on their rails, with J2''s secular rates, through `rails-state-into!`.
+- Time limit: the aim point within the limit of planning. Default 48 h; 12 h to 10 days in 12 h steps. The first burn is ≥ snapshot t + `*plan-min-lead*`.
+- Family A (direct): departures every 1/64 of the ship''s period over the limit; transfer times 0.4–1.5 target periods in 32 steps.
+- The close grid: when the ship is within 50 km of the aim point, also transfer times of 0.02–0.4 target periods in 16 steps. This serves a ship already beside its target (`skua-yard-apogee-approach`).
+- Family B (phasing): a tangential burn at one of 64 points of the ship''s next revolution into an orbit of period T_ph, held N whole revolutions, then an A transfer departing within one T_ph of its end.
+  - First guess, with Δt the target''s lead in time along its orbit at the phasing burn: T_ph = T_t − Δt / N to catch up, or T_t + (T_t − Δt) / N to fall back.
+  - N runs from 1 to 32 while N T_ph fits the limit.
+  - Every phasing orbit above the 150 km floor and within 150,000 km of Earth.
+  - In `milestone 3` B is a burn of its own; merging it into an existing burn is `milestone 4`''s.
+- Cost: the impulsive sum of all burns, including a `:plane` burn when there is one.
+- Clearance filter (`decision 59`): a candidate is kept only if its Kepler arc, from its first burn to the aim point, stays ≥ bound + 200 m from the target and from every other object. The arc is scanned at 1/256 of each coast, refined by golden section wherever the distance is under 10 km.
+- Refinement: the best three per family (and per N) by golden section in departure and transfer time.
+- The winner: the least total Δv; candidates within 1 m/s of it go to the earlier arrival. The job keeps an ordered list of the best 8 clear candidates for the shooting.
+- Work units: each Lambert solve and each clearance scan counts a number of `decision 116`''s units, set from a measurement against a coast step. The search spreads over frames in the job''s `:search` stage. It is deterministic: the same snapshot gives the same list whether run at once or in budgeted slices.
+
+## The rendezvous plan and its shooting (`autopilot.lisp`, `decision 119`)
+- Burns: `[:plane] [:phasing] :departure :arrival`, then the terminal phase.
+  - `:plane`: when the planes differ by ≥ 0.01°, `plan 26`''s change-plane guess at the cheaper relative node comes first, and the search starts after its cut + 120 s.
+  - `:phasing`, `:departure`, `:arrival`: built by `finite-burn` with the stack''s mass at each burn.
+  - `burn-plan` gains its rendezvous part: target, fixture, range, stop-point choice, the aim point''s number and its offset, arrival time.
+- Shooting: `plan 26`''s Newton (`decision 117`) with:
+  - parameters: the `:departure`''s and the `:arrival`''s Δv in their LVLH axes (6); `:plane` and `:phasing` stay fixed at their guesses;
+  - residuals: position and velocity at the `:arrival` cut against the aim point''s (6);
+  - tolerance: 100 m and 0.1 m/s;
+  - the shot from the snapshot copy at `*prediction-level*`; the target''s state from the shot''s copy (rails or promoted).
+- Shot-path check (`decision 58`, `decision 59`): from the first burn to the `:arrival` burn''s start, the stack''s CoM must stay ≥ bound + 200 m from the target''s CoM and from every other object''s.
+  - The check covers the objects the shot''s copy promotes (within 100 km), tested on each step''s relative Hermite with `plan 23`''s swept test. Objects beyond 100 km are farther than any bound + 200 m.
+  - A candidate that fails, or does not converge, is dropped and the next one is shot, up to 8; then "NO CLEAR TRANSFER".
+- Refusals (`plan 26`''s `:check`) also count the terminal allowance of 20 m/s in the propellant: plan + 20 m/s + reserve.
+- Measurement and replans (`decision 117`) apply to `:plane`, `:phasing` and `:departure`; there is no `:trim` after `:arrival`, since the terminal phase absorbs its error.
+- `autopilot-plan-now sim :rendezvous goal`: `goal` is `(<target or (place fixture)> &key range limit)`.
+- Engaging a rendezvous sets `sim-target` to its target (`sim-set-target!`).
+- Menu rows (`decision 118`, `decision 119`): after the orbit rows, `RDV <PLACE> <h> H` for the five places in `*places*` order, then `RDV TARGET <h> H` while a target is set that is not a place. Left/Right step the limit by 12 h within 12–240 h. Return plans, as for every row.
+
+## Terminal phase and station-keeping in the step (`controls.lisp`, `clock.lisp`, `prediction.lisp`; `decision 120`)
+- The cursor: after the `:arrival` cut the phase is `:terminal`, later `:station`. Copied and compared as the cursor is.
+- The target scratch (`plan 25`): the step''s start also writes the stop point''s r and v, from `stop-point-into!`, while a rendezvous is engaged.
+- The law, in `controls.lisp`: `(terminal-controls! controls p u q phase)`. It is pure; it writes the translation keys (full RCS, not fine), the throttle and the hold. Here p is the controlled point less the stop point and u their relative velocity:
+  - the wanted velocity is w = −p / 100 s, its magnitude capped at 10 m/s in `:terminal` and 0.05 m/s in `:station`; the error is e = u − w;
+  - per body axis, the translation key opposing e is held while |e| along that axis exceeds 0.01 m/s, released under 0.003 m/s;
+  - the throttle is 0.1 while −e lies within 10° of +x and exceeds 0.3 m/s along it, off again under 0.05 m/s;
+  - the hold is `:relative-retrograde` in `:terminal` (frozen while slow, `decision 114`) and `:target` in `:station`.
+- Glue in `clock.lisp`: right after `plan-step-controls!`, on fine steps only. On a coarse step the law releases the keys and the throttle, so the prediction''s copy coasts.
+- On station: |p| ≤ 1 m and |u| ≤ 0.02 m/s give:
+  - the phase `:station`;
+  - the notice "ON STATION: <NAME>", once;
+  - the sim''s `checkpoint-request`.
+
+  It then keeps station until disengaged; `:autopilot-done` is true from then on.
+- Warp:
+  - at the start of `:terminal` the clock lowers to ×4 ("WARP ×4: TERMINAL PHASE");
+  - in `:terminal` and `:station` warp above ×4 is refused ("WARP REFUSED: STATION-KEEPING, LIMIT ×4");
+  - both go through `clock-check-level!` and `warp-refusal`.
+- Aborts, beside `decision 117`''s:
+  - the target cleared by the step''s clearing rule (removed or latched): "TARGET LOST";
+  - `:terminal` longer than `*terminal-timeout*` (7,200 s of game time): "APPROACH TIMED OUT".
+  - A contact, latch or berth notice aborts as before, so the pilot''s `:approach` disengages first, with Backspace.
+- Prediction: in `:terminal` and `:station` the clock''s prediction behaves as under thrust: one period, restarted each frame.
+
+## Pieces, in order
+Each piece is one task: code, its tests, its docs; `nix build` and `scripts/test` pass. This part''s tests together stay under ~1.5 s (`docs/architecture.md` "Rules for tests"):
+- `:point` or `:j2`, unless a test is about `:full`;
+- fine steps only for the terminal and station-keeping tests;
+- every search test measured; a test over ~150 ms is shortened, or moved to `task 162`''s slow command with the reason in its comment.
+
+1. **The Lambert solver**
+   - Files: `orbits.lisp`, `tests/orbits.lisp`.
+   - Code: `lambert-into!`.
+   - Tests:
+     - Vallado''s example 7-5 and Curtis''s example 5.2, v1 and v2 within 1e-5 km/s of the books'' figures.
+     - 64 fixed cases (a committed list; transfer angles 5°–355° but 179.5°–180.5°, elliptic and hyperbolic, LEO to 70,000 km): v1 propagated by `orbits.lisp`''s Kepler reaches r2 within 1e-8 relative.
+     - Near 180°: nil.
+     - Conses nothing.
+     - The time per solve measured (a benchmark form in the test file''s comment) and recorded in `docs/architecture.md` "Testing".
+   - Done: tests pass; `docs/architecture.md` "Files in load order" names `lambert-into!` in `orbits.lisp`.
+2. **Stop points, aim points and the terminal check**
+   - Files: `places.lisp`, `autopilot.lisp`, `tests/places.lisp`, `tests/autopilot.lisp`.
+   - Code: the terminal frame, `stop-point-into!`, fixture choice, Skua Yard''s front, aim points (1)–(3), `terminal-path-clear-p`, the refusals.
+   - Tests, against `docs/design.md` "The terminal path and crowded targets":
+     - The stop points'' distances from the CoM at range 100 m: Tern 103.0 m, Fulmar A 105.2 m, Highport''s plant 103.3 m, K-17 106.35 m out of plane, within 0.05 m.
+     - The stop point''s velocity equals a central difference within 1e-9 m/s.
+     - Aim point (1) lies on the target''s rails within 1e-6 m.
+     - Skua Yard 5 at its first apogee: (1) refused (it passes Skua Yard 1); (2) chosen, its segment ≥ 565 m from Skua Yard 1''s CoM and ≥ 765 m from POD 14''s, the aim point ≥ 1,140 m from the nearest object.
+     - Skua Yard 5 at perigee: (1) refused (it passes through the target), (2) chosen.
+     - Tern, Fulmar A and K-17 keep (1).
+     - "Rendezvous: Skua Yard" in the start state stops at the front, 1,000 m ± 1 m ahead of the drop point at apogee; with Skua Yard 3 removed, at the drop point.
+     - Refusals: `(:fulmar-depot :b)` "NO FREE FIXTURE"; Tern at 50 m "RANGE TOO SHORT"; K-17 removed "NO TARGET"; three crafted objects across the three segments "NO CLEAR APPROACH".
+   - Done: tests pass; `docs/design.md` "The terminal path and crowded targets" (the aim point''s definitions and the refusals as built, `decision 119`), "Earth-orbit points of interest" (Skua Yard''s front, `decision 121`).
+3. **The search**
+   - Files: `autopilot.lisp`, `tests/autopilot.lisp`.
+   - Code: families A and B, the close grid, the clearance filter, refinement, the limit, the tie rule, work units, the `:search` stage.
+   - Tests, Kepler and impulsive, against "The quest line''s rendezvous" (its Earth-orbit rows) and the table of "The terminal path and crowded targets" (± max(1 m/s, 0.5 %) unless stated):
+     - Tern Station from the start state: family A, departure 15–23 h after the start, total ≤ 11.4 m/s, the pass ≥ 239.8 m from Tern''s CoM.
+     - K-17 from 400 km: 219.5 m/s, pass ≥ 208.5 m.
+     - Fulmar Depot from 400 km: 56.75 m/s, pass ≥ 233.7 m.
+     - Fulmar Depot 296° short (`rendezvous-fulmar-phasing`''s start state): family B, phasing ≤ 33 m/s, total ≤ 91 m/s, aim point within 48 h.
+     - Highport from Fulmar''s 500 km at 8 phases of Highport over its period: each total ≤ 2,758 m/s.
+     - Skua Yard 5 from Highport''s plant 1 h before perigee: family B with N = 1, phasing 0.22 ± 0.05 m/s, aim point within 26 h, every candidate''s arc ≥ 500 m from every object but the target.
+     - The skua-yard-apogee-approach state: a close-grid transfer to aim point (2).
+     - The search split over 300-unit calls gives an `equalp` list to one run; the work per call ≤ its budget.
+     - Each case''s wall time measured in the test file''s comment.
+     - The Lambert and scan units set from the measurement and recorded.
+   - Done: tests pass; `docs/design.md` "The search" as built (the close grid, the Kepler filter, the 8 candidates); `docs/architecture.md` "Trajectory prediction" (the search''s work units).
+4. **The rendezvous job, shooting and the menu rows**
+   - Files: `autopilot.lisp`, `controls.lisp` (`burn-plan`''s rendezvous part), `tests/autopilot.lisp`.
+   - Code: the `:plane` burn first, the shooting to the aim point, the shot-path check and the fallback, the refusals with the terminal allowance, `autopilot-plan-now … :rendezvous`, `rendezvous-plan-aim-point`, the rows, `sim-target` set on engaging.
+   - Tests:
+     - Tern Station from the start state (`:j2`): the shot reaches the aim point within 100 m and 0.1 m/s at the `:arrival` cut; Δv within 3 % of the search''s impulsive figure; the shot path ≥ 239.8 m from Tern''s CoM until the `:arrival` start; burn labels `:departure`, `:arrival`.
+     - K-17 (`:point`): ≥ 208.5 m and within 3 % of 219.5 m/s.
+     - A start state turned 0.5° in Ω: the plan begins with `:plane`, and its total lies within 3 % of the plane change plus the coplanar plan.
+     - The best candidate made unclear by a crafted object on its shot path: the second is shot and chosen. All 8 blocked: "NO CLEAR TRANSFER".
+     - 300 kg of propellant for Highport: "NEEDS <n> KG", with the 20 m/s counted.
+     - The job split over 300-unit calls is `equalp` to `autopilot-plan-now`.
+     - Menu: the five `RDV` rows after `plan 26`''s rows; `RDV TARGET` only with Skua Yard 5 targeted; Right ×3 → 84 H; 240 H the top; engaging sets `sim-target`.
+   - Measure the time per rendezvous plan (benchmark form) and record it in "Testing".
+   - Done: tests pass; `docs/design.md` "The autopilot" (the rendezvous manoeuvre and its rows, refusals, labels as built), "Rendezvous: search, phasing and the approach" (shooting, the check, the fallback).
+5. **Terminal phase and station-keeping**
+   - Files: `controls.lisp`, `clock.lisp`, `prediction.lisp`, `places.lisp`; `tests/controls.lisp`, `tests/clock.lisp`, `tests/prediction.lisp`.
+   - Code: the phases, the scratch, the law, the glue, on station, warp, the aborts, the prediction''s rule.
+   - Tests:
+     - The law alone: crafted p and u give the documented keys and throttle on each side of every threshold.
+     - Terminal phase from aim point (1) 1 km behind a promoted Tern Station (`:j2`, ×1):
+       - at every step the closing speed ≤ |p| / 100 s + 0.05 m/s and the CoM ≥ 100 m from Tern''s;
+       - `:station` reached within 1,800 s, with "ON STATION: TERN STATION" once and the checkpoint taken;
+       - terminal Δv ≤ 20 m/s.
+     - Station-keeping:
+       - at Tern (its stop point turning with LVLH) one orbit at ×1 and at ×4: |p| ≤ 5 m and |u| ≤ 0.05 m/s at every step after `:station`;
+       - a quarter orbit each at Fulmar A (Sun-pointing) and K-17 (spinning): the same bounds.
+     - Skua Yard 5 near apogee from aim point (2): the path ≥ 560 m from Skua Yard 1''s and POD 14''s CoM until `:station`.
+     - Warp:
+       - ×4 with its message at the start of `:terminal`;
+       - ×10 refused with its text;
+       - a coarse step releases keys and throttle;
+       - the prediction restarts each frame in `:terminal`.
+     - Aborts:
+       - K-17 removed by hand in `:station`: "TARGET LOST";
+       - `*terminal-timeout*` bound to 60 s: "APPROACH TIMED OUT" at exactly the start + 60 s.
+     - Determinism: the run through `clock-frame!` at two frame rates and from a checkpoint restore is `equalp`.
+     - 10,000 station-keeping steps cons nothing.
+   - Done: tests pass; `docs/architecture.md` "The clock" (the law in the step), "Time warp" (the ×4 rule and texts), "Trajectory prediction" (terminal as thrust), "Checkpoints" (the phases, on station''s checkpoint); `docs/design.md` "The autopilot" (the terminal phase and station-keeping as built, `decision 120`), "Time warp" (the texts).
+6. **End to end**
+   - Files: `tests/autopilot.lisp`, docs.
+   - Code: none.
+   - Tests:
+     - "Rendezvous: Tern Station" from the start state (`:j2`), planned by `autopilot-plan-now`, engaged, flown through `clock-step!` with the warp at ×1,000 on the coasts and the clock''s drop-outs to `:station`: Δv ≤ 34.3 m/s (11 + 3 % + 20 + 3, `docs/architecture.md` "Scripts by milestone"); on station within 1 day.
+     - "Rendezvous: Skua Yard 5" from `rendezvous-skua-yard`''s state (released at Highport''s plant 1 h before perigee): Δv ≤ 21 m/s, on station within 93,600 s, ≥ 500 m from every object but the target throughout.
+     - Both runs twice give `equalp` end states.
+     - The run times measured; if together over ~400 ms, the second moves to `task 162`''s slow command, saying so.
+   - Done: tests pass; `docs/architecture.md` "Testing" gains the rendezvous tests of this part with their bounds and measured times under "Autopilot"; `AGENTS.md` "Commands" ("Run": the `RDV` rows of O) and "Layout" (`orbits.lisp`''s Lambert solver, `autopilot.lisp`''s rendezvous, `places.lisp`''s stop points).
+
+## Docs and `AGENTS.md`
+- `docs/architecture.md`:
+  - "Files in load order": `orbits.lisp`, `places.lisp`, `controls.lisp`, `clock.lisp`, `prediction.lisp` and `autopilot.lisp` as built.
+  - "The clock": the law in the step, the phases.
+  - "Time warp": the ×4 rule and its texts.
+  - "Trajectory prediction": the search''s work units; terminal as thrust.
+  - "Checkpoints": the cursor''s phases, on station''s checkpoint.
+  - "Testing" → "Autopilot": the tests and the measured times.
+  - Each piece updates its sections.
+- `docs/design.md`:
+  - "The autopilot": rendezvous rows, refusals, the terminal phase and station-keeping as built.
+  - "Rendezvous: search, phasing and the approach": the search, the shooting, the aim points, the check as built.
+  - "Earth-orbit points of interest": Skua Yard''s front.
+  - "Time warp": the texts.
+  - Citing `decision 119`, `decision 120` and `decision 121`.
+- `AGENTS.md`: "Commands" ("Run": the `RDV` rows of O); "Layout" (`orbits.lisp`''s `lambert-into!`, `places.lisp`''s stop points, `autopilot.lisp`''s rendezvous, `controls.lisp`''s terminal law).
+
+## Done when
+- The six pieces are done; `nix build` and `scripts/test` pass, `scripts/test` near its ~15 s.
+- Headless, "Rendezvous: <place>" is planned for each of the five Earth-orbit places, from the start state, through the clock''s job. Tern Station and Skua Yard 5 are flown to station within their bounds; every shot path and terminal path keeps the clearances of `decision 59`; station-keeping holds ±5 m at ×1 and ×4.
+- In the running game (`nix run` or `./sly play`), O lists the `RDV` rows. "RDV TERN STATION 48 H" plans, engages and flies to 100 m above Tern Station''s berth while the player warps the coast. The ship then keeps station there until Backspace.', '2026-10-15T06:39:29Z', 161);
 
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (1, 1, 'write the masterplan of milestone 1: Scope and design: what luv can carry, what the game is', 'masterplan', 'done', NULL, '2026-10-14, plan 1 body (tasks.sql)', 'Write `plan 1: masterplan`, the masterplan of `milestone 1: Scope and design: what luv can carry, what the game is`: expand on everything that needs to be done to achieve it,
 divided into parts. State in the masterplan that its own tasks are not implementation work: each of them writes the
@@ -3465,7 +3723,7 @@ INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, crea
 - A choice the docs leave open: decide it and record it (`pm decision record`), cite it in the plan.
 - Depends on part 3''s plan (the trajectory and planned burns in the prediction); planning shares the 1 ms of `decision 20: Trajectory prediction on the frame thread`.
 Done when: the plan exists with priority 670 and the body above.', '2026-10-15T06:03:53Z', '2026-10-15T06:31:19Z', 156, 0);
-INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (161, 3, 'write plan: Autopilot: rendezvous, phasing, clear approaches and station-keeping', 'plan', 'open', 1000, NULL, 'Write the plan for part 5 of `plan 3: masterplan` ("5. Autopilot: rendezvous, phasing, clear approaches and station-keeping"): `pm plan add 3 "Autopilot: rendezvous, phasing, clear approaches and station-keeping" --priority 660 < body.md`.
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (161, 3, 'write plan: Autopilot: rendezvous, phasing, clear approaches and station-keeping', 'plan', 'done', 1000, '2026-10-15, plan 27: Autopilot: rendezvous, phasing, clear approaches and station-keeping (priority 660); decisions 119, 120, 121', 'Write the plan for part 5 of `plan 3: masterplan` ("5. Autopilot: rendezvous, phasing, clear approaches and station-keeping"): `pm plan add 3 "Autopilot: rendezvous, phasing, clear approaches and station-keeping" --priority 660 < body.md`.
 
 - Scope: the bullets of part 5 in `plan 3: masterplan` (`pm show p3`), and its "Rules for every part"; the specification is `docs/design.md` "Scope" → "Feature list" (the milestone-3 rows) and the sections the part names, built as `docs/architecture.md` sets out.
 - Before writing: `pm plans list` (don''t duplicate a plan; refer to an earlier part''s plan by id where this one depends on it), `pm decision list --answered --grep <word>` for the part''s subjects; cite decisions as `decision N: <subject>`.
@@ -3473,7 +3731,7 @@ INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, crea
 - Divide it into pieces a worker can finish in one task each (code with its tests), listed in the order they should run; the plan''s split task turns them into tasks.
 - A choice the docs leave open: decide it and record it (`pm decision record`), cite it in the plan.
 - Depends on parts 1, 3 and 4''s plans; the cross-SOI chain stays `milestone 4`''s (room in the code, no stubs).
-Done when: the plan exists with priority 660 and the body above.', '2026-10-15T06:03:53Z', NULL, 156, 0);
+Done when: the plan exists with priority 660 and the body above.', '2026-10-15T06:03:53Z', '2026-10-15T06:39:33Z', 156, 0);
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (162, 3, 'write plan: Flight scripts of milestone 3: vocabulary, start states and the headless preset runs', 'plan', 'open', 1000, NULL, 'Write the plan for part 6 of `plan 3: masterplan` ("6. Flight scripts of milestone 3: vocabulary, start states and the headless preset runs"): `pm plan add 3 "Flight scripts of milestone 3: vocabulary, start states and the headless preset runs" --priority 650 < body.md`.
 
 - Scope: the bullets of part 6 in `plan 3: masterplan` (`pm show p3`), and its "Rules for every part"; the specification is `docs/design.md` "Scope" → "Feature list" (the milestone-3 rows) and the sections the part names, built as `docs/architecture.md` sets out.
@@ -3560,6 +3818,9 @@ tasks for what the plan asks beyond them. A task that writes a plan gets `--kind
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (173, 26, 'create tasks for plan 26: Autopilot: planner, orbit manoeuvres, execution and safety', 'split', 'open', 1000, NULL, 'Split `plan 26: Autopilot: planner, orbit manoeuvres, execution and safety` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
 done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
 tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-15T06:31:14Z', NULL, 160, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (174, 27, 'create tasks for plan 27: Autopilot: rendezvous, phasing, clear approaches and station-keeping', 'split', 'open', 1000, NULL, 'Split `plan 27: Autopilot: rendezvous, phasing, clear approaches and station-keeping` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
+done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
+tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-15T06:39:29Z', NULL, 161, 0);
 
 INSERT INTO decision (id, subject, status, options, body, answer, reason, created_at, closed_at, created_by_task, signoff, kind, decided_by_task, consequences) VALUES (1, 'How the game consumes luv', 'answered', '[]', 'Findings of `task 17: Build and run luv''s programs and test suite; record the runs` (docs/luv-capabilities.md, Packaging and Runs).
 - luv''s flake exports apps, devShells, packages and lib; lib has only environmentFor, which returns everything the packaging needs (pkgs, lisp, applicationEnvironment/Packages, developmentEnvironmentHook, slynkSource, swashPackage, …). No overlays.
@@ -3715,6 +3976,9 @@ INSERT INTO decision (id, subject, status, options, body, answer, reason, create
 INSERT INTO decision (id, subject, status, options, body, answer, reason, created_at, closed_at, created_by_task, signoff, kind, decided_by_task, consequences) VALUES (116, 'Prediction in milestone 3: horizon, target nodes, closest approach, relative nodes, budget', 'answered', '[]', 'plan 3: masterplan part 3 (task 159), extending decision 75: Prediction in milestone 2: the step function on a copy and decision 20: Trajectory prediction on the frame thread (two periods for the map, events for closest approach and nodes). plan 23: Objects on rails and the Earth-orbit places measures up to ~5 us per coarse step with Skua Yard''s nine objects promoted, against ~0.4 us without, so a budget in steps would overrun 1 ms tenfold near the yard. Coplanar orbits (every place shares the start orbit''s plane, decision 38: Start orbit: polar) would give relative nodes from rounding noise; 0.01 deg is the autopilot''s plane tolerance (docs/design.md ''The autopilot'').', 'The clock''s prediction runs two osculating periods while coasting (map, AUTOPILOT plot and closest approach read one prediction) and one while the throttle is on (it restarts every frame then). With a target it stores the target''s r, v at every node in a parallel buffer, from the copy sim (object-state-into!: rails, or promoted and stepped with the ship). Events added: :closest-approach at each local minimum of |r_T - r_ship| (r_rel . v_rel from - to +), bisected on both Hermites to 1e-6 s, with its distance as the event''s value; :relative-ascending / :relative-descending where the ship''s path crosses the target''s orbit plane (r_ship . (r_T x v_T)^ from - to +, or + to -), bisected to 1e-6 s, counted only where the planes are at least 0.01 deg apart; :burn-start (value: the burn''s index) when the copy''s executor starts a burn. prediction-closest-approach gives the least local minimum after the flown t (time, distance), nil without one. Events hold a double value beside time and kind; capacity 128. Restart also when the target key or the plan (eq) changes, and when the flown target is more than 1 m from the stored target path at the flown t. The per-frame budget counts work, not steps: 1 per copy step, 1 per promoted object stepped in it, 1 per rails evaluation of the target; *prediction-work-per-frame* set from a measurement to about 1 ms (no wall clock in the prediction).', NULL, '2026-10-15T06:20:55Z', '2026-10-15T06:20:55Z', 159, NULL, 'rule', 159, '2026-10-15, task 159: 2026-10-15, task 159: plan 25: Predicted trajectories, targets and target holds builds it in its pieces.');
 INSERT INTO decision (id, subject, status, options, body, answer, reason, created_at, closed_at, created_by_task, signoff, kind, decided_by_task, consequences) VALUES (117, 'Autopilot in milestone 3: planning jobs, goal measures, burns, execution rules in the step, trims', 'answered', '[]', 'plan 3: masterplan part 4 (task 160). docs/design.md ''The autopilot'' and decision 32: Autopilot scope and safety rules give the method, the tolerances and the safety rules but not how frame-spread planning stays deterministic, how the goals are measured under J2 (a circular polar orbit''s radius swings ~3 km per orbit, the inclination''s short-period terms reach ~0.02 deg), how ''each frame'' checks land on the grid, how a trim is found, or the burn labels for the orbit manoeuvres. A snapshot makes the plan independent of frame timing; the barrier keeps a plan''s burns in the future without changing warp; 0.1 % of the radius (6.8 km in LEO) covers the J2 swing, means over a period remove short-period terms; impulsive closed forms per step are cheap and deterministic, where a shot per frame is neither; max(0.2 m/s, 1 %) keeps tiny burns from trimming their own noise; re-shooting the remaining burns absorbs an error more cheaply than an extra burn.', 'Planning is a job on a snapshot: copy-sim of the flown sim at the request, the preset and goal; the plan is a pure function of them (the same bit for bit whether run at once, headless, or spread over frames). While a job runs the clock steps the sim no further than the snapshot''s t + 60 s (*plan-barrier*; it stalls, warp unchanged), and a plan''s first hold-at is >= snapshot t + 120 s (*plan-min-lead*). The frame''s work budget (*prediction-work-per-frame*, decision 116) is shared: with a job running the prediction takes at most half, the job the rest; headless (run-flight, tests) jobs run to completion at once. A shown plan is stale at engagement when the flown t has passed its first hold-at - 10 s or the flown r is more than 1 m from the job''s final shot at the flown t; Return then re-plans from now (''PLAN STALE: REPLANNING''). First guesses from osculating Kepler elements (vis-viva at the apsis, Hohmann, 2 v sin(di/2) at the cheaper node: the equatorial nodes for an inclination, the prediction''s relative nodes for a target''s plane; the one at the larger radius, the earlier on a tie); shooting refines each burn''s dv vector in the LVLH axes at its node (T, N, R) by Newton with a finite-difference Jacobian and the minimum-norm step, burn times re-centred on the node after each iteration, at most 8 iterations (''NOT CONVERGED''). Shots are sim-step! runs of a snapshot copy with the candidate sim-plan at *prediction-level* until the last cut + one osculating period, under the sim''s model. Goal measures on the shot after the last cut: apoapsis and periapsis are the largest and smallest |r| over that period (the apsis events), within max(0.1 % of the goal radius, 1 km); inclination is the mean osculating inclination over it, within 0.01 deg; a target''s plane is the angle between the period''s mean unit h and the target''s h at its middle, within 0.01 deg. Burns: centred on the node, t_burn by the rocket equation at the mass then; full throttle unless under 10 s at full, then the throttle that makes 10 s, floor 10 %; under 0.5 m/s on the RCS along +/-x, the sign that keeps the nose within 90 deg of the coast hold''s direction (prograde), so small retrograde trims need no slew; attitude fixed inertial with the nose along dv and the cab (-z) radial out at the node (towards the normal when dv is within 10 deg of radial); hold-at = start - max(60 s, slew estimate + 10 s), the slew estimate the bang-bang time at 80 % of the stack''s couple and 5 deg/s from the previous burn''s attitude or the coast hold''s at hold-at; all times on the 1/64 s grid. Labels: a Hohmann''s first :departure and second :circularise, ''Circularise'' :circularise, ''Set apoapsis/periapsis'' :apsis, ''Change plane'' :plane, trims :trim (decision 56''s list gains :circularise, :apsis, :plane). A plane change asked with a Hohmann merges into the burn at the larger radius. Planning refuses (reason shown) when any node of the final shot from the snapshot to its end is below Earth''s crash radius + 50 km (''BELOW 150 KM'') or within the Moon''s radius + 10 km (''TOO NEAR THE MOON''), when propellant for the plan (rocket equation per burn, RCS at 360 s) plus the reserve max(2 % of the plan''s dv, 20 m/s) exceeds m_p (''NEEDS <n> KG''), when the ship is not in Earth''s sphere, or when a goal altitude lies outside 150-300,000 km (milestone 3 keeps apoapses below the Moon''s sphere). Execution rules run in the one step (clock.lisp, beside plan-step-controls!), so they land on the grid: during a burn, abort (''AUTOPILOT ABORT: UNSAFE ORBIT'') at the first step where the osculating periapsis after cutting now is at or above Earth''s crash radius + 25 km but the one after the burn''s remaining dv applied impulsively along the thrust axis is below it (half the planning margin, so a plan at the 150 km floor never trips it); abort (''PROPELLANT LOW'') when m_p falls below the remaining burns'' propellant plus half the reserve; an angle over 5 deg between the thrust axis and the burn''s direction cuts the burn, the inertial hold re-settles and the burn resumes with its remaining dv once settled, a second time aborts (''ATTITUDE ERROR''); a capture, bounce, latch or berth notice in the step aborts (''CONTACT'', ''LATCHED'', ''BERTHED''). Abort and disengage: throttle off, translation keys released, rate damping, sim-plan nil, the plan kept by the clock''s autopilot for the map in grey; an abort is a sim notice (SHIP log, AUTO lamp). Measurement at each cut: the actual v against the shot''s post-cut state propagated by Kepler to the actual cut time; over max(0.2 m/s, 1 % of the burn''s dv) the cursor goes :replan and a job from that step''s sim re-shoots the remaining burns (after the last leg one :trim burn, only if the goal measure on the post-cut path misses its tolerance), installed exactly at the cut + 60 s (the barrier) in every mode; at most 2 replans per plan, then the plan ends with ''AUTOPILOT: GOAL MISSED''. A burn running on the RCS caps warp at x4 (''WARP x4: RCS BURN'', refusal ''RCS BURN, LIMIT x4''); the next burn''s hold-at is a warp drop-out event (''WARP xL: BURN IN <duration>'', x1 at hold-at). The last cut sets the cursor :done, engages the coast hold, sends ''AUTOPILOT: PLAN COMPLETE'' and sets the sim''s checkpoint request (decision 112); the autopilot is then disengaged (rendezvous keeps station: task 161).', NULL, '2026-10-15T06:29:26Z', '2026-10-15T06:29:26Z', 160, NULL, 'rule', 160, '2026-10-15, task 160: 2026-10-15, task 160: plan 26: Autopilot: planner, orbit manoeuvres, execution and safety builds it in its pieces 1-5; decision 56''s burn labels gain :circularise, :apsis, :plane.');
 INSERT INTO decision (id, subject, status, options, body, answer, reason, created_at, closed_at, created_by_task, signoff, kind, decided_by_task, consequences) VALUES (118, 'Autopilot preset menu and input in milestone 3', 'answered', '[]', 'plan 3: masterplan part 4 (task 160). docs/design.md ''The autopilot'' (''Picking a preset'', ''Interrupting'') and ''Controls'' name the keys and step sizes but not the menu''s rows, the value ranges, the repeat rate of held keys, what Backspace does outside a running plan, gating, or how input and the executor share controls. One list with inline values needs no second screen on the 22 x 8 AUTOPILOT screen; letting held keys reach controls while engaged would overwrite the executor''s translation key every frame; the 300,000 km cap keeps milestone 3''s apoapses out of the Moon''s sphere, whose crossing is milestone 4''s.', 'The clock holds the autopilot model (clock-autopilot; not in the sim, not in checkpoints): the menu (open or closed, the selected row, each row''s value), the planning job, the shown plan, the engaged flag mirrored from the sim, the last refusal or abort text. The menu is one list, one manoeuvre per row with its goal value inline: ''CIRCULARISE AP'' (Left/Right toggle AP/PE; default the next apsis), ''SET AP <alt> KM'', ''SET PE <alt> KM'', ''ORBIT <alt> KM'' (a Hohmann to a circular altitude) with an optional second value ''INC <deg>'' or KEEP for a merged plane change, ''PLANE <deg>'' or ''PLANE TARGET'' (offered only with a target); task 161 appends ''RENDEZVOUS <PLACE>'' rows. Altitudes start at the current orbit''s value rounded to 10 km and stay within 150-300,000 km; inclinations at the current one rounded to 0.5 deg, within 0-180 deg. O opens and closes the menu; Up/Down select (wrapping); Left/Right change the selected value: one step at the press, then 8 steps per second of real time while held, steps x10 after 1 s held (10 km -> 100 km, 0.5 deg -> 5 deg); Return plans the selected row (state planning, ''PLANNING...''), a second Return on a shown plan engages it (a running plan is replaced only then); Backspace disengages a running plan (''AUTOPILOT OFF''), else drops a shown or refused plan back to the menu, else closes the menu. After a disengage or abort, Return re-plans the same row from the new state and engages as soon as it is shown. Gating: the menu, planning and engaging act while paused and at every warp level; not while lost; while a flight runs its keys are ignored (flights drive the model through the same functions). While engaged input-frame! writes no held keys and runs no throttle ramp (the executor owns the controls); a new press of any flight key (rotation, translation, Shift-left, Control-left, Z, X, F, T, R, 1-0) disengages with ''AUTOPILOT OFF: PILOT INPUT'' and acts from that frame. The readout''s MODE shows ''AUTOPILOT'' before the hold while engaged. The window title gains ''O autopilot''.', NULL, '2026-10-15T06:29:39Z', '2026-10-15T06:29:39Z', 160, NULL, 'rule', 160, '2026-10-15, task 160: 2026-10-15, task 160: plan 26: Autopilot: planner, orbit manoeuvres, execution and safety builds it in its piece 4; task 161 appends the rendezvous rows.');
+INSERT INTO decision (id, subject, status, options, body, answer, reason, created_at, closed_at, created_by_task, signoff, kind, decided_by_task, consequences) VALUES (119, 'Rendezvous planning in milestone 3: Lambert, search, aim and stop points, checks, shooting, burns', 'answered', '[]', 'plan 3: masterplan part 5 (task 161). docs/design.md ''Rendezvous: search, phasing and the approach'' and decision 54: Autopilot rendezvous: phasing, lunar chain, hyperbolic targets, clear approaches give the families, grids, aim points and checks, but leave open the solver, how the clearance enters a Kepler search whose least-dv transfers pass through the target (decision 59: Rendezvous transfers pass the target clear), how a ship already 1 km from its target finds a transfer (skua-yard-apogee-approach: 0.4 periods of Highport are 9.5 h), the shooting''s parameters and tolerance, how a co-orbital aim point is defined, what is refused, the stop point for a loaded stack, and the menu rows. A universal-variable solver is short, robust and well documented (Vallado, Curtis give test cases); a time-shifted rails state keeps aim point (1) exactly on the target''s orbit under J2; filtering in Kepler keeps shots few, the shot check keeps the rule exact; milestone-4 merges are left as room, not stubs.', 'The Lambert solver is a universal-variable single-revolution solver (orbits.lisp, lambert-into!), prograde in the sense of the ship''s angular momentum, its plane from r1 x r2 or, within 0.5 deg of 180 deg, the ship''s orbit normal; candidates within 0.5 deg of 180 deg are skipped. A rendezvous plan is [:plane] [:phasing] :departure :arrival, then the terminal phase: a :plane burn first at the cheaper relative node (plan 26''s change-plane guess) when the planes differ by 0.01 deg or more, the search starting after its cut. The search runs in two-body Kepler with J2-secular rails for the target and the other objects: family A departures every 1/64 ship period over the limit, transfer times 0.4-1.5 target periods in 32 steps, plus, when the ship is within 50 km of the aim point, 0.02-0.4 target periods in 16 steps (the close grid, for a ship already beside its target); family B a tangential burn at one of 64 points of the ship''s next revolution into T_ph = T_t - dt/N or T_t + (T_t - dt)/N, N 1-32 while N T_ph fits the limit, then an A transfer departing within one T_ph of its end; in milestone 3 B is a burn of its own (merging into a capture, LOI or Hohmann burn is milestone 4''s). Cost: the impulsive sum of every burn; a candidate is kept only if its Kepler arc from its first burn to the aim point stays >= bound + 200 m from the target and every other object (decision 59), scanned at 1/256 of each coast and refined by golden section where under 10 km; the best three per family and N refined by golden section in departure and transfer time; least total dv wins, within 1 m/s the earlier arrival. Each Lambert solve and each Kepler clearance scan counts work units set from a measurement against a coast step (decision 116''s budget). Aim point (1) is the target''s own rails state shifted back in time by 1 km / |v_T| (so co-orbital by construction); (2) and (3) are fixed in the target''s terminal frame (its attitude with any spin about the fixture axis removed) 1 km from the stop point, radially out (in when the fixture axis points inward) or out of plane (the clearer side), with the velocity of that frame''s point. The stop point is the fixture''s pin plus the range (default 100 m, 100-1,000 m) along its outward axis, for the grapple cone''s tip; a place without a fixture (Skua Yard''s drop point) stops the stack''s CoM. A named fixture, else the place''s first free berth or towable fixture; an occupied or missing one refuses ''NO FREE FIXTURE''; a stop point under 100 m from the target''s CoM refuses ''RANGE TOO SHORT''. The aim point is the first candidate whose straight terminal segment (aim to stop point in the terminal frame) keeps >= 100 m from the target''s CoM and >= bound + 200 m from every other object (their positions relative to the target at the arrival and every 300 s for 1,800 s); none: ''NO CLEAR APPROACH''. Shooting: parameters the departure''s and arrival''s dv in LVLH (6; the phasing and plane burns fixed from their guesses), residuals the post-cut position and velocity against the aim point''s at the arrival burn''s cut (6), Newton as decision 117, tolerance 100 m and 0.1 m/s; the shot path from the first burn to the arrival burn''s start must keep >= bound + 200 m from the target and every other object (the shot copy''s promoted objects, the stack''s CoM to their CoM); a failing candidate is dropped and the next shot, up to 8, then ''NO CLEAR TRANSFER''. No :trim after :arrival: the terminal phase absorbs the arrival''s error; measurement and replans of decision 117 apply to :phasing and :departure. The plan''s propellant counts a terminal allowance of 20 m/s beside decision 117''s reserve. Engaging a rendezvous sets sim-target to its target. Limit: 48 h default, 12 h-10 days in 12 h steps. Menu rows after decision 118''s: ''RDV <PLACE> <h> H'' for the five places, then ''RDV TARGET <h> H'' offered with a target that is not a place; Left/Right change the limit.', NULL, '2026-10-15T06:36:38Z', '2026-10-15T06:36:38Z', 161, NULL, 'rule', 161, '2026-10-15, task 161: plan 27: Autopilot: rendezvous, phasing, clear approaches and station-keeping builds it in its pieces.');
+INSERT INTO decision (id, subject, status, options, body, answer, reason, created_at, closed_at, created_by_task, signoff, kind, decided_by_task, consequences) VALUES (120, 'Rendezvous terminal phase and station-keeping in the step', 'answered', '[]', 'plan 3: masterplan part 5 (task 161). docs/design.md ''The autopilot'' gives the terminal phase (RCS and low throttle along the relative-retrograde hold, closing at most range / 100 s, nulling below 0.02 m/s, +/-5 m at x1 and x4) but not where the law runs, its deadbands, which point is controlled, how a rotating stop point (Tern''s LVLH turns 0.065 deg/s, sweeping 0.12 m/s at 102 m) is followed, what warp is allowed, or when it gives up. w = -p / 100 s is the design''s speed rule as a velocity field: straight towards the stop point, so the flown path is the checked segment. The RCS gives 0.05 m/s^2 wet (0.8 mm/s per fine step), the 10 % throttle 0.28 m/s^2 for the larger braking; manual RCS is off above x4, so close work runs on fine steps. A law that acts only on fine steps keeps the step function the one function the prediction and shots run, without the law flying the copy at coarse steps. Station-keeping keeps the nose on the target, as the pilot''s :approach needs (decision 56: Flight-script actions, start states and the quest play-through).', 'After the :arrival burn''s cut the plan cursor goes :terminal, then :station; a law in controls.lisp (pure: relative state in, keys and throttle out) run by clock.lisp right after plan-step-controls!, on fine steps only (on a coarse step it releases the keys and the throttle, so the prediction''s copy coasts). Controlled point: the grapple cone''s tip for a fixture, the stack''s CoM for a point; stop point and its velocity from the target''s terminal frame (attitude without spin about the fixture axis; v_T + w x offset), written into the controls'' target scratch at the step''s start. With p the controlled point less the stop point and u their relative velocity: the wanted velocity w = -p / 100 s, its magnitude capped at 10 m/s in :terminal and 0.05 m/s in :station; the error e = u - w; RCS translation (full, not fine) per body axis on while |e| along it exceeds 0.01 m/s, off under 0.003 m/s; the engine at 10 % throttle while -e lies within 10 deg of +x and exceeds 0.3 m/s along it, off under 0.05 m/s. Attitude: hold :relative-retrograde in :terminal (frozen while slow, decision 114), hold :target in :station. :station is reached at |p| <= 1 m and |u| <= 0.02 m/s: notice ''ON STATION: <NAME>'', the sim''s checkpoint request, :autopilot-done true; it then holds the range within +/-5 m until disengaged. The clock lowers warp to x4 when :terminal begins (''WARP x4: TERMINAL PHASE'') and refuses higher levels in :terminal and :station (''WARP REFUSED: STATION-KEEPING, LIMIT x4''). Aborts beside decision 117''s: the target cleared by the step (removed or latched) ''TARGET LOST''; :terminal longer than 7,200 s of game time ''APPROACH TIMED OUT''. While :terminal or :station the clock''s prediction treats the ship as under thrust (one period, restarted each frame).', NULL, '2026-10-15T06:37:09Z', '2026-10-15T06:37:09Z', 161, NULL, 'rule', 161, '2026-10-15, task 161: plan 27: Autopilot: rendezvous, phasing, clear approaches and station-keeping builds it in its pieces.');
+INSERT INTO decision (id, subject, status, options, body, answer, reason, created_at, closed_at, created_by_task, signoff, kind, decided_by_task, consequences) VALUES (121, 'Skua Yard''s stop point while the drop point is occupied', 'answered', '[]', 'plan 3: masterplan part 5 (task 161). decision 54: Autopilot rendezvous: phasing, lunar chain, hyperbolic targets, clear approaches puts ''Rendezvous: Skua Yard'' at the drop point, empty after quest 6; but the milestone''s preset-skua-yard flies it from the start state, where Skua Yard 3 sits at the drop point, so the clearance rule would refuse the preset and milestone 3''s Done when could not be met. The yard''s lane ahead of Skua Yard 3 is empty up to Highport, 27 km ahead at apogee (docs/design.md ''Earth-orbit points of interest''), and a time shift keeps the point on the yard''s orbit under J2 like the yard''s own gaps.', '''Rendezvous: Skua Yard'' stops the stack''s CoM at the drop point (Skua Yard 3''s slot) when no object''s bound + 200 m reaches it; while one does (Skua Yard 3 itself until quest 6 tows it, or a rock released there), it stops at the yard''s front: the drop point''s rails shifted 1.043 s ahead in time (1 km at apogee, ~10 km at perigee), the yard''s own time-gap rule. Chosen at planning; a stop point taken stays for the plan.', NULL, '2026-10-15T06:37:09Z', '2026-10-15T06:37:09Z', 161, NULL, 'rule', 161, '2026-10-15, task 161: plan 27: Autopilot: rendezvous, phasing, clear approaches and station-keeping builds it in its pieces.');
 
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (1, 1, '2026-10-14T16:10:25Z', '2026-10-14T16:11:12Z', 'done', NULL, 0, 'dbb0732a624bc26e8981cc36772e27859e6c5ea6', 'claude-opus-5-5[1m]', '332e5758-5e41-45e9-975c-f9674f9ae310', 5, 10, 4524, 144844, 45557, 0.4839448, 2177276);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (2, 7, '2026-10-14T16:11:12Z', '2026-10-14T16:11:52Z', 'done', NULL, 0, '413343ae3d6bf69e5b19c1f2946215ec59767499', 'claude-opus-5-5[1m]', 'ef09344d-70e2-4295-94e9-29228b85f2ab', 5, 10, 4111, 147758, 29261, 0.3458996, 2177276);
@@ -3875,6 +4139,7 @@ INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, b
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (157, 158, '2026-10-15T06:09:04Z', '2026-10-15T06:14:37Z', 'done', NULL, 0, '1d822bd29e37766ef1d73d5a5ad6b8bd8ad51d14', 'claude-opus-5-5[1m]', '2abadc43-cdc0-445d-973c-c4e5ae3b2a2d', 29, 50, 30857, 3395590, 203681, 2.9259059999999995, 2373073);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (158, 159, '2026-10-15T06:14:37Z', '2026-10-15T06:22:56Z', 'done', NULL, 0, '062fda1d1d03f15f504fd6d9a9b8e9279bfcb8de', 'claude-opus-5-5[1m]', 'b5b8684b-3637-40e8-b60a-e96d91d7ab5d', 29, 50, 35152, 3156299, 179044, 2.7668518, 2373073);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (159, 160, '2026-10-15T06:22:56Z', '2026-10-15T06:31:32Z', 'done', NULL, 0, '35e306ae7ffacd632d98e0db3b61a1a27284e4ad', 'claude-opus-5-5[1m]', '86bee460-f9de-42da-8bc7-ef614ab8fc2a', 22, 36, 43580, 2052153, 183675, 2.7515746000000005, 2373073);
+INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (160, 161, '2026-10-15T06:31:32Z', '2026-10-15T06:39:44Z', 'done', NULL, 0, 'cbbf73de65566efdee9b167ec2dbc167bdebec11', 'claude-opus-5-5[1m]', '4dfa1df2-3163-4d1d-90d6-928be8d68f4a', 25, 46, 47612, 2815861, 213039, 3.2199082, 2373073);
 
 INSERT INTO task_decision (task_id, decision_id) VALUES (44, 28);
 INSERT INTO task_decision (task_id, decision_id) VALUES (44, 45);

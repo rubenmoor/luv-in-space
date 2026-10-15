@@ -52,13 +52,15 @@
   ;; The engaged burn plan, shared by copies, and its cursor (decision 115).
   (plan nil :type (or null burn-plan))
   (plan-index 0 :type fixnum)                   ; the current burn
-  (plan-phase :done :type (member :pending :holding :burning :done))
+  (plan-phase :done :type (member :pending :holding :burning :replan :done))
   (plan-rcs-target 0d0 :type double-float)      ; the RCS burn's odometer target
   ;; The autopilot's (decision 117): attitude cuts so far, replans so far,
-  ;; and the Δv a burn cut for its attitude resumes with (0: none).
+  ;; the Δv a burn cut for its attitude resumes with (0: none), and the cut
+  ;; that set :replan (plan-index the burn cut).
   (plan-retries 0 :type fixnum)
   (plan-replans 0 :type fixnum)
-  (plan-resume 0d0 :type double-float))
+  (plan-resume 0d0 :type double-float)
+  (plan-replan-t 0d0 :type double-float))
 
 (defun copy-sim (sim)
   "A deep copy: equalp to SIM, sharing no array (the objects' definitions
@@ -99,7 +101,8 @@ nothing; OUT."
         (sim-plan-rcs-target out) (sim-plan-rcs-target sim)
         (sim-plan-retries out) (sim-plan-retries sim)
         (sim-plan-replans out) (sim-plan-replans sim)
-        (sim-plan-resume out) (sim-plan-resume sim))
+        (sim-plan-resume out) (sim-plan-resume sim)
+        (sim-plan-replan-t out) (sim-plan-replan-t sim))
   out)
 
 (defparameter *delivery-wait* 600d0 "s from a delivery's release to the removal; decision 53.")
@@ -356,6 +359,16 @@ target hold released to rate damping."
 ;;; Planned burns (decision 115: Planned burns as scheduled controls in the
 ;;; sim): flown open-loop at each step's start; planning is the autopilot's.
 
+(defparameter *plan-barrier* 60d0
+  "s past a running job's snapshot, or past a cut that asks for a replan, the
+clock steps the sim at most; decision 117.")
+(defparameter *cut-error-min* 0.2d0
+  "m/s: a cut's velocity error over max(it, *cut-error-fraction* of the burn's Δv) replans; decision 117.")
+(defparameter *cut-error-fraction* 0.01d0 "decision 117.")
+(defparameter *plan-max-replans* 2 "Replans a plan takes, then \"AUTOPILOT: GOAL MISSED\"; decision 117.")
+(declaim (type double-float *plan-barrier* *cut-error-min* *cut-error-fraction*)
+         (type fixnum *plan-max-replans*))
+
 (defun sim-set-plan! (sim plan)
   "PLAN (a burn-plan, or nil) engaged from its first burn, the cursor's
 retries, replans and resume 0; SIM."
@@ -365,21 +378,46 @@ retries, replans and resume 0; SIM."
         (sim-plan-rcs-target sim) 0d0
         (sim-plan-retries sim) 0
         (sim-plan-replans sim) 0
-        (sim-plan-resume sim) 0d0)
+        (sim-plan-resume sim) 0d0
+        (sim-plan-replan-t sim) 0d0)
   sim)
 
 (declaim (inline plan-next-time))
 (defun plan-next-time (sim)
   "The time of SIM's plan's next scheduled control: the current burn's
 hold-at while :pending, its start while :holding (none while a resume waits
-for the hold to settle); else nil."
+for the hold to settle), the cut + *plan-barrier* while :replan (the new
+plan's installation); else nil."
   (let ((plan (sim-plan sim)))
     (when plan
       (let ((burn (svref (burn-plan-burns plan) (sim-plan-index sim))))
         (declare (type planned-burn burn))
         (case (sim-plan-phase sim)
           (:pending (planned-burn-hold-at burn))
-          (:holding (and (= (sim-plan-resume sim) 0d0) (planned-burn-start burn))))))))
+          (:holding (and (= (sim-plan-resume sim) 0d0) (planned-burn-start burn)))
+          (:replan (+ (sim-plan-replan-t sim) *plan-barrier*)))))))
+
+(defun plan-cut-error (sim burn)
+  "m/s between SIM's velocity now and BURN's shot after its cut, carried to
+now by Kepler (decision 117)."
+  (let* ((ship (sim-ship sim))
+         (cut-t (planned-burn-cut-t burn))
+         (v (if (= (sim-t sim) cut-t)
+                (planned-burn-cut-v burn)
+                (nth-value 1 (orbit-state (state->orbit (planned-burn-cut-r burn)
+                                                        (planned-burn-cut-v burn)
+                                                        (body-mu (body (sim-body sim))) cut-t)
+                                          (sim-t sim))))))
+    (vec3-norm (vec3-sub (ship-state-v ship) v))))
+
+(defun plan-cut-missed-p (sim plan burn)
+  "After BURN's cut: PLAN is the planner's (it has a goal measure) and SIM's
+velocity is off its shot by more than max(*cut-error-min*,
+*cut-error-fraction* of the burn's Δv)."
+  (and (burn-plan-measure plan)
+       (planned-burn-cut-v burn)
+       (> (plan-cut-error sim burn)
+          (max *cut-error-min* (* *cut-error-fraction* (planned-burn-dv burn))))))
 
 (defun plan-step-controls! (sim)
   "At the start of SIM's step, before the cut-off check: from the current
@@ -388,8 +426,12 @@ throttle with sim-cutoff at odometer + Δv, or the RCS burn's ±x translation
 key with its own odometer target; once cut (or the RCS target reached, the
 key released) the plan's coast hold and the next burn :pending, :done after
 the last. A burn cut for its attitude (plan-step-checks!) resumes with the
-Δv it had left once its hold has settled. Several at one t in turn. SIM;
-conses nothing."
+Δv it had left once its hold has settled. A planner's plan is measured at
+each cut (plan-cut-missed-p): off its shot, the cursor goes :replan at the
+burn cut, with the cut's t, for the clock to install a new plan
+(autopilot-replan-due!); after *plan-max-replans* the plan ends with the
+notice \"AUTOPILOT: GOAL MISSED\", the coast hold kept. Several at one t in
+turn. SIM; conses nothing but at a measured cut."
   (declare (optimize speed) (type sim sim))
   (let ((plan (sim-plan sim)))
     (when plan
@@ -403,7 +445,7 @@ conses nothing."
                 (odometer (ship-state-dv ship)))
             (declare (type planned-burn burn) (type double-float odometer))
             (ecase (sim-plan-phase sim)
-              (:done (return))
+              ((:done :replan) (return))
               (:pending
                (when (< time (planned-burn-hold-at burn)) (return))
                (controls-engage-hold! controls :inertial (planned-burn-attitude burn))
@@ -432,10 +474,30 @@ conses nothing."
                      (controls-throttle-cut controls)
                      (setf (sim-cutoff sim) nil)))
                (controls-engage-hold! controls (burn-plan-coast-hold plan))
-               (if (< (1+ (sim-plan-index sim)) (length burns))
-                   (setf (sim-plan-index sim) (1+ (sim-plan-index sim))
-                         (sim-plan-phase sim) :pending)
-                   (setf (sim-plan-phase sim) :done)))))))))
+               (cond ((plan-cut-missed-p sim plan burn)
+                      (if (>= (sim-plan-replans sim) *plan-max-replans*)
+                          (progn (sim-set-plan! sim nil)
+                                 (sim-notice! sim :autopilot "AUTOPILOT: GOAL MISSED"))
+                          (setf (sim-plan-phase sim) :replan
+                                (sim-plan-replan-t sim) time))
+                      (return))
+                     ((< (1+ (sim-plan-index sim)) (length burns))
+                      (setf (sim-plan-index sim) (1+ (sim-plan-index sim))
+                            (sim-plan-phase sim) :pending))
+                     (t (setf (sim-plan-phase sim) :done))))))))))
+  sim)
+
+(defun sim-install-plan! (sim plan)
+  "PLAN replacing SIM's plan in :replan (decision 117): from its first burn,
+the attempts and the coast hold kept, one replan more; SIM."
+  (let ((retries (sim-plan-retries sim))
+        (replans (sim-plan-replans sim))
+        (hold (burn-plan-coast-hold (sim-plan sim))))
+    (sim-set-plan! sim plan)
+    (setf (sim-plan-retries sim) retries
+          (sim-plan-replans sim) (1+ replans))
+    (unless (eq hold (burn-plan-coast-hold plan))
+      (controls-engage-hold! (sim-controls sim) (burn-plan-coast-hold plan))))
   sim)
 
 (declaim (inline plan-rcs-burning-p))
@@ -1125,12 +1187,20 @@ the held flag kept. With BUDGET (game s, the frame's accumulator) no step
 when the next h exceeds it. While the autopilot's job runs, no step past
 its barrier (autopilot-barrier): the step lands on it, there the
 accumulator is emptied. The step's 1/64 s ticks, or nil when none was
-taken (lost, over BUDGET or at the barrier)."
+taken (lost, over BUDGET or at the barrier). A plan's cut that asks for a
+replan starts the replan job after its step; at the cut + *plan-barrier*
+its result is installed (autopilot-replan-due!), the job finished at once
+without BUDGET (headless), else the sim waits there for the frames'
+work."
   (declare (type clock clock) (type sim sim) (type (or null double-float) budget)
            (inline step-h sim-step-ticks!))
   (when (sim-loss sim)
     (return-from clock-step! nil))
   (setf (clock-game-t clock) (sim-t sim))
+  (when (and (eq (sim-plan-phase sim) :replan)
+             (not (autopilot-replan-due! (clock-autopilot clock) clock sim (null budget))))
+    (setf (clock-accumulator clock) 0d0)
+    (return-from clock-step! nil))
   (let ((barrier (autopilot-barrier (clock-autopilot clock))))
     (declare (type (or null double-float) barrier))
     (when (and barrier (>= (sim-t sim) barrier))
@@ -1151,6 +1221,8 @@ taken (lost, over BUDGET or at the barrier)."
         (let ((ticks (sim-step-ticks! sim level until)))
           (setf (clock-held clock) (and (> level *fine-levels-max*) (held-p sim))
                 (clock-game-t clock) (sim-t sim))
+          (when (eq (sim-plan-phase sim) :replan)
+            (autopilot-replan-start! (clock-autopilot clock) sim))
           (when (or (sim-notices sim) (sim-checkpoint-request sim))
             (clock-take-notices! clock sim))
           ticks)))))
@@ -1201,18 +1273,19 @@ until the meter holds a second since the last warp change or pause."
 
 (defun clock-frame! (clock sim elapsed)
   "One frame of ELAPSED real seconds: the prediction updated (while the
-autopilot plans with at most half of *prediction-work-per-frame*, its job
-the rest, paused too; decision 117), then the accumulator fed min(ELAPSED,
+autopilot plans or replans with at most half of *prediction-work-per-frame*,
+the replan job then the menu's the rest, paused too; decision 117), then the accumulator fed min(ELAPSED,
 0.1 s) × level and stepped down (the hook before each step gives its
 until); none paused (the accumulator emptied) or lost. The steps taken."
   (let ((elapsed (float elapsed 1d0))
         (start (sim-t sim))
         (model (clock-autopilot clock))
         (prediction (clock-prediction clock)))
-    (if (autopilot-planning-p model)
+    (if (or (autopilot-planning-p model) (autopilot-replanning-p model sim))
         (progn (prediction-update! prediction sim (floor *prediction-work-per-frame* 2))
-               (autopilot-frame! model clock sim (- *prediction-work-per-frame*
-                                                    (prediction-last-work prediction))))
+               (let ((left (- *prediction-work-per-frame* (prediction-last-work prediction))))
+                 (decf left (autopilot-replan-work! model sim left))
+                 (autopilot-frame! model clock sim left)))
         (progn (prediction-update! prediction sim)
                (autopilot-frame! model clock sim 0)))
     (incf (clock-real-time clock) elapsed)

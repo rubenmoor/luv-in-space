@@ -601,6 +601,9 @@ pivoting; a singular J J ᵀ is regularised. OUT."
   (preset nil :type (or null keyword))
   (goal nil)
   (stage :done :type (member :coast :guess :iterate :check :done :refused))
+  ;; A replan (decision 117): the plan flown and its first burn left to re-shoot.
+  (base nil :type (or null burn-plan))
+  (from 0 :type fixnum)
   (iteration 0 :type fixnum)                    ; Newton steps taken
   (column -1 :type fixnum)                      ; the parameter being perturbed, −1 the base shot
   (plan nil :type (or null burn-plan))          ; the result, :done
@@ -661,6 +664,8 @@ of SIM; refused at once outside Earth orbit, for a goal above
     (sim-assign! snapshot sim)
     (setf (autopilot-job-preset job) preset
           (autopilot-job-goal job) goal
+          (autopilot-job-base job) nil
+          (autopilot-job-from job) 0
           (autopilot-job-iteration job) 0
           (autopilot-job-column job) -1
           (autopilot-job-plan job) nil
@@ -751,16 +756,96 @@ or cut short."
          (largest (nth-value 1 (goal-residuals! out measure shot start))))
     (values (goal-residuals! out measure shot start t) largest)))
 
+(defun replan-remaining-guess (snapshot base from)
+  "The first guess re-shooting BASE's burns from FROM on, from SNAPSHOT: each
+on its old node (the middle of its start and cut) with its old Δv vector,
+the node's state by Kepler from SNAPSHOT's osculating orbit after the
+earlier burns applied at their nodes."
+  (let* ((ship (sim-ship snapshot))
+         (mu +mu-earth+)
+         (coast (state->orbit (ship-state-r ship) (ship-state-v ship) mu (sim-t snapshot)))
+         (orbit coast)
+         (load (sim-stack-load snapshot))
+         (m-p (ship-state-m-p ship))
+         (old-burns (burn-plan-burns base))
+         (burns '())
+         (previous nil))
+    (loop for i from from below (length old-burns)
+          for old = (svref old-burns i)
+          for node = (grid-round (* 0.5d0 (+ (planned-burn-start old) (planned-burn-cut-t old))))
+          do (multiple-value-bind (r v) (orbit-state orbit node)
+               (let ((dv (burn-dv-vector old)))
+                 (multiple-value-bind (burn propellant)
+                     (build-burn (planned-burn-label old) node r v dv m-p load previous coast)
+                   (push burn burns)
+                   (setf previous (planned-burn-attitude burn)
+                         orbit (state->orbit r (vec3-add v dv) mu node))
+                   (decf m-p propellant)))))
+    (assemble-burn-plan (coerce (nreverse burns) 'simple-vector)
+                        (burn-plan-preset base) (burn-plan-goal base) m-p load)))
+
+(defun trim-goal (measure coast start)
+  "The preset and goal whose first guess starts a trim for MEASURE missed on
+COAST from START: a plane alone by its plane change; set Ap / Pe by the
+apsis further off its tolerance; a circular goal by circularising at the
+apsis nearer its radius."
+  (multiple-value-bind (r-max r-min) (shot-measure coast start)
+    (let ((high (goal-measure-r-max measure))
+          (low (goal-measure-r-min measure)))
+      (cond ((null high)
+             (values :change-plane (goal-measure-plane measure)))
+            ((eq (goal-measure-steer measure) :apsides)
+             (if (>= (abs (/ (- r-max high) (apsis-tolerance high)))
+                     (abs (/ (- r-min low) (apsis-tolerance low))))
+                 (values :set-apoapsis (- high +radius-earth+))
+                 (values :set-periapsis (- low +radius-earth+))))
+            (t (values :circularise
+                       (if (< (abs (- r-max high)) (abs (- r-min high))) :apoapsis :periapsis)))))))
+
+(defun replan-guess (job)
+  "JOB's first guess as a replan: the base's burns left, or after its last
+one the goal measured on the coast shot from the snapshot and, missed, a
+trim's guess. (values plan reason trim): no plan and no reason when the goal
+is met."
+  (let* ((snapshot (autopilot-job-snapshot job))
+         (coast (autopilot-job-coast job))
+         (base (autopilot-job-base job))
+         (from (autopilot-job-from job))
+         (measure (burn-plan-measure base)))
+    (if (< from (length (burn-plan-burns base)))
+        (values (replan-remaining-guess snapshot base from) nil nil)
+        (if (<= (nth-value 1 (goal-residuals! (autopilot-job-residuals job) measure coast
+                                               (sim-t snapshot)))
+                1d0)
+            (values nil nil nil)
+            (multiple-value-bind (preset goal) (trim-goal measure coast (sim-t snapshot))
+              (multiple-value-bind (plan reason) (autopilot-first-guess snapshot preset goal coast)
+                (values plan reason t)))))))
+
 (defun job-guess! (job)
-  "From the coast shot: the first guess, its burns' nodes and LVLH Δv, the
-goal measure, the propellant check; then the base shot."
+  "From the coast shot: the first guess (a replan's: replan-guess), its
+burns' nodes and LVLH Δv, the goal measure (a replan's the base's), the
+propellant check; then the base shot. A replan whose goal is met is :done
+without a plan."
   (let ((snapshot (autopilot-job-snapshot job))
         (coast (autopilot-job-coast job))
         (preset (autopilot-job-preset job))
-        (goal (autopilot-job-goal job)))
-    (multiple-value-bind (guess reason) (autopilot-first-guess snapshot preset goal coast)
+        (goal (autopilot-job-goal job))
+        (base (autopilot-job-base job))
+        (trim nil))
+    (multiple-value-bind (guess reason)
+        (if base
+            (multiple-value-bind (plan reason trimming) (replan-guess job)
+              (setf trim trimming)
+              (values plan reason))
+            (autopilot-first-guess snapshot preset goal coast))
       (unless guess
-        (return-from job-guess! (job-refuse! job reason)))
+        (return-from job-guess!
+          (if reason
+              (job-refuse! job reason)
+              (progn (setf (autopilot-job-plan job) nil
+                           (autopilot-job-stage job) :done)
+                     job))))
       (let* ((burns (burn-plan-burns guess))
              (n (length burns))
              (states (autopilot-job-node-states job))
@@ -772,7 +857,7 @@ goal measure, the propellant check; then the base shot."
                  (dv (burn-dv-vector burn))
                  (r (planned-burn-cut-r burn))
                  (v (vec3-sub (planned-burn-cut-v burn) dv)))
-            (setf (svref (autopilot-job-burn-labels job) i) (planned-burn-label burn)
+            (setf (svref (autopilot-job-burn-labels job) i) (if trim :trim (planned-burn-label burn))
                   (aref (autopilot-job-node-times job) i) (planned-burn-cut-t burn))
             (replace states r :start1 (* 6 i))
             (replace states v :start1 (+ (* 6 i) 3))
@@ -791,12 +876,14 @@ goal measure, the propellant check; then the base shot."
                (radius (and altitude (+ +radius-earth+ altitude)))
                (plane (goal-plane preset goal)))
           (setf (autopilot-job-measure job)
-                (ecase preset
-                  (:circularise (make-goal-measure here here nil :shape))
-                  ((:set-apoapsis :set-periapsis)
-                   (make-goal-measure (max here radius) (min here radius) nil))
-                  (:change-orbit (make-goal-measure radius radius plane :circle))
-                  (:change-plane (make-goal-measure nil nil plane)))))
+                (if base
+                    (burn-plan-measure base)
+                    (ecase preset
+                      (:circularise (make-goal-measure here here nil :shape))
+                      ((:set-apoapsis :set-periapsis)
+                       (make-goal-measure (max here radius) (min here radius) nil))
+                      (:change-orbit (make-goal-measure radius radius plane :circle))
+                      (:change-plane (make-goal-measure nil nil plane))))))
         (job-candidate! job)
         (let ((needed (+ (autopilot-job-propellant job)
                          (burn-plan-reserve-mass (autopilot-job-candidate job)))))
@@ -875,9 +962,10 @@ its reason."
                       (format nil "NEEDS ~D KG" (ceiling needed)))
                      (abort (subseq abort (length "AUTOPILOT ABORT: ")))))))))
 
-(defun shot-cut-plan (plan shot)
+(defun shot-cut-plan (plan shot measure)
   "PLAN with each burn's cut state the SHOT's (the copy's t, r, v at its
-cut) and the goal orbit from the last."
+cut), the goal orbit from the last and the goal MEASURE (measured at each
+cut in flight)."
   (let* ((nodes (prediction-nodes shot))
          (burns (map 'simple-vector
                      (lambda (burn i)
@@ -899,7 +987,8 @@ cut) and the goal orbit from the last."
                           :goal-orbit (state->orbit (planned-burn-cut-r last) (planned-burn-cut-v last)
                                                     +mu-earth+ (planned-burn-cut-t last))
                           :reserve-dv (burn-plan-reserve-dv plan)
-                          :reserve-mass (burn-plan-reserve-mass plan))))
+                          :reserve-mass (burn-plan-reserve-mass plan)
+                          :measure measure)))
 
 (defun job-check! (job)
   "The refusals on JOB's final shot, else the plan with the shot's cut states: :done."
@@ -907,7 +996,8 @@ cut) and the goal orbit from the last."
     (if reason
         (job-refuse! job reason)
         (setf (autopilot-job-plan job) (shot-cut-plan (autopilot-job-candidate job)
-                                                      (autopilot-job-shot job))
+                                                      (autopilot-job-shot job)
+                                                      (autopilot-job-measure job))
               (autopilot-job-stage job) :done))
     job))
 
@@ -941,13 +1031,27 @@ scripts): (values plan nil) or (values nil reason)."
   (autopilot-job-work! job most-positive-fixnum)
   (values (autopilot-job-plan job) (autopilot-job-reason job)))
 
+(defun autopilot-replan-job-start! (job sim)
+  "JOB re-planning SIM's plan, in :replan after a cut (decision 117): the
+burns after the one cut re-shot from a snapshot of SIM, or after the last
+one a :trim burn when the goal measure misses; same preset and goal. JOB."
+  (let ((plan (sim-plan sim)))
+    (autopilot-job-start! job sim (burn-plan-preset plan) (burn-plan-goal plan))
+    (setf (autopilot-job-base job) plan
+          (autopilot-job-from job) (1+ (sim-plan-index sim)))
+    job))
+
+(defun autopilot-replan-now (sim &optional (job (new-autopilot-job sim)))
+  "SIM's replan at once: (values plan reason); neither when the goal is met."
+  (autopilot-replan-job-start! job sim)
+  (autopilot-job-work! job most-positive-fixnum)
+  (values (autopilot-job-plan job) (autopilot-job-reason job)))
+
 ;;; The preset menu (decision 118: Autopilot preset menu and input in
 ;;; milestone 3): the clock's model (clock-autopilot, not in the sim or
 ;;; checkpoints), driven by O, the arrows, Return and Backspace; drawn by the
 ;;; cockpit and the overlay.
 
-(defparameter *plan-barrier* 60d0
-  "s past a running job's snapshot the clock steps the sim at most; decision 117.")
 (defparameter *plan-stale-lead* 10d0 "s before the first hold-at a shown plan goes stale; decision 117.")
 (defparameter *plan-stale-distance* 1d0 "m off the job's final shot: stale; decision 117.")
 (defparameter *menu-altitude-step* 10 "km a step; decision 118.")
@@ -958,7 +1062,7 @@ scripts): (values plan nil) or (values nil reason)."
 (defparameter *menu-repeat-rate* 8 "Steps per real second while Left or Right is held; decision 118.")
 (defparameter *menu-fast-after* 1 "s held: then each step ×*menu-fast-factor*; decision 118.")
 (defparameter *menu-fast-factor* 10 "decision 118.")
-(declaim (type double-float *plan-barrier* *plan-stale-lead* *plan-stale-distance*)
+(declaim (type double-float *plan-stale-lead* *plan-stale-distance*)
          (type fixnum *menu-altitude-step* *menu-altitude-min* *menu-altitude-max*
                *menu-inclination-step* *menu-inclination-max* *menu-repeat-rate*
                *menu-fast-after* *menu-fast-factor*))
@@ -1061,6 +1165,9 @@ scripts): (values plan nil) or (values nil reason)."
   (selection :circularise :type keyword)        ; the selected row's key
   (values '() :type list)                       ; (key . value) per row
   (job nil :type (or null autopilot-job))       ; made at the first plan, reused
+  (replan-job nil :type (or null autopilot-job)) ; made at the first replan, reused
+  (replan nil :type (or null burn-plan))        ; the plan it re-plans, nil once installed
+  (replan-t 0d0 :type double-float)             ; its cut
   (row nil :type (or null keyword))             ; the row the job plans, or the plan's
   (plan nil :type (or null burn-plan))          ; the plan shown
   (flown nil :type (or null burn-plan))         ; the plan last engaged: the map's, grey after
@@ -1300,6 +1407,61 @@ snapshot's + *plan-barrier*), or nil."
   (when (autopilot-planning-p model)
     (+ (sim-t (autopilot-job-snapshot (autopilot-model-job model))) *plan-barrier*)))
 
+;;; Replans (decision 117): a cut off its shot leaves the sim's plan in
+;;; :replan; the clock runs a job from that step's sim and installs its
+;;; result at the cut + *plan-barrier*, the same in every mode.
+
+(defun autopilot-replan-start! (model sim)
+  "After a step leaving SIM's plan in :replan: MODEL's replan job started
+from SIM, unless already for this plan and cut."
+  (unless (and (eq (autopilot-model-replan model) (sim-plan sim))
+               (= (autopilot-model-replan-t model) (sim-plan-replan-t sim)))
+    (let ((job (or (autopilot-model-replan-job model)
+                   (setf (autopilot-model-replan-job model) (new-autopilot-job sim)))))
+      (autopilot-replan-job-start! job sim)
+      (setf (autopilot-model-replan model) (sim-plan sim)
+            (autopilot-model-replan-t model) (sim-plan-replan-t sim))))
+  model)
+
+(defun autopilot-replanning-p (model sim)
+  "MODEL's replan job runs for SIM's plan."
+  (and (eq (sim-plan-phase sim) :replan)
+       (eq (autopilot-model-replan model) (sim-plan sim))
+       (not (member (autopilot-job-stage (autopilot-model-replan-job model)) '(:done :refused)))))
+
+(defun autopilot-replan-work! (model sim budget)
+  "The replan job's share of the frame: at most BUDGET units while it runs;
+the units done."
+  (if (autopilot-replanning-p model sim)
+      (let ((job (autopilot-model-replan-job model)))
+        (autopilot-job-work! job budget)
+        (autopilot-job-work job))
+      0))
+
+(defun autopilot-replan-due! (model clock sim finish)
+  "Before a step of SIM in :replan (clock-step!): true to step on. Before
+the cut + *plan-barrier* the job runs on; there, its job done (or FINISH:
+done at once) its result installed (sim-install-plan!, the message
+\"AUTOPILOT: REPLANNED\"), no plan the goal met (the plan :done, completing
+in the step), a refusal an abort with its reason; nil while it still runs."
+  (autopilot-replan-start! model sim)
+  (let ((job (autopilot-model-replan-job model)))
+    (cond ((< (sim-t sim) (+ (sim-plan-replan-t sim) *plan-barrier*)) t)
+          ((and (not finish) (autopilot-replanning-p model sim)) nil)
+          (t
+           (autopilot-job-work! job most-positive-fixnum)
+           (setf (autopilot-model-replan model) nil)
+           (ecase (autopilot-job-stage job)
+             (:done
+              (let ((plan (autopilot-job-plan job)))
+                (if plan
+                    (progn (sim-install-plan! sim plan)
+                           (setf (autopilot-model-flown model) plan)
+                           (clock-message! clock :autopilot "AUTOPILOT: REPLANNED"))
+                    (setf (sim-plan-phase sim) :done))))
+             (:refused (plan-abort! sim (autopilot-job-reason job))))
+           t))))
+
 (defun autopilot-frame! (model clock sim budget)
   "Once per frame (clock-frame!): the job's BUDGET work units, its end polled;
 the engaged flag mirrored."
@@ -1353,6 +1515,7 @@ cut's t). Pure; conses only its result."
 and the job's buffers kept."
   (setf (autopilot-model-plan model) nil
         (autopilot-model-flown model) nil
+        (autopilot-model-replan model) nil
         (autopilot-model-row model) nil
         (autopilot-model-engage model) nil
         (autopilot-model-engaged model) nil

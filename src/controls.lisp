@@ -248,7 +248,7 @@ drift; CONTROLS. Conses nothing."
 
 (defstruct (burn-plan (:constructor make-burn-plan
                           (burns &key (coast-hold :prograde) preset goal goal-orbit
-                                   (reserve-dv 0d0) (reserve-mass 0d0)))
+                                   (reserve-dv 0d0) (reserve-mass 0d0) measure))
                       (:copier nil))
   (burns #() :type simple-vector :read-only t)
   (coast-hold :prograde :type (member :prograde :retrograde :normal :anti-normal
@@ -260,7 +260,10 @@ drift; CONTROLS. Conses nothing."
   (goal nil :read-only t)
   (goal-orbit nil :type (or null orbit) :read-only t)
   (reserve-dv 0d0 :type double-float :read-only t)
-  (reserve-mass 0d0 :type double-float :read-only t))
+  (reserve-mass 0d0 :type double-float :read-only t)
+  ;; The planner's goal measure (autopilot.lisp): a plan with one is
+  ;; measured at each cut; candidates and hand-made plans have none.
+  (measure nil :read-only t))
 
 ;;; The RCS mixer (decision 70): duty cycles u in [0, 1] minimising
 ;;; |w (B_τ u − τ_c)|² + |B_F u − F_c|² + e² |u|² by Stark–Parker BVLS,

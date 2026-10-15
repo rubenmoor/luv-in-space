@@ -346,6 +346,43 @@ at ×1,000 and ×100 within its goal's tolerances; the plan."
     (true (< (abs (+ (aref out 0) 1)) 1d-9))
     (true (< (abs (+ (aref out 1) 1)) 1d-9))))
 
+(define-test autopilot-replan-job
+  ;; After the :point Hohmann's last cut, flown as shot: a replan finds the
+  ;; goal met, no plan. With the velocity there 0.5 % short of the goal's
+  ;; periapsis: one :trim burn, the plan's preset and measure, the goal met
+  ;; on its shot; in 300-unit calls the same plan.
+  (let* ((sim (model-sim :point))
+         (plan (plan-now sim :change-orbit '(800d3)))
+         (last (plan-burn plan 1))
+         (r2 (+ lis::+radius-earth+ 800d3))
+         (short (- (circular-speed 800d3) (nth-value 1 (transfer-speeds (* 0.995d0 r2) r2)))))
+    (lis::sim-engage-plan! sim plan)
+    (step-sim sim 1000000 1000 (lis::planned-burn-cut-t last))
+    (lis::plan-step-controls! sim)
+    (is eq :done (lis::sim-plan-phase sim))
+    (setf (lis::sim-plan-phase sim) :replan
+          (lis::sim-plan-index sim) 1
+          (lis::sim-plan-replan-t sim) (lis::sim-t sim))
+    (multiple-value-bind (replan reason) (lis::autopilot-replan-now sim)
+      (false replan)
+      (false reason))
+    (let ((v (lis::ship-state-v (lis::sim-ship sim))))
+      (lis::vec3-add-scaled! v v (lis::vec3-normalize v) (- short)))
+    (let* ((job (lis::new-autopilot-job sim))
+           (trim (lis::autopilot-replan-now sim job)))
+      (true trim)
+      (when trim
+        (is equal '(:trim) (map 'list #'lis::planned-burn-label (lis::burn-plan-burns trim)))
+        (is eq :change-orbit (lis::burn-plan-preset trim))
+        (is eq (lis::burn-plan-measure plan) (lis::burn-plan-measure trim))
+        (true (<= (nth-value 1 (lis::job-shot-residuals! job (make-array 4 :element-type 'double-float)))
+                  1d0))
+        (lis::autopilot-replan-job-start! job sim)
+        (loop for stage = (lis::autopilot-job-work! job 300)
+              do (true (<= (lis::autopilot-job-work job) 300))
+              until (member stage '(:done :refused)))
+        (true (equalp trim (lis::autopilot-job-plan job)))))))
+
 (define-test autopilot-plan-refusals
   (flet ((refused (sim preset goal)
            (multiple-value-bind (plan reason) (lis::autopilot-plan-now sim preset goal)

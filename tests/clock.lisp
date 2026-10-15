@@ -1346,3 +1346,170 @@ count and the largest sim t seen while planning."
     (lis::clock-restart! clock sim (lis::new-game-sim))
     (is eq :closed (menu-state clock))
     (false (lis::autopilot-model-flown (lis::clock-autopilot clock)))))
+
+;;; Measurement at each cut, replans and trims (decision 117, task 205).
+
+(defun crafted-plan (plan i &key (turn 0d0) (dv 0d0))
+  "PLAN with burn I's attitude turned by TURN (rad) about its orbit's normal
+and its Δv changed by DV, its shot's cut state and the goal measure kept."
+  (let* ((burns (copy-seq (lis::burn-plan-burns plan)))
+         (b (svref burns i))
+         (r (lis::planned-burn-cut-r b))
+         (v (lis::planned-burn-cut-v b))
+         (n (lis::vec3-normalize (lis::vec3-cross r v))))
+    (setf (svref burns i)
+          (lis::make-planned-burn (lis::planned-burn-label b) (lis::planned-burn-hold-at b)
+                                  (lis::planned-burn-start b)
+                                  (lis::quat-mul (lis::quat-from-axis-angle n turn)
+                                                 (lis::planned-burn-attitude b))
+                                  (lis::planned-burn-throttle b) (lis::planned-burn-rcs b)
+                                  (+ (lis::planned-burn-dv b) dv)
+                                  :cut-t (lis::planned-burn-cut-t b) :cut-r r :cut-v v
+                                  :isp (lis::planned-burn-isp b)))
+    (lis::make-burn-plan burns :preset (lis::burn-plan-preset plan) :goal (lis::burn-plan-goal plan)
+                               :goal-orbit (lis::burn-plan-goal-orbit plan)
+                               :reserve-dv (lis::burn-plan-reserve-dv plan)
+                               :reserve-mass (lis::burn-plan-reserve-mass plan)
+                               :measure (lis::burn-plan-measure plan))))
+
+(defun burn-level (sim)
+  "×1 from a hold-at to the cut, else ×1,000."
+  (let ((next (lis::plan-next-time sim)))
+    (if (or (member (lis::sim-plan-phase sim) '(:holding :burning))
+            (and next (<= next (lis::sim-t sim))))
+        1 1000)))
+
+(defun replan-run (sim plan &key frames)
+  "PLAN engaged in SIM and flown through a clock at burn-level, by
+clock-step!, with FRAMES by clock-frame!s of 1/60 s while a replan runs, to
+its end. (values clock seen messages): SEEN ((t phase plan replans
+replan-t) …) before each step that saw a new plan or a new phase, oldest
+first; MESSAGES the autopilot's, in order (the log fills with warp's)."
+  (let ((lis::*frame-step-time-limit* nil)
+        (clock (lis::new-clock sim))
+        (seen '())
+        (messages '()))
+    (flet ((message! ()
+             (let ((text (second (assoc :autopilot (lis::clock-message-list clock)))))
+               (when (and text (not (equal text (first messages))))
+                 (push text messages)))))
+      (setf (lis::clock-hook clock)
+            (lambda (clock s)
+              (let ((last (first seen)))
+                (unless (and last (eq (third last) (lis::sim-plan s))
+                             (eq (second last) (lis::sim-plan-phase s)))
+                  (push (list (lis::sim-t s) (lis::sim-plan-phase s) (lis::sim-plan s)
+                              (lis::sim-plan-replans s) (lis::sim-plan-replan-t s))
+                        seen)))
+              (message!)
+              (lis::clock-set-level-index! clock (level-index (burn-level s)))
+              nil))
+      (lis::autopilot-engage! clock sim plan)
+      (loop repeat 1000000
+            while (lis::sim-plan sim)
+            do (if (and frames (eq (lis::sim-plan-phase sim) :replan))
+                   (lis::clock-frame! clock sim 1/60)
+                   (lis::clock-step! clock sim)))
+      (message!))
+    (false (lis::sim-plan sim))
+    (values clock (reverse seen) (reverse messages))))
+
+(defun goal-score (sim measure)
+  "MEASURE's largest residual (1: the tolerance) over a period from SIM."
+  (let ((pred (lis::prediction-shoot! (lis::new-prediction) (lis::copy-sim sim)
+                                      (+ (lis::sim-t sim) (lis::osculating-period sim)))))
+    (lis::prediction-extend! pred most-positive-fixnum)
+    (nth-value 1 (lis::goal-residuals! (make-array 4 :element-type 'double-float)
+                                       measure pred (lis::sim-t sim)))))
+
+(defun installs (seen plan)
+  "The (t plan replans) of each plan installed after PLAN in SEEN."
+  (loop for (time nil p replans) in seen
+        for previous = plan then current
+        for current = (or p previous)
+        when (and p (not (eq p previous)))
+          collect (list time p replans)))
+
+(define-test autopilot-replan
+  ;; The :point Hohmann 400 → 800 km, its first burn turned 3° in pitch
+  ;; (5.8 m/s off its shot): :replan at its cut, the second burn re-shot and
+  ;; installed at exactly the cut + 60 s by clock-step! and through
+  ;; clock-frame!s alike; the goal met after it; twice the same sim.
+  (let* ((start (model-sim :point))
+         (plan (plan-now start :change-orbit '(800d3)))
+         (crafted (crafted-plan plan 0 :turn (lis::deg->rad 3d0)))
+         (runs (loop for frames in '(nil nil t)
+                     collect (let ((sim (lis::copy-sim start)))
+                               (multiple-value-bind (clock seen messages)
+                                   (replan-run sim crafted :frames frames)
+                                 (declare (ignore clock))
+                                 (list sim seen messages))))))
+    (destructuring-bind ((sim seen messages) (again &rest again-run) (framed framed-seen &rest framed-run))
+        runs
+      (declare (ignore again-run framed-run))
+      (let ((cut (find :replan seen :key #'second))
+            (new (installs seen crafted)))
+        (true cut)
+        (is = 1 (length new))
+        (when (and cut new)
+          (let ((cut-t (fifth cut))
+                (installed (second (first new))))
+            ;; The cut's step (×1) started at t_cut.
+            (is = (+ cut-t 1/64) (first cut))
+            (is = (+ cut-t 60) (first (first new)))
+            (is = 1 (third (first new)))
+            (is equal '(:circularise) (map 'list #'lis::planned-burn-label
+                                           (lis::burn-plan-burns installed)))
+            (let ((framed-new (installs framed-seen crafted)))
+              (is = 1 (length framed-new))
+              (is = (+ cut-t 60) (first (first framed-new)))
+              (true (equalp installed (second (first framed-new)))))))
+        (is equal '("AUTOPILOT: REPLANNED" "AUTOPILOT: PLAN COMPLETE") messages)
+        (let ((score (goal-score sim (lis::burn-plan-measure plan))))
+          (true (<= score 1d0) "~,3F of the tolerance" score))
+        (true (equalp again sim))
+        (true (equalp framed sim))))))
+
+(define-test autopilot-trim
+  ;; The Hohmann's last burn short by what leaves its periapsis 0.5 % low:
+  ;; :replan at its cut, one :trim burn, the goal then met. A turn under
+  ;; the threshold (0.1°, 0.2 m/s of 1.1) replans nothing.
+  (let* ((start (model-sim :point))
+         (plan (plan-now start :change-orbit '(800d3)))
+         (r2 (+ lis::+radius-earth+ 800d3))
+         (short (- (circular-speed 800d3) (nth-value 1 (transfer-speeds (* 0.995d0 r2) r2))))
+         (sim (lis::copy-sim start)))
+    (multiple-value-bind (clock seen messages) (replan-run sim (crafted-plan plan 1 :dv (- short)))
+      (declare (ignore clock))
+      (let ((new (installs seen plan)))
+        (is = 2 (length new))
+        (when (= 2 (length new))
+          (is equal '(:trim) (map 'list #'lis::planned-burn-label
+                                  (lis::burn-plan-burns (second (second new))))))
+        (is equal '("AUTOPILOT: REPLANNED" "AUTOPILOT: PLAN COMPLETE") messages)
+        (let ((score (goal-score sim (lis::burn-plan-measure plan))))
+          (true (<= score 1d0) "~,3F of the tolerance" score))))
+    (let ((sim (lis::copy-sim start)))
+      (multiple-value-bind (clock seen messages)
+          (replan-run sim (crafted-plan plan 0 :turn (lis::deg->rad 0.1d0)))
+        (declare (ignore clock))
+        (false (find :replan seen :key #'second))
+        (is = 1 (length (installs seen plan)))
+        (is equal '("AUTOPILOT: PLAN COMPLETE") messages)))))
+
+(define-test autopilot-goal-missed
+  ;; A third error: after two replans the cut ends the plan, "AUTOPILOT:
+  ;; GOAL MISSED", the coast hold kept, no checkpoint asked for.
+  (let* ((sim (model-sim :point))
+         (plan (crafted-plan (plan-now sim :change-orbit '(800d3)) 0 :turn (lis::deg->rad 3d0)))
+         (clock (lis::new-clock sim)))
+    (lis::autopilot-engage! clock sim plan)
+    (setf (lis::sim-plan-replans sim) 2)
+    (step-until sim 1 (lambda (s) (or (null (lis::sim-plan s)) (lis::sim-notices s))) 1000000)
+    (false (lis::sim-plan sim))
+    (is equal '("AUTOPILOT: GOAL MISSED") (notice-texts sim))
+    (false (lis::sim-checkpoint-request sim))
+    (is eq :hold (lis::controls-attitude-mode (lis::sim-controls sim)))
+    (is eq :prograde (lis::controls-hold (lis::sim-controls sim)))
+    (lis::clock-take-notices! clock sim)
+    (is eq :closed (menu-state clock))))

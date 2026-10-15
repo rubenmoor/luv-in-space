@@ -181,6 +181,72 @@ integer COLOUR. Conses nothing for real X, Y that are not boxed doubles."
                                         px (+ py dot) r g b))))))))
     out))
 
+(defparameter *marker-label-order* '(:earth :sun :moon :ship :impact :periapsis :apoapsis)
+  "Labels are placed in this order, each right of its marker, else left of
+it, else dropped where it would overlap one placed before; decision 103.")
+
+(defun label-width (string &optional (dot *label-dot-px*))
+  "STRING's width in px: 6 dots a cell, the last cell's gap not counted."
+  (if (zerop (length string)) 0 (- (* 6 dot (length string)) dot)))
+
+(defun place-map-labels! (markers)
+  "Set each marker's LABEL-SIDE and LABEL-X: in *marker-label-order*, right
+of the marker (*marker-label-gap-px* from its centre), else as far left,
+else nil when both overlap a label placed before. Conses nothing."
+  (declare (optimize speed) (type map-markers markers))
+  (let ((items (map-markers-items markers))
+        (count (map-markers-count markers))
+        (height (float (* 7 (the fixnum *label-dot-px*)) 1d0))
+        (gap (float *marker-label-gap-px* 1d0)))
+    (declare (type double-float height gap))
+    (dotimes (i count)
+      (setf (map-marker-label-side (svref items i)) nil))
+    (flet ((free-p (x0 x1 y)
+             ;; no placed label's box meets [x0, x1] × [y − h/2, y + h/2]
+             (declare (type double-float x0 x1 y))
+             (dotimes (j count t)
+               (let ((other (svref items j)))
+                 (when (and (map-marker-label-side other)
+                            (< x0 (+ (map-marker-label-x other)
+                                     (label-width (map-marker-label other))))
+                            (< (map-marker-label-x other) x1)
+                            (< (abs (- y (map-marker-y other))) height))
+                   (return nil))))))
+      (declare (inline free-p))
+      (dolist (key *marker-label-order*)
+        (dotimes (i count)
+          (let ((marker (svref items i)))
+            (when (and (eq (map-marker-key marker) key) (map-marker-label marker))
+              (let* ((x (map-marker-x marker)) (y (map-marker-y marker))
+                     (width (float (label-width (map-marker-label marker)) 1d0))
+                     (right (+ x gap)) (left (- x gap width)))
+                (cond ((free-p right (+ right width) y)
+                       (setf (map-marker-label-side marker) :right (map-marker-label-x marker) right))
+                      ((free-p left (+ left width) y)
+                       (setf (map-marker-label-side marker) :left (map-marker-label-x marker) left)))))))))
+    markers))
+
+(defun map-marker-vertices! (out markers)
+  "MARKERS (ribbons.lisp's map-markers) into OUT: the shapes at their
+pixels, the ship's last, then the labels place-map-labels! keeps, in *marker-label-colour*, rows
+centred on the marker. Conses nothing; OUT."
+  (declare (type overlay-buffer out) (type map-markers markers))
+  (place-map-labels! markers)
+  ;; the ship's ring, the first, on top
+  (loop for i from (1- (map-markers-count markers)) downto 0
+        for marker = (svref (map-markers-items markers) i)
+        do (marker-vertices! out (map-marker-kind marker)
+                             (coerce (map-marker-x marker) 'single-float)
+                             (coerce (map-marker-y marker) 'single-float)
+                             (map-marker-colour marker)))
+  (dotimes (i (map-markers-count markers) out)
+    (let ((marker (svref (map-markers-items markers) i)))
+      (when (map-marker-label-side marker)
+        (label-at! out (map-marker-label marker)
+                   (coerce (map-marker-label-x marker) 'single-float)
+                   (coerce (map-marker-y marker) 'single-float)
+                   *marker-label-colour*)))))
+
 (defun quad (anchor-x anchor-y left top size color)
   "Two triangles of overlay vertices: a SIZE-pixel square at pixel offset
 LEFT, TOP from the clip-space anchor."

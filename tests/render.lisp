@@ -631,7 +631,9 @@ check looks from el 10 deg, where the far half lies apart."
             (let ((n (cyan pixels format #'on-ring)))
               (true (>= n 315) "ribbon: ~D cyan pixels on the ring" n)))
           (multiple-value-bind (pixels format)
-              (with-canvas-values (game (lis::*ribbon-radiance* 0d0)) (capture camera-fn))
+              (with-canvas-values (game (lis::*ribbon-radiance* 0d0)
+                                        (lis::*marker-colour* #x8A8A80))
+                (capture camera-fn))
             (is = 0 (cyan pixels format #'on-ring)))))
       (let* ((camera-fn (map-camera-fn 10))
              (state (sim-render-state (lis::new-game-sim)))
@@ -643,6 +645,36 @@ check looks from el 10 deg, where the far half lies apart."
               (true (> (cyan pixels format (lambda (x y) (near-any-p x y seen 2))) 0))
               (is = 0 (cyan pixels format #'far-side)))))))
     (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))))
+
+;; The map's markers (decision 84): exact colours after the tone map.
+
+(defun rgb-bytes (rgb)
+  (list (ldb (byte 8 16) rgb) (ldb (byte 8 8) rgb) (ldb (byte 8 0) rgb)))
+
+(defun marker-checks (game png width height)
+  "The 400 x 2,000 km orbit, the ship at true anomaly 135 deg: the AP
+diamond's centre pixel cyan and a dot of its label's A paper white, both
+exact (the GPU's rounding aside)."
+  (let* ((orbit (test-orbit-400x2000))
+         (time (time-at-true-anomaly orbit (deg 135d0)))
+         (sim (orbit-sim orbit time))
+         (state (sim-render-state sim))
+         (markers (lis::map-markers state (nth-value 1 (opened-map state)) (list width height)
+                                    (lis::make-map-markers)))
+         (ap (lis::map-marker-ref markers :apoapsis))
+         (pixels (nth-value 3 (lis::capture-game-state game png :sim sim :view :map :frames 1)))
+         (format (lis::renderer-format (lis::game-renderer game))))
+    (true ap)
+    (let ((x (lis::map-marker-x ap)) (y (lis::map-marker-y ap)))
+      (flet ((check (px py rgb what)
+               (let ((pixel (pixel-rgb pixels format width px py)))
+                 (true (every (lambda (a b) (<= (abs (- a b)) 1)) (rgb-bytes rgb) pixel)
+                       "~A at ~D, ~D: ~A" what px py pixel))))
+        (check (floor x) (floor y) #x40D0FF "AP diamond")
+        ;; A's top row .###.: its second dot spans x + 10 .. 12, y − 7 .. −5
+        (check (floor (+ x 10 1)) (floor (- y 6)) #xE8E4D8 "AP label"))))
+  (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))
+  (lis::game-load-state! game (lis::new-game-sim)))
 
 (defun ship-checks (game png width height)
   (flet ((capture (sim camera-fn)
@@ -920,6 +952,7 @@ check looks from el 10 deg, where the far half lies apart."
            (light-checks game png width height)
            (map-checks game png width height)
            (ribbon-checks game png width height)
+           (marker-checks game png width height)
            (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))
            ;; Resizes replace the swapchain's textures; what the renderer kept
            ;; for the old ones goes, so its per-target state stays bounded.

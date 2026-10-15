@@ -201,3 +201,199 @@
     (true (<= (lis::ribbon-count ribbon) 400))
     (is = (reduce #'max splits) (aref splits nearest))
     (true (plusp (aref splits nearest)))))
+
+;;; The map's markers (decision 84).
+
+(defun with-bodies (state)
+  "STATE with the Sun and the Moon at its time, as render-state-update! sets them."
+  (let ((scratch (lis::make-vec3)) (time (lis::render-state-t state)))
+    (lis::body-state-into (lis::render-state-sun state) scratch :sun time :earth)
+    (lis::body-state-into (lis::render-state-moon state) scratch :moon time :earth)
+    state))
+
+(defun opened-markers (state &key (extent '(1280 800)) (view-fn #'identity))
+  "STATE's markers from the map's opening frame, VIEW-FN applied to the
+view first; also the camera."
+  (with-bodies state)
+  (let ((view (funcall view-fn (opened-map state)))
+        (camera (lis::make-camera)))
+    (lis::map-camera-update! camera view state nil)
+    (values (lis::map-markers state camera extent (lis::make-map-markers)) camera)))
+
+(defun marker (markers key) (lis::map-marker-ref markers key))
+
+(defun clip-pixel (camera point &optional (width 1280) (height 800))
+  "POINT (relative to Earth's centre) in pixels through camera-clip-rows!."
+  (let ((rows (make-array 16 :element-type 'single-float)))
+    (lis::camera-clip-rows! rows camera (/ width height))
+    (pixel rows (lis::vec3-sub point (lis::camera-offset camera)) width height)))
+
+(defun at-pixel-p (marker camera point &optional (height 800))
+  (multiple-value-bind (x y) (clip-pixel camera point 1280 height)
+    (<= (sqrt (+ (expt (- (lis::map-marker-x marker) x) 2) (expt (- (lis::map-marker-y marker) y) 2)))
+        0.5d0)))
+
+(defun time-at-true-anomaly (orbit theta)
+  (let ((e (lis::orbit-e orbit)))
+    (+ (lis::orbit-tp orbit)
+       (/ (if (< e 1)
+              (let ((ea (lis::true->eccentric theta e))) (- ea (* e (sin ea))))
+              (let ((ha (lis::true->hyperbolic theta e))) (- (* e (sinh ha)) ha)))
+          (lis::orbit-n orbit)))))
+
+(define-test map-markers-apsides
+  ;; The ship at true anomaly 135°: the opening eye looks across the apse
+  ;; line, so neither apsis is behind Earth.
+  (let* ((orbit (test-orbit-400x2000))
+         (tp (lis::orbit-tp orbit))
+         (period (lis::orbit-period orbit)))
+    (multiple-value-bind (markers camera)
+        (opened-markers (orbit-render-state orbit (time-at-true-anomaly orbit (deg 135d0))))
+      (let ((ap (marker markers :apoapsis)) (pe (marker markers :periapsis))
+            (ship (marker markers :ship)))
+        (true (and ap pe ship))
+        (is string= "AP 2000 KM" (lis::map-marker-label ap))
+        (is string= "PE 400 KM" (lis::map-marker-label pe))
+        (is eq :diamond (lis::map-marker-kind ap))
+        (is = #x40D0FF (lis::map-marker-colour pe))
+        (true (at-pixel-p ap camera (lis::orbit-state orbit (+ tp (/ period 2)))))
+        (true (at-pixel-p pe camera (lis::orbit-state orbit tp)))
+        (is eq :ring (lis::map-marker-kind ship))
+        (is string= "M-07" (lis::map-marker-label ship)))))
+  (let* ((orbit (eccentric-orbit 1.5d0))
+         (markers (opened-markers (orbit-render-state orbit (time-at-true-anomaly orbit (deg 90d0))))))
+    (true (marker markers :periapsis))
+    (is string= "PE 400 KM" (lis::map-marker-label (marker markers :periapsis)))
+    (false (marker markers :apoapsis))))
+
+(define-test map-markers-impact
+  (let* ((orbit (apsides-orbit 50d3 400d3))
+         (t-r (+ (lis::start-t) 600))
+         (impact (marker (opened-markers (orbit-render-state orbit t-r)) :impact)))
+    (true impact)
+    (is eq :cross (lis::map-marker-kind impact))
+    (is = #xFF3030 (lis::map-marker-colour impact))
+    (is string= "IMPACT" (lis::map-marker-label impact))
+    (let ((point (lis::map-marker-point impact)) (time (lis::map-marker-time impact)))
+      (true (< (abs (- (lis::vec3-norm point) *earth-crash-radius*)) 1d-3))
+      (true (> time t-r))
+      (true (< (abs (- time (lis::orbit-radius-crossings orbit *earth-crash-radius* t-r))) 1d-3))
+      ;; inbound: falling there
+      (multiple-value-bind (r v) (lis::orbit-state orbit time)
+        (true (< (lis::vec3-norm (lis::vec3-sub r point)) 1d0))
+        (true (minusp (lis::vec3-dot r v))))))
+  (false (marker (opened-markers (start-map-state)) :impact)))
+
+(define-test map-markers-visibility
+  ;; The ship at periapsis, the eye in the orbit plane opposite it.
+  (let* ((orbit (test-orbit-400x2000))
+         (state (orbit-render-state orbit (lis::orbit-tp orbit)))
+         (markers (opened-markers state :view-fn (lambda (view)
+                                                    (setf (lis::map-view-elevation view) 0d0
+                                                          (lis::map-view-azimuth view) pi)
+                                                    view))))
+    (false (marker markers :periapsis))
+    (true (marker markers :apoapsis))
+    (true (marker markers :ship))))
+
+(defun body-px (state camera key height)
+  "KEY's projected diameter, px: H tan(asin(R/d)) / tan(fov/2)."
+  (let* ((centre (ecase key
+                   (:earth (lis::vec3 0 0 0))
+                   (:moon (lis::render-state-moon state))
+                   (:sun (lis::render-state-sun state))))
+         (d (lis::vec3-norm (lis::vec3-sub centre (lis::camera-offset camera)))))
+    (/ (* height (tan (asin (/ (lis::body-radius (lis::body key)) d))))
+       (tan (* 0.5d0 (lis::camera-field-of-view camera))))))
+
+(define-test map-markers-bodies
+  (let ((state (start-map-state)))
+    ;; The Moon is ~7.7 px at 800 px and ~3.9 px at 400 px.
+    (loop for height in '(800 400)
+          do (multiple-value-bind (markers camera) (opened-markers state :extent (list 1280 height))
+               (false (marker markers :earth))
+               (let ((px (body-px state camera :moon height))
+                     (moon (marker markers :moon)))
+                 (true (< 0.2d0 (* 2 (lis::rad->deg (asin (/ lis::+radius-moon+
+                                                              (lis::vec3-norm (lis::render-state-moon state))))))
+                          0.6d0))
+                 (if (< px 6)
+                     (progn (true moon "Moon at ~,1F px" px)
+                            (is string= "MOON" (lis::map-marker-label moon))
+                            (is = #x8A8A80 (lis::map-marker-colour moon))
+                            (true (at-pixel-p moon camera (lis::render-state-moon state) height)))
+                     (false moon "Moon at ~,1F px" px)))))
+    (multiple-value-bind (markers camera)
+        (opened-markers state :view-fn (lambda (view) (lis::map-view-zoom! view 1d10)))
+      (true (< (abs (- 1.5d13 (lis::vec3-norm (lis::camera-offset camera)))) 1d0))
+      (is string= "EARTH" (lis::map-marker-label (marker markers :earth)))
+      (is string= "SUN" (lis::map-marker-label (marker markers :sun)))
+      (is eq :dot (lis::map-marker-kind (marker markers :sun)))
+      ;; both labels kept, apart (decision 103: Map labels: placement order and overlap)
+      (lis::place-map-labels! markers)
+      (let ((earth (marker markers :earth)) (sun (marker markers :sun)))
+        (true (and (lis::map-marker-label-side earth) (lis::map-marker-label-side sun)))
+        (false (labels-overlap-p earth sun))))))
+
+(defun labels-overlap-p (a b)
+  (flet ((span (m) (let ((x (lis::map-marker-label-x m)))
+                     (list x (+ x (lis::label-width (lis::map-marker-label m)))))))
+    (destructuring-bind (a0 a1) (span a)
+      (destructuring-bind (b0 b1) (span b)
+        (and (< a0 b1) (< b0 a1)
+             (< (abs (- (lis::map-marker-y a) (lis::map-marker-y b))) (* 7 lis::*label-dot-px*)))))))
+
+(define-test map-labels-placement
+  ;; The ship at apoapsis: M-07 right of the ring, AP's label to the left.
+  (let* ((orbit (test-orbit-400x2000))
+         (markers (opened-markers (orbit-render-state orbit (+ (lis::orbit-tp orbit)
+                                                                (/ (lis::orbit-period orbit) 2))))))
+    (lis::place-map-labels! markers)
+    (let ((ship (marker markers :ship)) (ap (marker markers :apoapsis)))
+      (true (and ship ap))
+      (is eq :right (lis::map-marker-label-side ship))
+      (is = (+ (lis::map-marker-x ship) 8) (lis::map-marker-label-x ship))
+      (is eq :left (lis::map-marker-label-side ap))
+      (is = (- (lis::map-marker-x ap) 8) (+ (lis::map-marker-label-x ap)
+                                             (lis::label-width "AP 2000 KM")))
+      (dotimes (i (lis::map-markers-count markers))
+        (dotimes (j i)
+          (let ((a (svref (lis::map-markers-items markers) i))
+                (b (svref (lis::map-markers-items markers) j)))
+            (when (and (lis::map-marker-label-side a) (lis::map-marker-label-side b))
+              (false (labels-overlap-p a b)))))))))
+
+(define-test map-marker-labels-have-glyphs
+  (let ((labels '()))
+    (flet ((collect (markers)
+             (dotimes (i (lis::map-markers-count markers))
+               (push (copy-seq (lis::map-marker-label (svref (lis::map-markers-items markers) i)))
+                     labels))))
+      (collect (opened-markers (orbit-render-state (apsides-orbit 50d3 400d3) (lis::start-t))))
+      (collect (opened-markers (orbit-render-state (eccentric-orbit 1.5d0) (lis::start-t))))
+      (collect (opened-markers (start-map-state)
+                               :extent '(1280 400)
+                               :view-fn (lambda (view) (lis::map-view-zoom! view 1d10)))))
+    (dolist (want '("M-07" "IMPACT" "EARTH" "SUN"))
+      (true (member want labels :test #'string=) "no ~A" want))
+    (dolist (label labels)
+      (loop for c across label
+            do (true (lis::glyph c) "~S in ~S has no glyph" c label)))
+    (is string= "PE -1234 KM"
+        (lis::write-altitude-label! (lis::label-buffer) "PE " (- lis::+radius-earth+ 1234.4d3)))
+    (is string= "AP 0 KM" (lis::write-altitude-label! (lis::label-buffer) "AP " lis::+radius-earth+))))
+
+(define-test map-markers-cons-nothing
+  (let ((state (with-bodies (orbit-render-state (apsides-orbit 50d3 400d3) (+ (lis::start-t) 600))))
+        (markers (lis::make-map-markers))
+        (extent (list 1280 800)))
+    (multiple-value-bind (view camera) (opened-map state)
+      (declare (ignore view))
+      (lis::map-markers state camera extent markers)
+      (true (lis::map-marker-ref markers :impact))
+      (let ((out (lis::make-overlay-buffer)))
+        (is = 0 (least-bytes-consed
+                 (lambda () (dotimes (i 1000)
+                              (lis::map-markers state camera extent markers)
+                              (lis::map-marker-vertices! (lis::overlay-clear! out) markers)))
+                 5))))))

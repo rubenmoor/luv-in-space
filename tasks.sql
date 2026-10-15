@@ -5199,7 +5199,7 @@ INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, crea
 ## Done when
 - Tests pass, within the plan''s ~1.5 s share; `nix build` and `scripts/test` pass.
 - `docs/architecture.md` "Trajectory prediction" lists the events and queries as built, "Testing" → "Prediction"; `docs/design.md` "Instruments and how each is drawn" (TARGET''s "CA" reads `prediction-closest-approach`); `AGENTS.md` "Layout" (`prediction.lisp`''s target, closest approach and nodes).', '2026-10-15T07:41:08Z', '2026-10-15T12:55:41Z', 172, 0);
-INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (200, 25, 'Plan 25''s Done when: targets, holds, burns and prediction live and headless', 'work', 'open', NULL, NULL, 'The "Done when" of `plan 25: Predicted trajectories, targets and target holds`, after its five pieces (`task 195` … `task 199`). Files: whatever the check finds; `docs/architecture.md`, `docs/design.md`, `AGENTS.md`.
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (200, 25, 'Plan 25''s Done when: targets, holds, burns and prediction live and headless', 'work', 'done', NULL, '2026-10-15, docs/architecture.md (''The clock'': the target in the step; ''Files in load order'': overlay''s MODE names; ''Rules for tests'': plan 25''s 31 tests 1.31 s, scripts/test 16.0 s), docs/design.md (''The autopilot'': planned burns as built, decision 115), AGENTS.md (''Test'' ~16 s); live: ] [ \ cycle, wrap and clear, 7 settled 3e-7 deg on Tern Station, 9 1.2e-4 deg along the relative velocity, 8 and 0 at x100 opposite; follow-up task 261', 'The "Done when" of `plan 25: Predicted trajectories, targets and target holds`, after its five pieces (`task 195` … `task 199`). Files: whatever the check finds; `docs/architecture.md`, `docs/design.md`, `AGENTS.md`.
 
 ## What
 - In the running game (`./sly play` or `nix run`): ] [ \ cycle and clear the targets, 7–0 point the ship at Tern Station and along the relative velocity; close the window, stop processes by PID.
@@ -5209,7 +5209,7 @@ INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, crea
 - Small gaps fixed here; larger ones a follow-up task in this plan.
 
 ## Done when
-- `nix build` and `scripts/test` pass; the docs above match what was built.', '2026-10-15T07:41:08Z', NULL, 172, 0);
+- `nix build` and `scripts/test` pass; the docs above match what was built.', '2026-10-15T07:41:08Z', '2026-10-15T13:06:53Z', 172, 0);
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (201, 26, 'Autopilot burns and first guesses', 'work', 'open', NULL, NULL, 'Piece 1 of `plan 26: Autopilot: planner, orbit manoeuvres, execution and safety` (read its "Burns" and "First guesses" sections). Follows `decision 117: Autopilot in milestone 3: planning jobs, goal measures, burns, execution rules in the step, trims`, `decision 31: Warp choices within the time-warp rules` (lead time), `decision 70: Flight computer: per-step control laws, holds and the RCS mixer` (slew). Stands on `task 197: Planned burns in the sim` (`planned-burn`, `burn-plan`) and `task 199: Closest approach and relative nodes` (relative nodes). Files: `src/autopilot.lisp` (new, after `prediction.lisp`, before `flights.lisp`), `src/controls.lisp`, `luv-in-space.asd`, `tests/autopilot.lisp` (new, after `tests/prediction.lisp`), `docs/architecture.md`, `AGENTS.md`.
 
 ## What
@@ -6206,6 +6206,18 @@ INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, crea
 
 ## Done when
 - `nix build`, `scripts/test` pass; the measured figures and the chosen budget are in `docs/architecture.md` and a decision.', '2026-10-15T12:30:30Z', NULL, 198, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (261, 25, 'Bring scripts/test back under its ~15 s budget after plan 25', 'work', 'open', NULL, NULL, 'Found by `task 200: Plan 25''s Done when: targets, holds, burns and prediction live and headless`: after `plan 25: Predicted trajectories, targets and target holds` `scripts/test` takes 16.0 s wall (three runs, 15.9–16.2 s), ~1 s over its ~15 s budget (`docs/architecture.md` "Rules for tests"; `task 258: Bring scripts/test back under its ~15 s budget` had it at 14.3 s).
+
+## Measured (task 200, each test by `parachute:test` in one image after loading `luv-in-space/tests`)
+- Plan 25''s 31 tests together 1.31 s; the largest: `target-hold-promoted` 0.38 s (`tests/controls.lisp`, a quarter orbit of fine steps at `:j2`), `prediction-closest-approach` 0.27 s (`tests/prediction.lisp`, the 1/16 s brute-force scan over two periods), `target-holds-settle` 0.19 s.
+- The rest of the suite grew too: find the largest tests over all files (the same loop over every test) before cutting.
+
+## What
+- Bring `scripts/test` back to ≤ ~15 s wall without loosening a bound: shorter runs (e.g. `target-hold-promoted` over an eighth orbit, a coarser brute-force scan where the 0.05 s time bound still holds by the Hermite), shared setups, or work moved out of per-step checks; each shortened test''s comment says what and why, as `task 258` did.
+- Record the new figures in `docs/architecture.md` "Rules for tests" and `AGENTS.md` "Commands" ("Test").
+
+## Done when
+- `nix build` and `scripts/test` pass; `scripts/test` ≤ ~15 s wall over three runs, recorded.', '2026-10-15T13:06:07Z', NULL, 200, 0);
 
 INSERT INTO decision (id, subject, status, options, body, answer, reason, created_at, closed_at, created_by_task, signoff, kind, decided_by_task, consequences) VALUES (1, 'How the game consumes luv', 'answered', '[]', 'Findings of `task 17: Build and run luv''s programs and test suite; record the runs` (docs/luv-capabilities.md, Packaging and Runs).
 - luv''s flake exports apps, devShells, packages and lib; lib has only environmentFor, which returns everything the packaging needs (pkgs, lisp, applicationEnvironment/Packages, developmentEnvironmentHook, slynkSource, swashPackage, …). No overlays.
@@ -6600,6 +6612,7 @@ INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, b
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (199, 197, '2026-10-15T12:14:20Z', '2026-10-15T12:20:13Z', 'done', NULL, 0, '617c1305d86ac539c7346072a0843ed62057188b', 'claude-opus-5-5[1m]', '8f76e7b7-fc26-4648-95cf-3b9707279c96', 41, 72, 30722, 3721025, 125911, 2.366220999999999, 2373073);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (200, 198, '2026-10-15T12:20:14Z', '2026-10-15T12:31:50Z', 'done', NULL, 0, 'a79873fa51fa9582ce2a5a5d101051c6a1c0af4e', 'claude-opus-5-5[1m]', '293921d0-6566-4458-83e1-253b0f6346ef', 53, 92, 52838, 6283598, 180732, 3.7597036000000008, 2373073);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (201, 199, '2026-10-15T12:31:50Z', '2026-10-15T12:55:52Z', 'done', NULL, 0, '19d4029e2f6ca24228fb4aee3f258cdb9145706b', 'claude-opus-5-5[1m]', 'c6ce84b5-4e90-4b2d-82a1-abe0a03b041c', 43, 68, 33914, 2951508, 113055, 2.1732936000000005, 2373073);
+INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (202, 200, '2026-10-15T12:55:52Z', '2026-10-15T13:07:03Z', 'done', NULL, 0, '63fa178fb750b0eee1a1f50b990136804bae4fd8', 'claude-opus-5-5[1m]', '12c2736e-f96b-4ff1-9345-bcc7e59bcaf4', 66, 126, 19838, 4904765, 99331, 2.1728650000000007, 2373073);
 
 INSERT INTO task_decision (task_id, decision_id) VALUES (44, 28);
 INSERT INTO task_decision (task_id, decision_id) VALUES (44, 45);

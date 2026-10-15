@@ -132,13 +132,20 @@
 
 ;;; State <-> orbit
 
-(defun perifocal-axes (i raan argp)
-  "The unit vectors P (to periapsis) and Q (90° ahead of it) in ICRF."
+(declaim (inline perifocal-axes!))
+(defun perifocal-axes! (p-out q-out i raan argp)
+  "Write the unit vectors P (to periapsis) and Q (90° ahead of it) in ICRF."
+  (declare (type vec3 p-out q-out) (type double-float i raan argp))
   (let ((co (cos raan)) (so (sin raan))
         (cw (cos argp)) (sw (sin argp))
         (ci (cos i)) (si (sin i)))
-    (values (vec3 (- (* co cw) (* so sw ci)) (+ (* so cw) (* co sw ci)) (* sw si))
-            (vec3 (- (- (* co sw)) (* so cw ci)) (- (* co cw ci) (* so sw)) (* cw si)))))
+    (vec3-set! p-out (- (* co cw) (* so sw ci)) (+ (* so cw) (* co sw ci)) (* sw si))
+    (vec3-set! q-out (- (- (* co sw)) (* so cw ci)) (- (* co cw ci) (* so sw)) (* cw si))
+    (values p-out q-out)))
+
+(defun perifocal-axes (i raan argp)
+  "The unit vectors P (to periapsis) and Q (90° ahead of it) in ICRF."
+  (perifocal-axes! (make-vec3) (make-vec3) i raan argp))
 
 (defun state->orbit (r v mu time)
   "The osculating orbit of the state (r, v) at time about a body of μ."

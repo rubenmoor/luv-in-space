@@ -16,6 +16,7 @@ luv's flake and live image are built around luv's own games; a dependent repo co
 - `./sly status` or `./sly failures` reporting failed live artifacts (run 21). Why: a broken shader redefinition is silent today; the last good pipeline keeps drawing. Workaround here: `luv-in-space:report-failed-live-artifacts`, called by our `./sly status` (`task 28: Live image: report failed live artifacts`).
 - `./sly failures` printing `~%` literally (run 22): a small format bug.
 - Test and build targets with an output directory option (Screenshots, tests; runs 11–15). Why: they write into `<checkout>/build/`, so running them against a read-only or shared checkout needs a clone.
+- `luv/test-support` compiling Parachute tests with `make-instance` notinline (`task 262: Bring scripts/test back under its ~15 s budget after plan 26`). Why: SBCL compiles a constructor for each check's call site on its first run, ~10 ms a small test; here 2.5 s of a 14 s run. Workaround here: `(declaim (notinline make-instance))` in `tests/package.lisp`.
 - Game outputs in the binary cache for `x86_64-linux` (runs 2–4). Why: `nix run github:mbrock/luv` builds locally despite the cache.
 
 ## Rendering

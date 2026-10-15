@@ -4,6 +4,11 @@
 
 (in-package #:luv-in-space.tests)
 
+;;; Every Parachute check is a MAKE-INSTANCE with its own quoted form, so
+;;; SBCL compiles a constructor for each call site on its first run: ~2.5 s
+;;; of scripts/test (task 262). Notinline takes the generic path instead.
+(declaim (notinline make-instance))
+
 (defparameter *earth-crash-radius* (lis::body-crash-radius (lis::body :earth)))
 
 (defun least-bytes-consed (thunk &optional (runs 3))

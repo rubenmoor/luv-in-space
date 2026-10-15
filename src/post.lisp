@@ -141,8 +141,8 @@ log2 with *exposure-time-constant*."
           (list u1 d0))))
 
 (defun encode-bloom (renderer encoder views bind-groups vertices)
-  "The chain: D0 down to D4; U3 = D3 + tent(D4), U2 = D2 + tent(U3),
-U1 = D1 + tent(U2). BIND-GROUPS as post-sources; VERTICES' triangle k
+  "The chain: D0 down to D4; U3 = D3 + disc(D4), U2 = D2 + disc(U3),
+U1 = D1 + disc(U2), disc the round 19-tap kernel. BIND-GROUPS as post-sources; VERTICES' triangle k
 carries level k's scale."
   (destructuring-bind (d0 d1 d2 d3 d4 u1 u2 u3) views
     (declare (ignore d0))

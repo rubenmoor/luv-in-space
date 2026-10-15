@@ -243,7 +243,21 @@ GAME's canvas thread, restored after."
         (loop for (x y) in (list (list (+ cx 20) cy) (list (- cx 20) cy)
                                  (list cx (+ cy 20)) (list cx (- cy 20)))
               do (true (> (- (at glare x y) (at background x y)) 30)
-                       "glare at ~D, ~D: ~,1F over ~,1F" x y (at glare x y) (at background x y))))
+                       "glare at ~D, ~D: ~,1F over ~,1F" x y (at glare x y) (at background x y)))
+        ;; Round: the glow's extent (more than 5 over the background) along
+        ;; the row and along the diagonals x sqrt 2. The tent's rounded
+        ;; square measured 64.5 and 69.7 px (8 %), the disc kernel 74.5 and
+        ;; 76.0 (2 %); task 145 asked for under 15 %.
+        (flet ((run (dx dy)
+                 (loop for k from 0
+                       for x = (+ cx (* k dx)) for y = (+ cy (* k dy))
+                       while (and (< -1 x width) (< -1 y height)
+                                  (> (- (at glare x y) (at background x y)) 5))
+                       finally (return k))))
+          (let ((row (/ (+ (run 1 0) (run -1 0)) 2.0))
+                (diagonal (* (sqrt 2.0) (/ (+ (run 1 1) (run -1 -1) (run 1 -1) (run -1 1)) 4.0))))
+            (true (< (abs (- (/ diagonal row) 1)) 0.05)
+                  "glow ~,1F px along the row, ~,1F along the diagonal" row diagonal))))
       ;; Behind Earth at u = 180 deg: hidden by depth.
       (let ((pixels (capture (start-sim-at 180) (body-camera :sun 20))))
         (true (<= (nth-value 2 (brightest-pixel pixels width height)) 250)

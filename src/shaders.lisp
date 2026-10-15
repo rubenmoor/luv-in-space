@@ -322,11 +322,27 @@
         ,(taps-form 0.0625 '((0 -2) (0 2) (-2 0) (2 0)))
         ,(taps-form 0.125 '((-1 -1) (1 -1) (-1 1) (1 1)))))
 
-  ;; The 3x3 tent, weights 1 2 1 / 2 4 2 / 1 2 1 over 16.
+  ;; The 3x3 tent, weights 1 2 1 / 2 4 2 / 1 2 1 over 16; the tone map's last step.
   (defun tent-form ()
     `(+ ,(taps-form 0.25 '((0 0)))
         ,(taps-form 0.125 '((0 -1) (0 1) (-1 0) (1 0)))
-        ,(taps-form 0.0625 '((-1 -1) (1 -1) (-1 1) (1 1))))))
+        ,(taps-form 0.0625 '((-1 -1) (1 -1) (-1 1) (1 1)))))
+
+  (defun disc-form (&optional (rings '((1.0 6 0.0) (2.0 12 15.0))) (sigma 1.0))
+    "19 taps in a disc, bilinear: the centre and RINGS (radius in texels, taps, first
+angle in degrees), weighted by a Gaussian of SIGMA texels, normalised."
+    (let* ((taps (cons (list 0.0 0.0)
+                       (loop for (radius count start) in rings
+                             append (loop for i below count
+                                          for a = (* (/ pi 180) (+ start (* i (/ 360.0 count))))
+                                          collect (list (* radius (cos a)) (* radius (sin a)))))))
+           (weights (mapcar (lambda (tap)
+                              (exp (- (/ (+ (expt (first tap) 2) (expt (second tap) 2))
+                                         (* 2 sigma sigma)))))
+                            taps))
+           (total (reduce #'+ weights)))
+      `(+ ,@(loop for (dx dy) in taps for w in weights
+                  collect `(* ,(tap-form dx dy) ,(float (/ w total) 1.0)))))))
 
 (defmacro define-post-fragment (name &body body)
   `(define-frame-shader ,name
@@ -348,13 +364,14 @@
   (if (<= x 0.0031308) (* x 12.92) (- (* 1.055 (expt x 0.41666666)) 0.055)))
 
 ;; The bloom levels: SOURCE the level above or below, BASE the level of this
-;; size where one is added.
+;; size where one is added. The way up uses the round kernel: the tent's
+;; square footprint showed in the Sun's saturated glare (task 145).
 (define-post-fragment bloom-down-fragment
   (set-output color (vec4 #.(down-form) 1.0)))
 
 (define-post-fragment bloom-up-fragment
   (set-output color (vec4 (+ (finite-radiance3 (swizzle (sample base source-sampler uv) :rgb))
-                             #.(tent-form))
+                             #.(disc-form))
                           1.0)))
 
 ;; BASE the scene, SOURCE the bloom: scene (1 - s) + bloom s, exposed, ACES,

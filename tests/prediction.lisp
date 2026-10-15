@@ -199,3 +199,129 @@
                      (lis::prediction-run! pred sim)))))
       (true (< consed 1024) "~D bytes" consed))
     (is = 4 (lis::prediction-restarts pred))))
+
+;;; The contact drop-out (docs/architecture.md "Time warp", "Trajectory
+;;; prediction"; decision 43: Warp drop-outs for contact and life support,
+;;; decision 113: Grapple and contact details the design leaves open).
+
+(defun intercept! (sim key v-rel duration)
+  "SIM's ship (:point) placed to coast into object KEY's CoM DURATION s
+from now at V-REL (inertial) relative to it, both on Kepler conics; KEY
+put on J2-free rails when on rails. (values sim index)."
+  (let* ((object (lis::sim-object sim key))
+         (index (position object (lis::sim-objects sim)))
+         (t0 (lis::sim-t sim))
+         (t1 (+ t0 duration))
+         (mu lis::+mu-earth+))
+    (multiple-value-bind (r v) (object-rv object t0)
+      (let ((orbit (lis::state->orbit r v mu t0)))
+        (when (eq (lis::object-status object) :rails)
+          (setf (lis::object-rails object) (lis::make-rails orbit t0 :j2 nil)))
+        (multiple-value-bind (r1 v1) (lis::orbit-state orbit t1)
+          (multiple-value-bind (r0 v0)
+              (lis::orbit-state (lis::state->orbit r1 (lis::vec3-add v1 v-rel) mu t1) t0)
+            (setf (lis::sim-model sim) :point)
+            (lis::ship-state-assign! (lis::sim-ship sim)
+                                     (lis::make-ship-state r0 v0 (lis::quat 1 0 0 0)
+                                                           (lis::make-vec3) 28000d0))
+            (lis::sim-recheck-objects! sim)
+            (values sim index)))))))
+
+(defun approach-sim ()
+  "The ship 1,800 s from Skua Yard 3 (50 t, promoted by hand), closing at
+2 m/s radially at the end: ~5 km away now. (values sim index)."
+  (let ((sim (contact-scene :skua-yard-3 (lis::vec3 -100 0 0))))
+    (intercept! sim :skua-yard-3 (lis::vec3 -2 0 0) 1800d0)))
+
+(define-test prediction-contact-event
+  (multiple-value-bind (sim index) (approach-sim)
+    (let* ((ship (lis::sim-ship sim))
+           (object (svref (lis::sim-objects sim) index))
+           (d (lis::vec3-norm (lis::vec3-sub (lis::ship-state-r (lis::object-state object))
+                                             (lis::ship-state-r ship))))
+           (pred (run-prediction sim)))
+      (true (< 4000 d 7000) "~,1F m" d)
+      (multiple-value-bind (time object-index) (lis::prediction-event pred :contact)
+        (true time)
+        (is eql index object-index)
+        ;; The spheres meet a little before the CoMs: ~(bounds) / 2 m/s.
+        (when time
+          (true (< 1780 (- time (lis::sim-t sim)) 1800) "~,3F s" (- time (lis::sim-t sim)))
+          (is = time (lis::prediction-dropout-event pred))
+          (is eq :contact (nth-value 1 (lis::prediction-dropout-event pred)))))
+      ;; The copy's contact death is no :impact.
+      (true (lis::sim-lost-p (lis::prediction-sim pred)))
+      (false (lis::prediction-event pred :impact))
+      (false (lis::checkpoint-safe-p sim))
+      (let ((consed (least-bytes-consed (lambda ()
+                                          (lis::prediction-invalidate! pred)
+                                          (lis::prediction-run! pred sim)))))
+        (true (< consed 1024) "~D bytes" consed)))))
+
+(define-test prediction-contact-none
+  ;; Berthed, latched, just released, overlapping at the start (bouncing,
+  ;; or dying): no :contact event.
+  (flet ((events (sim)
+           (let ((pred (run-prediction sim)))
+             (list (lis::prediction-event pred :contact) (lis::prediction-event pred :impact)))))
+    (dolist (key '(:tern-station :skua-yard-3))
+      (let ((sim (attached-scene key)))
+        (is equal '(nil nil) (events sim) "~A attached" key)
+        (false (lis::grapple-key! sim))
+        (is equal '(nil nil) (events sim) "~A released" key)))
+    (dolist (speed '(0.5d0 1.01d0))
+      (is equal '(nil nil) (events (aft-scene speed)) "~F m/s" speed))))
+
+(define-test prediction-contact-rails
+  ;; Tern Station on rails ~180 km away, promoted on the copy: seen.
+  (multiple-value-bind (sim index) (intercept! (lis::new-game-sim) :tern-station
+                                               (lis::vec3 0 0 50) 3000d0)
+    (is eq :rails (lis::object-status (svref (lis::sim-objects sim) index)))
+    (let ((pred (run-prediction sim)))
+      (multiple-value-bind (time object-index) (lis::prediction-event pred :contact)
+        (true time)
+        (is eql index object-index)
+        (when time
+          (true (< 2998 (- time (lis::sim-t sim)) 3000) "~,3F s" (- time (lis::sim-t sim))))))))
+
+(define-test clock-dropout-to-contact
+  ;; At ×1,000 through clock-frame!: every step above ×1 at least 3 s ×
+  ;; level before the event (less 0.05 s), ×1 at it, a message at each
+  ;; lowering; warp up refused within 3 s of it.
+  (let* ((sim (approach-sim))
+         (event (lis::prediction-event (run-prediction (lis::copy-sim sim)) :contact))
+         (clock (clock-at sim 1000))
+         (record '())
+         (messages '())
+         (refused nil)
+         (lis::*frame-step-time-limit* nil))
+    (setf (lis::clock-hook clock)
+          (lambda (clock s)
+            (push (cons (lis::sim-t s) (lis::clock-level clock)) record)
+            (when (and (not refused) (< 0 (- event (lis::sim-t s)) 3))
+              (setf refused t)
+              (false (lis::clock-warp-up clock s))
+              (true (find-if (lambda (m) (search "WARP REFUSED: CONTACT IN " m))
+                             (lis::clock-messages clock))))
+            (setf messages (union messages (lis::clock-messages clock) :test #'string=))
+            nil))
+    (loop repeat 100000
+          until (or (lis::sim-lost-p sim) (> (lis::sim-t sim) (+ event 5)))
+          do (lis::clock-frame! clock sim 1/60))
+    (true refused)
+    (is = 0 (count-if (lambda (r)
+                        (and (> (cdr r) 1) (< (- event (car r)) (- (* 3 (cdr r)) 0.05d0))))
+                      record))
+    (is = 1 (cdr (find-if (lambda (r) (<= (car r) event)) record)))
+    (dolist (level '(100 10 4 1))
+      (true (find-if (lambda (m) (search (format nil "WARP ×~:D: CONTACT IN " level) m)) messages)
+            "×~D in ~S" level messages))))
+
+(define-test clock-checkpoint-contact
+  ;; A checkpoint request with a contact predicted takes none.
+  (let* ((sim (approach-sim))
+         (clock (lis::new-clock sim)))
+    (setf (lis::sim-checkpoint-request sim) t)
+    (lis::clock-step! clock sim)
+    (false (lis::sim-checkpoint-request sim))
+    (false (lis::clock-checkpoint clock))))

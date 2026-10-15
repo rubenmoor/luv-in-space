@@ -395,11 +395,11 @@ call boxes h."
   (sim-assign! sim checkpoint))
 
 (defun checkpoint-safe-p (sim &optional prediction)
-  "Throttle off, not lost, no impact predicted (PREDICTION, the clock's, run
-to its horizon; without it a fresh one, prediction.lisp)."
+  "Throttle off, not lost, no impact and no contact predicted (PREDICTION,
+the clock's, run to its horizon; without it a fresh one, prediction.lisp)."
   (and (= (controls-throttle (sim-controls sim)) 0d0)
        (null (sim-loss sim))
-       (not (prediction-impact-p sim prediction))))
+       (not (prediction-dropout-p sim prediction))))
 
 ;;; The clock: frames, warp levels, pause, the actual rate (docs/architecture.md
 ;;; "The clock", "Time warp"; decision 72, decision 19: Time-warp rules). Not
@@ -517,7 +517,8 @@ to its horizon; without it a fresh one, prediction.lisp)."
 (defun held-p (sim) (eq (controls-attitude-mode (sim-controls sim)) :hold))
 
 (defun clock-dropout (clock sim)
-  "(values Δ kind loss) to the prediction's earliest drop-out event, or nil."
+  "(values Δ kind data) to the prediction's earliest drop-out event, or nil;
+DATA as prediction-event's second value."
   (multiple-value-bind (time kind) (prediction-dropout-event (clock-prediction clock))
     (when time
       (values (max 0d0 (- time (sim-t sim))) kind
@@ -534,14 +535,18 @@ to its horizon; without it a fresh one, prediction.lisp)."
           ((and delta (< delta (* *dropout-real-time* level)))
            (format nil "WARP REFUSED: ~A IN ~A" kind (format-duration delta))))))
 
-(defun dropout-message (level delta loss)
-  "decision 73's text for a drop-out to LEVEL, Δ ahead of LOSS's impact."
-  (if (and loss (eq (loss-body loss) :moon))
-      (format nil "WARP ×~:D: MOON IMPACT AHEAD" level)
-      (let ((body (body (if loss (loss-body loss) :earth))))
-        (format nil "WARP ×~:D: PERIAPSIS BELOW ~D KM IN ~A" level
-                (round (- (body-crash-radius body) (body-radius body)) 1000)
-                (format-duration delta)))))
+(defun dropout-message (level delta kind &optional loss)
+  "The text for a drop-out to LEVEL, Δ ahead of the event of KIND: decision
+73's for an :impact (LOSS its record), decision 113's for a :contact."
+  (cond ((eq kind :contact)
+         (format nil "WARP ×~:D: CONTACT IN ~A" level (format-duration delta)))
+        ((and loss (eq (loss-body loss) :moon))
+         (format nil "WARP ×~:D: MOON IMPACT AHEAD" level))
+        (t
+         (let ((body (body (if loss (loss-body loss) :earth))))
+           (format nil "WARP ×~:D: PERIAPSIS BELOW ~D KM IN ~A" level
+                   (round (- (body-crash-radius body) (body-radius body)) 1000)
+                   (format-duration delta))))))
 
 (defun clock-check-level! (clock sim)
   "Before every step (decision 73): the thrust limit, ×4 for a hold released
@@ -556,13 +561,12 @@ ahead; each lowering writes its message."
               (format nil "WARP ×~:D: ENGINE ON" (thrust-warp-limit sim))))
     (when (and (clock-held clock) (not (held-p sim)) (> (clock-level clock) *fine-levels-max*))
       (lower! *fine-levels-max* (format nil "WARP ×~D: HOLD RELEASED" *fine-levels-max*)))
-    (multiple-value-bind (delta kind loss) (clock-dropout clock sim)
-      (declare (ignore kind))
+    (multiple-value-bind (delta kind data) (clock-dropout clock sim)
       (when (and delta (< delta (* *dropout-real-time* (clock-level clock))))
         (let ((level (or (find-if (lambda (l) (>= delta (* *dropout-real-time* l)))
                                   *warp-levels* :from-end t)
                          1)))
-          (lower! level (dropout-message level delta loss)))))))
+          (lower! level (dropout-message level delta kind (and (eq kind :impact) data))))))))
 
 ;;; The rate meter: real and game seconds per frame, emptied at each warp
 ;;; change and pause or resume, so it measures only the current level.

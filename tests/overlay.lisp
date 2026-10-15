@@ -77,8 +77,9 @@
                      (lis::clock-warp-up clock sim)
                      (lis::clock-frame! clock sim 1/60))
                  (collect clock))))
-    (list* (lis::dropout-message 1000000 3600d0 nil)
-           (lis::dropout-message 1000 60d0 (lis::make-loss :crash :moon 0d0 0d0 0d0 0d0))
+    (list* (lis::dropout-message 1000000 3600d0 :impact)
+           (lis::dropout-message 1000 60d0 :impact (lis::make-loss :crash :moon 0d0 0d0 0d0 0d0))
+           (lis::dropout-message 100 290d0 :contact 3)
            texts)))
 
 (define-test glyph-missing
@@ -90,7 +91,8 @@
   (let ((texts (clock-message-texts)))
     (dolist (prefix '("WARP REFUSED: ENGINE ON" "WARP REFUSED: ROTATING" "WARP REFUSED: IMPACT IN"
                       "WARP ×10: ENGINE ON" "WARP ×4: HOLD RELEASED" "WARP ×10: PERIAPSIS BELOW"
-                      "WARP ×1,000,000: PERIAPSIS" "WARP ×1,000: MOON IMPACT AHEAD"))
+                      "WARP ×1,000,000: PERIAPSIS" "WARP ×1,000: MOON IMPACT AHEAD"
+                      "WARP ×100: CONTACT IN"))
       (true (find prefix texts :test (lambda (p m) (eql 0 (search p m)))) "~S in ~S" prefix texts))
     (dolist (text texts)
       (false (lis::glyph-missing text) "~S" text))))

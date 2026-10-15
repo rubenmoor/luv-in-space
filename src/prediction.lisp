@@ -22,7 +22,8 @@
 
 (defconstant +node-size+ 7)                     ; t, r, v
 
-(defstruct (prediction (:constructor %make-prediction (nodes event-times event-kinds))
+(defstruct (prediction (:constructor %make-prediction (nodes event-times event-kinds
+                                                        event-objects))
                        (:copier nil))
   (sim nil :type (or null sim))                 ; the copy that steps ahead
   (nodes nil :type (simple-array double-float (*)))
@@ -35,6 +36,9 @@
   (event-times nil :type (simple-array double-float (*)))
   (event-kinds nil :type simple-vector)
   (event-count 0 :type fixnum)
+  (event-objects nil :type simple-vector)       ; :contact: the object's index
+  (contact-starts (make-array 0 :element-type 'double-float) ; a step's start: ship, candidates
+   :type (simple-array double-float (*)))
   (impact nil)                                  ; the copy's loss record
   (signature (new-controls) :type controls)     ; the controls it was made with
   (signature-cutoff nil :type (or null double-float))
@@ -50,6 +54,7 @@
                                                                :initial-element 0d0)
             (make-array *prediction-event-capacity* :element-type 'double-float
                                                     :initial-element 0d0)
+            (make-array *prediction-event-capacity* :initial-element nil)
             (make-array *prediction-event-capacity* :initial-element nil))))
     (setf (prediction-periods p) periods)
     p))
@@ -138,17 +143,20 @@ outside it."
 
 ;;; Events: kept in time order, dropped once the flown t passes them.
 
-(defun push-event! (pred kind time)
-  "KIND at TIME, unless the flown t is there already."
+(defun push-event! (pred kind time &optional object)
+  "KIND at TIME (a :contact with its OBJECT's index), unless the flown t is
+there already."
   (let ((n (prediction-event-count pred)))
     (when (and (< n *prediction-event-capacity*) (> time (prediction-now pred)))
       (setf (aref (prediction-event-times pred) n) time
             (svref (prediction-event-kinds pred) n) kind
+            (svref (prediction-event-objects pred) n) object
             (prediction-event-count pred) (1+ n)))))
 
 (defun drop-past-events! (pred)
   (let* ((times (prediction-event-times pred))
          (kinds (prediction-event-kinds pred))
+         (objects (prediction-event-objects pred))
          (n (prediction-event-count pred))
          (now (prediction-now pred))
          (k (loop for i of-type fixnum below n
@@ -159,6 +167,7 @@ outside it."
     (when (> k 0)
       (replace times times :start2 k :end2 n)
       (replace kinds kinds :start2 k :end2 n)
+      (replace objects objects :start2 k :end2 n)
       (setf (prediction-event-count pred) (- n k)))))
 
 (defun apsis-search! (pred i)
@@ -192,6 +201,84 @@ its time, bisected on the Hermite to *apsis-time-tolerance*."
                          (setf hi s))))
           (push-event! pred (if rising :periapsis :apoapsis)
                        (+ (node-t nodes i) (* 0.5d0 (+ lo hi) h))))))))
+
+;;; Contact (decision 43: Warp drop-outs for contact and life support,
+;;; decision 113): the stack's and a candidate's bounding spheres coming to
+;;; meet on a step's relative Hermite, as contact-find!'s broad phase.
+
+(defun contact-starts! (pred sim)
+  "Before a step of PRED's copy SIM: its t, the ship's r, v, then per
+object a flag (a contact candidate, contact-candidate-p) and its r, v.
+Conses nothing once the buffer fits SIM's objects."
+  (declare (optimize speed) (type prediction pred) (type sim sim))
+  (let* ((objects (sim-objects sim))
+         (size (* 7 (1+ (length objects))))
+         (buffer (prediction-contact-starts pred))
+         (ship (sim-ship sim)))
+    (unless (= (length buffer) size)
+      (setf buffer (make-array size :element-type 'double-float :initial-element 0d0)
+            (prediction-contact-starts pred) buffer))
+    (setf (aref buffer 0) (sim-t sim))
+    (replace buffer (ship-state-r ship) :start1 1)
+    (replace buffer (ship-state-v ship) :start1 4)
+    (loop for object across objects
+          for i of-type fixnum from 0
+          for k of-type fixnum from 7 by 7
+          do (cond ((contact-candidate-p sim object i)
+                    (let ((state (object-state object)))
+                      (setf (aref buffer k) 1d0)
+                      (replace buffer (ship-state-r state) :start1 (+ k 1))
+                      (replace buffer (ship-state-v state) :start1 (+ k 4))))
+                   (t (setf (aref buffer k) 0d0))))
+    nil))
+
+(defun contact-crossing! (pred sim)
+  "After a step of PRED's copy SIM (contact-starts! before it): of
+the objects a candidate at both ends, the first whose bounding sphere and
+the stack's come to meet within the step, by hermite-crossing on their
+relative Hermite against the sum of bounds (stack-bound at the end), not
+already meeting at its start: a :contact event at that time. Conses
+nothing."
+  (declare (optimize speed) (type prediction pred) (type sim sim) (inline stack-bound))
+  (let* ((objects (sim-objects sim))
+         (buffer (prediction-contact-starts pred))
+         (t0 (if (> (length buffer) 0) (aref buffer 0) (sim-t sim)))
+         (h (- (sim-t sim) t0)))
+    (declare (type double-float t0 h))
+    (flet ((candidate-p (i)
+             (declare (type fixnum i))
+             (and (= (aref buffer (* 7 (1+ i))) 1d0)
+                  (contact-candidate-p sim (svref objects i) i))))
+      (declare (inline candidate-p))
+      (unless (and (> h 0d0)
+                   (= (length buffer) (* 7 (1+ (length objects))))
+                   (loop for i of-type fixnum below (length objects) thereis (candidate-p i)))
+        (return-from contact-crossing! nil))
+      (with-stack-properties (properties sim load)
+        (let ((bound (stack-bound (mass-properties-com properties) load))
+              (ship (sim-ship sim))
+              (c (make-array 12 :element-type 'double-float))
+              (p0 (make-vec3)) (u0 (make-vec3)) (p1 (make-vec3)) (u1 (make-vec3))
+              (best 2d0) (best-i -1))
+          (declare (dynamic-extent c p0 u0 p1 u1) (type double-float bound best)
+                   (type fixnum best-i))
+          (dotimes (i (length objects))
+            (when (candidate-p i)
+              (let ((k (* 7 (1+ i)))
+                    (state (object-state (svref objects i))))
+                (dotimes (j 3)
+                  (setf (aref p0 j) (- (aref buffer (+ k 1 j)) (aref buffer (+ 1 j)))
+                        (aref u0 j) (- (aref buffer (+ k 4 j)) (aref buffer (+ 4 j)))
+                        (aref p1 j) (- (aref (ship-state-r state) j) (aref (ship-state-r ship) j))
+                        (aref u1 j) (- (aref (ship-state-v state) j) (aref (ship-state-v ship) j))))
+                (hermite-set! c p0 u0 p1 u1 h)
+                (let ((s (hermite-crossing c (+ bound (object-def-bound
+                                                       (object-def-of (svref objects i))))
+                                           (hermite-sag c))))
+                  (when (< 0d0 s best)
+                    (setf best s best-i i))))))
+          (when (>= best-i 0)
+            (push-event! pred :contact (+ t0 (* best h)) best-i)))))))
 
 ;;; Restart and extension
 
@@ -285,8 +372,9 @@ its events; PRED."
         (return))
       (when (>= steps budget)
         (return))
-      (let ((cutoff (sim-cutoff sim))
-            (zero (eql (sim-step-ticks! sim *prediction-level* nil) 0)))
+      (contact-starts! pred sim)
+      (let* ((cutoff (sim-cutoff sim))
+             (zero (eql (sim-step-ticks! sim *prediction-level* nil) 0)))
         ;; The copy's notices and requests are nobody's (decision 112).
         (setf (sim-notices sim) nil
               (sim-checkpoint-request sim) nil)
@@ -298,8 +386,10 @@ its events; PRED."
           (setf (prediction-state pred) :complete)
           (return))
         (unless zero
-          (apsis-search! pred (- (prediction-count pred) 2)))
-        (cond ((sim-loss sim)
+          (apsis-search! pred (- (prediction-count pred) 2))
+          (contact-crossing! pred sim))
+        ;; A contact death is no :impact: its spheres' meeting came first.
+        (cond ((and (sim-loss sim) (not (eq (loss-cause (sim-loss sim)) :contact)))
                (setf (prediction-impact pred) (sim-loss sim))
                (push-event! pred :impact (loss-time (sim-loss sim))))
               ((and cutoff (null (sim-cutoff sim)))
@@ -341,15 +431,17 @@ else extend the tail; at most *prediction-steps-per-frame* steps. PRED."
 ;;; Queries
 
 (defun prediction-event (pred kind)
-  "The first event of KIND (:apoapsis, :periapsis, :impact, :cutoff) after
-the flown t: its time (for :impact also the copy's loss record), or nil."
+  "The first event of KIND (:apoapsis, :periapsis, :impact, :cutoff,
+:contact) after the flown t: its time (for :impact also the copy's loss
+record, for :contact the object's index in sim-objects), or nil."
   (let ((times (prediction-event-times pred))
         (kinds (prediction-event-kinds pred)))
     (dotimes (i (prediction-event-count pred) nil)
       (when (and (eq (svref kinds i) kind) (> (aref times i) (prediction-now pred)))
-        (return (if (eq kind :impact)
-                    (values (aref times i) (prediction-impact pred))
-                    (aref times i)))))))
+        (return (case kind
+                  (:impact (values (aref times i) (prediction-impact pred)))
+                  (:contact (values (aref times i) (svref (prediction-event-objects pred) i)))
+                  (t (aref times i))))))))
 
 (defun prediction-apsis (pred kind)
   "(values time radius) of the next :apoapsis or :periapsis of PRED: on the
@@ -373,8 +465,8 @@ impact state (decision 87); nil if neither is known."
                                 (orbit-apoapsis-radius orbit)
                                 (orbit-periapsis-radius orbit)))))))))
 
-(defparameter *dropout-events* '(:impact)
-  "The events that drop warp; milestone 2's, decision 75.")
+(defparameter *dropout-events* '(:impact :contact)
+  "The events that drop warp: decision 75's, decision 43's contact.")
 
 (defun prediction-dropout-event (pred)
   "(values time kind) of the earliest drop-out event, or nil."
@@ -385,9 +477,9 @@ impact state (decision 87); nil if neither is known."
           (setf best time best-kind kind))))
     (and best (values best best-kind))))
 
-(defun prediction-impact-p (sim &optional pred)
-  "True when PRED, updated from SIM and run to its horizon, meets a crash;
-without PRED a fresh one."
+(defun prediction-dropout-p (sim &optional pred)
+  "True when PRED, updated from SIM and run to its horizon, meets a crash or
+a contact; without PRED a fresh one."
   (let ((pred (or pred (new-prediction))))
     (prediction-run! pred sim)
-    (and (prediction-event pred :impact) t)))
+    (and (prediction-dropout-event pred) t)))

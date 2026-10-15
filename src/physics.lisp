@@ -25,6 +25,17 @@
                     (quat-copy (ship-state-q state)) (vec3-copy (ship-state-w state))
                     (ship-state-m-p state) (ship-state-dv state)))
 
+(defun ship-state-assign! (out state)
+  "Copy STATE into OUT, consing nothing; OUT."
+  (declare (type ship-state out state))
+  (replace (ship-state-r out) (ship-state-r state))
+  (replace (ship-state-v out) (ship-state-v state))
+  (replace (ship-state-q out) (ship-state-q state))
+  (replace (ship-state-w out) (ship-state-w state))
+  (setf (ship-state-m-p out) (ship-state-m-p state)
+        (ship-state-dv out) (ship-state-dv state))
+  out)
+
 ;;; Gravity
 
 (declaim (inline third-body-add! earth-gravity-into! gravity-into!))

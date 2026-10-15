@@ -43,6 +43,21 @@
           (controls-duties copy) (copy-seq (controls-duties controls)))
     copy))
 
+(defun controls-assign! (out controls)
+  "Copy CONTROLS into OUT, consing nothing; OUT."
+  (declare (type controls out controls))
+  (setf (controls-throttle out) (controls-throttle controls)
+        (controls-fine out) (controls-fine controls)
+        (controls-attitude-mode out) (controls-attitude-mode controls)
+        (controls-hold out) (controls-hold controls)
+        (controls-roll-offset out) (controls-roll-offset controls)
+        (controls-settled out) (controls-settled controls))
+  (replace (controls-rotation-keys out) (controls-rotation-keys controls))
+  (replace (controls-translation-keys out) (controls-translation-keys controls))
+  (replace (controls-inertial-target out) (controls-inertial-target controls))
+  (replace (controls-duties out) (controls-duties controls))
+  out)
+
 ;;; Commands (docs/design.md "Controls"); each returns CONTROLS.
 
 (defun controls-set-throttle (controls throttle)

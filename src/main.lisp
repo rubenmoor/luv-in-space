@@ -85,9 +85,11 @@ snap on the first frame and when ELAPSED is nil (decision 76)."
     (luv:present-canvas-frame
      context
      (lambda (texture encoder time)
-       (let ((elapsed (frame-elapsed! game time)))
+       (let ((elapsed (frame-elapsed! game time))
+             (extent (luv:canvas-extent context)))
+         (note-swapchain-target (game-renderer game) texture extent)
          (clock-frame! (game-clock game) (game-sim game) elapsed)
-         (encode-game-frame game encoder texture (luv:canvas-extent context) elapsed))))))
+         (encode-game-frame game encoder texture extent elapsed))))))
 
 (defmethod luv:capture-canvas ((game game)) (game-canvas game))
 

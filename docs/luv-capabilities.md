@@ -45,6 +45,7 @@ The HAL is a small explicit GPU API: devices, buffers, textures, samplers, bind 
 
 - HAL vocabulary in `../luv/hal/gpu.lisp`: `create`, `encode`, `finish`, `submit`, `submitted-work-done`, `write-buffer`, `write-texture`, `read-buffer`, `draw`, `draw-indexed` (instanced), compute dispatch, task/mesh pipelines (read).
 - Explicit resource discipline: callers destroy what they create; destruction is deferred until the GPU is done; per-frame mutable buffers belong in `canvas-frame-resource-cache` slots (`../luv/wiki/gpu-architecture.org`) (read).
+- Swapchain rebuilds: on a resize the Vulkan canvas rebuilds its swapchain and destroys the old textures (`rebuild-vulkan-canvas-swapchain`); nothing public signals it but a new `canvas-extent`, and a frame-resource cache keeps the old textures' entries until evicted. Here `note-swapchain-target` (`src/render.lisp`) evicts them on an extent change (ran: `tests/render.lisp`, three `resize-canvas` calls on a hidden canvas, 4 slots before and after; 16 without the eviction).
 - Vertex formats: `:float32x2`, `:float32x3`, `:float32x4` only (`vertex-attribute-format-component-count`) (read).
 - Texture formats: `:r16-float`, `:rg16-float`, `:rg16-uint`, `:rgba8-unorm(-srgb)`, `:bgra8-unorm(-srgb)`, `:rgba16-float`, `:depth32-float`; MSAA 1/2/4/8 (read).
 - Primitive topology: `:triangle-list` and `:triangle-strip` only; the Vulkan and Metal backends reject anything else, so no lines or points (`../luv/hal/vulkan/gpu.lisp`, `../luv/hal/metal/gpu.lisp`) (read).

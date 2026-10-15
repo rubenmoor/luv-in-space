@@ -294,4 +294,19 @@
                                  (pixel-luminance baseline width x cy)))
                          1)
                      "invalid radiance at ~D: ~,1F" x (pixel-luminance invalid width x cy))))
-           (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))))))))
+           (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))
+           ;; Resizes replace the swapchain's textures; what the renderer kept
+           ;; for the old ones goes, so its per-target state stays bounded.
+           (let* ((renderer (lis::game-renderer game))
+                  (frames (lis::frame-renderer-frames renderer))
+                  (images (luv:canvas-frame-resource-count frames)))
+             (true (plusp images))
+             (is = images (hash-table-count (lis::renderer-color-views renderer)))
+             (dolist (size (list (list 240 160) (list 400 250) (list width height)))
+               (luv:resize-canvas (lis::game-canvas game) (first size) (second size))
+               (lis::wait-for-frames game 6)
+               (is equal size (luv:canvas-extent (lis::game-context game))))
+             (true (<= (luv:canvas-frame-resource-count frames) images)
+                   "~D frame slots after resizes, ~D images"
+                   (luv:canvas-frame-resource-count frames) images)
+             (true (<= (hash-table-count (lis::renderer-color-views renderer)) images)))))))))

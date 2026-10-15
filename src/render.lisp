@@ -146,6 +146,9 @@ radiances seen at *exposure-deep*, gone at *exposure-sunlit* (decision 76)."
                :documentation "Tests only: nil or (buffer . count), drawn as stars.")
    (frames :initform (luv:make-canvas-frame-resource-cache) :reader frame-renderer-frames
            :documentation "Per target: its frame-slot.")
+   (swapchain-extent :initform nil :accessor frame-renderer-swapchain-extent)
+   (swapchain-targets :initform '() :accessor frame-renderer-swapchain-targets
+                      :documentation "The swapchain textures drawn at that extent.")
    (uniforms :initform (make-array +frame-uniform-floats+ :element-type 'single-float
                                                           :initial-element 0f0)
              :reader frame-renderer-uniforms)
@@ -258,6 +261,16 @@ pipeline into the HDR target; nil removes them."
                                    (frame-renderer-context renderer) target
                                    #'release-frame-resources)
   (forget-color-view renderer target))
+
+(defun note-swapchain-target (renderer target extent)
+  "Record TARGET, a swapchain texture of the canvas's EXTENT. A new extent
+means luv rebuilt the swapchain: forget its old textures first."
+  (unless (equal extent (frame-renderer-swapchain-extent renderer))
+    (dolist (old (frame-renderer-swapchain-targets renderer))
+      (forget-target renderer old))
+    (setf (frame-renderer-swapchain-targets renderer) '()
+          (frame-renderer-swapchain-extent renderer) extent))
+  (pushnew target (frame-renderer-swapchain-targets renderer)))
 
 (defun destroy-frame-renderer (renderer)
   (luv:destroy-canvas-frame-resource-cache (frame-renderer-frames renderer)

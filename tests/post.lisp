@@ -72,7 +72,34 @@
 
 (define-test exposure-map
   (let ((state (sim-render-state (lis::new-game-sim))))
-    (is = lis::*exposure-map* (exposure (default-camera state) state :map))))
+    (is = 4d0 lis::*exposure-map*)
+    (is = lis::*exposure-map* (exposure (default-camera state) state :map))
+    (is = lis::*exposure-map* (exposure (ship-camera state 40d0) state :map))
+    (is = lis::*exposure-map* (exposure (look-along! (lis::make-camera)
+                                                     (lis::vec3-sub (lis::render-state-sun state)
+                                                                    (lis::render-state-r state)))
+                                        state :map)))
+  ;; decision 83: a mag 2.0 star shows, bright land face-on stays below white.
+  (true (<= 30 (star-byte 2.0d0 lis::*exposure-map*)))
+  (true (<= (lis::tone-map-srgb 0.3d0 lis::*exposure-map*) 240)))
+
+(define-test exposure-snaps-across-views
+  ;; Entering the map snaps to its exposure, leaving to the outside target
+  ;; (decision 83), however little real time passes.
+  (let* ((sim (lis::new-game-sim))
+         (game (make-instance 'lis::game :sim sim :clock (lis::new-clock sim)))
+         (state (lis::game-render-state game))
+         (extent '(1280 800)))
+    (lis::render-state-update! state (lis::game-clock game) (lis::game-sim game))
+    (lis::update-view! game nil)
+    (is = lis::*exposure-sunlit* (lis::update-exposure! game extent nil))
+    (lis::run-command game :map)
+    (lis::update-view! game 0.016d0)
+    (is = lis::*exposure-map* (lis::update-exposure! game extent 0.016d0))
+    (false (lis::game-view-changed-p game))
+    (lis::run-command game :map)
+    (lis::update-view! game 0.016d0)
+    (is = lis::*exposure-sunlit* (lis::update-exposure! game extent 0.016d0))))
 
 (define-test exposure-easing
   ;; After one time constant, 1 - 1/e of the way in log2.

@@ -9,7 +9,8 @@
 (defparameter *bloom-strength* 0.04 "The bloom chain's share of the tone map's input.")
 (defparameter *exposure-sunlit* 1.0d0 "The Sun or a lit body in view.")
 (defparameter *exposure-deep* 16.0d0 "Deep space: stars.")
-(defparameter *exposure-map* 1.0d0 "The map's fixed exposure; part 8 sets it.")
+(defparameter *exposure-map* 4.0d0
+  "The map's fixed exposure, snapped to on entering; decision 83: Map camera: framing on opening, focus, zoom, drag and exposure.")
 (defparameter *exposure-time-constant* 1.0d0 "Real seconds; log2 easing.")
 (defparameter *exposure-sun-margin* (* 5 (/ pi 180)) "Beyond the half-diagonal, radians.")
 (defparameter *exposure-coverage* 0.05d0 "Least coverage, and coverage x lit fraction.")

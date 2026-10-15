@@ -304,12 +304,13 @@ and the four draw forms."
                               (frame-renderer-earth-rows renderer))
         (values data (list sun-form moon-form earth-form halo-form))))))
 
-(defun encode-frame (renderer encoder target extent state camera exposure)
+(defun encode-frame (renderer encoder target extent state camera exposure &optional (view :outside))
   "The frame into TARGET of EXTENT (width height) from the render STATE seen
 by CAMERA, in three stages (decision 76: Frame passes, radiance scale and
 exposure): the scene pass into the HDR target (the stars, the Sun, the
 Moon, Earth, Earth's halo, the Mule); the bloom chain; one pass on TARGET, the tone
-map at EXPOSURE and then the overlay."
+map at EXPOSURE and then the overlay. VIEW: :outside or :map."
+  (declare (ignorable view))
   (let* ((slot (frame-resources renderer target))
          (views (post-views renderer extent))
          (bind-groups (post-bind-groups renderer slot views))

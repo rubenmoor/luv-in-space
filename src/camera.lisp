@@ -244,10 +244,13 @@ corner of a part's box in *ship-parts*."
 (defparameter *map-zoom-tau* 0.15d0 "s of real time, the distance's easing in log; decision 83.")
 (defparameter *map-drag-rate* (* 0.25d0 (/ pi 180)) "Radians per pixel of right-drag; decision 83.")
 (defparameter *map-elevation-limit* (* 85 (/ pi 180)) "±, radians; decision 83.")
+(defparameter *map-zoom-step* 1.2d0 "Target distance factor per wheel notch; decision 83.")
+(defparameter *map-page-factor* 10d0 "Target distance factor per Page key; decision 83.")
 (defparameter *map-degenerate-h* 1d-9 "|r × v| below this × |r||v|: n = ICRF z; decision 83.")
 (declaim (type double-float *map-azimuth* *map-elevation* *map-opening-factor* *map-fov*
                *map-min-distance-ship* *map-min-factor-earth* *map-max-distance*
-               *map-zoom-tau* *map-drag-rate* *map-elevation-limit* *map-degenerate-h*))
+               *map-zoom-tau* *map-drag-rate* *map-elevation-limit* *map-zoom-step*
+               *map-page-factor* *map-degenerate-h*))
 
 (defstruct (map-view (:constructor new-map-view ()))
   (focus :earth :type (member :earth :ship))

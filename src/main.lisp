@@ -28,7 +28,9 @@
    (frame-count :initform 0 :accessor game-frame-count)
    (input :initform (make-input) :reader game-input
           :documentation "Held keys, taps and the pointer (input.lisp); not in the sim.")
-   (view :initform :outside :accessor game-view :documentation "The view: :outside.")
+   (view :initform :outside :accessor game-view :documentation "The view: :outside or :map.")
+   (view-changed-p :initform nil :accessor game-view-changed-p
+                   :documentation "Set by M; the next frame snaps the exposure and clears it.")
    (quit-requested-p :initform nil :accessor game-quit-requested-p)
    (stopped-p :initform nil :accessor game-stopped-p)))
 
@@ -60,24 +62,30 @@ A failed artifact keeps drawing its last good build."
     (if previous (max 0d0 (- time previous)) 0d0)))
 
 (defun update-view! (game elapsed)
-  "The render state from the clock and the sim, the outside view on it
-(its distance eased over ELAPSED real seconds, snapped when nil), then the
-game's camera-fn."
+  "The render state from the clock and the sim, the current view's camera
+on it (its distance eased over ELAPSED real seconds, snapped when nil),
+then the game's camera-fn."
   (let ((state (game-render-state game))
         (camera (game-camera game)))
     (render-state-update! state (game-clock game) (game-sim game))
-    (outside-camera-update! camera (game-outside-view game) state elapsed)
+    (ecase (game-view game)
+      (:outside (outside-camera-update! camera (game-outside-view game) state elapsed))
+      (:map (map-camera-update! camera (game-map-view game) state elapsed)))
     (when (game-camera-fn game)
       (funcall (game-camera-fn game) camera state))))
 
 (defun update-exposure! (game extent elapsed)
   "Ease the exposure toward the view's target over ELAPSED real seconds;
-snap on the first frame and when ELAPSED is nil (decision 76)."
-  (let ((target (exposure-target (game-camera game) (game-render-state game) :outside
+snap on the first frame, when ELAPSED is nil (decision 76) and after a
+change of view (decision 83)."
+  (let ((target (exposure-target (game-camera game) (game-render-state game) (game-view game)
                                  :aspect (/ (first extent) (second extent))))
         (current (game-exposure game)))
-    (setf (game-exposure game)
-          (if (and current elapsed) (exposure-ease current target elapsed) target))))
+    (prog1 (setf (game-exposure game)
+                 (if (and current elapsed (not (game-view-changed-p game)))
+                     (exposure-ease current target elapsed)
+                     target))
+      (setf (game-view-changed-p game) nil))))
 
 (defun encode-game-frame (game encoder target extent elapsed)
   "ELAPSED: real seconds since the last frame, nil to snap the exposure and
@@ -85,7 +93,7 @@ the outside view's distance."
   (update-view! game elapsed)
   (encode-frame (game-renderer game) encoder target extent
                 (game-render-state game) (game-camera game)
-                (update-exposure! game extent elapsed)))
+                (update-exposure! game extent elapsed) (game-view game)))
 
 (defun draw (game)
   (let ((context (game-context game)))

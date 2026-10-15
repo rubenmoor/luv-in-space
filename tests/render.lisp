@@ -545,6 +545,27 @@ toe."
 
 ;; The registration's numbers: 53 and 183 of 255 on +y, 40 and 201 on −y
 ;; (lavapipe); the shadow's mean 0.4.
+(defun map-checks (game png width height)
+  "The map on the start state (decision 83: Map camera: framing on opening,
+focus, zoom, drag and exposure): Earth's disc in the centre, the corners
+at the background, neither black nor white-out."
+  (let* ((pixels (nth-value 3 (lis::capture-game-state game png :sim (lis::new-game-sim)
+                                                                :view :map :frames 1)))
+         (background (/ (reduce #'+ (pixel-mode pixels width 0 height)) 3))
+         (centre (pixel-luminance pixels width (floor width 2) (floor height 2)))
+         (mean (rows-luminance pixels width 0 height)))
+    (is eq :map (lis::game-view game))
+    (is = lis::*exposure-map* (lis::game-exposure game))
+    (true (> centre (+ background 20)) "map centre ~,1F, background ~,1F" centre background)
+    (loop for (x y) in (list (list 0 0) (list (1- width) 0) (list 0 (1- height))
+                             (list (1- width) (1- height)))
+          do (let ((corner (pixel-luminance pixels width x y)))
+               (true (<= (abs (- corner background)) 10) "corner ~D, ~D: ~,1F, background ~,1F"
+                     x y corner background)))
+    (true (< 5 mean 200) "map mean luminance ~,1F" mean))
+  (lis::capture-game-state game png :frames 1)
+  (is eq :outside (lis::game-view game)))
+
 (defun ship-checks (game png width height)
   (flet ((capture (sim camera-fn)
            (nth-value 3 (lis::capture-game-state game png :sim sim :frames 1 :camera-fn camera-fn))))
@@ -819,6 +840,7 @@ toe."
            (earth-checks game png width height)
            (ship-checks game png width height)
            (light-checks game png width height)
+           (map-checks game png width height)
            (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))
            ;; Resizes replace the swapchain's textures; what the renderer kept
            ;; for the old ones goes, so its per-target state stays bounded.

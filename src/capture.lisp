@@ -43,22 +43,33 @@ Call on luv's SDL main thread (LUV:CALL-WITH-SDL-MAIN-THREAD)."
        (unwind-protect (progn ,@body)
          (stop ,game)))))
 
-(defun capture-game-state (game pathname &key sim camera-fn (frames *screenshot-frames*))
+(defun game-set-view! (game view)
+  "GAME in VIEW (:outside or :map), the map framed on the current state."
+  (call-on-canvas-thread game (lambda ()
+                                (when (eq view :map)
+                                  (open-map-view! game))
+                                (setf (game-view game) (ecase view ((:outside :map) view))
+                                      (game-view-changed-p game) t))))
+
+(defun capture-game-state (game pathname &key sim camera-fn (view :outside)
+                                              (frames *screenshot-frames*))
   "Write a PNG of GAME showing SIM (default its current state) after FRAMES
-frames; CAMERA-FN (fn camera render-state) sets a pose other than the
-default outside view. Returns as SCREENSHOT."
+frames in VIEW (:outside, or :map framed as on opening); CAMERA-FN (fn
+camera render-state) sets a pose other than the view's. Returns as
+SCREENSHOT."
   (when sim
     (game-load-state! game sim))
+  (game-set-view! game view)
   (setf (game-camera-fn game) camera-fn)
   (wait-for-frames game frames)
   (screenshot pathname :game game))
 
-(defun capture-state (pathname sim &key camera-fn (frames *screenshot-frames*)
+(defun capture-state (pathname sim &key camera-fn (view :outside) (frames *screenshot-frames*)
                                        (width 1280) (height 800))
   "A PNG showing exactly SIM's state (a copy, the clock paused) on a hidden
-canvas. Call on luv's SDL main thread."
+canvas in VIEW (:outside or :map). Call on luv's SDL main thread."
   (with-capture-game (game :width width :height height :sim sim)
-    (capture-game-state game pathname :camera-fn camera-fn :frames frames)))
+    (capture-game-state game pathname :camera-fn camera-fn :view view :frames frames)))
 
 (defun capture-scene (pathname &key (frames *screenshot-frames*) (width 1280) (height 800))
   "The start state from the outside view: scripts/screenshot's picture."

@@ -92,10 +92,32 @@
       (:warp-down (clock-warp-down clock))
       (:warp-reset (clock-warp-reset clock))
       (:pause (clock-toggle-pause clock))
-      (:camera-frame (outside-view-toggle-frame! (game-outside-view game) (game-render-state game)))
-      (:camera-reset (outside-view-reset! (game-outside-view game)))
-      ;; PLACEHOLDER(79): the map's commands, plan 20: The basic map.
-      ((:map :map-focus :map-zoom-in :map-zoom-out) nil))))
+      (:camera-frame (unless (map-p game)
+                       (outside-view-toggle-frame! (game-outside-view game) (game-render-state game))))
+      (:camera-reset (if (map-p game)
+                         (open-map-view! game)
+                         (outside-view-reset! (game-outside-view game))))
+      (:map (toggle-map! game))
+      (:map-focus (when (map-p game) (map-view-cycle-focus! (game-map-view game))))
+      (:map-zoom-in (when (map-p game) (map-view-zoom! (game-map-view game) (/ *map-page-factor*))))
+      (:map-zoom-out (when (map-p game) (map-view-zoom! (game-map-view game) *map-page-factor*))))))
+
+(defun map-p (game) (eq (game-view game) :map))
+
+(defun open-map-view! (game)
+  "Frame the map on the current state (decision 83: Map camera: framing on
+opening, focus, zoom, drag and exposure)."
+  (map-view-open! (game-map-view game)
+                  (render-state-update! (game-render-state game) (game-clock game) (game-sim game))))
+
+(defun toggle-map! (game)
+  "M: :outside ↔ :map; opening frames the map, leaving keeps the outside
+view as it was. The frame snaps the exposure (view-changed-p)."
+  (if (map-p game)
+      (setf (game-view game) :outside)
+      (progn (open-map-view! game)
+             (setf (game-view game) :map)))
+  (setf (game-view-changed-p game) t))
 
 (defun key-pressed! (game key)
   "A new press of KEY: its command, or the RCS-off message for a flight
@@ -164,14 +186,24 @@ below 0.1 off (controls-set-throttle)."
                                     (min (float elapsed 1d0) *throttle-ramp-elapsed-cap*))))))))
 
 (defun pointer-frame! (game input)
-  "The drag and wheel summed since the last frame to the view (decision 82)."
-  (when (eq (game-view game) :outside)
-    (let ((view (game-outside-view game)))
-      (unless (and (= (input-pointer-dx input) 0d0) (= (input-pointer-dy input) 0d0))
-        (outside-view-drag! view (input-pointer-dx input) (input-pointer-dy input)))
-      (unless (= (input-wheel input) 0d0)
-        (outside-view-zoom! view (input-wheel input)
-                            (ship-state-m-p (sim-ship (game-sim game))))))))
+  "The drag and wheel summed since the last frame to the current view
+(decision 82; decision 83)."
+  (let ((dx (input-pointer-dx input))
+        (dy (input-pointer-dy input))
+        (notches (input-wheel input)))
+    (ecase (game-view game)
+      (:outside
+       (let ((view (game-outside-view game)))
+         (unless (and (= dx 0d0) (= dy 0d0))
+           (outside-view-drag! view dx dy))
+         (unless (= notches 0d0)
+           (outside-view-zoom! view notches (ship-state-m-p (sim-ship (game-sim game)))))))
+      (:map
+       (let ((view (game-map-view game)))
+         (unless (and (= dx 0d0) (= dy 0d0))
+           (map-view-drag! view dx dy))
+         (unless (= notches 0d0)
+           (map-view-zoom! view (expt *map-zoom-step* (- notches)))))))))
 
 (defun input-frame! (game elapsed)
   "Once per frame, before clock-frame!: the held and tapped keys to the

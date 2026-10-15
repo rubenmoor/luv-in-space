@@ -35,7 +35,7 @@ Luv in Space is a showcase for [luv](https://github.com/mbrock/luv), Mikael Broc
 - Dev shell: `direnv allow` or `nix develop`; SBCL with luv on `CL_SOURCE_REGISTRY`, Vulkan/SDL3, `pm`, `git`. The scripts below enter it themselves.
   - `scripts/test`, `scripts/screenshot` and `./sly` always re-enter it, so a stale direnv shell or a foreign `LD_LIBRARY_PATH` (`GLIBC_2.43 not found`, `Unable to load … libSDL3.so`) doesn't reach them; run `sbcl` by hand only in a fresh `nix develop` (or after `direnv reload`).
 - Build: `nix build` (`result/bin/luv-in-space`); ~17 s from a fresh clone, luv and its dependencies from luv's binary cache; ~11 s when only the game's image builds.
-- Run: `nix run` opens the window, its title listing the main keys; Escape, Control+Q or closing the window quits. An agent stops it by PID.
+- Run: `nix run` opens the window, its title listing the main keys; M opens the map (Tab focus, wheel and Page keys zoom, Home re-frames); Escape, Control+Q or closing the window quits. An agent stops it by PID.
 - Test: `scripts/test` (Parachute, `luv-in-space/tests`; renders one frame on a hidden canvas, lavapipe without a display; exit 1 on failure; ~5 s). `nix flake check` runs it in the sandbox (~16 s).
 - Screenshot: `scripts/screenshot out.png [--frames N]`: a 1280x800 PNG of the start state from the outside view (`capture-scene`), from a hidden canvas, headless too; ~3 s.
 - Star table: `scripts/convert-stars [out]` downloads HYG (needs network), checks its pinned SHA-256 and writes the stars ≤ 6.5 mag; without an argument it rewrites the committed `assets/stars/hyg-6.5.sexp`; ~12 s.

@@ -234,8 +234,8 @@ Keyboard and mouse through luv's canvas events (`docs/luv-capabilities.md` "Wind
 | Pause on/off | P | 2 |
 | View: outside ↔ cockpit | V | 3 (outside only in 2) |
 | Map on/off | M | 2 |
-| Outside camera: orbital frame ↔ locked to the ship | C | 2 |
-| Reset camera or head look | Home | 2 |
+| Outside camera: orbital frame ↔ locked to the ship (nothing in the map) | C | 2 |
+| Reset camera or head look; in the map, re-frame as on opening | Home | 2 |
 | Map focus: next (ship, current body, target, other bodies) | Tab | 2 (ship, Earth); 3 targets; 4 bodies |
 | Map zoom ×10 in / out | Page-up / Page-down | 2 |
 | Target next / previous / clear | ] / [ / \ | 3 |
@@ -302,7 +302,8 @@ Three views of one scene, drawn by one renderer (reversed-Z, `decision 4: Depth 
   - Bodies are drawn as their impostors at true size; below 6 px they become a marker with a label, so the Moon and the planets stay findable. The ship and targets are markers at every zoom.
   - Lines, as screen-space ribbons (`docs/luv-capabilities.md` "Orbit lines and markers"; `ribbons.lisp`): `milestone 2` the ship's osculating orbit (2 px) with apoapsis and periapsis markers and an impact marker where the orbit meets the crash sphere; `milestone 3` the predicted trajectory (`decision 20: Trajectory prediction on the frame thread`, two periods in the map) in place of the osculating orbit, the target's orbit, closest approach, relative ascending and descending nodes, and the planned burns ("The autopilot"); `milestone 4` the Moon's and planets' orbits (1 px), SOI changes on the trajectory, focus on the Moon, the Sun and the planets.
   - Colours: the ship's line cyan, the target's magenta (the colour rules of "The cockpit", "Readability"), bodies' orbits grey, the part of a trajectory after a planned burn dashed, impacts red; labels as the readout's text.
-  - The exposure is fixed in the map, so stars stay visible next to a lit Earth.
+  - The exposure is fixed in the map, so stars stay visible next to a lit Earth: 4.0 (`*exposure-map*`, `src/post.lisp`), snapped to on entering the map and back to the outside view's target on leaving, without the 1 s easing (`decision 83`).
+  - M, Tab, the Page keys, Home, drag and wheel act while paused, at every warp level and after a loss; leaving the map returns the outside view as it was.
 
 ### Instruments
 What the pilot reads, and from which milestone; how each is drawn and where it sits is "The cockpit". In `milestone 2` the minimal readout is a screen-space panel of the overlay pass (`overlay.lisp`, `docs/architecture.md` "Files in load order") in the outside and map views; from `milestone 3` the cockpit screens carry the full set and the outside view keeps the minimal readout. Values come in display units through `units.lisp` (`decision 14: Units and time epoch`); orbital values are those of the dominant body.

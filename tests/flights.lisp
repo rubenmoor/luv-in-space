@@ -1,8 +1,10 @@
 (in-package #:luv-in-space.tests)
 
-;;; flights.lisp: the safe reader and the step parser; prediction-apsis
-;;; (docs/architecture.md "Scripted runs"; decision 87: Flight scripts in
-;;; milestone 2: additions, apsis conditions, live fly and scripts/fly).
+;;; flights.lisp: the safe reader and the step parser; prediction-apsis;
+;;; start states (docs/architecture.md "Scripted runs"; decision 87: Flight
+;;; scripts in milestone 2: additions, apsis conditions, live fly and
+;;; scripts/fly, decision 122: Flight scripts in milestone 3: autopilot
+;;; steps, the record, close work, start states).
 
 (defun script-error-of (source)
   "The flight-script-error reading SOURCE signals, or nil."
@@ -21,7 +23,7 @@
  (:hold foo))")))
     (true (search "SECOND FORM" (script-error-text "((:throttle 1.0)) ((:throttle 0))")))
     (true (search "NOT BEFORE MILESTONE 3" (script-error-text "((:autopilot :hohmann 800e3))")))
-    (true (search "NOT BEFORE MILESTONE 3" (script-error-text "((:start :state (:date \"2040-01-01\")))")))
+    (true (search "NOT BEFORE MILESTONE 5" (script-error-text "((:start :after \"x\"))")))
     (true (search "NOT BEFORE MILESTONE 5" (script-error-text "((:wait :quest-step \"2.3\"))")))
     (true (search "NOT BEFORE MILESTONE 4" (script-error-text "((:expect :soi :moon))")))
     (true (search ":BOGUS" (script-error-text "((:bogus 1))")))
@@ -309,3 +311,168 @@ elapsed times cycling through ELAPSED-LIST: (values record sim-at-the-end)."
         (true (equalp sim live-sim) "~A: end sims differ" elapsed-list)
         (true (record-equal record live) "~A: records differ~%~A~%~A" elapsed-list
               (script-record-lines record) (script-record-lines live))))))
+
+;;; Start states (docs/architecture.md "Start states"; decision 122)
+
+(defun state-error-text (plist)
+  "The text of stated-sim's error for PLIST, or nil."
+  (handler-case (progn (lis::stated-sim plist) nil)
+    (lis::flight-script-error (e) (princ-to-string e))))
+
+(defun ship-tip (sim)
+  "The grapple's tip of SIM's ship, Earth-centred."
+  (let* ((ship (lis::sim-ship sim))
+         (com (lis::mass-properties-com
+               (lis::ship-mass-properties (lis::ship-state-m-p ship) nil))))
+    (lis::vec3-add (lis::ship-state-r ship)
+                   (lis::quat-rotate (lis::ship-state-q ship) (lis::vec3-sub lis::*grapple-tip* com)))))
+
+(defun def-rails-state (key time)
+  "(values r v) of object KEY on its definition's rails at TIME."
+  (let ((r (lis::make-vec3)) (v (lis::make-vec3)))
+    (lis::rails-state-into! r v (lis::rails-segment-at (lis::object-def-rails (lis::object-definition key))
+                                                       time)
+                            time)
+    (values r v)))
+
+(define-test flights-start-states
+  (true (equalp (lis::stated-sim '()) (lis::new-game-sim)))
+  (dolist (plist '((:orbit (:circular 500d3 :u 30))
+                   (:date "2040-01-01" :orbit (:circular 400d3 :lead (:fulmar-depot 297.96d0)))
+                   (:orbit (:near :skua-yard-5 :behind 1000))
+                   (:orbit (:near :tern-station :above 500))
+                   (:orbit (:near :skua-yard :at-slot))
+                   (:orbit (:on-axis :k-17 100))
+                   (:orbit (:elements :earth 7d6 0.01d0 51.6d0 10 20 30))
+                   (:date (:periapsis :highport :before 3600))
+                   (:date (:apoapsis :highport :after "2040-01-03"))
+                   (:berthed (:tern-station :berth))
+                   (:date "2040-01-19" :orbit (:near :pod-14 :at-slot) :grappled :pod-14)
+                   (:grappled :k-17 :orbit (:circular 600d3))
+                   (:removed ((:k-17 :burned-up) (:pod-14 :delivered)) :propellant 1000
+                    :target :tern-station)))
+    (let ((a (lis::stated-sim plist)))
+      (true (equalp a (lis::stated-sim plist)) "~S twice" plist)
+      (false (lis::sim-notices a) "~S" plist)
+      (is = 0d0 (lis::controls-throttle (lis::sim-controls a)))))
+  ;; A circle in the polar plane at u 30°.
+  (let* ((sim (lis::stated-sim '(:orbit (:circular 500d3 :u 30))))
+         (ship (lis::sim-ship sim))
+         (a (+ lis::+radius-earth+ 500d3)))
+    (true (< (abs (- (lis::vec3-norm (lis::ship-state-r ship)) a)) 1d-6))
+    (true (< (abs (- (lis::vec3-norm (lis::ship-state-v ship)) (sqrt (/ lis::+mu-earth+ a)))) 1d-9))
+    (true (< (abs (- (lis::polar-u (lis::ship-state-r ship)) (lis::deg->rad 30d0))) 1d-12))
+    (is eq :hold (lis::controls-attitude-mode (lis::sim-controls sim)))
+    (true (lis::controls-settled (lis::sim-controls sim))))
+  ;; Fulmar Depot's lead over the ship.
+  (let* ((sim (lis::stated-sim '(:date "2040-01-01"
+                                 :orbit (:circular 400d3 :lead (:fulmar-depot 297.96d0)))))
+         (lead (lis::wrap-angle (- (lis::polar-u (def-rails-state :fulmar-depot (lis::sim-t sim)))
+                                   (lis::polar-u (lis::ship-state-r (lis::sim-ship sim)))))))
+    (true (< (abs (- lead (lis::deg->rad 297.96d0))) 1d-9) "lead ~,12F°" (lis::rad->deg lead)))
+  ;; 1,000 m behind Skua Yard 5 at its velocity.
+  (let ((sim (lis::stated-sim '(:orbit (:near :skua-yard-5 :behind 1000)))))
+    (multiple-value-bind (r v) (def-rails-state :skua-yard-5 (lis::sim-t sim))
+      (let* ((ship (lis::sim-ship sim))
+             (d (lis::vec3-sub (lis::ship-state-r ship) r)))
+        (true (< (lis::vec3-norm (lis::vec3-add-scaled d (lis::vec3-normalize v) 1000d0)) 1d-6))
+        (true (equalp v (lis::ship-state-v ship))))))
+  ;; On K-17's axis, 100 m out.
+  (let* ((sim (lis::stated-sim '(:orbit (:on-axis :k-17 100))))
+         (ship (lis::sim-ship sim))
+         (r (lis::make-vec3)) (v (lis::make-vec3)) (q (lis::make-quat)) (w (lis::make-vec3))
+         (fixture (first (lis::object-def-fixtures (lis::object-definition :k-17)))))
+    (lis::object-state-into! r v q w (lis::sim-object sim :k-17) (lis::sim-t sim))
+    (let* ((axis (lis::quat-rotate q (lis::fixture-axis fixture)))
+           (pin (lis::vec3-add r (lis::quat-rotate q (lis::fixture-pin fixture))))
+           (out (lis::vec3-sub (ship-tip sim) pin))
+           (along (lis::vec3-dot out axis)))
+      (true (< (abs (- along 100d0)) 1d-8) "~,3E m along" (- along 100d0))
+      (true (< (lis::vec3-norm (lis::vec3-add-scaled out axis (- along))) 1d-8))
+      (true (< (lis::vec3-norm (lis::vec3-add (lis::quat-rotate (lis::ship-state-q ship) (lis::vec3 1 0 0))
+                                              axis))
+               1d-12))
+      (is eq :rate-damping (lis::controls-attitude-mode (lis::sim-controls sim)))))
+  ;; An hour before Highport's perigee.
+  (let* ((sim (lis::stated-sim '(:date (:periapsis :highport :before 3600))))
+         (segment (first (lis::object-def-rails (lis::object-definition :highport)))))
+    (true (on-grid-p (lis::sim-t sim)))
+    (true (< (abs (- (lis::vec3-norm (def-rails-state :highport (+ (lis::sim-t sim) 3600)))
+                     (lis::orbit-q (lis::rails-segment-orbit segment))))
+             1d0)))
+  ;; Berthed at Tern Station: the tip on the pin, the claws closed.
+  (let* ((sim (lis::stated-sim '(:berthed (:tern-station :berth))))
+         (grapple (lis::sim-grapple sim))
+         (station (lis::sim-object sim :tern-station)))
+    (true (lis::sim-berthed sim))
+    (is eq :latched (lis::grapple-state grapple))
+    (is eq station (svref (lis::sim-objects sim) (lis::grapple-object grapple)))
+    (is = 0 (lis::grapple-fixture grapple))
+    (is eq :promoted (lis::object-status station))
+    (is eq :rate-damping (lis::controls-attitude-mode (lis::sim-controls sim)))
+    (false (lis::sim-transfer sim))
+    (let ((p (lis::make-vec3)) (v (lis::make-vec3)))
+      (lis::fixture-pin-into! p v station (first (lis::object-def-fixtures (lis::object-def-of station)))
+                              (lis::sim-t sim))
+      (true (< (lis::vec3-norm (lis::vec3-sub (ship-tip sim) p)) 1d-6)))
+    (step-sim sim 64 1)
+    (true (lis::sim-berthed sim))
+    (false (lis::sim-loss sim)))
+  ;; POD 14 grappled where its rails put it.
+  (let* ((sim (lis::stated-sim '(:date "2040-01-19" :orbit (:near :pod-14 :at-slot) :grappled :pod-14)))
+         (ship (lis::sim-ship sim))
+         (pod (lis::sim-object sim :pod-14)))
+    (is eq :latched (lis::object-status pod))
+    (is eq :latched (lis::grapple-state (lis::sim-grapple sim)))
+    (is = (+ (lis::mass-properties-mass (lis::ship-mass-properties (lis::ship-state-m-p ship) nil))
+             12000d0)
+        (lis::with-stack-properties (properties sim)
+          (lis::mass-properties-mass properties)))
+    (multiple-value-bind (r v) (def-rails-state :pod-14 (lis::sim-t sim))
+      (let ((state (lis::object-state pod)))
+        (true (< (lis::vec3-norm (lis::vec3-sub (lis::ship-state-r state) r)) 1d-6))
+        (true (< (lis::vec3-norm (lis::vec3-sub (lis::ship-state-v state) v)) 1d-9)))))
+  ;; Removals, propellant and the target.
+  (let* ((sim (lis::stated-sim '(:date "2040-01-02" :removed ((:k-17 :burned-up))
+                                 :propellant 1000 :target :tern-station)))
+         (removal (lis::object-removal (lis::sim-object sim :k-17))))
+    (is eq :removed (lis::object-status (lis::sim-object sim :k-17)))
+    (is eq :burned-up (lis::removal-cause removal))
+    (is = (lis::sim-t sim) (lis::removal-time removal))
+    (is = 1000d0 (lis::ship-state-m-p (lis::sim-ship sim)))
+    (is eq :tern-station (lis::sim-target sim)))
+  ;; Read errors.
+  (loop for (plist text) in '(((:quest "2.3") "NOT BEFORE MILESTONE 5")
+                              ((:consumables 100) "NOT BEFORE MILESTONE 4")
+                              ((:orbit (:elements :moon 2d6 0 0 0 0 0)) "NOT BEFORE MILESTONE 4")
+                              ((:berthed (:tern-station :berth) :orbit (:circular 400d3)) "NOT BOTH")
+                              ((:orbit (:near :nowhere :behind 10)) "UNKNOWN PLACE")
+                              ((:berthed (:tern-station :dock)) "UNKNOWN FIXTURE")
+                              ((:berthed :k-17) "BERTH FIXTURE")
+                              ((:removed ((:k-17 :eaten))) "UNKNOWN CAUSE")
+                              ((:removed ((:k-17 :burned-up)) :target :k-17) "REMOVED")
+                              ((:propellant 30000) ":PROPELLANT")
+                              ((:speed 3) ":STATE TAKES"))
+        do (let ((error (state-error-text plist)))
+             (true (and error (search text error)) "~S: ~A" plist error)))
+  (true (search "NOT BEFORE MILESTONE 5" (script-error-text "((:start :file \"x\"))")))
+  (true (search "LINE 2" (script-error-text "(
+ (:start :state (:orbit (:circular 400e3 :lead (:nowhere 3)))))"))))
+
+(define-test flights-run-stated
+  ;; run-flight starts from the stated state, its periapsis 68 km; (:restart)
+  ;; returns to it.
+  (let ((script "((:start :state (:date \"2040-01-02\" :propellant 1000
+                                  :orbit (:elements :earth 6578136.6 0.02 90 270 0 180)))
+                  (:expect :propellant-above 999)
+                  (:warp :coast)
+                  (:wait :crashed :within 7200)
+                  (:expect :lost :crash)
+                  (:restart)
+                  (:expect :start-state))"))
+    (multiple-value-bind (record sim flight) (lis::run-flight script)
+      (true (lis::flight-record-passed-p record) "~A" (script-record-lines record))
+      (true (equalp (lis::flight-start flight)
+                    (lis::stated-sim '(:date "2040-01-02" :propellant 1000
+                                       :orbit (:elements :earth 6578136.6d0 0.02d0 90 270 0 180)))))
+      (true (equalp sim (lis::flight-start flight))))))

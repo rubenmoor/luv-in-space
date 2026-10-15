@@ -57,7 +57,10 @@ prediction), :wait, :expect or :any.")
      (:hull-below . 4) (:autopilot-done . 3) (:quest-step . 5) (:quest-skipped . 5)
      (:quest-line-done . 5) (:dv-below . 3) (:date-between . 3) (:elapsed-below . 3)
      (:burn . 3) (:since-burn . 3) (:clearance-above . 3) (:aim-point . 3) (:offer . 5))
-    (:start (:state . 3) (:after . 5) (:file . 5))
+    (:start (:after . 5) (:file . 5))
+    (:state-key (:consumables . 4) (:quest . 5))
+    (:body (:moon . 4) (:sun . 4))
+    (:preset (:tli . 4) (:capture . 4) (:return . 4))
     (:hold (:target . 3) (:anti-target . 3) (:rel-prograde . 3) (:rel-retrograde . 3))
     (:drop-out (:burn . 3) (:contact . 3) (:soi . 4) (:sun-zone . 4) (:life-support . 4))
     (:cause (:contact . 3) (:heat . 4) (:life-support . 4)))
@@ -123,6 +126,373 @@ prediction), :wait, :expect or :any.")
              (script-error line "~S: ~S GIVEN TWICE" what key)))
   list)
 
+;;; Start states (docs/architecture.md "Start states"; decision 122: Flight
+;;; scripts in milestone 3: autopilot steps, the record, close work, start
+;;; states). check-start-state reads (:start :state PLIST) into a normal
+;;; form, stated-sim builds the sim from it.
+
+(defun point-key-p (key)
+  "KEY names a place or an object."
+  (or (find key *places* :key #'place-key) (find key *objects* :key #'object-def-key)))
+
+(defun point-rails (key)
+  "The rails of place or object KEY: its object's definition's, or the
+place's own (Skua Yard's drop point)."
+  (let ((place (find key *places* :key #'place-key)))
+    (if (and place (null (place-object place)))
+        (place-rails place)
+        (object-def-rails (object-definition (if place (place-object place) key))))))
+
+(defun state-point (x line)
+  (unless (and (keywordp x) (point-key-p x))
+    (script-error line "UNKNOWN PLACE ~S" x))
+  x)
+
+(defun state-fixture (x line)
+  "(object-key fixture-index) of fixture X: (<place> <fixture>) or a load's
+id for its one fixture."
+  (flet ((object-of (key)
+           (let ((place (find key *places* :key #'place-key)))
+             (cond ((and place (place-object place)))
+                   (place (script-error line "~S HAS NO FIXTURE" key))
+                   ((find key *objects* :key #'object-def-key) key)
+                   (t (script-error line "UNKNOWN PLACE ~S" key))))))
+    (cond ((keywordp x)
+           (let* ((key (object-of x))
+                  (fixtures (object-def-fixtures (object-definition key))))
+             (unless (= (length fixtures) 1)
+               (script-error line "~S HAS ~D FIXTURES: WRITE (~S <FIXTURE>)" x (length fixtures) x))
+             (list key 0)))
+          ((and (consp x) (= (length x) 2) (keywordp (first x)) (keywordp (second x)))
+           (let* ((key (object-of (first x)))
+                  (index (position (second x) (object-def-fixtures (object-definition key))
+                                   :key #'fixture-name :test #'string-equal)))
+             (unless index
+               (script-error line "UNKNOWN FIXTURE ~S" x))
+             (list key index)))
+          (t (script-error line "A FIXTURE IS (<PLACE> <FIXTURE>) OR A LOAD, NOT ~S" x)))))
+
+(defun rails-apsis-after (rails kind time)
+  "The first :periapsis or :apoapsis passage on RAILS at or after TIME (M 0
+or π at the segment's mean rate)."
+  (let* ((segment (rails-segment-at rails time))
+         (rate (rails-segment-mean-rate segment))
+         (m (+ (rails-segment-mean-anomaly segment)
+               (* rate (- time (rails-segment-start segment)))))
+         (goal (if (eq kind :periapsis) 0d0 pi)))
+    (+ time (/ (mod (- goal m) +two-pi+) rate))))
+
+(defun state-date (x line)
+  "Date X as a grid t: a UTC string or (:periapsis|:apoapsis <place>
+[:before s] [:after UTC])."
+  (let ((time (cond ((stringp x) (parse-utc x line))
+                    ((and (consp x) (member (first x) '(:periapsis :apoapsis)) (rest x))
+                     (let* ((key (state-point (second x) line))
+                            (options (parse-options (cddr x) '(:before :after) line (first x)))
+                            (after (if (getf options :after)
+                                       (parse-utc (getf options :after) line)
+                                       (start-t)))
+                            (before (script-duration (getf options :before 0) line :before)))
+                       (grid-ceiling (- (rails-apsis-after (point-rails key) (first x) after)
+                                        before))))
+                    (t (script-error line "BAD :DATE ~S" x)))))
+    (when (< time (start-t))
+      (script-error line ":DATE ~A BEFORE THE START" (format-utc time)))
+    time))
+
+(defun state-orbit (x line)
+  "Orbit X in normal form: (:circular a u lead) with u in rad or nil and
+lead nil or (place rad); (:near place how m); (:on-axis object fixture m);
+(:elements a e i Ω ω M), metres and radians."
+  (unless (and (consp x) (keywordp (first x)) (null (cdr (last x))))
+    (script-error line "BAD :ORBIT ~S" x))
+  (destructuring-bind (kind &rest args) x
+    (case kind
+      (:circular
+       (unless args
+         (script-error line "WRITE (:CIRCULAR <ALT> [:U <°>] [:LEAD (<PLACE> <°>)])"))
+       (let ((altitude (script-real (first args) line :circular))
+             (options (parse-options (rest args) '(:u :lead) line :circular)))
+         (unless (> altitude 0d0)
+           (script-error line ":CIRCULAR WANTS AN ALTITUDE ABOVE 0, NOT ~S" (first args)))
+         (when (and (getf options :u) (getf options :lead))
+           (script-error line ":CIRCULAR TAKES :U OR :LEAD, NOT BOTH"))
+         (let ((lead (getf options :lead)))
+           (when lead
+             (unless (and (consp lead) (= (length lead) 2))
+               (script-error line "WRITE :LEAD (<PLACE> <°>)"))
+             (setf lead (list (state-point (first lead) line)
+                              (deg->rad (script-real (second lead) line :lead)))))
+           (list :circular (+ +radius-earth+ altitude)
+                 (and (getf options :u) (deg->rad (script-real (getf options :u) line :u)))
+                 lead))))
+      (:near
+       (let ((key (state-point (first args) line)))
+         (cond ((equal (rest args) '(:at-slot)) (list :near key :at-slot 0d0))
+               ((and (= (length args) 3) (member (second args) '(:behind :above)))
+                (let ((m (script-real (third args) line (second args))))
+                  (when (minusp m)
+                    (script-error line "~S WANTS 0 M OR MORE, NOT ~S" (second args) (third args)))
+                  (list :near key (second args) m)))
+               (t (script-error line "WRITE (:NEAR <PLACE> :BEHIND <M>), :ABOVE <M> OR :AT-SLOT")))))
+      (:on-axis
+       (unless (= (length args) 2)
+         (script-error line "WRITE (:ON-AXIS <FIXTURE> <M>)"))
+       (let ((m (script-real (second args) line :on-axis)))
+         (when (minusp m)
+           (script-error line ":ON-AXIS WANTS 0 M OR MORE, NOT ~S" (second args)))
+         (list* :on-axis (append (state-fixture (first args) line) (list m)))))
+      (:elements
+       (check-not-later :body (first args) line)
+       (unless (eq (first args) :earth)
+         (script-error line ":ELEMENTS AROUND :EARTH, NOT ~S" (first args)))
+       (unless (= (length args) 7)
+         (script-error line "WRITE (:ELEMENTS :EARTH A E I Ω ω M)"))
+       (destructuring-bind (a e &rest angles)
+           (mapcar (lambda (y) (script-real y line :elements)) (rest args))
+         (unless (and (> a 0d0) (<= 0d0 e) (< e 1d0))
+           (script-error line ":ELEMENTS WANTS A > 0 AND 0 ≤ E < 1"))
+         (list* :elements a e (mapcar #'deg->rad angles))))
+      (t (script-error line "UNKNOWN ORBIT ~S" kind)))))
+
+(defun target-key-p (key)
+  "KEY is a place or a towable object: what ] and [ can target."
+  (or (find key *places* :key #'place-key)
+      (let ((def (find key *objects* :key #'object-def-key)))
+        (and def (eq (object-def-kind def) :towable)))))
+
+(defun check-start-state (plist line)
+  "PLIST of (:start :state PLIST) checked and in normal form: (:date t
+:orbit … :berthed (object index) :grappled key :propellant kg :removed
+((key cause) …) :target key), each nil when not given."
+  (unless (and (listp plist) (null (cdr (last plist))))
+    (script-error line ":STATE WANTS A LIST OF KEYS AND VALUES, NOT ~S" plist))
+  (loop for (key nil) on plist by #'cddr
+        do (check-not-later :state-key key line))
+  (let* ((options (parse-options plist '(:date :orbit :berthed :grappled :propellant :removed :target)
+                                 line :state))
+         (date (let ((x (getf options :date))) (and x (state-date x line))))
+         (orbit (let ((x (getf options :orbit))) (and x (state-orbit x line))))
+         (berthed (let ((x (getf options :berthed))) (and x (state-fixture x line))))
+         (grappled (let ((x (getf options :grappled)))
+                     (and x (first (state-fixture x line)))))
+         (propellant (let ((x (getf options :propellant)))
+                       (and x (script-real x line :propellant))))
+         (removed (getf options :removed))
+         (target (getf options :target)))
+    (when (and berthed orbit)
+      (script-error line ":BERTHED REPLACES :ORBIT: NOT BOTH"))
+    (when (and berthed grappled)
+      (script-error line ":BERTHED OR :GRAPPLED, NOT BOTH"))
+    (when berthed
+      (unless (eq (fixture-kind (nth (second berthed) (object-def-fixtures
+                                                        (object-definition (first berthed)))))
+                  :berth)
+        (script-error line ":BERTHED WANTS A BERTH FIXTURE, NOT ~S" (getf options :berthed))))
+    (when grappled
+      (unless (eq (object-def-kind (object-definition grappled)) :towable)
+        (script-error line ":GRAPPLED WANTS A LOAD, NOT ~S" grappled))
+      (when (eq (first orbit) :on-axis)
+        (script-error line ":GRAPPLED TAKES NO :ON-AXIS"))
+      (when (and (eq (first orbit) :near) (eq (third orbit) :at-slot)
+                 (not (eq (second orbit) grappled)))
+        (script-error line ":GRAPPLED ~S WANTS (:NEAR ~S :AT-SLOT)" grappled grappled)))
+    (when (and propellant (not (<= 0d0 propellant *propellant-full*)))
+      (script-error line ":PROPELLANT 0 TO ~,0F KG, NOT ~S" *propellant-full* (getf options :propellant)))
+    (unless (listp removed)
+      (script-error line "WRITE :REMOVED ((<ID> <CAUSE>) …)"))
+    (dolist (pair removed)
+      (unless (and (consp pair) (= (length pair) 2))
+        (script-error line "WRITE :REMOVED ((<ID> <CAUSE>) …), NOT ~S" pair))
+      (unless (and (keywordp (first pair)) (find (first pair) *objects* :key #'object-def-key))
+        (script-error line "UNKNOWN OBJECT ~S" (first pair)))
+      (unless (member (second pair) '(:burned-up :delivered))
+        (script-error line "UNKNOWN CAUSE ~S: :BURNED-UP OR :DELIVERED" (second pair)))
+      (when (> (count (first pair) removed :key #'first) 1)
+        (script-error line "~S REMOVED TWICE" (first pair))))
+    (when (and target (not (and (keywordp target) (target-key-p target))))
+      (script-error line "UNKNOWN TARGET ~S" target))
+    ;; What the state uses must be there.
+    (flet ((object-of (key)
+             (let ((place (find key *places* :key #'place-key)))
+               (if place (place-object place) key))))
+      (dolist (key (list (and (member (first orbit) '(:near :on-axis)) (second orbit))
+                         (and (eq (first orbit) :circular) (first (fourth orbit)))
+                         (first berthed) grappled target))
+        (when (and key (assoc (object-of key) removed))
+          (script-error line "~S IS REMOVED" key)))
+      (when (and target grappled (eq (object-of target) grappled))
+        (script-error line ":TARGET ~S IS LATCHED" target)))
+    (list :date date :orbit orbit :berthed berthed :grappled grappled :propellant propellant
+          :removed removed :target target)))
+
+(defun point-state (sim key)
+  "(values r v q w) of place or object KEY at SIM's t: its object's state
+(w inertial), or the drop point's rails (q, w nil)."
+  (let ((place (find key *places* :key #'place-key)))
+    (if (and place (null (place-object place)))
+        (let ((r (make-vec3)) (v (make-vec3)))
+          (rails-state-into! r v (rails-segment-at (place-rails place) (sim-t sim)) (sim-t sim))
+          (values r v nil nil))
+        (let ((r (make-vec3)) (v (make-vec3)) (q (make-quat)) (w (make-vec3)))
+          (unless (object-state-into! r v q w (sim-object sim (if place (place-object place) key))
+                                      (sim-t sim))
+            (script-error nil "~S HAS NO STATE AT ~A" key (format-utc (sim-t sim))))
+          (values r v q (quat-rotate q w))))))
+
+(defun polar-u (r)
+  "The argument of latitude of R in the common polar plane (i 90°, Ω 270°):
+the ascending node along −y, the plane's normal along −x."
+  (atan (aref r 2) (- (aref r 1))))
+
+(defun stated-orbit-state (sim orbit)
+  "(values r v q) of the ship's CoM for ORBIT (normal form) at SIM's t; Q
+nil for the prograde hold's attitude."
+  (let ((time (sim-t sim)))
+    (ecase (first orbit)
+      (:circular
+       (destructuring-bind (a u lead) (rest orbit)
+         (let ((u (cond (lead (- (polar-u (point-state sim (first lead))) (second lead)))
+                        (u)
+                        (t 0d0))))
+           ;; Directly in the plane: an epoch's mean anomaly at t ~1e9 s
+           ;; would round u by ~1e-10 rad.
+           (let ((s (sqrt (/ +mu-earth+ a))))
+             (values (vec3 0 (* a (- (cos u))) (* a (sin u)))
+                     (vec3 0 (* s (sin u)) (* s (cos u)))
+                     nil)))))
+      (:near
+       (destructuring-bind (key how m) (rest orbit)
+         (multiple-value-bind (r v) (point-state sim key)
+           (values (ecase how
+                     (:at-slot r)
+                     (:behind (vec3-add-scaled r (vec3-normalize v) (- m)))
+                     (:above (vec3-add-scaled r (vec3-normalize r) m)))
+                   v nil))))
+      (:on-axis
+       (destructuring-bind (key index m) (rest orbit)
+         (on-axis-state sim key index m)))
+      (:elements
+       (destructuring-bind (a e i raan argp mean-anomaly) (rest orbit)
+         (multiple-value-bind (r v)
+             (orbit-state (make-elliptic-orbit +mu-earth+ a e i raan argp mean-anomaly time) time)
+           (values r v nil)))))))
+
+(defun on-axis-state (sim key index m)
+  "(values r v q) of the ship's CoM with the grapple's tip M m out along
+object KEY's INDEXth fixture's axis: +x along the inward axis, +z the
+object's +z made perpendicular to it (its +y when under 1e-6), at the
+object's velocity there."
+  (multiple-value-bind (r-o v-o q-o w-o) (point-state sim key)
+    (let* ((fixture (nth index (object-def-fixtures (object-definition key))))
+           (axis (quat-rotate q-o (fixture-axis fixture)))
+           (tip (vec3-add-scaled (vec3-add r-o (quat-rotate q-o (fixture-pin fixture))) axis m))
+           (x (vec3-scale axis -1d0))
+           (z (flet ((across (b)
+                       (let ((b (quat-rotate q-o b)))
+                         (vec3-add-scaled b x (- (vec3-dot b x))))))
+                (let ((z (across (vec3 0 0 1))))
+                  (vec3-normalize (if (< (vec3-norm z) 1d-6) (across (vec3 0 1 0)) z)))))
+           (q (quat-from-basis x (vec3-cross z x) z))
+           (com (mass-properties-com (ship-mass-properties (ship-state-m-p (sim-ship sim)) nil)))
+           (r (vec3-sub tip (quat-rotate q (vec3-sub *grapple-tip* com)))))
+      (values r (vec3-add v-o (vec3-cross w-o (vec3-sub r r-o))) q))))
+
+(defun stated-ship! (sim r v q)
+  "The ship's CoM at R, V; attitude Q at rest and rate damping, or for nil
+the prograde hold's attitude and rate, held and settled."
+  (let ((ship (sim-ship sim))
+        (controls (sim-controls sim)))
+    (replace (ship-state-r ship) r)
+    (replace (ship-state-v ship) v)
+    (if q
+        (progn (replace (ship-state-q ship) q)
+               (vec3-set! (ship-state-w ship) 0d0 0d0 0d0)
+               (setf (controls-attitude-mode controls) :rate-damping
+                     (controls-settled controls) nil))
+        (multiple-value-bind (q w-t) (hold-attitude :prograde r v 0d0)
+          (replace (ship-state-q ship) q)
+          (replace (ship-state-w ship) (quat-rotate (quat-conjugate q) w-t))))
+    sim))
+
+(defun stated-berth! (sim key index)
+  "Berthed at object KEY's INDEXth fixture (plan 24's berth-capture! at the
+pose: the tip on the pin, the claws closed)."
+  (let ((object (sim-object sim key)))
+    (object-promote! object (sim-t sim))
+    (multiple-value-bind (r v q) (on-axis-state sim key index 0d0)
+      (stated-ship! sim r v q))
+    (berth-capture! sim (position object (sim-objects sim)) index)
+    (setf (grapple-state (sim-grapple sim)) :latched)
+    sim))
+
+(defun stated-grapple! (sim key orbit)
+  "Load KEY latched at the capture pose (stack-design-pose): with (:near KEY
+:at-slot) the load at its rails state and attitude, else the stack's CoM on
+ORBIT (the ship's own without) in the prograde hold's attitude."
+  (let* ((object (sim-object sim key))
+         (index (position object (sim-objects sim)))
+         (pose (stack-design-pose (object-def-of object)))
+         (grapple (sim-grapple sim))
+         (at-slot (and (eq (first orbit) :near) (eq (third orbit) :at-slot))))
+    (multiple-value-bind (r-l v-l q-l w-l) (and at-slot (point-state sim key))
+      (setf (grapple-state grapple) :latched
+            (grapple-object grapple) index
+            (grapple-fixture grapple) 0
+            (object-status object) :latched
+            (object-disturbed object) t)
+      (replace (grapple-com grapple) (stack-load-com pose))
+      (replace (grapple-q grapple) (stack-load-q pose))
+      (let ((com (with-stack-properties (properties sim)
+                   (vec3-copy (mass-properties-com properties)))))
+        (cond (at-slot
+               (let* ((q (quat-mul q-l (quat-conjugate (stack-load-q pose))))
+                      (r (vec3-add r-l (quat-rotate q (vec3-sub com (stack-load-com pose)))))
+                      (ship (sim-ship sim)))
+                 (stated-ship! sim r (vec3-add v-l (vec3-cross w-l (vec3-sub r r-l))) q)
+                 (replace (ship-state-w ship) (quat-rotate (quat-conjugate q) w-l))))
+              (orbit
+               (multiple-value-bind (r v) (stated-orbit-state sim orbit)
+                 (stated-ship! sim r v nil)))
+              (t (let ((ship (sim-ship sim)))
+                   (stated-ship! sim (vec3-copy (ship-state-r ship)) (vec3-copy (ship-state-v ship))
+                                 nil))))))
+    (latched-load-update! sim)
+    sim))
+
+(defun stated-sim (plist)
+  "The sim of (:start :state PLIST) (docs/architecture.md \"Start states\"):
+new-game-sim at the date, the objects fresh on their definition rails, the
+removals recorded at the date, the ship placed, berthed or grappled, the
+target set, the objects' first checks due at once; a flight-script-error for
+a bad PLIST. The same PLIST gives equalp sims."
+  (destructuring-bind (&key date orbit berthed grappled propellant removed target)
+      (check-start-state plist nil)
+    (let ((sim (new-game-sim)))
+      (when date
+        (setf (sim-t sim) date))
+      (setf (sim-objects sim) (map 'simple-vector #'new-object *objects*))
+      (when propellant
+        (setf (ship-state-m-p (sim-ship sim)) propellant))
+      (loop for (key cause) in removed
+            do (object-remove! sim (sim-object sim key) (sim-t sim) cause))
+      (cond (berthed (apply #'stated-berth! sim berthed))
+            (grappled (stated-grapple! sim grappled orbit))
+            (orbit (multiple-value-call #'stated-ship! sim (stated-orbit-state sim orbit))))
+      (when target
+        (sim-set-target! sim target))
+      (setf (sim-notices sim) nil
+            (sim-checkpoint-request sim) nil)
+      (sim-recheck-objects! sim))))
+
+(defun flight-start-sim (steps)
+  "The start state of STEPS: (:start :state …)'s stated-sim, else
+new-game-sim."
+  (let ((first (first steps)))
+    (if (and first (eq (flight-step-name first) :start) (eq (first (flight-step-args first)) :state))
+        (stated-sim (second (flight-step-args first)))
+        (new-game-sim))))
+
 ;;; Actions
 
 (defun parse-action (step name args line first)
@@ -139,9 +509,12 @@ prediction), :wait, :expect or :any.")
              (when (or (flight-step-at step) (plusp (flight-step-after step)))
                (script-error line ":START TAKES NO TIME"))
              (check-not-later :start (first args) line)
-             (unless (equal args '(:new-game))
-               (script-error line "UNKNOWN START ~S: (:START :NEW-GAME)" args))
-             args)
+             (cond ((equal args '(:new-game)) args)
+                   ((and (eq (first args) :state) (= (length args) 2))
+                    (check-start-state (second args) line)
+                    args)
+                   (t (script-error line "UNKNOWN START ~S: (:START :NEW-GAME) OR (:START :STATE (…))"
+                                    args))))
             (:warp
              (arity 1)
              (let ((level (first args)))
@@ -792,15 +1165,15 @@ runs once."
 
 (defun run-flight (script &key model sim)
   "Fly SCRIPT (read-flight's source, or a list of flight-steps) headless
-from the new-game state, or from SIM (a copy; the script's :start then
-ignored), with the gravity MODEL if given: per step prediction-update!,
+from its start state (flight-start-sim), or from SIM (a copy; the script's
+:start then ignored), with the gravity MODEL if given: per step prediction-update!,
 the hook, clock-step! with no accumulator; while the throttle is on the
 prediction is updated once per *flight-burn-prediction-interval*. (values
 record end-sim flight)."
   (let* ((steps (if (and (listp script) (every #'flight-step-p script))
                     script
                     (read-flight script)))
-         (sim (if sim (copy-sim sim) (new-game-sim))))
+         (sim (if sim (copy-sim sim) (flight-start-sim steps))))
     (when model
       (setf (sim-model sim) model))
     (let* ((flight (new-flight steps sim))
@@ -887,13 +1260,14 @@ as run-flight calls it after a loss."
     (and flight (not (flight-done flight)))))
 
 (defun fly (name &key (game *game*))
-  "Fly the script NAME (read-flight's source) in GAME from its start state,
-the view outside; returns at once. At the end the record lines are printed
-to the image's output; flight-status reads them."
-  (let ((steps (read-flight name)))
+  "Fly the script NAME (read-flight's source) in GAME from its start state
+(flight-start-sim), the view outside; returns at once. At the end the
+record lines are printed to the image's output; flight-status reads them."
+  (let* ((steps (read-flight name))
+         (start (flight-start-sim steps)))
     (call-in-game game
                   (lambda ()
-                    (let ((flight (new-flight steps (new-game-sim))))
+                    (let ((flight (new-flight steps start)))
                       (setf (flight-restart flight)
                             (lambda () (game-restart! game (flight-start flight))))
                       (setf (clock-checkpoint (game-clock game)) nil)

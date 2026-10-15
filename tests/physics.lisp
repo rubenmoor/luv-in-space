@@ -348,3 +348,245 @@ angular momentum compared in inertial axes."
     (let ((consed (least-bytes-consed (lambda () (full-steps b 3333)))))
       (true (< consed 1024) "~D bytes" consed))
     (is equalp a b)))
+
+;;; Objects and rails (docs/architecture.md "Rails", "Rails, orbits and
+;;; frames", "Removal of objects").
+
+(defun test-object-def (attitude rails)
+  (lis::make-object-def :test "TEST" :towable 2500d0 (lis::mat3 1d3 0 0  0 2d3 0  0 0 3d3)
+                        nil nil attitude 5d0 rails))
+
+(define-test object-copy-and-assign
+  (let* ((orbit (drift-orbit 0d0))
+         (def (test-object-def (lis::make-attitude :lvlh)
+                               (lis::make-rails orbit (lis::start-t))))
+         (a (lis::new-object def))
+         (b (lis::copy-object a)))
+    (true (equalp a b))
+    (is eq :rails (lis::object-status a))
+    (is eq :test (lis::object-key a))
+    (false (lis::object-promoted-p a))
+    (false (lis::object-removed-p a))
+    (setf (lis::object-status b) :promoted
+          (lis::object-next-check b) 12.5d0
+          (lis::object-removal b) (lis::make-removal 1d0 :earth :burned-up '(0d0 0d0)))
+    (setf (aref (lis::ship-state-r (lis::object-state b)) 0) 7d6)
+    (false (equalp a b))
+    (is = 0d0 (aref (lis::ship-state-r (lis::object-state a)) 0))
+    (true (lis::object-removed-p (progn (setf (lis::object-status b) :removed) b)))
+    (let ((consed (least-bytes-consed (lambda () (dotimes (i 1000) (lis::object-assign! a b))))))
+      (true (<= consed 0) "~D bytes" consed))
+    (true (equalp a b))
+    (is eq (lis::object-def-of a) (lis::object-def-of b))))
+
+(defun rails-point (rails time)
+  (let ((r (lis::make-vec3)) (v (lis::make-vec3)))
+    (lis::rails-state-into! r v (lis::rails-segment-at rails time) time)
+    (values r v)))
+
+(define-test rails-against-integrator
+  ;; Two-body rails and the coarse step over 10 orbits of the drift orbit:
+  ;; within the coarse position bound (5 m, "Drift bounds").
+  (let* ((orbit (drift-orbit 0d0))
+         (t0 (lis::start-t))
+         (rails (lis::make-rails orbit t0 :j2 nil))
+         (period (lis::orbit-period orbit))
+         (zero (lis::make-vec3))
+         (inverse (lis::mat3-inverse-symmetric *test-inertia*))
+         (state (multiple-value-bind (r v) (rails-point rails t0)
+                  (lis::make-ship-state r v (lis::quat 1 0 0 0) (lis::make-vec3) 0d0)))
+         (time t0) (next 1) (dr 0d0))
+    (multiple-value-bind (r v) (lis::orbit-state orbit t0)
+      (true (< (rel-diff r (rails-point rails t0)) 1d-15))
+      (true (< (rel-diff v (nth-value 1 (rails-point rails t0))) 1d-15)))
+    (is eq :horizon (lis::rails-segment-end-kind (first rails)))
+    (is = lis::*rails-horizon* (lis::rails-segment-end (first rails)))
+    (loop while (<= next 10)
+          do (let ((h (lis::coarse-step (lis::ship-state-r state) time nil)))
+               (lis::rk4-step! state h time :point zero zero 0d0 1000d0 *test-inertia* inverse)
+               (incf time h))
+             (when (>= time (+ t0 (* next period)))
+               (setf dr (max dr (lis::vec3-norm (lis::vec3-sub (lis::ship-state-r state)
+                                                               (rails-point rails time)))))
+               (incf next)))
+    (true (< dr 5d0) "~,3F m" dr)))
+
+(defun leo-51.6 ()
+  "A 400 km circular orbit at 51.6° from the start date."
+  (lis::make-elliptic-orbit lis::+mu-earth+ 6778d3 0d0 (deg 51.6) (deg 30) 0d0 0d0 (lis::start-t)))
+
+(define-test rails-j2-node
+  (let* ((orbit (leo-51.6))
+         (t0 (lis::start-t))
+         (rails (lis::make-rails orbit t0))
+         (segment (first rails))
+         (period (lis::orbit-period orbit))
+         (p (lis::orbit-semi-latus orbit))
+         (closed (* -3/2 (lis::orbit-n orbit) lis::+j2-earth+
+                    (expt (/ lis::+radius-earth+ p) 2) (cos (deg 51.6)))))
+    (true (< (relative-error (lis::rails-segment-raan-rate segment) closed) 1d-9))
+    ;; The ship integrated with J2 for a day: its osculating node averaged
+    ;; over the first and the last orbit moves as the rails' node does; the
+    ;; first orbit's average removes the start's short-period offset
+    ;; (measured: ship −4.7014°, rails −4.6811°, 0.020° apart).
+    (let* ((zero (lis::make-vec3))
+           (inverse (lis::mat3-inverse-symmetric *test-inertia*))
+           (state (multiple-value-bind (r v) (rails-point rails t0)
+                    (lis::make-ship-state r v (lis::quat 1 0 0 0) (lis::make-vec3) 0d0)))
+           (elements (lis::state->orbit (lis::ship-state-r state) (lis::ship-state-v state)
+                                        lis::+mu-earth+ t0))
+           (end (+ t0 lis::+day+))
+           (first-sum 0d0) (first-n 0) (last-sum 0d0) (last-n 0)
+           (time t0))
+      (loop while (< time end)
+            do (lis::rk4-step! state 2d0 time :j2 zero zero 0d0 1000d0 *test-inertia* inverse)
+               (incf time 2d0)
+               (flet ((node ()
+                        (lis::state->orbit-into! elements (lis::ship-state-r state)
+                                                 (lis::ship-state-v state) lis::+mu-earth+ time)
+                        (lis::orbit-raan elements)))
+                 (cond ((<= time (+ t0 period)) (incf first-sum (node)) (incf first-n))
+                       ((> time (- end period)) (incf last-sum (node)) (incf last-n)))))
+      (let* ((ship-drift (- (/ last-sum last-n) (/ first-sum first-n)))
+             (rails-drift (* (lis::rails-segment-raan-rate segment) (- lis::+day+ period)))
+             (miss (abs (- ship-drift rails-drift))))
+        (true (< rails-drift (deg -4)))
+        (true (< miss (deg 0.05)) "~,4F°" (/ (* miss 180) pi)))))
+  ;; A polar orbit's node stays at 270° exactly.
+  (let* ((orbit (lis::make-elliptic-orbit lis::+mu-earth+ 6778d3 0d0 (deg 90) (deg 270) 0d0 0d0
+                                          (lis::start-t)))
+         (segment (first (lis::make-rails orbit (lis::start-t)))))
+    (is = 0d0 (lis::rails-segment-raan-rate segment))
+    (is = (deg 270) (lis::rails-raan segment (+ (lis::start-t) (* 3650 lis::+day+))))))
+
+(defun k-17-orbit (perigee-altitude)
+  "800 km × PERIGEE-ALTITUDE, polar, at apogee at the start date."
+  (let* ((ra (+ lis::+radius-earth+ 800d3))
+         (rp (+ lis::+radius-earth+ perigee-altitude))
+         (a (/ (+ ra rp) 2)))
+    (lis::make-elliptic-orbit lis::+mu-earth+ a (/ (- ra rp) (+ ra rp)) (deg 90) (deg 270) 0d0
+                              pi (lis::start-t))))
+
+(defun rails-crossing (rails from to radius)
+  "The time in [FROM, TO] at which the rails' radius falls through RADIUS,
+by bisection down to adjacent doubles (~2.4e-7 s in 2040)."
+  (loop for mid = (* 0.5d0 (+ from to))
+        until (or (= mid from) (= mid to))
+        do (if (> (lis::vec3-norm (rails-point rails mid)) radius)
+               (setf from mid)
+               (setf to mid)))
+  (* 0.5d0 (+ from to)))
+
+(define-test rails-crash-end
+  (let ((t0 (lis::start-t)))
+    (dolist (j2 '(nil t))
+      (let* ((rails (lis::make-rails (k-17-orbit 90d3) t0 :j2 j2))
+             (segment (first rails))
+             (end (lis::rails-segment-end segment))
+             (reference (rails-crossing rails (+ t0 2500) (+ t0 2700) *earth-crash-radius*)))
+        (is eq :crash (lis::rails-segment-end-kind segment))
+        (true (< (abs (- end reference)) 1d-6) "J2 ~A: ~,9F s off" j2 (- end reference))
+        (if j2
+            (false (< (abs (- end t0 2603.07d0)) 0.005d0))
+            (true (< (abs (- end t0 2603.07d0)) 0.005d0) "~,3F s" (- end t0)))))
+    (let ((segment (first (lis::make-rails (k-17-orbit (+ 100d3 1)) t0))))
+      (is eq :horizon (lis::rails-segment-end-kind segment))
+      (is = lis::*rails-horizon* (lis::rails-segment-end segment)))
+    ;; A hyperbola: one two-body segment to the horizon.
+    (let ((segment (first (lis::make-rails (lis::make-hyperbolic-orbit
+                                            lis::+mu-earth+ 7378d3 1.5d0 (deg 30) 0d0 0d0
+                                            -1d0 t0)
+                                           t0))))
+      (is eq :horizon (lis::rails-segment-end-kind segment))
+      (is = 0d0 (lis::rails-segment-raan-rate segment))
+      (is = (lis::orbit-n (lis::rails-segment-orbit segment))
+          (lis::rails-segment-mean-rate segment)))))
+
+(define-test object-state-past-crash
+  (let* ((t0 (lis::start-t))
+         (object (lis::new-object (test-object-def (lis::make-attitude :lvlh)
+                                                   (lis::make-rails (k-17-orbit 90d3) t0))))
+         (end (lis::rails-segment-end (first (lis::object-rails object))))
+         (r (lis::make-vec3)) (v (lis::make-vec3)) (q (lis::make-quat)) (w (lis::make-vec3)))
+    (true (lis::object-state-into! r v q w object end))
+    (false (lis::object-state-into! r v q w object (+ end lis::+fine-step+)))
+    (setf (lis::object-status object) :removed)
+    (false (lis::object-state-into! r v q w object t0))))
+
+(defun attitude-at (mode orbit time)
+  "(values q ω-inertial ω-body) of MODE on ORBIT at TIME."
+  (multiple-value-bind (r v) (lis::orbit-state orbit time)
+    (let ((q (lis::make-quat)) (w (lis::make-vec3)))
+      (lis::object-attitude-into! q w mode r v time)
+      (values q w))))
+
+(defun finite-difference-rate (mode orbit time dt)
+  "ω (inertial) from q at TIME ± DT: 2 q̇ q*."
+  (let* ((a (attitude-at mode orbit (- time dt)))
+         (b (attitude-at mode orbit (+ time dt)))
+         (b (if (minusp (loop for i below 4 sum (* (aref a i) (aref b i))))
+                (map 'lis::quat #'- b)
+                b))
+         (q (attitude-at mode orbit time))
+         (q (if (minusp (loop for i below 4 sum (* (aref a i) (aref q i))))
+                (map 'lis::quat #'- q)
+                q))
+         (dq (map 'lis::quat (lambda (x y) (/ (- y x) (* 2 dt))) a b))
+         (product (lis::quat-mul dq (lis::quat-conjugate q))))
+    (lis::vec3 (* 2 (aref product 1)) (* 2 (aref product 2)) (* 2 (aref product 3)))))
+
+(define-test attitude-modes-rates
+  (let* ((time (+ (lis::start-t) 1234d0))
+         (orbit (drift-orbit 0.3d0))
+         (spin-q (lis::quat-normalize (lis::quat 0.3d0 -0.5d0 0.7d0 0.2d0)))
+         (modes (list (lis::make-attitude :lvlh)
+                      (lis::make-attitude :sun-pointing)
+                      (lis::make-attitude :inertial :q spin-q)
+                      (lis::make-attitude :spin :q spin-q
+                                                :axis (lis::vec3-normalize (lis::vec3 1 2 -2))
+                                                :rate (deg 0.3) :epoch (lis::start-t)))))
+    (dolist (mode modes)
+      (multiple-value-bind (q w) (attitude-at mode orbit time)
+        (let ((miss (lis::vec3-norm (lis::vec3-sub w (finite-difference-rate mode orbit time (/ 1d0 64))))))
+          (true (< miss 1d-9) "~A: ~,2E rad/s" (lis::attitude-kind mode) miss))
+        (true (< (abs (- 1 (sqrt (loop for x across q sum (* x x))))) 1d-14))))
+    ;; The frames' axes.
+    (multiple-value-bind (r v) (lis::orbit-state orbit time)
+      (let ((q (attitude-at (first modes) orbit time)))
+        (true (< (rel-diff (lis::quat-rotate q (lis::vec3 0 0 1))
+                           (lis::vec3-normalize (lis::vec3-scale r -1d0)))
+                 1d-14))
+        (true (plusp (lis::vec3-dot (lis::quat-rotate q (lis::vec3 1 0 0)) v))))
+      (let* ((q (attitude-at (second modes) orbit time))
+             (sun (lis::vec3-sub (lis::body-state :sun time) r))
+             (south (lis::vec3 0 (sin lis::+obliquity+) (- (cos lis::+obliquity+)))))
+        (true (< (rel-diff (lis::quat-rotate q (lis::vec3 1 0 0)) (lis::vec3-normalize sun))
+                 1d-14))
+        (true (< (abs (lis::vec3-dot (lis::quat-rotate q (lis::vec3 0 1 0)) south)) 1d-14))
+        (true (plusp (lis::vec3-dot (lis::quat-rotate q (lis::vec3 0 0 1)) south)))))))
+
+(defun rails-attitude-loop (object r v q w time n)
+  (declare (type double-float time) (type fixnum n))
+  (dotimes (i n)
+    (lis::object-state-into! r v q w object (+ time (* 7d0 i)))))
+
+(define-test rails-cons-nothing
+  (let* ((t0 (lis::start-t))
+         (r (lis::make-vec3)) (v (lis::make-vec3)) (q (lis::make-quat)) (w (lis::make-vec3))
+         (objects (mapcar (lambda (mode)
+                            (lis::new-object (test-object-def
+                                              mode (lis::make-rails (k-17-orbit 300d3) t0))))
+                          (list (lis::make-attitude :lvlh) (lis::make-attitude :sun-pointing)
+                                (lis::make-attitude :inertial)
+                                (lis::make-attitude :spin :rate 0.01d0))))
+         (hyperbola (lis::new-object
+                     (test-object-def (lis::make-attitude :lvlh)
+                                      (lis::make-rails (lis::make-hyperbolic-orbit
+                                                        lis::+mu-earth+ 7378d3 1.5d0 (deg 30)
+                                                        0d0 0d0 -1d0 t0)
+                                                       t0)))))
+    (dolist (object (cons hyperbola objects))
+      (rails-attitude-loop object r v q w t0 1000)
+      (let ((consed (least-bytes-consed (lambda () (rails-attitude-loop object r v q w t0 1000)))))
+        (true (<= consed 0) "~A: ~D bytes" (lis::attitude-kind (lis::object-attitude object))
+              consed)))))

@@ -3,7 +3,8 @@
 ;;; The ship's state, the gravity models and the coarse step rule
 ;;; (docs/architecture.md "Integrator", "Gravity model"; decision 69: Ship
 ;;; state, step rule and kinematic attitude in physics.lisp, decision 17:
-;;; Gravity model). Earth's frame only in milestone 2.
+;;; Gravity model). Earth's frame only in milestone 2. From milestone 3 the
+;;; objects, their rails and attitude modes ("Rails").
 
 (defstruct (ship-state (:constructor %make-ship-state (r v q w m-p dv))
                        (:copier nil))
@@ -284,3 +285,290 @@ at each stage, torque is ignored, q and ω are set from it at t + h."
                 (* (/ fn mdot) (log (the (double-float (0d0)) (/ m0 m1))))
                 (/ (* fn h) m0)))
       state)))
+
+;;; Objects (docs/architecture.md "Rails", "Removal of objects"; decision 110:
+;;; Objects in the simulation: places.lisp's load position, the object struct
+;;; and promotion checks). A definition is immutable and shared by every copy
+;;; of an object; the object holds what the simulation changes.
+
+(defstruct (shape (:constructor make-shape (kind centre &key size (radius 0d0))))
+  (kind :box :type (member :box :sphere) :read-only t)
+  (centre (make-vec3) :type vec3 :read-only t)      ; m, body axes about the CoM
+  (size nil :type (or null vec3) :read-only t)      ; :box, edge lengths
+  (radius 0d0 :type double-float :read-only t))    ; :sphere
+
+(defstruct (fixture (:constructor make-fixture (name pin axis kind &key receiving (free t))))
+  (name "" :type string :read-only t)
+  (pin (make-vec3) :type vec3 :read-only t)         ; m, body axes about the CoM
+  (axis (make-vec3) :type vec3 :read-only t)        ; outward, unit
+  (kind :towable :type (member :towable :berth) :read-only t)
+  (receiving nil :type boolean :read-only t)        ; takes deliveries (decision 53)
+  (free t :type boolean :read-only t))              ; nil: a scenery ship holds it
+
+(defstruct (attitude (:constructor make-attitude
+                         (kind &key (q (quat 1 0 0 0)) (axis (vec3 1 0 0)) (rate 0d0)
+                                    (epoch 0d0))))
+  "An attitude mode: :lvlh, :sun-pointing, :inertial (q) or :spin (q at
+EPOCH, turning about the body AXIS at RATE rad/s)."
+  (kind :inertial :type (member :lvlh :sun-pointing :inertial :spin) :read-only t)
+  (q (quat 1 0 0 0) :type quat :read-only t)
+  (axis (vec3 1 0 0) :type vec3 :read-only t)       ; unit, body axes
+  (rate 0d0 :type double-float :read-only t)
+  (epoch 0d0 :type double-float :read-only t))
+
+(defstruct (rails-segment (:constructor %make-rails-segment) (:copier nil))
+  "A conic from START to END around BODY: ORBIT's elements at START, Ω and ω
+advanced by their rates, M from MEAN-ANOMALY at START by MEAN-RATE (n + Ṁ)."
+  (start 0d0 :type double-float :read-only t)
+  (end 0d0 :type double-float :read-only t)
+  (body :earth :type keyword :read-only t)
+  (orbit nil :type orbit :read-only t)
+  (mean-anomaly 0d0 :type double-float :read-only t)
+  (raan-rate 0d0 :type double-float :read-only t)
+  (argp-rate 0d0 :type double-float :read-only t)
+  (mean-rate 0d0 :type double-float :read-only t)
+  (end-kind :horizon :type (member :crash :horizon) :read-only t))
+
+(defstruct (object-def (:constructor make-object-def
+                           (key name kind mass tensor shapes fixtures attitude bound rails
+                            &aux (tensor-inverse (mat3-inverse-symmetric tensor)))))
+  (key nil :type keyword :read-only t)
+  (name "" :type string :read-only t)               ; display name
+  (kind :towable :type (member :towable :berth :fixed) :read-only t)
+  (mass 0d0 :type double-float :read-only t)        ; kg
+  (tensor (make-mat3) :type mat3 :read-only t)      ; kg m², body axes (FRD) about the CoM
+  (tensor-inverse (make-mat3) :type mat3 :read-only t)
+  (shapes nil :type list :read-only t)
+  (fixtures nil :type list :read-only t)
+  (attitude nil :type attitude :read-only t)
+  (bound 0d0 :type double-float :read-only t)       ; m
+  (rails nil :type list :read-only t))              ; the definition's segments
+
+(defstruct (removal (:constructor make-removal (time body cause point)))
+  (time 0d0 :type double-float :read-only t)
+  (body :earth :type keyword :read-only t)
+  (cause :burned-up :type (member :burned-up :delivered :impact) :read-only t)
+  (point nil :read-only t))     ; (latitude longitude) of a crash; a delivery's place and fixture
+
+(defstruct (object (:constructor %make-object
+                       (def-of status rails attitude state next-check removal))
+                   (:copier nil))
+  (def-of nil :type object-def :read-only t)
+  (status :rails :type (member :rails :promoted :removed))
+  (rails nil :type list)                            ; segments, replaced whole
+  (attitude nil :type attitude)                     ; replaced whole
+  (state nil :type ship-state :read-only t)         ; promoted: r, v, q, ω (body); m_p 0
+  (next-check 0d0 :type double-float)               ; the next promotion check's t
+  (removal nil :type (or null removal)))
+
+(defun new-object (def)
+  "An object on its definition's rails, unpromoted."
+  (%make-object def :rails (object-def-rails def) (object-def-attitude def)
+                (make-ship-state (make-vec3) (make-vec3) (quat 1 0 0 0) (make-vec3) 0d0)
+                0d0 nil))
+
+(defun copy-object (object)
+  "A copy, equalp to OBJECT, sharing the definition and the immutable parts."
+  (%make-object (object-def-of object) (object-status object) (object-rails object)
+                (object-attitude object) (copy-ship-state (object-state object))
+                (object-next-check object) (object-removal object)))
+
+(defun object-assign! (out object)
+  "Copy OBJECT into OUT, an object of the same definition, consing nothing;
+OUT."
+  (declare (type object out object))
+  (assert (eq (object-def-of out) (object-def-of object)))
+  (setf (object-status out) (object-status object)
+        (object-rails out) (object-rails object)
+        (object-attitude out) (object-attitude object)
+        (object-next-check out) (object-next-check object)
+        (object-removal out) (object-removal object))
+  (ship-state-assign! (object-state out) (object-state object))
+  out)
+
+(defun object-key (object) (object-def-key (object-def-of object)))
+(defun object-removed-p (object) (eq (object-status object) :removed))
+(defun object-promoted-p (object) (eq (object-status object) :promoted))
+
+;;; Rails (docs/architecture.md "Rails", "Removal of objects"; decision 46:
+;;; Rails across spheres, hyperbolas and re-entry). Milestone 3 builds one
+;;; segment around Earth; milestone 4 adds segments across spheres.
+
+(defparameter *rails-horizon* (utc->grid-t 2050 1 1 0 0 0)
+  "The ephemerides' end, decision 18: Ephemerides.")
+(defparameter *polar-cos* 1d-15
+  "|cos i| below this gives Ω̇ = 0: the double nearest 90° keeps Ω exactly.")
+
+(defun rails-crash-time (orbit start m0 mean-rate radius)
+  "The first inbound crossing of RADIUS at or after START, M = M0 at START
+advancing at MEAN-RATE; START if it is below RADIUS there; nil if never."
+  (when (< (orbit-q orbit) radius)
+    (let* ((e (orbit-e orbit))
+           (c (max -1d0 (min 1d0 (/ (- (/ (orbit-semi-latus orbit) radius) 1) e))))
+           (theta (acos c)))
+      (if (elliptic-p orbit)
+          (let* ((ea (- (true->eccentric theta e)))
+                 (mc (- ea (* e (sin ea)))))
+            (if (and (<= mc m0) (< m0 (- mc)))
+                start
+                (+ start (/ (mod (- mc m0) +two-pi+) mean-rate))))
+          (let* ((h (- (true->hyperbolic theta e)))
+                 (mc (- (* e (sinh h)) h)))
+            (cond ((< m0 mc) (+ start (/ (- mc m0) mean-rate)))
+                  ((< m0 (- mc)) start)))))))
+
+(defun make-rails (orbit start &key (body :earth) (j2 t))
+  "The segment list of an object on ORBIT (around BODY) from START: one
+segment to the first inbound crossing of the crash radius, or to
+*rails-horizon*; an Earth-centred ellipse with J2's secular rates unless J2
+is nil."
+  (let* ((body (body body))
+         (orbit (copy-orbit orbit))
+         (start (float start 1d0))
+         (m0 (orbit-mean-anomaly orbit start)))
+    (multiple-value-bind (raan-rate argp-rate mean-delta)
+        (if (and j2 (elliptic-p orbit) (eq (body-key body) :earth))
+            (orbit-j2-rates orbit body)
+            (values 0d0 0d0 0d0))
+      (when (< (abs (cos (orbit-i orbit))) *polar-cos*)
+        (setf raan-rate 0d0))
+      (let* ((mean-rate (+ (orbit-n orbit) mean-delta))
+             (crash (rails-crash-time orbit start m0 mean-rate (body-crash-radius body)))
+             (crash (and crash (< crash *rails-horizon*) crash)))
+        (list (%make-rails-segment :start start
+                                   :end (or crash (max start *rails-horizon*))
+                                   :body (body-key body) :orbit orbit :mean-anomaly m0
+                                   :raan-rate raan-rate :argp-rate argp-rate
+                                   :mean-rate mean-rate
+                                   :end-kind (if crash :crash :horizon)))))))
+
+(defun rails-raan (segment time)
+  "Ω of SEGMENT at TIME."
+  (+ (orbit-raan (rails-segment-orbit segment))
+     (* (rails-segment-raan-rate segment) (- time (rails-segment-start segment)))))
+
+(defun rails-state-into! (r v segment time)
+  "Write the state on SEGMENT at TIME (m, m/s, around its body) into R and V;
+R. Conses nothing."
+  (declare (optimize speed) (type vec3 r v) (type rails-segment segment)
+           (type double-float time)
+           (inline solve-kepler-elliptic solve-kepler-hyperbolic))
+  (let* ((orbit (rails-segment-orbit segment))
+         (dt (- time (rails-segment-start segment)))
+         (e (orbit-e orbit)) (q (orbit-q orbit)) (mu (orbit-mu orbit))
+         (m (+ (rails-segment-mean-anomaly segment) (* (rails-segment-mean-rate segment) dt)))
+         (pv (make-vec3)) (qv (make-vec3)))
+    (declare (dynamic-extent pv qv) (type double-float e q mu m))
+    (perifocal-axes! pv qv (orbit-i orbit)
+                     (+ (orbit-raan orbit) (* (rails-segment-raan-rate segment) dt))
+                     (+ (orbit-argp orbit) (* (rails-segment-argp-rate segment) dt)))
+    (multiple-value-bind (x y vx vy)
+        (if (< e 1d0)
+            (let* ((a (/ q (- 1 e)))
+                   (ea (solve-kepler-elliptic (wrap-signed m) e))
+                   (ce (cos ea)) (se (sin ea))
+                   (b (sqrt (the (double-float 0d0) (- 1 (* e e)))))
+                   (k (/ (sqrt (the (double-float 0d0) (* mu a))) (* a (- 1 (* e ce))))))
+              (values (* a (- ce e)) (* a b se) (* k (- se)) (* k b ce)))
+            (let* ((a (/ q (- e 1)))
+                   (h (solve-kepler-hyperbolic m e))
+                   (ch (cosh h)) (sh (sinh h))
+                   (b (sqrt (the (double-float 0d0) (- (* e e) 1))))
+                   (k (/ (sqrt (the (double-float 0d0) (* mu a))) (* a (- (* e ch) 1)))))
+              (values (* q (- 1 (/ (- ch 1) (- e 1))))
+                      (* q (sqrt (the (double-float 0d0) (/ (+ e 1) (- e 1)))) sh)
+                      (* k (- sh)) (* k b ch))))
+      (declare (type double-float x y vx vy))
+      (dotimes (i 3 r)
+        (setf (aref r i) (+ (* x (aref pv i)) (* y (aref qv i)))
+              (aref v i) (+ (* vx (aref pv i)) (* vy (aref qv i))))))))
+
+(defun rails-segment-at (rails time)
+  "The segment of RAILS containing TIME: the first ending at or after it,
+else the last."
+  (loop for (segment . more) on rails
+        when (or (null more) (<= time (rails-segment-end segment)))
+          return segment))
+
+;;; Attitude modes (docs/design.md "Rigid bodies: attitude, mass, shapes and
+;;; fixtures"), a pure function of the state and t, on rails and promoted.
+
+(defun object-attitude-into! (q w mode r v time)
+  "Write the attitude of MODE at the state (R, V) and TIME into Q (body ->
+inertial) and its angular velocity, inertial axes, into W; Q. :lvlh: x the
+horizontal along the motion, z to the centre, ω = h / r². :sun-pointing: x to
+the Sun, z the ecliptic south pole made perpendicular to x. :inertial: q.
+:spin: q₀ turned about the axis by rate (t − epoch). Conses nothing."
+  (declare (optimize speed) (type quat q) (type vec3 w r v) (type attitude mode)
+           (type double-float time))
+  (let ((x (make-vec3)) (y (make-vec3)) (z (make-vec3)))
+    (declare (dynamic-extent x y z))
+    (ecase (attitude-kind mode)
+      (:lvlh
+       ;; y = −ĥ, z = −r̂, x = y × z
+       (vec3-normalize! y (vec3-cross! y v r))
+       (vec3-normalize! z (vec3-scale! z r -1d0))
+       (vec3-cross! x y z)
+       (quat-from-basis! q x y z)
+       (vec3-scale! w (vec3-cross! w r v) (/ (vec3-dot r r))))
+      (:sun-pointing
+       (let ((s (make-vec3)) (ds (make-vec3)))
+         (declare (dynamic-extent s ds))
+         (body-state-into s ds :sun time :earth)
+         (vec3-sub! s s r)
+         (vec3-sub! ds ds v)
+         (let ((sn (vec3-norm s)))
+           (vec3-scale! x s (/ sn))
+           ;; ẋ = (ṡ − (ṡ·x) x) / |s|, into ds
+           (vec3-add-scaled! ds ds x (- (vec3-dot ds x)))
+           (vec3-scale! ds ds (/ sn)))
+         (vec3-set! z 0d0 (sin +obliquity+) (- (cos +obliquity+)))
+         (let ((nx (vec3-dot z x)))
+           (vec3-add-scaled! z z x (- nx))
+           (let ((un (vec3-norm z)))
+             (vec3-scale! z z (/ un))
+             (vec3-cross! y z x)
+             (quat-from-basis! q x y z)
+             ;; ω = x × ẋ + ((n·x)(ẋ·y) / |n − (n·x) x|) x
+             (vec3-cross! w x ds)
+             (vec3-add-scaled! w w x (/ (* nx (vec3-dot ds y)) un))))))
+      (:inertial
+       (replace q (attitude-q mode))
+       (vec3-set! w 0d0 0d0 0d0))
+      (:spin
+       (let* ((axis (attitude-axis mode))
+              (rate (attitude-rate mode))
+              (half (* 0.5d0 rate (- time (attitude-epoch mode))))
+              (s (sin half))
+              (turn (make-quat)))
+         (declare (dynamic-extent turn))
+         (quat-set! turn (cos half) (* s (aref axis 0)) (* s (aref axis 1)) (* s (aref axis 2)))
+         (quat-mul! q (attitude-q mode) turn)
+         (vec3-scale! w (quat-rotate! w q axis) rate))))
+    q))
+
+(defun object-state-into! (r v q w object time)
+  "Write OBJECT's state at TIME into R, V (m, m/s, Earth-centred), Q (body ->
+inertial) and W (rad/s, body axes); true, or nil for a removed object or a
+time past its rails' crash end. A promoted object's state is the integrated
+one, valid only at the sim's t."
+  (declare (type vec3 r v w) (type quat q) (type object object) (type double-float time))
+  (ecase (object-status object)
+    (:removed nil)
+    (:promoted
+     (let ((state (object-state object)))
+       (replace r (ship-state-r state))
+       (replace v (ship-state-v state))
+       (replace q (ship-state-q state))
+       (replace w (ship-state-w state))
+       t))
+    (:rails
+     (let ((segment (rails-segment-at (object-rails object) time)))
+       (unless (and (eq (rails-segment-end-kind segment) :crash)
+                    (> time (rails-segment-end segment)))
+         (rails-state-into! r v segment time)
+         (object-attitude-into! q w (object-attitude object) r v time)
+         (let ((conjugate (make-quat)))
+           (declare (dynamic-extent conjugate))
+           (quat-rotate! w (quat-conjugate! conjugate q) w))
+         t)))))

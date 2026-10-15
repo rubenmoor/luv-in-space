@@ -68,6 +68,9 @@
 
 ;;; Kepler's equation
 
+;; Rails (physics.lisp) inline them: a full call boxes the double result.
+(declaim (sb-ext:maybe-inline solve-kepler-elliptic solve-kepler-hyperbolic))
+
 (defun solve-kepler-elliptic (mean-anomaly e)
   "E with E − e sin E = M, M in (−π, π], by Newton to 1e-15 relative."
   (declare (type double-float mean-anomaly e))

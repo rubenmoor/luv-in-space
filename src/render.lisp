@@ -16,7 +16,9 @@ SHIP-LIGHTS-ON (decision 80) and LIGHTS-T, the real seconds the clock has
 run, the strobe's clock (decision 100: The lights' clock and the glows'
 numbers), which render-state-update! leaves alone; the TARGET's key (nil
 without one), its TARGET-R and TARGET-V at T and TARGET-RELATIVE
-(target-relative-into!; decision 114: Targets and target holds in the sim)."
+(target-relative-into!; decision 114: Targets and target holds in the sim;
+a rails target's closing speed from its position's rate, decision 148: The
+closing speed of a rails target: the position's rate)."
   (t 0d0 :type double-float)
   (r (make-vec3) :type vec3)
   (v (make-vec3) :type vec3)
@@ -105,8 +107,15 @@ not below t or the sim is lost; the target at the render time
         (setf (render-state-target out)
               (and (target-state-into! target-r target-v sim tr) (sim-target sim)))
         (if (render-state-target out)
-            (target-relative-into! (render-state-target-relative out) (render-state-r out)
-                                   (render-state-v out) (render-state-q out) target-r target-v)
+            (let ((segment (target-rails-segment sim tr))
+                  (rate (make-vec3)))
+              (declare (dynamic-extent rate))
+              (replace rate target-v)
+              (when segment
+                (rails-rate-into! rate target-r segment))
+              (target-relative-into! (render-state-target-relative out) (render-state-r out)
+                                     (render-state-v out) (render-state-q out) target-r target-v
+                                     rate))
             (fill (render-state-target-relative out) 0d0))))
     out))
 

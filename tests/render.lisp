@@ -1101,11 +1101,13 @@ after it."
           (let ((rails (if (eq key :skua-yard)
                            (lis::place-rails (lis::place key))
                            (lis::object-rails (lis::sim-object sim key)))))
-            (lis::rails-state-into! r v (lis::rails-segment-at rails (+ t0 1d0)) (+ t0 1d0)))
-          (let ((dr (lis::vec3-norm (lis::vec3-sub (lis::render-state-target-r state) r))))
-            (true (< dr 1d-6) "~A ~,3E m" key dr))
-          (lis::target-relative-into! relative (lis::render-state-r state) (lis::render-state-v state)
-                                      (lis::render-state-q state) r v)
+            (lis::rails-state-into! r v (lis::rails-segment-at rails (+ t0 1d0)) (+ t0 1d0))
+            (let ((dr (lis::vec3-norm (lis::vec3-sub (lis::render-state-target-r state) r))))
+              (true (< dr 1d-6) "~A ~,3E m" key dr))
+            (lis::target-relative-into! relative (lis::render-state-r state) (lis::render-state-v state)
+                                        (lis::render-state-q state) r v
+                                        (lis::rails-rate-into! (lis::vec3-copy v) r
+                                                               (lis::rails-segment-at rails (+ t0 1d0)))))
           (true (every (lambda (a b) (< (abs (- a b)) 1d-6))
                        relative (lis::render-state-target-relative state)))))))
   ;; Promoted (:j2): the extrapolation from the step's end against the
@@ -1134,3 +1136,30 @@ after it."
     (multiple-value-bind (stepped clock) (stepped-sim :sim sim)
       (let ((state (lis::render-state-update! (lis::make-render-state) clock stepped)))
         (false (lis::render-state-target state))))))
+;;; decision 148: The closing speed of a rails target: the position's rate.
+
+(define-test render-state-target-closing-speed
+  ;; Tern Station on rails from the start orbit: the closing speed against
+  ;; the range's centred difference over ±1/64 s, the ship moved by
+  ;; r + v τ + a τ²/2.
+  (let* ((sim (lis::new-game-sim))
+         (clock (lis::new-clock sim))
+         (t0 (lis::sim-t sim))
+         (h (/ 64d0))
+         (ship (lis::sim-ship sim))
+         (rails (lis::object-rails (lis::sim-object sim :tern-station)))
+         (a (lis::gravity-into! (lis::make-vec3) (lis::ship-state-r ship) t0 :j2))
+         (r (lis::make-vec3)) (v (lis::make-vec3)))
+    (lis::sim-set-target! sim :tern-station)
+    (is eq :rails (lis::object-status (lis::sim-object sim :tern-station)))
+    (flet ((range (tau)
+             (let ((time (+ t0 tau)))
+               (lis::rails-state-into! r v (lis::rails-segment-at rails time) time)
+               (lis::vec3-norm
+                (map 'lis::vec3 (lambda (rt rs vs as) (- rt (+ rs (* tau (+ vs (* 0.5d0 tau as))))))
+                     r (lis::ship-state-r ship) (lis::ship-state-v ship) a)))))
+      (let* ((state (lis::render-state-update! (lis::make-render-state) clock sim))
+             (closing (aref (lis::render-state-target-relative state) 1))
+             (rate (/ (- (range (- h)) (range h)) (* 2 h))))
+        (is eq :tern-station (lis::render-state-target state))
+        (true (< (abs (- closing rate)) 1d-3) "CLS ~,6F, −d(range)/dt ~,6F m/s" closing rate)))))

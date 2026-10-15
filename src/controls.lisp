@@ -587,19 +587,23 @@ and target scratch of this moment."
 (F R D, m/s), the target's direction in body axes (unit; zero at range 0)."
   (make-array 8 :element-type 'double-float :initial-element 0d0))
 
-(defun target-relative-into! (out r v q r-t v-t)
+(defun target-relative-into! (out r v q r-t v-t &optional (rate-t v-t))
   "The ship at R, V with attitude Q (body -> inertial) and the target at R-T,
-V-T into OUT, a target-relative; OUT. Conses nothing."
-  (declare (optimize speed) (type target-relative out) (type vec3 r v r-t v-t) (type quat q))
+V-T into OUT, a target-relative; OUT. The closing speed takes the rate of
+R-T, RATE-T (a rails target's, decision 148: The closing speed of a rails
+target: the position's rate), so it is −d(range)/dt. Conses nothing."
+  (declare (optimize speed) (type target-relative out) (type vec3 r v r-t v-t rate-t)
+           (type quat q))
   (let ((d (make-vec3)) (dv (make-vec3)) (c (make-quat)) (b (make-vec3)))
     (declare (dynamic-extent d dv c b))
     (vec3-sub! d r-t r)
-    (vec3-sub! dv v v-t)
+    (vec3-sub! dv v rate-t)
     (quat-conjugate! c q)
     (let ((range (vec3-norm d)))
       (declare (type double-float range))
       (setf (aref out 0) range
             (aref out 1) (if (> range 0d0) (/ (vec3-dot d dv) range) 0d0))
+      (vec3-sub! dv v v-t)
       (quat-rotate! b c dv)
       (replace out b :start1 2)
       (if (> range 0d0)

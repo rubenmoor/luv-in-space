@@ -128,8 +128,8 @@ view and a linear sampler repeating in u and clamped in v."
       (values texture view sampler))))
 
 (defun destroy-renderer (renderer)
-  "Release the pipelines and destroy what the renderer created; views of
-foreign textures go with the device."
+  "Release the pipelines and destroy what the renderer created, the views of
+foreign textures too; call it before the device goes."
   (mapc #'luv:release-live-artifact (renderer-live-artifacts renderer))
   (clrhash (renderer-pipelines renderer))
   (loop for (nil nil texture view) being the hash-values of (renderer-targets renderer)
@@ -138,5 +138,7 @@ foreign textures go with the device."
   (clrhash (renderer-targets renderer))
   (mapc #'luv:destroy (renderer-owned renderer))
   (setf (renderer-owned renderer) '())
+  (loop for view being the hash-values of (renderer-color-views renderer)
+        do (luv:destroy view))
   (clrhash (renderer-color-views renderer))
   (values))

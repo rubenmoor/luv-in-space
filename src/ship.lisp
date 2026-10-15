@@ -339,6 +339,14 @@ ship's boxes or to LOAD's bounding sphere."
   (offset-z 0d0 :type double-float)
   (angle 0d0 :type double-float)               ; rad, +x to the inward axis
   (rotation 0d0 :type double-float)            ; rad/s, |ω_ship − ω_object|
+  (axis-y 0d0 :type double-float)              ; the inward axis in body y and z
+  (axis-z 0d0 :type double-float)
+  (velocity-x 0d0 :type double-float)          ; m/s, the tip's against the object's rigid motion there, body axes
+  (velocity-y 0d0 :type double-float)
+  (velocity-z 0d0 :type double-float)
+  (rate-x 0d0 :type double-float)              ; rad/s, ω_ship − ω_object in body axes
+  (rate-y 0d0 :type double-float)
+  (rate-z 0d0 :type double-float)
   (closing-ok nil :type boolean)               ; each value inside its capture tolerance
   (offset-ok nil :type boolean)                ; √(y² + z²)
   (angle-ok nil :type boolean)
@@ -381,6 +389,11 @@ the stack's CoM at COM (body axes from R); OUT. Conses nothing."
     (let ((closing (+ (vec3-dot axis u)
                       (vec3-dot (vec3-cross! u-v w-o axis) d))))
       (vec3-sub! w-s w-s w-o)
+      ;; The tip's velocity less the object's rigid motion at the tip.
+      (vec3-cross! u-v w-o d)
+      (vec3-sub! u-v u-v u)
+      (quat-rotate! tip-b q-s* u-v)
+      (quat-rotate! u-v q-s* w-s)
       (quat-rotate! u q-s* axis)
       (let ((y (aref d-b 1)) (z (aref d-b 2))
             (angle (acos (max -1d0 (min 1d0 (- (aref u 0))))))
@@ -393,6 +406,14 @@ the stack's CoM at COM (body axes from R); OUT. Conses nothing."
               (grapple-reading-offset-z out) z
               (grapple-reading-angle out) angle
               (grapple-reading-rotation out) rotation
+              (grapple-reading-axis-y out) (- (aref u 1))
+              (grapple-reading-axis-z out) (- (aref u 2))
+              (grapple-reading-velocity-x out) (aref tip-b 0)
+              (grapple-reading-velocity-y out) (aref tip-b 1)
+              (grapple-reading-velocity-z out) (aref tip-b 2)
+              (grapple-reading-rate-x out) (aref u-v 0)
+              (grapple-reading-rate-y out) (aref u-v 1)
+              (grapple-reading-rate-z out) (aref u-v 2)
               (grapple-reading-closing-ok out) (<= *capture-closing-min* closing
                                                    *capture-closing-max*)
               (grapple-reading-offset-ok out) (<= (sqrt (+ (* y y) (* z z))) *capture-offset*)

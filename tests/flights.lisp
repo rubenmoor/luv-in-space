@@ -22,7 +22,7 @@
     (true (search "FOO IS NOT A KEYWORD" (script-error-text "((:throttle 1.0)
  (:hold foo))")))
     (true (search "SECOND FORM" (script-error-text "((:throttle 1.0)) ((:throttle 0))")))
-    (true (search "NOT BEFORE MILESTONE 3" (script-error-text "((:approach :k-17))")))
+    (true (search "NOT BEFORE MILESTONE 5" (script-error-text "((:ack))")))
     (true (search "NOT BEFORE MILESTONE 5" (script-error-text "((:start :after \"x\"))")))
     (true (search "NOT BEFORE MILESTONE 5" (script-error-text "((:wait :quest-step \"2.3\"))")))
     (true (search "NOT BEFORE MILESTONE 4" (script-error-text "((:expect :soi :moon))")))
@@ -543,8 +543,7 @@ record sim-at-the-end frames-planning)."
                                ("((:wait :drop-out :soi))" "NOT BEFORE MILESTONE 4")
                                ("((:expect :lost :heat))" "NOT BEFORE MILESTONE 4")
                                ("((:wait :date-between \"2040-01-01\" \"2040-01-02\"))" "NOT A WAIT")
-                               ("((:screenshot \"x\" :view :inside))" ":COCKPIT")
-                               ("((:approach :k-17))" "NOT BEFORE MILESTONE 3"))
+                               ("((:screenshot \"x\" :view :inside))" ":COCKPIT"))
         do (let ((error (script-error-text source)))
              (true (and error (search text error)) "~A: ~A" source error))))
 
@@ -855,3 +854,129 @@ record sim-at-the-end frames-planning)."
           (true (equalp sim live-sim) "~A: end sims differ" elapsed-list)
           (true (record-equal record live) "~A: records differ~%~A~%~A" elapsed-list
                 (script-record-lines record) (script-record-lines live)))))))
+
+;;; The terminal approach (docs/architecture.md "The terminal approach";
+;;; decision 122)
+
+(define-test flights-reader-approach
+  (destructuring-bind (plain options)
+      (lis::read-flight "((:approach :k-17) (:approach (:fulmar-depot :a) :speed 0.05 :tries 1))")
+    (is equal '((:k-17 0) 0.1d0 3) (lis::flight-step-args plain))
+    (is equal '((:fulmar-depot 0) 0.05d0 1) (lis::flight-step-args options)))
+  (loop for (source text) in '(("((:approach))" "WRITE (:APPROACH")
+                               ("((:approach :skua-yard))" "HAS NO FIXTURE")
+                               ("((:approach :k-17 :speed 0.3))" ":SPEED 0.02 TO 0.25")
+                               ("((:approach :k-17 :speed 0.01))" ":SPEED 0.02 TO 0.25")
+                               ("((:approach :k-17 :tries 0))" ":TRIES")
+                               ("((:approach :k-17 :range 5))" ":SPEED, :TRIES"))
+        do (let ((error (script-error-text source)))
+             (true (and error (search text error)) "~A: ~A" source error))))
+
+(defun fly-watching (source sim watch)
+  "SOURCE flown from a copy of SIM as run-flight flies it, but the prediction
+refreshed only at the start (at ×1 it steers no step); WATCH called with the
+sim before each step. (values record end-sim clock)."
+  (let* ((sim (lis::copy-sim sim))
+         (flight (lis::new-flight (lis::read-flight source) sim))
+         (clock (lis::new-clock sim)))
+    (setf (lis::flight-headless flight) t
+          (lis::clock-hook clock) (lambda (clock sim) (lis::flight-step-hook flight clock sim)))
+    (lis::prediction-update! (lis::clock-prediction clock) sim)
+    (loop (lis::flight-step-hook flight clock sim)
+          (when (lis::flight-done flight)
+            (return))
+          (funcall watch sim)
+          (unless (lis::clock-step! clock sim)
+            (when (lis::sim-loss sim)
+              (lis::flight-step-hook flight clock sim))
+            (return)))
+    (values (lis::flight-record flight) sim clock)))
+
+(defun missed-captures (clock)
+  "CLOCK's SHIP log's :grapple entries other than LATCHED and BERTHED."
+  (loop for (nil key text) in (lis::clock-log clock)
+        when (and (eq key :grapple) (not (eql 0 (search "LATCHED" text)))
+                  (not (eql 0 (search "BERTHED" text))))
+          collect text))
+
+(define-test flights-approach-k-17
+  ;; From 25 m on K-17's axis: latched at 0.1 ± 0.01 m/s at the first try.
+  (let* ((start (lis::stated-sim '(:orbit (:on-axis :k-17 25))))
+         (source "((:approach :k-17) (:expect :latched :k-17))")
+         (index (position :k-17 (lis::sim-objects start) :key #'lis::object-key))
+         (reading (lis::make-grapple-reading))
+         (closing nil)
+         (inputs nil))
+    (multiple-value-bind (record sim clock)
+        (fly-watching source start
+                      (lambda (sim)
+                        (push (list (lis::copy-controls (lis::sim-controls sim))
+                                    (lis::grapple-state (lis::sim-grapple sim))
+                                    (lis::sim-target sim))
+                              inputs)
+                        (when (eq (lis::grapple-state (lis::sim-grapple sim)) :armed)
+                          (lis::with-stack-properties (properties sim)
+                            (lis::fixture-reading-into! reading sim index 0
+                                                        (lis::mass-properties-com properties)))
+                          (setf closing (lis::grapple-reading-closing-speed reading)))))
+      (true (lis::flight-record-passed-p record) "~A" (script-record-lines record))
+      (true (< (abs (- closing 0.1d0)) 0.01d0) "contact at ~,4F m/s" closing)
+      (is equal '() (missed-captures clock))
+      (let ((controls (lis::sim-controls sim)))
+        (is eq :rate-damping (lis::controls-attitude-mode controls))
+        (false (lis::controls-fine controls))
+        (is equalp #(0 0 0) (lis::controls-translation-keys controls))
+        (is equalp #(0 0 0) (lis::controls-rotation-keys controls)))
+      ;; Flown again by run-flight, its prediction rule besides: the same.
+      (multiple-value-bind (again again-sim) (lis::run-flight source :sim start)
+        (true (equalp sim again-sim))
+        (true (record-equal record again)))
+      ;; The pilot acts only through the controls, G and the target: the
+      ;; same inputs before each step, without it, give the same sim.
+      (let ((replay (lis::copy-sim start))
+            (clock (lis::new-clock start)))
+        (lis::prediction-update! (lis::clock-prediction clock) replay)
+        (loop for (controls grapple target) in (reverse inputs)
+              do (lis::controls-assign! (lis::sim-controls replay) controls)
+                 (when (and (eq grapple :armed) (eq (lis::grapple-state (lis::sim-grapple replay)) :stowed))
+                   (lis::grapple-key! replay))
+                 (setf (lis::sim-target replay) target)
+                 (lis::clock-step! clock replay))
+        ;; The pilot's end, rate damping and F off, after the last step.
+        (lis::controls-assign! (lis::sim-controls replay) (lis::sim-controls sim))
+        (true (equalp sim replay))))))
+
+(define-test flights-approach-tern
+  ;; 25 m off Tern Station's berth, 2 m to the side and yawed 5°: berthed.
+  (let* ((sim (lis::stated-sim '(:orbit (:on-axis (:tern-station :berth) 25))))
+         (ship (lis::sim-ship sim))
+         (q (lis::ship-state-q ship)))
+    (lis::vec3-add! (lis::ship-state-r ship) (lis::ship-state-r ship)
+                    (lis::quat-rotate q (lis::vec3 0 2 0)))
+    (replace q (lis::quat-mul q (lis::quat-from-axis-angle (lis::vec3 0 0 1) (lis::deg->rad 5d0))))
+    (let ((source "((:approach (:tern-station :berth)) (:expect :berthed (:tern-station :berth)))"))
+      (multiple-value-bind (record end clock) (lis::run-flight source :sim sim)
+        (declare (ignore clock))
+        (true (lis::flight-record-passed-p record) "~A" (script-record-lines record))
+        (true (lis::sim-berthed end))
+        (multiple-value-bind (again again-end) (lis::run-flight source :sim sim)
+          (true (equalp end again-end))
+          (true (record-equal record again)))))))
+
+(define-test flights-approach-refused
+  ;; Skua Yard 6, 150 t, over the grapple's rating: three bounces, then its reason.
+  (let ((source "((:start :state (:orbit (:on-axis :skua-yard-6 25)
+                   :removed ((:skua-yard-1 :delivered) (:skua-yard-2 :delivered)
+                             (:skua-yard-3 :delivered) (:skua-yard-4 :delivered)
+                             (:skua-yard-5 :delivered) (:pod-14 :delivered))))
+ (:approach :skua-yard-6 :speed 0.25))"))
+    (multiple-value-bind (record end flight clock) (lis::run-flight source)
+      (declare (ignore end flight))
+      (is equal "(:APPROACH): LOAD 150 T OVER 100 T RATING" (failure-text record))
+      (is = 3 (length (missed-captures clock)))))
+  ;; 600 m out: no fixture in range; a held load first released.
+  (is equal "(:APPROACH): NO FIXTURE"
+      (failure-text (lis::run-flight "((:start :state (:orbit (:on-axis :k-17 600))) (:approach :k-17))")))
+  (is equal "(:APPROACH): (:RELEASE) FIRST"
+      (failure-text (lis::run-flight "((:start :state (:berthed (:tern-station :berth)))
+ (:approach (:tern-station :berth)))"))))

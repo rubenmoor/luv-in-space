@@ -432,3 +432,22 @@ rotating ROTATION °/s relative to it (about the ship's z); SIM."
     (let ((consed (least-bytes-consed
                    (lambda () (dotimes (i 1000) (lis::grapple-range-into! reading sim))))))
       (true (< consed 1024) "~D bytes" consed))))
+
+(define-test grapple-range-axis-velocity
+  ;; The inward axis in body y and z, the tip's velocity against the rock's
+  ;; rigid motion at the tip and the relative rotation, in body axes.
+  (let* ((reading (range-reading (lis::new-game-sim) :offset-z 0.1d0))
+         (theta (lis::deg->rad 5d0))
+         (outward (lis::vec3 (- (cos theta)) (sin theta) 0))
+         (d-b (lis::vec3 (/ (+ 50d0 (* 0.2d0 (sin theta))) (cos theta)) 0.2d0 0.1d0))
+         (velocity (lis::vec3-add (lis::vec3-scale outward -0.1d0)
+                                  (lis::vec3-cross (lis::vec3-scale outward (lis::deg->rad 0.15d0)) d-b))))
+    (loop for (value expected) in `((,(lis::grapple-reading-axis-y reading) ,(- (sin theta)))
+                                    (,(lis::grapple-reading-axis-z reading) 0d0)
+                                    (,(lis::grapple-reading-velocity-x reading) ,(aref velocity 0))
+                                    (,(lis::grapple-reading-velocity-y reading) ,(aref velocity 1))
+                                    (,(lis::grapple-reading-velocity-z reading) ,(aref velocity 2))
+                                    (,(lis::grapple-reading-rate-x reading) 0d0)
+                                    (,(lis::grapple-reading-rate-y reading) 0d0)
+                                    (,(lis::grapple-reading-rate-z reading) ,(lis::deg->rad 0.3d0)))
+          do (true (< (abs (- value expected)) 1d-9) "~F, not ~F" value expected))))

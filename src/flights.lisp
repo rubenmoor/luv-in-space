@@ -37,7 +37,7 @@
 
 (defparameter *flight-actions*
   '(:start :warp :hold :throttle :after-dv :keys :fine :screenshot :restart
-    :target :grapple :release :transfer :translate :autopilot))
+    :target :grapple :release :transfer :translate :autopilot :approach))
 
 (defparameter *flight-conditions*
   '((:apoapsis :event) (:periapsis :event) (:impact :event)
@@ -64,7 +64,7 @@ wait on the prediction), :wait, :expect or :any.")
   "The autopilot's burn labels (docs/architecture.md \"Waits and expectations\").")
 
 (defparameter *later-vocabulary*
-  '((:action (:approach . 3) (:ack . 5))
+  '((:action (:ack . 5))
     (:condition (:soi . 4) (:dominant . 4) (:sun-distance-below . 4) (:sun-distance-above . 4)
      (:hull-above . 4) (:hull-below . 4) (:quest-step . 5)
      (:quest-skipped . 5) (:quest-line-done . 5) (:offer . 5))
@@ -88,6 +88,26 @@ wait on the prediction), :wait, :expect or :any.")
 (defparameter *flight-translations*
   '((:fwd . :h) (:aft . :n) (:up . :i) (:down . :k) (:left . :j) (:right . :l))
   "(:translate axis . its key in *flight-keys*).")
+
+;;; The terminal approach's numbers (docs/architecture.md "The terminal
+;;; approach"; decision 122).
+(defparameter *approach-speed-min* 0.02d0 "m/s, :speed's least.")
+(defparameter *approach-speed-max* 0.25d0 "m/s, :speed's most.")
+(defparameter *approach-tick* 4 "Fine steps between the pilot's looks.")
+(defparameter *approach-time-limit* 7200d0 "s of game time an :approach may take.")
+(defparameter *approach-start-angle* (deg->rad 30d0) "rad: the axis off +x at the start, at most.")
+(defparameter *approach-turn-on* (deg->rad 1d0) "rad off the axis per body axis that holds a turn key.")
+(defparameter *approach-turn-off* (deg->rad 0.5d0) "rad: inside it the turn key is released.")
+(defparameter *approach-lateral-time* 20d0 "s: the wanted lateral velocity is −offset / it.")
+(defparameter *approach-lateral-max* 0.05d0 "m/s per axis, the wanted lateral velocity's most.")
+(defparameter *approach-lateral-band* 0.005d0 "m/s off the wanted that holds a translation key.")
+(defparameter *approach-closing-band* 0.01d0 "m/s off the wanted closing speed that holds H or N.")
+(defparameter *approach-hold-range* 20d0 "m: where the pilot stops before the last metres.")
+(defparameter *approach-hold-time* 30d0 "s: the wanted closing speed is (range − 20 m) / it.")
+(defparameter *approach-hold-window* 1d0 "m from the hold's range that counts as there.")
+(defparameter *approach-go-offset* 0.15d0 "m: the lateral offset under which it goes on.")
+(defparameter *approach-go-angle* (deg->rad 3d0) "rad: the angle under which it goes on.")
+(defparameter *approach-go-lateral* 0.01d0 "m/s: the lateral speed under which it goes on.")
 
 (defun check-not-later (kind key line)
   "Reject KEY with \"NOT BEFORE MILESTONE <n>\" if a later milestone brings it."
@@ -625,6 +645,19 @@ new-game-sim."
                (unless (plusp dv)
                  (script-error line ":TRANSLATE WANTS A Δv ABOVE 0, NOT ~S" (third args)))
                (list (first args) dv)))
+            (:approach
+             (unless args
+               (script-error line "WRITE (:APPROACH <FIXTURE> [:SPEED <M/S>] [:TRIES <N>])"))
+             (let* ((fixture (state-fixture (first args) line))
+                    (options (parse-options (rest args) '(:speed :tries) line :approach))
+                    (speed (script-real (getf options :speed 0.1d0) line :speed))
+                    (tries (getf options :tries 3)))
+               (unless (<= *approach-speed-min* speed *approach-speed-max*)
+                 (script-error line ":SPEED ~,2F TO ~,2F M/S, NOT ~S" *approach-speed-min*
+                               *approach-speed-max* (getf options :speed)))
+               (unless (and (integerp tries) (plusp tries))
+                 (script-error line ":TRIES WANTS A WHOLE NUMBER ABOVE 0, NOT ~S" tries))
+               (list fixture speed tries)))
             (:autopilot (parse-autopilot args line))))))
 
 (defun parse-autopilot (args line)
@@ -990,6 +1023,7 @@ whatever the prediction says.")
   (headless nil)                                ; run-flight: planning jobs run at once
   (request nil)                                 ; a running (:autopilot …): its snapshot's t
   (engage nil)                                  ; the last engage's flight-engage
+  (approach nil)                                ; a running (:approach …)'s pilot
   (plan-burn nil))                              ; an open plan burn: (what label start . odometer)
 
 ;;; The last engage (decision 122): the reference of the record's
@@ -1583,6 +1617,9 @@ second value), a wait set up. True when STEP is over at once."
                   (multiple-value-bind (over until reason) (flight-autopilot-step flight clock sim)
                     (declare (ignore until))
                     (if reason (values nil reason) over))))))
+         (:approach
+          (destructuring-bind ((key index) speed tries) args
+            (approach-begin! flight clock sim key index speed tries)))
          (:restart
           (if (sim-loss sim)
               (progn (if (flight-restart flight)
@@ -1594,6 +1631,7 @@ second value), a wait set up. True when STEP is over at once."
                            (flight-translate flight) nil
                            (flight-request flight) nil
                            (flight-engage flight) nil
+                           (flight-approach flight) nil
                            (flight-plan-burn flight) nil)
                      t)
               (values nil "(:RESTART): NOT LOST"))))))))
@@ -1628,6 +1666,179 @@ the game's text."
        (setf (flight-request flight) nil)
        (values nil nil "(:AUTOPILOT): NOTHING PLANNED")))))
 
+;;; The terminal approach (docs/architecture.md "The terminal approach";
+;;; decision 32: Autopilot scope and safety rules): a pilot, not the
+;;; autopilot. It reads the range finder's reading of its fixture and writes
+;;; only keys, F, T and G.
+
+(defstruct (approach (:constructor make-approach (object fixture speed tries next deadline mark))
+                     (:copier nil))
+  (object 0 :type fixnum)                       ; index in sim-objects
+  (fixture 0 :type fixnum)                      ; index in its fixtures
+  (speed 0.1d0 :type double-float)              ; m/s, the closing speed of the last metres
+  (tries 3 :type fixnum)
+  (misses 0 :type fixnum)                       ; missed captures so far
+  (phase :hold :type (member :hold :close))     ; to the 20 m hold, or on to contact
+  (next 0d0 :type double-float)                 ; the next tick's t
+  (deadline 0d0 :type double-float)
+  (mark nil)                                    ; the SHIP log's newest entry at the last look
+  (pitch 0 :type fixnum)                        ; turn keys held: −1, 0, +1
+  (yaw 0 :type fixnum)
+  (reading (make-grapple-reading) :type grapple-reading))
+
+(defun approach-begin! (flight clock sim key index speed tries)
+  "(:approach …)'s start: the fixture INDEX of object KEY must be the range
+finder's, its inward axis within 30° of +x, else \"NO FIXTURE\"; then
+Backspace if engaged, ×1, F on, rate damping (T), the target KEY, G to arm.
+(values over refusal) as flight-begin!."
+  (let* ((controls (sim-controls sim))
+         (grapple (sim-grapple sim))
+         (object (position (sim-object sim key) (sim-objects sim)))
+         (reading (make-grapple-reading)))
+    (unless (member (grapple-state grapple) '(:stowed :armed))
+      (return-from approach-begin! (values nil "(:APPROACH): (:RELEASE) FIRST")))
+    (unless (and (grapple-range-into! reading sim)
+                 (= (grapple-reading-object reading) object)
+                 (= (grapple-reading-fixture reading) index)
+                 (<= (grapple-reading-angle reading) *approach-start-angle*))
+      (return-from approach-begin! (values nil "(:APPROACH): NO FIXTURE")))
+    (when (sim-plan sim)
+      (autopilot-key! (clock-autopilot clock) clock sim :backspace))
+    (flight-warp! clock sim 1)
+    (unless (controls-fine controls)
+      (controls-toggle-fine controls))
+    (unless (eq (controls-attitude-mode controls) :rate-damping)
+      (controls-toggle-rate-damping controls))
+    (sim-set-target! sim key)
+    (when (eq (grapple-state grapple) :stowed)
+      (grapple-key! sim))
+    (setf (flight-approach flight)
+          (make-approach object index speed tries (sim-t sim) (+ (sim-t sim) *approach-time-limit*)
+                         (first (clock-log clock))))
+    nil))
+
+(defun approach-missed (pilot clock)
+  "The newest missed capture's text in CLOCK's SHIP log since PILOT's last
+look (a :grapple notice other than LATCHED or BERTHED), or nil; the mark
+moved on."
+  (let* ((log (clock-log clock))
+         (mark (approach-mark pilot))
+         (end (and mark (position mark log :test #'eq))))
+    (setf (approach-mark pilot) (first log))
+    (loop for (nil key text) in (if end (subseq log 0 end) log)
+          when (and (eq key :grapple)
+                    (not (eql 0 (search "LATCHED" text)))
+                    (not (eql 0 (search "BERTHED" text))))
+            return text)))
+
+(defun approach-turn (held x)
+  "A turn key's sign for X rad off the axis about it, HELD the sign held:
+pressed above *approach-turn-on*, released inside *approach-turn-off*."
+  (cond ((> (abs x) *approach-turn-on*) (if (plusp x) 1 -1))
+        ((< (abs x) *approach-turn-off*) 0)
+        (t held)))
+
+(defun approach-keys! (pilot sim)
+  "One tick's keys from the reading of PILOT's fixture (docs/architecture.md
+\"The terminal approach\"): the turn onto the inward axis; the stack's CoM
+abeam point of the nose's line steered onto the axis, its velocity the CoM's in the object's frame (the tip's less
+the relative rotation's share, so turning moves nothing laterally); the
+closing speed, to the 20 m hold, then on once aligned."
+  (let ((reading (approach-reading pilot))
+        (arm (make-vec3))
+        (keys nil))
+    (declare (dynamic-extent arm))
+    (with-stack-properties (properties sim)
+      (fixture-reading-into! reading sim (approach-object pilot) (approach-fixture pilot)
+                             (mass-properties-com properties))
+      (vec3-sub! arm *grapple-tip* (mass-properties-com properties)))
+    (let* ((ay (grapple-reading-axis-y reading))
+           (az (grapple-reading-axis-z reading))
+           (ax (max 1d-6 (sqrt (max 0d0 (- 1d0 (* ay ay) (* az az))))))
+           (range (grapple-reading-range reading))
+           (dy (grapple-reading-offset-y reading))
+           (dz (grapple-reading-offset-z reading))
+           (dx (/ (- range (* dy ay) (* dz az)) ax))
+           ;; The pin off the axis through the tip, and through the point of
+           ;; the nose's line abeam the CoM.
+           (offset (let ((x (- dx (* range ax))) (y (- dy (* range ay))) (z (- dz (* range az))))
+                     (sqrt (+ (* x x) (* y y) (* z z)))))
+           (cx (+ dx (aref arm 0)))
+           (ca (+ (* cx ax) (* dy ay) (* dz az)))
+           (py (- dy (* ca ay))) (pz (- dz (* ca az)))
+           ;; The CoM's velocity across the axis: v_tip − ω_rel × arm.
+           (rx (grapple-reading-rate-x reading))
+           (ry (grapple-reading-rate-y reading))
+           (rz (grapple-reading-rate-z reading))
+           (ux (- (grapple-reading-velocity-x reading) (- (* ry (aref arm 2)) (* rz (aref arm 1)))))
+           (uy (- (grapple-reading-velocity-y reading) (- (* rz (aref arm 0)) (* rx (aref arm 2)))))
+           (uz (- (grapple-reading-velocity-z reading) (- (* rx (aref arm 1)) (* ry (aref arm 0)))))
+           (ua (+ (* ux ax) (* uy ay) (* uz az)))
+           (wx (- ux (* ua ax))) (wy (- uy (* ua ay))) (wz (- uz (* ua az)))
+           (lateral (sqrt (+ (* wx wx) (* wy wy) (* wz wz))))
+           (closing (grapple-reading-closing-speed reading))
+           (speed (approach-speed pilot)))
+      (when (and (eq (approach-phase pilot) :hold)
+                 (< (abs (- range *approach-hold-range*)) *approach-hold-window*)
+                 (< offset *approach-go-offset*)
+                 (< (grapple-reading-angle reading) *approach-go-angle*)
+                 (< lateral *approach-go-lateral*))
+        (setf (approach-phase pilot) :close))
+      (setf (approach-yaw pilot) (approach-turn (approach-yaw pilot) (asin (max -1d0 (min 1d0 ay))))
+            (approach-pitch pilot) (approach-turn (approach-pitch pilot) (asin (max -1d0 (min 1d0 (- az))))))
+      (flet ((band (value wanted band minus plus)
+               (cond ((> (- value wanted) band) (push minus keys))
+                     ((< (- value wanted) (- band)) (push plus keys))))
+             (wanted-lateral (p)
+               (max (- *approach-lateral-max*) (min *approach-lateral-max* (/ p *approach-lateral-time*)))))
+        (case (approach-yaw pilot) (1 (push :d keys)) (-1 (push :a keys)))
+        (case (approach-pitch pilot) (1 (push :s keys)) (-1 (push :w keys)))
+        (band wy (wanted-lateral py) *approach-lateral-band* :j :l)
+        (band wz (wanted-lateral pz) *approach-lateral-band* :i :k)
+        (band closing
+              (if (eq (approach-phase pilot) :close)
+                  speed
+                  (max (- speed) (min speed (/ (- range *approach-hold-range*) *approach-hold-time*))))
+              *approach-closing-band* :n :h)))
+    (controls-apply-held-keys! (sim-controls sim) keys)))
+
+(defun approach-tick! (flight clock sim)
+  "A running (:approach …): (values over until reason). Every
+*approach-tick* fine steps: latched or berthed ends it (rate damping, F
+off); a missed capture goes back to the 20 m hold, the last of :tries fails
+with its text; while the claws close no key; else approach-keys!. 2 h fail."
+  (let* ((pilot (flight-approach flight))
+         (controls (sim-controls sim))
+         (grapple (sim-grapple sim))
+         (now (sim-t sim)))
+    (flet ((finish! (reason)
+             (controls-apply-held-keys! controls nil)
+             (setf (flight-approach flight) nil)
+             (cond (reason (values nil nil (format nil "(:APPROACH): ~A" reason)))
+                   (t (unless (eq (controls-attitude-mode controls) :rate-damping)
+                        (controls-toggle-rate-damping controls))
+                      (when (controls-fine controls)
+                        (controls-toggle-fine controls))
+                      t))))
+      (cond ((< now (approach-next pilot))
+             (values nil (min (approach-next pilot) (approach-deadline pilot))))
+            ((and (eq (grapple-state grapple) :latched)
+                  (eql (grapple-object grapple) (approach-object pilot)))
+             (finish! nil))
+            ((>= now (approach-deadline pilot))
+             (finish! (format nil "NOT WITHIN ~A" (format-duration *approach-time-limit*))))
+            (t
+             (setf (approach-next pilot) (+ now (* *approach-tick* +fine-step+)))
+             (let ((missed (approach-missed pilot clock)))
+               (when missed
+                 (when (>= (incf (approach-misses pilot)) (approach-tries pilot))
+                   (return-from approach-tick! (finish! missed)))
+                 (setf (approach-phase pilot) :hold)))
+             (if (eq (grapple-state grapple) :closing)
+                 (controls-apply-held-keys! controls nil)
+                 (approach-keys! pilot sim))
+             (values nil (min (approach-next pilot) (approach-deadline pilot))))))))
+
 (defun flight-running! (flight clock sim step)
   "A begun STEP: (values over until reason), REASON a failure."
   (let ((now (sim-t sim))
@@ -1637,6 +1848,7 @@ the game's text."
       (:action
        (ecase (flight-step-name step)
          (:autopilot (flight-autopilot-step flight clock sim))
+         (:approach (approach-tick! flight clock sim))
          (:keys
           (cond ((>= now until)
                  (controls-apply-held-keys! (sim-controls sim) nil)
@@ -1791,7 +2003,7 @@ translation key held, a plan's :terminal or :station (decision 122)."
 from its start state (flight-start-sim), or from SIM (a copy; the script's
 :start then ignored), with the gravity MODEL if given: per step prediction-update!,
 the hook, clock-step! with no accumulator; while the prediction would
-restart (flight-prediction-restarts-p) it is updated once per
+restart (flight-prediction-restarts-p) or an :approach runs it is updated once per
 *flight-burn-prediction-interval* above ×4, once per
 *flight-close-prediction-interval* at ×1 and ×4 (decision 122). (values
 record end-sim flight clock)."
@@ -1808,7 +2020,7 @@ record end-sim flight clock)."
       (setf (clock-hook clock) (lambda (clock sim) (flight-step-hook flight clock sim)))
       (loop
         (when (or (null predicted)
-                  (not (flight-prediction-restarts-p sim))
+                  (not (or (flight-prediction-restarts-p sim) (flight-approach flight)))
                   (>= (sim-t sim) (+ predicted (if (clock-kinematic-p clock)
                                                    *flight-burn-prediction-interval*
                                                    *flight-close-prediction-interval*))))

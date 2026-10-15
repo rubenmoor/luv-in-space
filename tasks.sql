@@ -4864,9 +4864,9 @@ tasks for what the plan asks beyond them. A task that writes a plan gets `--kind
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (175, 28, 'create tasks for plan 28: Flight scripts of milestone 3: vocabulary, start states and the headless preset runs', 'split', 'done', 1000, '2026-10-15, tasks.sql: tasks 213-218; no new decisions (decision 122, decision 123 cover the plan)', 'Split `plan 28: Flight scripts of milestone 3: vocabulary, start states and the headless preset runs` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
 done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
 tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-15T06:48:59Z', '2026-10-15T07:45:35Z', 162, 0);
-INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (176, 29, 'create tasks for plan 29: Meshes of the places, other ships and the grapple', 'split', 'open', 1000, NULL, 'Split `plan 29: Meshes of the places, other ships and the grapple` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (176, 29, 'create tasks for plan 29: Meshes of the places, other ships and the grapple', 'split', 'done', 1000, '2026-10-15, tasks.sql: tasks 219-223 for the five pieces; no new decisions (decision 124 holds the open numbers)', 'Split `plan 29: Meshes of the places, other ships and the grapple` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
 done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
-tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-15T06:57:17Z', NULL, 163, 0);
+tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-15T06:57:17Z', '2026-10-15T07:46:50Z', 163, 0);
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (177, 30, 'create tasks for plan 30: The map of milestone 3', 'split', 'open', 1000, NULL, 'Split `plan 30: The map of milestone 3` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
 done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
 tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-15T07:05:46Z', NULL, 164, 0);
@@ -5553,6 +5553,118 @@ INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, crea
 - `nix build`, `scripts/test` and `scripts/test-slow` pass with the five presets; `scripts/fly preset-<place> <dir>` exits 0 for each.
 - `docs/architecture.md` "Scripts by milestone": the presets'' bounds and measured times. `docs/design.md` "Rendezvous: search, phasing and the approach" → "Scripted runs": the preset scripts named. `AGENTS.md` "Commands": `scripts/test-slow`''s time; "Layout": every script in `flights/`.
 - Record in `decision 122`/`decision 123` consequences (`pm decision consequences`) what was built.', '2026-10-15T07:45:32Z', NULL, 175, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (219, 29, 'Ship builders, the fixture mesh, new materials and the decal atlas', 'work', 'open', NULL, NULL, 'Piece 1 of `plan 29: Meshes of the places, other ships and the grapple` (read its "Models" section and `decision 124: Meshes of the places: models, scenery liveries, lights, far dots, the grapple''s claws, floodlight and range finder`, which holds the numbers). Files: `src/meshes.lisp`, `src/shaders.lisp`, `tests/meshes.lisp`, `tests/render.lisp`, `docs/architecture.md`, `docs/design.md`. Needs nothing beyond today''s code: `fixture-mesh` takes a pin and an axis as arguments, so it doesn''t wait for the place definitions.
+
+## What
+- `truss-ship-model`: the general builder (truss length and bays, tank pairs with their x spans, cab or none, grapple or nose fixture, engines, RCS blocks, wings, radiators, decal row); `mule-model` becomes one case of it with output unchanged (7,302 hull vertices, 102 tubes, 11 boxes, 24 cones; `ship-bounding-radius` 12.57 m wet, 11.70 m dry).
+- `tanker-model` (TANKER 3 from `docs/design.md` "Rigid bodies": 24 m, 16 bays, LH2 pairs x 0.50–8.10 and 12.20–19.80, LOX 8.50–11.80 and 20.20–23.50, nose fixture at x 24.15).
+- `capsule-model` (frustum Ø 1.5 → 3.9 over 2.5 m, service section Ø 3.9 × 2.0, two wings 1.0 × 3.0 m).
+- `bake-model! out model xform`: appends a model''s hull and instance groups (bases composed) and its lights under a transform.
+- `fixture-mesh`: plate, pin, guides, stand-off, the `fixture` material with its target mark, placed from a pin and an axis.
+- `model-lights` (kind `:red`, `:green`, `:strobe`, `:lamp`, position, strobe phase offset) and `model-extent` (farthest vertex from the CoM).
+- Materials rock, net, scorched, peeling foil, fixture (with target mark), Boreal green, added to `*ship-material-names*` and the shader''s material rows; the decal atlas gains the rows and glyphs for "M-07", "M-04", "M-05", "TERN", "POD 14".
+
+## Tests
+- The Mule''s counts, part positions and bounding radii as today''s tests have them, unchanged; the Mule''s image checks unchanged.
+- The tanker''s truss 24.0 m long with 16 bays, its tanks'' x spans as the design, the nose fixture''s plate centre at x 24.15 within 1 mm.
+- `bake-model!` of the Mule under a 90° turn and an offset: every vertex at its transformed position within 1e-5 m, lights with it.
+- The fixture: plate face centre on the pin within 1 mm, normal within 0.01° of the axis, every guide and the pin within 0.6 m of the axis.
+- The atlas rows read "M-07", "M-04", "M-05", "TERN", "POD 14" by the existing decal test''s glyph boxes.
+- The shader''s material row count equals the length of `*ship-material-names*`.
+- CPU tests in `tests/meshes.lisp` stay under ~0.5 s together (models built once per run).
+
+## Done when
+- `nix build` and `scripts/test` pass; `docs/architecture.md` "Files in load order" (`meshes.lisp`) lists the builders as built; `docs/design.md` "How they look" names the builders, citing `decision 124`.', '2026-10-15T07:46:05Z', NULL, 176, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (220, 29, 'The places'' models and lights', 'work', 'open', NULL, NULL, 'Piece 2 of `plan 29: Meshes of the places, other ships and the grapple` (read its "Models" section and `decision 124: Meshes of the places: models, scenery liveries, lights, far dots, the grapple''s claws, floodlight and range finder`). Needs `task 219: Ship builders, the fixture mesh, new materials and the decal atlas` and the object definitions of `task 184: The places: the twelve object definitions and the five presets` (`plan 23: Objects on rails and the Earth-orbit places`; `decision 47: Rigid bodies of the places`, `decision 111: Fixture axes of Derelict K-17 and Skua Yard''s rocks`). Files: `src/meshes.lisp`, `tests/meshes.lisp`, `docs/architecture.md`, `docs/design.md`, `AGENTS.md`.
+
+## What
+- One model per object definition, in its body axes about the CoM, scenery ships baked in with `bake-model!`, each fixture''s mesh from its definition''s pin and axis (`places.lisp`), so mesh and contact plate coincide:
+  - Tern Station with AURORA 11 nose-in on the node (x 13.08 to 17.58), Boreal livery;
+  - Fulmar Depot with TANKER 2 berthed at fixture B, fixture A free;
+  - Highport with STUBBORN and THISTLE berthed at the arms, the plant fixture free;
+  - Derelict K-17 (scorched, peeling, the bright fixture);
+  - POD 14 (box with panel seams, "POD 14" stencilled);
+  - Skua Yard 1–6 (sphere under the net, the net''s frame, the fixture at r + 0.3), one model per rock;
+  - GRINDSTONE (two trusses, two engines, two tanks, the Mule cab, two grapples, the netted rock).
+  - The parts and positions: the plan''s "Models" list.
+- `(object-model key)`: built once and cached.
+- Lights per model as `decision 124` lists them; each free berth fixture four lamps, occupied ones none.
+- Size budget: each place''s hull ≤ 40,000 vertices and ≤ 2,000 instances.
+
+## Tests (`tests/meshes.lisp`)
+- For every definition: every vertex not in a thin part lies inside one of its shapes grown by 0.05 m; each shape''s box (or sphere) filled to 90 % of its size per axis by the vertices inside it.
+- Each fixture''s mesh plate on its definition''s pin and axis within 1 mm and 0.01°.
+- Scenery ships: AURORA 11 from x 13.08 to 17.58 within 1 cm; TANKER 2''s nose plate and the Mules'' grapple tips on their arm''s pin within 1 cm, axes within 0.01°.
+- Lights at their positions within 1 mm (Tern''s at the wing tips (−2.92, ±39.0, 0)); free fixtures four lamps, occupied none.
+- Sizes within the budget; `object-model` returns the same (eq) model twice.
+- `tests/meshes.lisp` CPU tests stay under ~0.5 s together.
+
+## Done when
+- `nix build` and `scripts/test` pass; `docs/architecture.md` "Files in load order" lists the models and their measured sizes; `docs/design.md` "Earth-orbit points of interest" and "Other ships" state the looks and liveries as built, citing `decision 124`; `AGENTS.md` "Layout" names the places'' models in `meshes.lisp`.', '2026-10-15T07:46:25Z', NULL, 176, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (221, 29, 'Objects and the grapple in the render state', 'work', 'open', NULL, NULL, 'Piece 3 of `plan 29: Meshes of the places, other ships and the grapple` (read its "Objects in the render state" section and `decision 124: Meshes of the places: models, scenery liveries, lights, far dots, the grapple''s claws, floodlight and range finder`). Needs `task 185: The sim holds the objects: promotion, demotion and stepping` (`plan 23: Objects on rails and the Earth-orbit places`) and from `plan 24: Grapple, contact, berthing, towing, deliveries and refuelling` `task 188: The sim''s grapple fields, notices, the SHIP log, the latest checkpoint and G, B, Y` and `task 190: Capture, the stack and berthing` (the relative pose of `decision 112: Grapple, stack and berth in the sim: state, notices to the clock, the latest checkpoint`). Files: `src/clock.lisp`, `src/render.lisp`, `src/main.lisp`, `tests/clock.lisp`, `tests/render.lisp`, `docs/architecture.md`.
+
+## What
+- `clock.lisp`: `clock-previous-objects`, a preallocated copy of `sim-objects`'' mutable parts, assigned with `object-assign!` where `clock-previous` is assigned today; it changes no sim state.
+- `render.lisp`: `render-state` gains `objects`, a preallocated vector of `object-render` (r, v, q, w double, drawn flag, sun-fraction at the object), one per `sim-objects` entry, and `render-state-grapple` (state, object index, the claws'' shown angle, floodlight and range finder on). `render-state-update!` fills them, consing nothing:
+  - on rails at both ends of the step: `object-state-into!` at t_r (exact);
+  - promoted, or promoted or demoted in the last step: the cubic Hermite and slerp of `render-state-hermite!` between the previous state (the previous copy''s promoted state, or its rails at t_prev) and the current;
+  - latched, and the station while berthed: the ship''s render pose composed with the grapple''s relative pose;
+  - removed: not drawn.
+- The claws'' angle from the sim''s grapple state and closing end time at t_r; between stowed and armed it eases at 90° per real second in `main.lisp`''s `draw` beside `lights-t`, snapping in captures.
+
+## Tests
+- A rails object''s render state equals `object-state-into!` at t_r bit for bit.
+- A promoted object at s = 0 and s = 1 equals the previous and current states bit for bit; between them within 1 mm of a fine-step reference at a coarse step.
+- An object promoted in the last step is drawn continuous (within 1 mm of its rails at t_r).
+- A latched Skua Yard 3 and a berthed Tern Station match the ship''s render pose composed with the relative pose within 1e-9 m and 1e-12 rad.
+- Removed objects not drawn.
+- Claws'' angle 30° armed, −8° latched, 11° midway through closing (by t_r), easing at 90°/s.
+- `render-state-update!` with the twelve objects conses nothing over 1,000 calls.
+- `clock-previous-objects` equals the objects before the frame''s last step bit for bit.
+
+## Done when
+- `nix build` and `scripts/test` pass; `docs/architecture.md` "The clock" (render state) and "Files in load order" (`render.lisp`, `clock.lisp`) as built; "Testing" lists the tests.', '2026-10-15T07:46:25Z', NULL, 176, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (222, 29, 'Drawing objects: meshes, dots, lights, exposure and the least distance', 'work', 'open', NULL, NULL, 'Piece 4 of `plan 29: Meshes of the places, other ships and the grapple` (read its "Draws" section and `decision 124: Meshes of the places: models, scenery liveries, lights, far dots, the grapple''s claws, floodlight and range finder`; also `decision 79: Sunlight at a point and the sunlit ship in the exposure rule`, `decision 93: Exposure rule as built: hidden Sun, coverage within the view`, `decision 99: Earthshine from the lit part of the visible cap`, `decision 5: Precision of positions`). Needs `task 220: The places'' models and lights`, `task 221: Objects and the grapple in the render state`, and `ship-mass-properties` with a load and `stack-bound` from `task 187: The stack and the ship''s collision shapes`. Files: `src/meshes.lisp`, `src/render.lisp`, `src/post.lisp`, `src/camera.lisp`, `src/shaders.lisp`; tests in `tests/render.lisp`, `tests/post.lisp`, `tests/camera.lisp`, `tests/meshes.lisp`; `docs/architecture.md`, `docs/design.md`.
+
+## What
+- `encode-ship` takes the stack''s CoM (`ship-mass-properties` with the latched load), so R = r − q c stays right with a load.
+- `object-gpu`: per model its hull and instance buffers, made once in `make-frame-renderer`; per target an `object-slot` per object (block, bind group, glow buffer) in the frame slot; the `:ship-mesh` and `:ship-instanced` pipelines, material table and decal atlas shared; no new pipeline.
+- `object-uniforms!`: the ship block''s layout for an object (rows of its q, its CoM relative to the eye in double then single, the Sun with (1 AU / d)² × its own `sun-visible-fraction`, earthshine from its position via `earth-lit-cap`, the eye in its body axes, lights on, no emission, identity trim); pure, consing nothing.
+- `encode-objects` after the Mule in the scene pass, every view: mesh when the projected `model-extent` reaches 2 px and lies in front of the near plane, else its dot (`decision 124`); its lights through `:ship-glow` (strobes offset per object, fixture lamps, scenery ships'' lights); depth against Earth and the Mule as the ship''s draws.
+- `post.lisp`: `exposure-target` counts each drawn object within the view like the ship (sphere of its bound, coverage × sun-fraction ≥ 0.005 gives the sunlit exposure); the latched load joins the ship''s term.
+- `camera.lisp`: `outside-min-distance` = 1.2 × the larger of today''s box-corner radius and the load''s CoM distance from the stack''s CoM plus its bound.
+- Measure the CPU encode time at Skua Yard (nine objects promoted, eight in view) and at Highport; target ≤ 1 ms.
+- If luv lacks something on the way (e.g. dynamic uniform offsets instead of a buffer per object), note it in `docs/luv-capabilities.md` and `docs/luv-wishlist.md`.
+
+## Tests
+- GPU (stars off, black background; join `render-frames`'' one hidden canvas at 320×200 via `with-capture-game`):
+  - Tern Station from 150 m in sunlight, Sun within 60° behind the camera: the count of pixels above 40 inside its projected bound within ×0.5 and ×2 of the first measured frame (written in the test); every pixel more than 8 px outside its projected bound below 20.
+  - Tern in Earth''s shadow from 100 m: −y wing tip''s pixel red (red above 150, 50 above green), +y tip''s green, the free fixture''s lamp pixel above 150 in all three channels.
+  - Tern at 30 km in sunlight: a pixel within 2 px of its projection above 30; none at 2,000 km behind the Moon.
+  - A latched Skua Yard 3 at `stack-design-pose` seen from 40 m: its projected centre inside the stack''s lit pixels; the box around the rock''s projection mean luminance above the background''s + 20.
+  - `report-failed-live-artifacts` 0.
+- CPU: `object-uniforms!` rows and positions against hand-computed values within 1e-6; exposure sunlit with a sunlit Tern filling 1 % of the frame in the eye''s shadow, deep without it; `outside-min-distance` with Skua Yard 6 at the design pose against hand computation within 1 mm; a frame''s encode with nine objects conses nothing after the first.
+- The GPU checks together add ≤ ~1 s; `scripts/test` stays near ~15 s.
+
+## Done when
+- `nix build` and `scripts/test` pass; `docs/architecture.md` "GPU tests" (with first-frame figures), "Files in load order" (`meshes.lisp`, `render.lisp` with the measured encode times, `post.lisp`, `camera.lisp`) and "Testing" as built; `docs/design.md` "Views" (objects in the exposure, the least distance with a load), citing `decision 124`; `AGENTS.md` "Layout" names objects in the render state and their draws in `render.lisp`.', '2026-10-15T07:46:47Z', NULL, 176, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (223, 29, 'The grapple at work: claws, floodlight and range finder', 'work', 'open', NULL, NULL, 'Piece 5 of `plan 29: Meshes of the places, other ships and the grapple` (read its "Draws" section, the floodlight and claws bullets, and `decision 124: Meshes of the places: models, scenery liveries, lights, far dots, the grapple''s claws, floodlight and range finder`). Needs `task 222: Drawing objects: meshes, dots, lights, exposure and the least distance` and from `plan 24: Grapple, contact, berthing, towing, deliveries and refuelling` `task 188: The sim''s grapple fields, notices, the SHIP log, the latest checkpoint and G, B, Y` (grapple state) and `task 187: The stack and the ship''s collision shapes` (`*grapple-tip*`, the objects'' shapes). Files: `src/meshes.lisp`, `src/render.lisp`, `src/shaders.lisp`, `tests/meshes.lisp`, `tests/render.lisp`, `docs/design.md`, `docs/architecture.md`, `AGENTS.md`.
+
+## What
+- The claws: three instances written per frame from the render state''s shown angle into a small per-target instance buffer, drawn with the box group''s primitive; the static box group keeps the RCS blocks.
+- The floodlight: two vec4s more in the ship block (lamp position and intensity; direction and cone cosines in the drawn body''s axes; zero when off), added in the hull and instanced fragment shaders of every draw (the Mule and the objects); its lamp glow.
+- The range finder: its aperture glow and its spot from `range-finder-spot` (a CPU ray from the tip along +x against the promoted objects'' shapes within 500 m, consing nothing).
+
+## Tests
+- Claw tips at 0°, 30° and −8° where the hinge rotation puts them within 1e-5 m.
+- `range-finder-spot` on Skua Yard 3''s sphere 50 m ahead at the ray''s first hit within 1 mm; nil beyond 500 m and with nothing ahead; conses nothing.
+- The floodlight''s block rows zero while stowed.
+- GPU (the shared hidden canvas), in Earth''s shadow facing Skua Yard 3 at 10 m: the mean of the rock''s projected box more than 20 brighter armed than stowed; a point 30° off the beam''s axis unlit; the spot''s pixel red (red 50 above green) while armed and absent while stowed; the claws'' projected tips move outward between stowed and armed (from 8 m on +y).
+
+## Done when
+- `nix build` and `scripts/test` pass, `scripts/test` near ~15 s.
+- `docs/design.md` "How they look" (lights) and "Grappling and berthing" (claws, floodlight, range finder) as built, citing `decision 124`; the "come with the grapple in `milestone 3`" sentence replaced by what was built; `docs/architecture.md` "Files in load order", "GPU tests" and "Testing" as built; `AGENTS.md` "Layout" names the grapple''s lights in `meshes.lisp`.
+- The plan''s Done when checked by captures (`capture-state` with a sim set beside each place): each place reads as the design describes it with its scenery ships and lights; a latched rock rides on the nose with the claws closed; armed in Earth''s shadow the floodlight lights the fixture ahead. Fix what is off or add a follow-up task to this plan.', '2026-10-15T07:46:47Z', NULL, 176, 0);
 
 INSERT INTO decision (id, subject, status, options, body, answer, reason, created_at, closed_at, created_by_task, signoff, kind, decided_by_task, consequences) VALUES (1, 'How the game consumes luv', 'answered', '[]', 'Findings of `task 17: Build and run luv''s programs and test suite; record the runs` (docs/luv-capabilities.md, Packaging and Runs).
 - luv''s flake exports apps, devShells, packages and lib; lib has only environmentFor, which returns everything the packaging needs (pkgs, lisp, applicationEnvironment/Packages, developmentEnvironmentHook, slynkSource, swashPackage, …). No overlays.
@@ -5896,6 +6008,7 @@ INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, b
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (172, 173, '2026-10-15T07:41:17Z', '2026-10-15T07:42:59Z', 'done', NULL, 0, '952afa9419f789c6074a5224fc79e792d00c0c01', 'claude-opus-5-5[1m]', '59d10ef9-53a2-4762-b622-d93c76b4f060', 8, 16, 9461, 376800, 51796, 0.679012, 2373073);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (173, 174, '2026-10-15T07:42:59Z', '2026-10-15T07:44:22Z', 'done', NULL, 0, '2e85061017979676a77e0f24662fa9d0d59b8508', 'claude-opus-5-5[1m]', '788557a6-c247-42cf-9c2b-546b1169d1a0', 8, 16, 10244, 361252, 48044, 0.6615464000000002, 2373073);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (174, 175, '2026-10-15T07:44:22Z', '2026-10-15T07:45:40Z', 'done', NULL, 0, 'a873cd010296591e0d3f03c44cd2ec56806322a9', 'claude-opus-5-5[1m]', '1de55748-2e9b-4a01-83ab-2fecb7f5d23d', 8, 14, 9038, 312783, 51004, 0.6514046, 2373073);
+INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (175, 176, '2026-10-15T07:45:40Z', '2026-10-15T07:46:57Z', 'done', NULL, 0, '98cc9676e6f4b403ad1f2e52a39751b94c468858', 'claude-opus-5-5[1m]', 'd7fa8bc4-e93b-4d88-ac60-3ad23fa03546', 9, 18, 8883, 386018, 43963, 0.60663960000000006, 2373073);
 
 INSERT INTO task_decision (task_id, decision_id) VALUES (44, 28);
 INSERT INTO task_decision (task_id, decision_id) VALUES (44, 45);

@@ -801,3 +801,183 @@ from START to END under :full, the Moon and the Sun read by the step."
     (lis::target-check! sim)
     (false (lis::sim-target sim))
     (is equal '((:target "TARGET LOST: SKUA YARD 4")) (lis::sim-notices sim))))
+
+;;; Planned burns (decision 115: Planned burns as scheduled controls in the
+;;; sim)
+
+(defun burn-duration (m0 dv throttle)
+  "s of an engine burn of DV from mass M0 at THROTTLE."
+  (let ((mdot (lis::ship-engine-mdot throttle))
+        (force (lis::ship-engine-force throttle)))
+    (* (/ m0 mdot) (- 1 (exp (- (/ (* dv mdot) force)))))))
+
+(defun grid-round (time) (/ (round (* time 64)) 64d0))
+
+(defun hohmann-plan (sim)
+  "SIM's two-burn Hohmann (point mass) from its circular orbit to 400 km
+higher, each full-throttle burn centred on its node, its hold 8 s before;
+(values plan r2)."
+  (let* ((mu lis::+mu-earth+)
+         (ship (lis::sim-ship sim))
+         (t0 (lis::sim-t sim))
+         (r1 (lis::vec3-norm (lis::ship-state-r ship)))
+         (r2 (+ r1 400d3))
+         (at (/ (+ r1 r2) 2))
+         (dv1 (* (sqrt (/ mu r1)) (- (sqrt (/ r2 at)) 1)))
+         (dv2 (* (sqrt (/ mu r2)) (- 1 (sqrt (/ r1 at)))))
+         (m0 (+ lis::*ship-dry-mass* (lis::ship-state-m-p ship)))
+         (m1 (* m0 (exp (- (/ (* dv1 (lis::ship-engine-mdot 1d0)) lis::*engine-thrust*)))))
+         (node1 (+ t0 60))
+         (node2 (+ node1 (* pi (sqrt (/ (expt at 3) mu)))))
+         (burns '()))
+    (multiple-value-bind (r v)
+        (lis::orbit-state (lis::state->orbit (lis::ship-state-r ship) (lis::ship-state-v ship) mu t0)
+                          node1)
+      (flet ((burn! (label node r v m dv)
+               (let ((start (grid-round (- node (/ (burn-duration m dv 1d0) 2)))))
+                 (push (lis::make-planned-burn label (- start 8) start
+                                               (lis::hold-attitude :prograde r v 0d0)
+                                               1d0 nil dv)
+                       burns))))
+        (burn! :raise node1 r v m0 dv1)
+        (let ((v1 (lis::vec3-add v (lis::vec3-scale (lis::vec3-normalize v) dv1))))
+          (multiple-value-bind (r v) (lis::orbit-state (lis::state->orbit r v1 mu node1) node2)
+            (burn! :circularise node2 r v m1 dv2)))))
+    (values (lis::make-burn-plan (coerce (reverse burns) 'simple-vector)) r2)))
+
+(defun plan-sim ()
+  "The start's sim, :point, with hohmann-plan engaged; (values sim r2)."
+  (let ((sim (lis::new-game-sim)))
+    (setf (lis::sim-model sim) :point)
+    (multiple-value-bind (plan r2) (hohmann-plan sim)
+      (lis::sim-set-plan! sim plan)
+      (values sim r2))))
+
+(defun fly-plan (sim level-fn &optional (stop (lambda (sim) (eq (lis::sim-plan-phase sim) :done))))
+  "SIM's steps at (LEVEL-FN SIM) until STOP; the transitions, oldest first:
+(:hold t i) at the step's start that engaged burn i's inertial hold, (:on t
+i throttle) that started it, (:cut t i dv-before cutoff dv-after) at the
+step's end that cut it, (:coast t i hold) that engaged the coast hold."
+  (let ((events '()))
+    (loop until (funcall stop sim)
+          do (let* ((c (lis::sim-controls sim))
+                    (t0 (lis::sim-t sim))
+                    (i (lis::sim-plan-index sim))
+                    (phase (lis::sim-plan-phase sim))
+                    (throttle (lis::controls-throttle c))
+                    (cutoff (lis::sim-cutoff sim))
+                    (dv (lis::ship-state-dv (lis::sim-ship sim))))
+               (step-sim sim 1 (funcall level-fn sim))
+               (let ((phase1 (lis::sim-plan-phase sim))
+                     (i1 (lis::sim-plan-index sim)))
+                 (when (and (eq phase :pending) (member phase1 '(:holding :burning)))
+                   (push (list :hold t0 i (lis::controls-hold c)) events))
+                 (when (and (member phase '(:pending :holding)) (eq phase1 :burning))
+                   (push (list :on t0 i (lis::controls-throttle c)) events))
+                 (when (and (> throttle 0d0) (= (lis::controls-throttle c) 0d0))
+                   (push (list :cut (lis::sim-t sim) i dv cutoff
+                               (lis::ship-state-dv (lis::sim-ship sim)))
+                         events))
+                 (when (and (eq phase :burning) (or (/= i i1) (eq phase1 :done)))
+                   (push (list :coast t0 i (lis::controls-hold c)) events)))))
+    (nreverse events)))
+
+(defun hohmann-run (level-fn)
+  "hohmann-plan flown at LEVEL-FN to :done, the transitions checked;
+(values the cut times, the final orbit's periapsis and apoapsis radii, r2)."
+  (multiple-value-bind (sim r2) (plan-sim)
+    (let* ((burns (lis::burn-plan-burns (lis::sim-plan sim)))
+           (events (fly-plan sim level-fn))
+           (cuts '()))
+      (is equal '(:hold :on :cut :coast :hold :on :cut :coast) (mapcar #'first events))
+      (dolist (e events)
+        (destructuring-bind (kind time i &rest data) e
+          (let ((burn (aref burns i)))
+            (ecase kind
+              (:hold (is = (lis::planned-burn-hold-at burn) time)
+               (is eq :inertial (first data)))
+              (:on (is = (lis::planned-burn-start burn) time)
+               (is = 1d0 (first data)))
+              (:cut (destructuring-bind (dv-before cutoff dv-after) data
+                      (true (on-grid-p time))
+                      (true (< dv-before cutoff) "~F ~F" dv-before cutoff)
+                      (true (<= cutoff dv-after (+ cutoff 0.1d0)) "~F ~F" cutoff dv-after)
+                      (push time cuts)))
+              (:coast (is eq :prograde (first data)))))))
+      (is eq :done (lis::sim-plan-phase sim))
+      (is eq :hold (lis::controls-attitude-mode (lis::sim-controls sim)))
+      (false (lis::sim-cutoff sim))
+      (let* ((ship (lis::sim-ship sim))
+             (orbit (lis::state->orbit (lis::ship-state-r ship) (lis::ship-state-v ship)
+                                       lis::+mu-earth+ (lis::sim-t sim))))
+        (values (nreverse cuts) (lis::orbit-periapsis-radius orbit)
+                (lis::orbit-apoapsis-radius orbit) r2)))))
+
+(define-test clock-plan-hohmann
+  ;; ×1 from each hold to its cut, coasting at ×1,000 between; and ×1,000 throughout.
+  (multiple-value-bind (cuts1 rp1 ra1 r2)
+      (hohmann-run (lambda (sim)
+                     (let ((next (lis::plan-next-time sim)))
+                       (if (or (member (lis::sim-plan-phase sim) '(:holding :burning))
+                               (and next (<= next (lis::sim-t sim))))
+                           1 1000))))
+    (multiple-value-bind (cuts1000 rp1000 ra1000) (hohmann-run (constantly 1000))
+      (loop for a in cuts1 for b in cuts1000
+            do (true (<= (abs (- a b)) 1/64) "~F ~F" a b))
+      (dolist (radius (list rp1 ra1 rp1000 ra1000))
+        (true (< (relative-error radius r2) 1d-2) "~,1F km from ~,1F km"
+              (/ radius 1000) (/ r2 1000))))))
+
+(define-test clock-plan-rcs
+  ;; 0.3 m/s along +x, no gravity: the velocity change is the burn's.
+  (let* ((sim (lis::new-game-sim))
+         (ship (lis::sim-ship sim))
+         (t0 (lis::sim-t sim)))
+    (setf (lis::sim-model sim) :none)
+    (lis::sim-set-plan!
+     sim (lis::make-burn-plan
+          (vector (lis::make-planned-burn :trim t0 (+ t0 2) (lis::quat-copy (lis::ship-state-q ship))
+                                          0d0 1 0.3d0))))
+    (step-sim sim 129 1)
+    (is eq :burning (lis::sim-plan-phase sim))
+    (is = 1 (aref (lis::controls-translation-keys (lis::sim-controls sim)) 0))
+    (let ((v0 (lis::vec3-copy (lis::ship-state-v ship)))
+          (step-dv 0d0))
+      (loop while (eq (lis::sim-plan-phase sim) :burning)
+            do (let ((v (lis::vec3-copy (lis::ship-state-v ship))))
+                 (step-sim sim 1 1)
+                 (setf step-dv (max step-dv (lis::vec3-norm (lis::vec3-sub (lis::ship-state-v ship) v))))))
+      (is eq :done (lis::sim-plan-phase sim))
+      (is equalp #(0 0 0) (lis::controls-translation-keys (lis::sim-controls sim)))
+      (is eq :prograde (lis::controls-hold (lis::sim-controls sim)))
+      ;; The last step ran with the key released.
+      (let ((delivered (lis::vec3-norm (lis::vec3-sub (lis::ship-state-v ship) v0))))
+        (true (< (abs (- delivered 0.3d0)) step-dv) "~F m/s, a step ~F m/s" delivered step-dv)))))
+
+(define-test clock-plan-cursor-copied
+  ;; Mid-burn: a copy, an assigned sim and a restored checkpoint fly the same burns.
+  (let ((sim (plan-sim)))
+    (fly-plan sim (constantly 1000) (lambda (sim) (eq (lis::sim-plan-phase sim) :burning)))
+    (step-sim sim 1 1000)
+    (is eq :burning (lis::sim-plan-phase sim))
+    (let* ((copy (lis::copy-sim sim))
+           (assigned (lis::sim-assign! (lis::new-game-sim) sim))
+           (checkpoint (lis::take-checkpoint sim))
+           (restored (lis::new-game-sim)))
+      (true (equalp copy sim))
+      (true (equalp assigned sim))
+      (is eq (lis::sim-plan sim) (lis::sim-plan copy))
+      (fly-plan sim (constantly 1000))
+      (lis::restore-checkpoint! restored checkpoint)
+      (dolist (other (list copy assigned restored))
+        (fly-plan other (constantly 1000))
+        (true (equalp other sim))))))
+
+(define-test clock-plan-cons-nothing
+  (let* ((sim (plan-sim))
+         (out (lis::new-game-sim)))
+    (is = 0 (least-bytes-consed (lambda () (lis::sim-assign! out sim))))
+    (fly-plan sim (constantly 1000))
+    (step-sim sim 100 1000)
+    (true (< (least-bytes-consed (lambda () (step-sim sim 10000 1000)) 1) 1024))
+    (is eq :done (lis::sim-plan-phase sim))))

@@ -206,12 +206,45 @@ drift; CONTROLS. Conses nothing."
     (setf (aref s 9) time))
   controls)
 
+(defun controls-engage-hold! (controls kind &optional q)
+  "Hold KIND with roll offset 0, never toggling: :inertial at the attitude Q
+(body -> inertial), else an orbital hold; CONTROLS. Conses nothing."
+  (declare (type controls controls) (type hold-kind kind) (type (or null quat) q))
+  (setf (controls-attitude-mode controls) :hold
+        (controls-hold controls) kind
+        (controls-roll-offset controls) 0d0
+        (controls-settled controls) nil)
+  (when q
+    (replace (controls-inertial-target controls) q))
+  controls)
+
 (defun controls-toggle-rate-damping (controls)
   "T: a hold or direct goes to rate damping, rate damping to direct."
   (setf (controls-attitude-mode controls)
         (if (eq (controls-attitude-mode controls) :rate-damping) :direct :rate-damping)
         (controls-settled controls) nil)
   controls)
+
+;;; Planned burns (decision 115: Planned burns as scheduled controls in the
+;;; sim): immutable, shared by every copy of the sim; clock.lisp flies them.
+
+(defstruct (planned-burn (:constructor make-planned-burn
+                             (label hold-at start attitude throttle rcs dv))
+                         (:copier nil))
+  (label nil :type keyword :read-only t)
+  (hold-at 0d0 :type double-float :read-only t) ; s, grid: the inertial hold engaged
+  (start 0d0 :type double-float :read-only t)   ; s, grid: throttle on or the RCS key held
+  (attitude nil :type quat :read-only t)        ; body -> inertial
+  (throttle 0d0 :type double-float :read-only t) ; 0.1–1, 0 for an RCS burn
+  (rcs nil :type (member nil -1 1) :read-only t) ; the sign along body x
+  (dv 0d0 :type double-float :read-only t))     ; m/s on the odometer
+
+(defstruct (burn-plan (:constructor make-burn-plan (burns &optional (coast-hold :prograde)))
+                      (:copier nil))
+  (burns #() :type simple-vector :read-only t)
+  (coast-hold :prograde :type (member :prograde :retrograde :normal :anti-normal
+                                      :radial-out :radial-in)
+              :read-only t))
 
 ;;; The RCS mixer (decision 70): duty cycles u in [0, 1] minimising
 ;;; |w (B_τ u − τ_c)|² + |B_F u − F_c|² + e² |u|² by Stark–Parker BVLS,

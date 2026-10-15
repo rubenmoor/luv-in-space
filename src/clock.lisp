@@ -48,7 +48,12 @@
   (delivery nil :type list)                     ; nil or (load receiver fixture release-t), immutable
   (notices nil :type list)                      ; ((key text) …) of this step, oldest first
   (checkpoint-request nil :type boolean)        ; the clock takes a checkpoint when safe
-  (target nil :type (or null keyword)))         ; a place's or a towable object's key       ; the clock takes a checkpoint when safe
+  (target nil :type (or null keyword))          ; a place's or a towable object's key
+  ;; The engaged burn plan, shared by copies, and its cursor (decision 115).
+  (plan nil :type (or null burn-plan))
+  (plan-index 0 :type fixnum)                   ; the current burn
+  (plan-phase :done :type (member :pending :holding :burning :done))
+  (plan-rcs-target 0d0 :type double-float))     ; the RCS burn's odometer target
 
 (defun copy-sim (sim)
   "A deep copy: equalp to SIM, sharing no array (the objects' definitions
@@ -82,7 +87,11 @@ nothing; OUT."
         (sim-delivery out) (sim-delivery sim)
         (sim-notices out) (sim-notices sim)
         (sim-checkpoint-request out) (sim-checkpoint-request sim)
-        (sim-target out) (sim-target sim))
+        (sim-target out) (sim-target sim)
+        (sim-plan out) (sim-plan sim)
+        (sim-plan-index out) (sim-plan-index sim)
+        (sim-plan-phase out) (sim-plan-phase sim)
+        (sim-plan-rcs-target out) (sim-plan-rcs-target sim))
   out)
 
 (defparameter *delivery-wait* 600d0 "s from a delivery's release to the removal; decision 53.")
@@ -336,6 +345,79 @@ target hold released to rate damping."
       (sim-notice! sim :target (format nil "TARGET LOST: ~A" (target-name key)))))
   sim)
 
+;;; Planned burns (decision 115: Planned burns as scheduled controls in the
+;;; sim): flown open-loop at each step's start; planning is the autopilot's.
+
+(defun sim-set-plan! (sim plan)
+  "PLAN (a burn-plan, or nil) engaged from its first burn; SIM."
+  (setf (sim-plan sim) plan
+        (sim-plan-index sim) 0
+        (sim-plan-phase sim) (if (and plan (> (length (burn-plan-burns plan)) 0)) :pending :done)
+        (sim-plan-rcs-target sim) 0d0)
+  sim)
+
+(declaim (inline plan-next-time))
+(defun plan-next-time (sim)
+  "The time of SIM's plan's next scheduled control: the current burn's
+hold-at while :pending, its start while :holding; else nil."
+  (let ((plan (sim-plan sim)))
+    (when plan
+      (let ((burn (svref (burn-plan-burns plan) (sim-plan-index sim))))
+        (declare (type planned-burn burn))
+        (case (sim-plan-phase sim)
+          (:pending (planned-burn-hold-at burn))
+          (:holding (planned-burn-start burn)))))))
+
+(defun plan-step-controls! (sim)
+  "At the start of SIM's step, before the cut-off check: from the current
+burn's hold-at its inertial hold (roll offset 0); from its start the
+throttle with sim-cutoff at odometer + Δv, or the RCS burn's ±x translation
+key with its own odometer target; once cut (or the RCS target reached, the
+key released) the plan's coast hold and the next burn :pending, :done after
+the last. Several at one t in turn. SIM; conses nothing."
+  (declare (optimize speed) (type sim sim))
+  (let ((plan (sim-plan sim)))
+    (when plan
+      (let* ((burns (burn-plan-burns plan))
+             (controls (sim-controls sim))
+             (ship (sim-ship sim))
+             (time (sim-t sim)))
+        (declare (type double-float time))
+        (loop
+          (let ((burn (svref burns (sim-plan-index sim)))
+                (odometer (ship-state-dv ship)))
+            (declare (type planned-burn burn) (type double-float odometer))
+            (ecase (sim-plan-phase sim)
+              (:done (return))
+              (:pending
+               (when (< time (planned-burn-hold-at burn)) (return))
+               (controls-engage-hold! controls :inertial (planned-burn-attitude burn))
+               (setf (sim-plan-phase sim) :holding))
+              (:holding
+               (when (< time (planned-burn-start burn)) (return))
+               (let ((rcs (planned-burn-rcs burn)))
+                 (if rcs
+                     (progn (controls-set-translation-key controls :x rcs)
+                            (setf (sim-plan-rcs-target sim) (+ odometer (planned-burn-dv burn))))
+                     (progn (controls-set-throttle controls (planned-burn-throttle burn))
+                            (setf (sim-cutoff sim) (+ odometer (planned-burn-dv burn))))))
+               (setf (sim-plan-phase sim) :burning))
+              (:burning
+               (if (planned-burn-rcs burn)
+                   (progn (when (< odometer (sim-plan-rcs-target sim)) (return))
+                          (controls-set-translation-key controls :x 0))
+                   (let ((cutoff (sim-cutoff sim)))
+                     (when (and cutoff (> (controls-throttle controls) 0d0) (< odometer cutoff))
+                       (return))
+                     (controls-throttle-cut controls)
+                     (setf (sim-cutoff sim) nil)))
+               (controls-engage-hold! controls (burn-plan-coast-hold plan))
+               (if (< (1+ (sim-plan-index sim)) (length burns))
+                   (setf (sim-plan-index sim) (1+ (sim-plan-index sim))
+                         (sim-plan-phase sim) :pending)
+                   (setf (sim-plan-phase sim) :done)))))))))
+  sim)
+
 ;;; The step (decision 72)
 
 (defparameter *fine-levels-max* 4
@@ -365,7 +447,8 @@ controls-attitude-fn's, without a closure per step."
 (declaim (inline step-h))
 (defun step-h (sim level until)
   "The h of SIM's next step at LEVEL with UNTIL, and whether the Δv cut-off
-ends it; it lands on a pending delivery's due time as on UNTIL; changes
+ends it; it lands on a pending delivery's due time and the plan's next
+hold-at or start (plan-next-time) as on UNTIL; changes
 nothing (a cut due before the step counts as made)."
   (declare (type sim sim) (type fixnum level) (type (or null double-float) until))
   (let* ((ship (sim-ship sim))
@@ -402,6 +485,9 @@ nothing (a cut due before the step counts as made)."
       (let ((due (sim-delivery-due sim)))
         (when (and due (> due time) (< (- due time) h))
           (setf h (- due time) cut-after nil)))
+      (let ((next (plan-next-time sim)))
+        (when (and next (> next time) (< (- next time) h))
+          (setf h (- next time) cut-after nil)))
       (values h cut-after))))
 
 (defvar *contact-redo* nil
@@ -425,6 +511,8 @@ contact answered at the step's start) or nil."
     (return-from sim-step-ticks! nil))
   (unless *contact-redo*
     (contact-save! sim level until))
+  (when (sim-plan sim)
+    (plan-step-controls! sim))
   (let* ((ship (sim-ship sim))
          (controls (sim-controls sim))
          (time (sim-t sim))
@@ -519,10 +607,11 @@ contact answered at the step's start) or nil."
 (declaim (inline sim-step!))
 (defun sim-step! (sim level &key until)
   "One step of SIM at warp LEVEL (×1, ×4, ×10 …) with every rule (decision
-72): the fine step to ×4, above it the coarse step with kinematic attitude
-(an inertial hold engaged first if no hold is, unless berthed), shortened
-to land on UNTIL (a grid time; one not ahead is ignored) and on the Δv
-cut-off, then flight-step! with SIM's model and the stack's mass (its
+72): the plan's controls first (plan-step-controls!), the fine step to
+×4, above it the coarse step with kinematic attitude (an inertial hold
+engaged first if no hold is, unless berthed), shortened to land on UNTIL
+(a grid time; one not ahead is ignored), on the plan's next hold-at or
+start and on the Δv cut-off, then flight-step! with SIM's model and the stack's mass (its
 latched load's too) and each promoted object's object-step! (the Moon and
 the Sun read once for all), the berthed ship held at its station
 (berth-hold!, no flight-step!; the transfer's propellant first,

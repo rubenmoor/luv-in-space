@@ -384,20 +384,41 @@ with no hold, the next step engages an inertial hold (sim-step!)."
   (setf (clock-paused clock) (not (clock-paused clock)))
   clock)
 
-;;; The frame
+;;; The step and the frame
+
+(declaim (inline clock-step!))
+(defun clock-step! (clock sim &optional budget)
+  "One step of SIM under CLOCK (decision 72, decision 73): the lowering
+rules, the hook's until, sim-step! at the level, the previous state and
+the held flag kept. With BUDGET (game s, the frame's accumulator) no step
+when the next h exceeds it. The step's 1/64 s ticks, or nil when none was
+taken (lost, or over BUDGET)."
+  (declare (type clock clock) (type sim sim) (type (or null double-float) budget)
+           (inline step-h sim-step-ticks!))
+  (when (sim-loss sim)
+    (return-from clock-step! nil))
+  (clock-check-level! clock sim)
+  (let* ((level (clock-level clock))
+         (hook (clock-hook clock))
+         (until (and hook (funcall hook clock sim))))
+    (declare (type (or null double-float) until))
+    (unless (and budget (< budget (the double-float (step-h sim level until))))
+      (ship-state-assign! (clock-previous clock) (sim-ship sim))
+      (setf (clock-previous-t clock) (sim-t sim))
+      (let ((ticks (sim-step-ticks! sim level until)))
+        (setf (clock-held clock) (and (> level *fine-levels-max*) (held-p sim)))
+        ticks))))
 
 (defun clock-steps! (clock sim)
   "Steps while the accumulator holds the next h, within the frame's caps;
 the rest dropped. The step count."
   (declare (optimize speed) (type clock clock) (type sim sim)
-           (inline step-h sim-step-ticks!))
+           (inline clock-step!))
   (let ((steps 0)
         (deadline (and *frame-step-time-limit*
                        (+ (get-internal-real-time)
                           (the fixnum (ceiling (* *frame-step-time-limit*
-                                                  internal-time-units-per-second))))))
-        (previous (clock-previous clock))
-        (hook (clock-hook clock)))
+                                                  internal-time-units-per-second)))))))
     (declare (type fixnum steps) (type (or null fixnum) deadline))
     (flet ((drop! ()
              (setf (clock-accumulator clock) 0d0)
@@ -408,18 +429,11 @@ the rest dropped. The step count."
                   (and deadline (> steps 0) (zerop (mod steps +time-check-interval+))
                        (> (get-internal-real-time) deadline)))
           (drop!))
-        (clock-check-level! clock sim)
-        (let* ((level (clock-level clock))
-               (until (and hook (funcall hook clock sim))))
-          (declare (type (or null double-float) until))
-          (when (< (clock-accumulator clock) (the double-float (step-h sim level until)))
+        (let ((ticks (clock-step! clock sim (clock-accumulator clock))))
+          (unless ticks
             (return steps))
-          (ship-state-assign! previous (sim-ship sim))
-          (setf (clock-previous-t clock) (sim-t sim))
-          (let ((ticks (sim-step-ticks! sim level until)))
-            (decf (clock-accumulator clock) (* (the fixnum ticks) +fine-step+))
-            (setf (clock-held clock) (and (> level *fine-levels-max*) (held-p sim)))
-            (incf steps)))))))
+          (decf (clock-accumulator clock) (* (the fixnum ticks) +fine-step+))
+          (incf steps))))))
 
 (defun rate-meter-record! (clock real game)
   (let ((i (clock-rate-index clock)))

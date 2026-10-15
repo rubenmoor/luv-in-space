@@ -344,6 +344,28 @@ the flown t: its time (for :impact also the copy's loss record), or nil."
                     (values (aref times i) (prediction-impact pred))
                     (aref times i)))))))
 
+(defun prediction-apsis (pred kind)
+  "(values time radius) of the next :apoapsis or :periapsis of PRED: on the
+stored Hermite, or with an impact before it the osculating apsis of the
+impact state (decision 87); nil if neither is known."
+  (check-type kind (member :apoapsis :periapsis))
+  (let ((time (prediction-event pred kind))
+        (impact (prediction-event pred :impact)))
+    (cond ((and time (or (null impact) (< time impact)))
+           (let ((p (make-vec3)))
+             (prediction-position! p pred time)
+             (values time (vec3-norm p))))
+          (impact
+           (let* ((sim (prediction-sim pred))
+                  (ship (sim-ship sim))
+                  (orbit (state->orbit (ship-state-r ship) (ship-state-v ship)
+                                       (body-mu (body (sim-body sim))) (sim-t sim)))
+                  (time (orbit-next-apsis orbit (sim-t sim) kind)))
+             (when time
+               (values time (if (eq kind :apoapsis)
+                                (orbit-apoapsis-radius orbit)
+                                (orbit-periapsis-radius orbit)))))))))
+
 (defparameter *dropout-events* '(:impact)
   "The events that drop warp; milestone 2's, decision 75.")
 

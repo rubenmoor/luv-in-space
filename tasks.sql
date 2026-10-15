@@ -6236,7 +6236,7 @@ INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, crea
 
 ## Done when
 - `scripts/test` near ~15 s wall at load average ~2; `nix build` and `scripts/test` pass; "Testing" updated.', '2026-10-15T15:18:07Z', '2026-10-15T15:30:50Z', 206, 0);
-INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (263, NULL, 'write an executive summary', 'exec', 'open', 10000, NULL, 'Write an executive summary of the project for the human: where it stands, in a few minutes of reading. Look, don''t
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (263, NULL, 'write an executive summary', 'exec', 'done', 10000, '2026-10-15, executive summary stored with pm summary add', 'Write an executive summary of the project for the human: where it stands, in a few minutes of reading. Look, don''t
 change: no code, files, tasks, plans or decisions; stage nothing.
 * the previous summary: `pm summary show` (none: this is the first, cover the project so far)
 * what happened since it: `git log --stat <its commit>..HEAD` (pm''s commits name the tasks and decisions), `pm status`,
@@ -6250,7 +6250,7 @@ Markdown, for the human, who knows the project but not the last days. Lead with:
 * **Risks**: what may go wrong, take longer or need a decision soon
 
 Bullets, ids with subjects (`task 12: <subject>`), no padding. Store it: `pm summary add < summary.md`, delete
-summary.md, then close your task.', '2026-10-15T15:49:28Z', NULL, NULL, 0);
+summary.md, then close your task.', '2026-10-15T15:49:28Z', '2026-10-15T15:57:42Z', NULL, 0);
 
 INSERT INTO decision (id, subject, status, options, body, answer, reason, created_at, closed_at, created_by_task, signoff, kind, decided_by_task, consequences) VALUES (1, 'How the game consumes luv', 'answered', '[]', 'Findings of `task 17: Build and run luv''s programs and test suite; record the runs` (docs/luv-capabilities.md, Packaging and Runs).
 - luv''s flake exports apps, devShells, packages and lib; lib has only environmentFor, which returns everything the packaging needs (pkgs, lisp, applicationEnvironment/Packages, developmentEnvironmentHook, slynkSource, swashPackage, …). No overlays.
@@ -6673,6 +6673,7 @@ INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, b
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (211, 206, '2026-10-15T15:07:26Z', '2026-10-15T15:18:51Z', 'done', NULL, 0, '5e577060477cd5a81959b30175febd77fdf179e4', 'claude-opus-5-5[1m]', '0fbe4356-d61b-4eaf-a0f7-92ea4efe1602', 68, 130, 23293, 5811324, 111393, 2.5197888, 2373073);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (212, 262, '2026-10-15T15:18:51Z', '2026-10-15T15:31:03Z', 'done', NULL, 0, '925f47fb6885fb4bede42c48a4699d03d6859825', 'claude-opus-5-5[1m]', 'e56fc129-b4ad-4bdf-8021-03b256afc1b5', 59, 108, 29436, 5492677, 140536, 2.8119754, 2373073);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (213, 207, '2026-10-15T15:48:57Z', '2026-10-15T15:56:43Z', 'done', NULL, 0, '56073cc2ca6eade033db1979c57c09ab88a4d072', 'claude-opus-5-5[1m]', 'eb3edef0-aadf-4515-b0b5-304bcc531198', 31, 58, 26817, 2420809, 101221, 1.8305018, 3425383);
+INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (214, 263, '2026-10-15T15:56:43Z', '2026-10-15T15:57:49Z', 'done', NULL, 0, 'f17898dcceae9f384d65b9603396b561168f63a9', 'claude-opus-5-5[1m]', 'd0004877-319d-4eb7-b98e-6f6564c0ec31', 11, 22, 6194, 436488, 42743, 0.5532096, 3425383);
 
 INSERT INTO task_decision (task_id, decision_id) VALUES (44, 28);
 INSERT INTO task_decision (task_id, decision_id) VALUES (44, 45);
@@ -6693,3 +6694,65 @@ INSERT INTO decision_supersedes (decision_id, superseded_id, note) VALUES (107, 
 INSERT INTO decision_supersedes (decision_id, superseded_id, note) VALUES (143, 114, 'only the instruments'' render-time extrapolation of a promoted target');
 INSERT INTO decision_supersedes (decision_id, superseded_id, note) VALUES (149, 116, 'the budget only: 4,096 work units, not ~1 ms');
 INSERT INTO decision_supersedes (decision_id, superseded_id, note) VALUES (149, 146, '');
+
+INSERT INTO summary (id, task_id, body, head_commit, created_at) VALUES (1, 263, '# Executive summary, 2026-10-15
+
+This is the first summary and covers the project from `pm init` (2026-10-14 10:43) to `task 207: The Lambert solver` (2026-10-15 15:48). Milestones 1 and 2 are done. Milestone 3 is a little over half done by task count, and the half that''s done is all simulation and autopilot. Nothing waits on you.
+
+## Needs you
+- **Pending decisions: none.** Workers recorded 152 decisions themselves, as `AGENTS.md` asks. You can override any of them by superseding it.
+- **Failures and stalls: none open.** 214 runs, none failed. The only hiccup was `task 44` in milestone 1, which was blocked twice (runs 32 and 40, ~30 s each) and then finished in run 51.
+- **Worth a look, not blocking:**
+  - Milestone 3''s cockpit hasn''t been started yet. Every plan that draws something is still at the "tasks created" stage (see "Where it stands").
+  - `task 248: Convert and commit Earth''s night-lights and cloud textures (scripts/convert-earth)` downloads NASA''s Black Marble and cloud images. If the worker has no network, it will stall there.
+
+## Since the last summary (the whole project so far)
+- **`milestone 1: Scope and design`**, implemented 2026-10-14 21:56 (plans 7–12, 65 tasks):
+  - `docs/luv-capabilities.md`, `architecture.md`, `design.md` (with the feature list assigned to milestones 2–6) and `story.md`.
+  - A walking skeleton built against luv pinned as a flake input.
+- **`milestone 2: Flight core`**, implemented 2026-10-15 06:00 (plans 13–22, 86 tasks):
+  - The Mule in a 400 km polar orbit under RK4 with J2, the Moon and the Sun, and time warp.
+  - The outside view and the stars, plus the Earth, Moon and Sun drawn as impostors, with HDR and bloom.
+  - The basic map, the minimal readout, crash and restart, and the LOST panel.
+  - Headless flight scripts (`burn`, `raise-orbit`, `deorbit`) that take screenshots.
+- **`milestone 3: Cockpit and autopilot`**, from 2026-10-15 06:00 on. Simulation side, all of it done:
+  - `plan 23: Objects on rails and the Earth-orbit places`: twelve objects and five presets.
+  - `plan 24: Grapple, contact, berthing, towing, deliveries and refuelling`, with contact and bounce in the step, the stack, the SHIP log and checkpoints.
+  - `plan 25: Predicted trajectories, targets and target holds`: holds 7–0, planned burns, prediction, closest approach and relative nodes.
+  - `plan 26: Autopilot: planner, orbit manoeuvres, execution and safety`: circularise, set AP/PE, Hohmann and plane changes by shooting, the O preset menu and engaging the autopilot. It works headless and live (`task 206`).
+  - `plan 27: Autopilot: rendezvous, …` has started with `task 207: The Lambert solver`.
+- **Course changes:**
+  - Follow-up tasks added by workers:
+    - `task 256: RCS translation capability with the stack''s CoM ahead of the front blocks` corrected the design''s 1,077 N to 1,065 N (`decision 142`).
+    - `task 257: Intermittent rails-cons-nothing failure in the full test run` fixed a flaky test.
+    - `task 259: Closing speed and relative velocity to a rails target`.
+    - `task 260: The prediction''s per-step cost and a ~1 ms frame budget`: the budget is now 4,096 work units per frame instead of 1 ms (`decision 149` supersedes `decision 146`).
+    - Tasks 258, 261 and 262 each brought `scripts/test` back under its ~15 s budget after a plan had pushed it over. The last fix declares `make-instance` notinline for the tests (`decision 155: Parachute checks compiled with make-instance notinline`).
+  - No tasks or plans were dropped. pm''s schema went from 16 to 20.
+- **Recorded decisions:** most of them write down how something was built ("as built" rules). The ones that matter most for what comes next:
+  - Autopilot: `decision 150` (first guesses), `decision 151` (shooting), `decision 152` (execution in the step), `decision 153` (the preset menu) and `decision 154` (measurement, replans and trims).
+  - Rendezvous: `decision 119` and `decision 120`.
+- **Runs and cost:** 214 runs, about $431 in all, 0 failed. Of that, milestone 3 has cost $157.74 over 60 runs so far.
+  - By kind: work 147 runs, 19 h 57 m, $349; plan 29 runs, $58; splits 32 runs, $18; masterplans 3 runs, $4; cleanup 2 runs, $2.
+  - The longest run was `task 189: Contact: detection, bounce and death` at 1 h 28 m and $8.16. Planning and autopilot tasks usually run 11–33 min at $2–8.
+
+## Where it stands
+- **`milestone 3: Cockpit and autopilot`**: 60 of 108 tasks closed, and 48 are open in nine plans. The queue runs in this order:
+  - `plan 27: Autopilot: rendezvous, phasing, clear approaches and station-keeping` (660): 5 tasks left, tasks 208–212. Its Done when: a rendezvous end to end, headless and live.
+  - `plan 28: Flight scripts of milestone 3` (650): tasks 213–218. They end with `task 218: Preset scripts: every Earth-orbit place by autopilot headless`, which covers half of the milestone''s Done when.
+  - `plan 29: Meshes of the places, other ships and the grapple` (480): 5 tasks.
+  - `plan 31: Text and the cockpit''s structure and view` (450): 6 tasks, including Slug text with fonts copied from luv.
+  - `plan 30: The map of milestone 3` (420): 7 tasks.
+  - `plan 32: Cockpit instruments, buttons, the grapple camera and messages` (400): 8 tasks. This is where the cockpit becomes the default view (`task 244`).
+  - `plan 33: The outside and map views'' overlay` (390): 3 tasks.
+  - `plan 34: Earth''s night lights and clouds` (300): 3 tasks.
+  - `plan 35: Flight screenshots, the live runs and the Done when` (250): 5 tasks, ending with `task 255: Check milestone 3''s Done when from a clean checkout`.
+- **Milestones 4, 5 and 6** (the solar system; story and quests; release) only have their masterplan tasks queued (tasks 4, 5 and 6). These run after milestone 3.
+- **Next up:** `task 208: Rendezvous stop points, aim points and the terminal check`.
+
+## Risks
+- **Rendezvous is the hardest algorithm left.** It covers the Kepler search over two families, shooting to an aim point, clearance checks and the terminal phase (tasks 209–211). The comparable autopilot tasks took 15–33 min each. Expect long runs and possibly follow-up tasks.
+- **The test budget keeps slipping.** Three tasks in a row went to bringing `scripts/test` back to ~15 s. Rendezvous, the preset scripts and the cockpit will add more, so splitting off a slow suite (`task 217` introduces `scripts/test-slow`) matters.
+- **The cockpit is a lot of unstarted work.** That''s about 25 tasks of rendering, text and UI across plans 29–33, the "heart of the game" in the milestone''s outcome, and none of it is built yet. Milestone 3 has cost $158 for 60 tasks so far, so the remaining 48 will likely cost another ~$130–180.
+- **Network:** `task 248` downloads source images (see "Needs you").
+- **Decision volume:** 152 recorded decisions, many very detailed "as built" rules. They are binding on later workers, so a design change you want is cheaper to make now, by superseding one, than after the cockpit has been built on top of it.', 'f17898dcceae9f384d65b9603396b561168f63a9', '2026-10-15T15:57:41Z');

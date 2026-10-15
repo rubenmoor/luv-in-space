@@ -15,8 +15,9 @@
 (defparameter *prediction-work-per-frame* 4096
   "Work per prediction-update!: per copy step 1, plus 1 per promoted object
 stepped, plus 1 for a rails target (decision 116). As many as the clock's
-steps per frame, so warp never outruns it: ~4.6 ms at the start orbit
-(1.13 us per unit, :full), ~2.7 ms at Skua Yard (0.66 us; tests/prediction.lisp).")
+steps per frame, so warp never outruns it: ~2.7 ms at the start orbit
+(0.65 us per unit, :full), ~2.4 ms at Skua Yard (0.59 us; tests/prediction.lisp;
+decision 149).")
 (defparameter *prediction-capacity* 20000
   "Stored steps, the horizon's last bound; decision 75.")
 (defparameter *prediction-deviation* 1d0
@@ -110,8 +111,8 @@ ends (decision 75)."
         (let ((k (* +node-size+ i))
               (ship (sim-ship sim)))
           (setf (aref nodes k) (sim-t sim))
-          (replace nodes (ship-state-r ship) :start1 (+ k 1))
-          (replace nodes (ship-state-v ship) :start1 (+ k 4)))
+          (copy-doubles! nodes (ship-state-r ship) 3 (+ k 1))
+          (copy-doubles! nodes (ship-state-v ship) 3 (+ k 4)))
         (setf (prediction-count pred) (1+ i))
         t))))
 
@@ -421,16 +422,16 @@ Conses nothing once the buffer fits SIM's objects."
       (setf buffer (make-array size :element-type 'double-float :initial-element 0d0)
             (prediction-contact-starts pred) buffer))
     (setf (aref buffer 0) (sim-t sim))
-    (replace buffer (ship-state-r ship) :start1 1)
-    (replace buffer (ship-state-v ship) :start1 4)
+    (copy-doubles! buffer (ship-state-r ship) 3 1)
+    (copy-doubles! buffer (ship-state-v ship) 3 4)
     (loop for object across objects
           for i of-type fixnum from 0
           for k of-type fixnum from 7 by 7
           do (cond ((contact-candidate-p sim object i)
                     (let ((state (object-state object)))
                       (setf (aref buffer k) 1d0)
-                      (replace buffer (ship-state-r state) :start1 (+ k 1))
-                      (replace buffer (ship-state-v state) :start1 (+ k 4))))
+                      (copy-doubles! buffer (ship-state-r state) 3 (+ k 1))
+                      (copy-doubles! buffer (ship-state-v state) 3 (+ k 4))))
                    (t (setf (aref buffer k) 0d0))))
     nil))
 

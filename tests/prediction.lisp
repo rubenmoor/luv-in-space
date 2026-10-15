@@ -334,8 +334,9 @@ put on J2-free rails when on rails. (values sim index)."
 ;;; target's nodes, the restart rules and the work budget.
 
 ;;; The time per work unit, outside scripts/test (2026-10-15, :full, two
-;;; periods: the start orbit 1.13 us per unit, with Tern Station targeted
-;;; 0.68 us, at Skua Yard with Skua Yard 3 targeted 0.66 us, 9.2 per step):
+;;; periods; task 198, then after task 260's cuts: the start orbit 1.13, then
+;;; 0.65 us per unit, with Tern Station targeted 0.68, then 0.45 us, at Skua
+;;; Yard with Skua Yard 3 targeted 0.66, then 0.59 us, 9.2 per step):
 #+(or)
 (flet ((ns-per-work (sim)
          (let ((pred (lis::new-prediction :periods 2)) (work 0))

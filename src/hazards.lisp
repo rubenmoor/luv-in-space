@@ -916,6 +916,8 @@ time, the loss :contact with the INDEXth object's key and the normal SPEED."
 r + q (its CoM − the stack's), q ⊗ its relative quaternion, the stack's
 rigid motion. SIM; conses nothing."
   (declare (optimize speed) (type sim sim) (inline ship-mass-properties))
+  (unless (and (grapple-object (sim-grapple sim)) (not (sim-berthed sim)))
+    (return-from latched-load-update! sim))
   (with-stack-properties (properties sim load)
     (when load
       (let* ((ship (sim-ship sim))

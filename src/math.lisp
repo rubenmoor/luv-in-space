@@ -49,6 +49,14 @@
   (declare (type real w x y z))
   (quat-set! (make-quat) (float w 1d0) (float x 1d0) (float y 1d0) (float z 1d0)))
 
+(declaim (inline copy-doubles!))
+(defun copy-doubles! (out in n &optional (out-start 0) (in-start 0))
+  "N doubles of IN from IN-START into OUT from OUT-START; OUT. A loop: replace
+on a few doubles is a full call (task 260)."
+  (declare (type (simple-array double-float (*)) out in) (type fixnum n out-start in-start))
+  (dotimes (i n out)
+    (setf (aref out (+ out-start i)) (aref in (+ in-start i)))))
+
 (defun vec3-copy (a) (declare (type vec3 a)) (copy-seq a))
 (defun quat-copy (a) (declare (type quat a)) (copy-seq a))
 

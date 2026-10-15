@@ -1061,7 +1061,7 @@ Priority: **must** (the milestone's Outcome or Done when needs it, or the game b
 ### Performance target
 - 60 frames per second steady at 1280 × 800 on the developer's machine (x86-64 Linux, `decision 6: Target platforms`), in every view and at every warp level, measured over a scripted flight that visits the cockpit, the map and ×1,000,000.
 - GPU: the one luv picks by default, the Intel Iris Xe here (luv takes the first Vulkan device), so the passes stay well below Luvcraft's, which ran at 24–36 Hz on it (`docs/luv-capabilities.md` "Performance"); the RTX 4060 is not the target.
-- CPU budget per frame: simulation steps ≤ 4 ms (the cap of `decision 16: Integrator and simulation clock`), trajectory prediction ≤ 1 ms (`decision 20: Trajectory prediction on the frame thread`), the rest of the frame ≤ 6 ms; the GPU within the 16.7 ms frame. The simulation's share rests on the measured ~180 ns per RK4 step (`docs/architecture.md` "Integrator").
+- CPU budget per frame: simulation steps ≤ 4 ms (the cap of `decision 16: Integrator and simulation clock`), trajectory prediction ≤ 1 ms coasting and up to 4,096 work units (~2.7 ms) in a frame where it restarts or catches up (`decision 20: Trajectory prediction on the frame thread`, `decision 149: The prediction's work budget stays 4,096 per frame after task 260's cheaper step`), the rest of the frame ≤ 6 ms; the GPU within the 16.7 ms frame. The simulation's share rests on the measured ~180 ns per RK4 step (`docs/architecture.md` "Integrator").
 - Every milestone keeps it in mind; `milestone 6` measures and documents it (frame times, the machine, the commands) in `docs/` and the README. lavapipe is a test renderer, not a target.
 
 ### Each milestone against its Outcome and Done when

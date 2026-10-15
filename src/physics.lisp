@@ -87,10 +87,14 @@ several points at one time reads the ephemeris once."
   "The Moon's and the Sun's positions at TIME (m, Earth-centred) into MOON
 and SUN."
   (declare (type vec3 moon sun) (type double-float time))
-  (let ((dv (make-vec3)))
-    (declare (dynamic-extent dv))
-    (body-state-into moon dv :moon time :earth)
-    (body-state-into sun dv :sun time :earth)))
+  ;; body-state-into's sums, each Hermite read once (task 260).
+  (let ((dv (make-vec3)) (zero (make-vec3))
+        (emb-r (make-vec3)) (emb-v (make-vec3)) (moon-r (make-vec3)) (moon-v (make-vec3)))
+    (declare (dynamic-extent dv zero emb-r emb-v moon-r moon-v))
+    (hermite-into emb-r emb-v 0 time)
+    (hermite-into moon-r moon-v 1 time)
+    (combine-into moon dv :moon :earth zero zero moon-r moon-v)
+    (combine-into sun dv :sun :earth emb-r emb-v moon-r moon-v)))
 
 (defun gravity-into! (a r time model &optional (central :earth))
   "Write the gravitational acceleration at r (m, CENTRAL's frame) at TIME
@@ -113,21 +117,31 @@ into a. MODEL: :none, :point (μ⊕), :j2 (with J2, pole along ICRF z),
 
 (defun make-third-bodies () (make-array 18 :element-type 'double-float :initial-element 0d0))
 
+(defvar *third-bodies-last*
+  (let ((cell (make-array 7 :element-type 'double-float :initial-element 0d0)))
+    (setf (aref cell 0) most-negative-double-float)
+    cell)
+  "The last step's end: its t, the Moon, the Sun; the next step's start
+reads it. A cache: dropping it changes no result.")
+(declaim (type (simple-array double-float (7)) *third-bodies-last*))
+
 (declaim (inline third-bodies-step-into!))
 
 (defun third-bodies-step-into! (buffer time h)
   "The Moon and the Sun at TIME, TIME + h/2 and TIME + h into BUFFER; BUFFER."
   (declare (type third-bodies buffer) (type double-float time h))
-  (let ((moon (make-vec3)) (sun (make-vec3)) (h/2 (* 0.5d0 h)))
+  (let ((moon (make-vec3)) (sun (make-vec3)) (h/2 (* 0.5d0 h))
+        (last *third-bodies-last*))
     (declare (dynamic-extent moon sun))
-    (flet ((at! (start time)
-             (third-bodies-into! moon sun time)
-             (replace buffer moon :start1 start)
-             (replace buffer sun :start1 (+ start 3))))
-      (declare (inline at!))
-      (at! 0 time)
-      (at! 6 (+ time h/2))
-      (at! 12 (+ time h)))
+    (loop for start of-type fixnum from 0 by 6 below 18
+          for at of-type double-float = time then (if (= start 6) (+ time h/2) (+ time h))
+          do (if (and (= start 0) (= (aref last 0) at))
+                 (copy-doubles! buffer last 6 0 1)
+                 (progn (third-bodies-into! moon sun at)
+                        (copy-doubles! buffer moon 3 start)
+                        (copy-doubles! buffer sun 3 (+ start 3)))))
+    (setf (aref last 0) (+ time h))
+    (copy-doubles! last buffer 6 1 12)
     buffer))
 
 ;;; The coarse step rule (docs/architecture.md "Integrator"); the fine step
@@ -209,8 +223,8 @@ scaled so the tanks empty exactly at the step's end. With ATTITUDE-FN,
 called as (attitude-fn q-out w-out time-cell r v) to write the attitude and
 the frame's rate (inertial axes) at the time in time-cell (a one-element
 double array, so nothing is boxed), attitude is kinematic: q comes from it
-at each stage, torque is ignored, q and ω are set from it at t + h. With
-THIRD-BODIES (third-bodies-step-into! of this TIME and h) :full reads the
+at each stage with a force (without one nothing reads it), torque is
+ignored, q and ω are set from it at t + h. With THIRD-BODIES (third-bodies-step-into! of this TIME and h) :full reads the
 Moon and the Sun from it, bit for bit the same as without."
   (declare (optimize speed) (type ship-state state) (type double-float h time mdot m-dry)
            (type vec3 force-body torque-body) (type mat3 inertia inertia-inverse)
@@ -235,22 +249,24 @@ Moon and the Sun from it, bit for bit the same as without."
          ;; The Moon and the Sun at t, t + h/2 (stages 2 and 3) and t + h
          (moon0 (make-vec3)) (sun0 (make-vec3))
          (moon1 (make-vec3)) (sun1 (make-vec3))
-         (moon2 (make-vec3)) (sun2 (make-vec3)))
+         (moon2 (make-vec3)) (sun2 (make-vec3))
+         (forceless nil))
     (declare (dynamic-extent y ys k1 k2 k3 k4 f tau r v w a iw tmp q dq time-cell
                              moon0 sun0 moon1 sun1 moon2 sun2)
              (type double-float scale mdot))
     (vec3-scale! f force-body scale)
     (vec3-scale! tau torque-body scale)
-    (replace y (ship-state-r state))
-    (replace y (ship-state-v state) :start1 3)
-    (replace y (ship-state-q state) :start1 6)
-    (replace y (ship-state-w state) :start1 10)
+    (setf forceless (and (= (aref f 0) 0d0) (= (aref f 1) 0d0) (= (aref f 2) 0d0)))
+    (copy-doubles! y (ship-state-r state) 3)
+    (copy-doubles! y (ship-state-v state) 3 3)
+    (copy-doubles! y (ship-state-q state) 4 6)
+    (copy-doubles! y (ship-state-w state) 3 10)
     (setf (aref y 13) m-p0)
     (when (eq model :full)
       (if third-bodies
           (flet ((from! (moon sun start)
-                   (replace moon third-bodies :start2 start)
-                   (replace sun third-bodies :start2 (+ start 3))))
+                   (copy-doubles! moon third-bodies 3 0 start)
+                   (copy-doubles! sun third-bodies 3 0 (+ start 3))))
             (declare (inline from!))
             (from! moon0 sun0 0)
             (from! moon1 sun1 6)
@@ -264,13 +280,14 @@ Moon and the Sun from it, bit for bit the same as without."
              (vec3-set! r (aref y 0) (aref y 1) (aref y 2))
              (vec3-set! v (aref y 3) (aref y 4) (aref y 5))
              (earth-gravity-into! a r model moon sun)
-             (if attitude-fn
-                 (progn (setf (aref time-cell 0) time)
-                        (funcall attitude-fn q tmp time-cell r v))
-                 (quat-set! q (aref y 6) (aref y 7) (aref y 8) (aref y 9)))
-             ;; v̇ = gravity + q (F / m) q*
-             (quat-rotate! tmp q f)
-             (vec3-add-scaled! a a tmp (/ (+ m-dry (aref y 13))))
+             ;; v̇ = gravity + q (F / m) q*; kinematic without force, q unused.
+             (unless (and attitude-fn forceless)
+               (if attitude-fn
+                   (progn (setf (aref time-cell 0) time)
+                          (funcall attitude-fn q tmp time-cell r v))
+                   (quat-set! q (aref y 6) (aref y 7) (aref y 8) (aref y 9)))
+               (quat-rotate! tmp q f)
+               (vec3-add-scaled! a a tmp (/ (+ m-dry (aref y 13)))))
              (setf (aref k 0) (aref y 3) (aref k 1) (aref y 4) (aref k 2) (aref y 5)
                    (aref k 3) (aref a 0) (aref k 4) (aref a 1) (aref k 5) (aref a 2)
                    (aref k 13) (- mdot))

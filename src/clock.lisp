@@ -552,9 +552,9 @@ contact answered at the step's start) or nil."
         (controls-inertial-hold controls (ship-state-q ship)))
       (multiple-value-bind (h cut-after) (step-h sim level until)
         (declare (type (double-float 0d0 1d6) h))
-        (replace r0 (ship-state-r ship))
-        (replace v0 (ship-state-v ship))
-        (replace q0 (ship-state-q ship))
+        (copy-doubles! r0 (ship-state-r ship) 3)
+        (copy-doubles! v0 (ship-state-v ship) 3)
+        (copy-doubles! q0 (ship-state-q ship) 4)
         (when (eq model :full)
           (third-bodies-step-into! third-bodies time h))
         ;; Berthed (decision 112): not integrated, set from the station below.
@@ -574,8 +574,8 @@ contact answered at the step's start) or nil."
               for i of-type fixnum from 1 by 6
               when (eq (object-status object) :promoted)
                 do (let ((state (object-state object)))
-                     (replace before (ship-state-r state) :start1 i)
-                     (replace before (ship-state-v state) :start1 (+ i 3))
+                     (copy-doubles! before (ship-state-r state) 3 i)
+                     (copy-doubles! before (ship-state-v state) 3 (+ i 3))
                      (object-step! object h time model third-bodies)))
         (if (sim-berthed sim)
             (berth-hold! sim)

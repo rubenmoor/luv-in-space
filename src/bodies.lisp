@@ -44,7 +44,9 @@
   "The body of a key, or the body itself."
   (if (body-p designator)
       designator
-      (or (find designator *bodies* :key #'body-key)
+      (or (loop for body in *bodies*
+                when (eq (body-key body) designator)
+                  return body)
           (error "No body ~S." designator))))
 
 ;;; Rotations. A body-fixed matrix maps body-centred inertial (ICRF) axes

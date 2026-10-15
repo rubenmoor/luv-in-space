@@ -546,7 +546,7 @@ Death ends the flight, never the game: the player goes on from the last checkpoi
 
   - Whether Venus and Mars are in scope is "The places"'s choice; the radii stand if they are.
   - Impacts are found by the swept test exactly (time and body-fixed point; `docs/architecture.md`); an impact on the prediction is an alarm and a warp drop-out ("Time warp").
-- Contact: above 1.0 m/s relative normal speed with any object ("Grappling and berthing").
+- Contact: above 1.0 m/s relative normal speed with any object ("Grappling and berthing"). As built (`task 189: Contact: detection, bounce and death`, `decision 113: Grapple and contact details the design leaves open`): the loss `:contact` holds the object and the normal speed; the ship and the promoted objects stop at the contact time on their step's paths.
 - The Sun: a hull temperature T that relaxes towards an equilibrium, as offered by `docs/architecture.md` "Collisions and the Sun":
   - Equilibrium of a sunlit, white-painted plate radiating from both sides with the cab's internal heat added: T_eq = ((α S + q) / (2 ε σ))^(1/4), with S = 1,361 W/m² / d² (d in AU; zero in a shadow), α = 0.30 and ε = 0.85 (white paint, aged), q = 100 W/m² for the cab's dissipation and planetary infrared, σ = 5.670374×10⁻⁸ W m⁻² K⁻⁴. This gives 269 K at 1 AU, 179 K in shadow, 309 K at Venus's orbit (0.723 AU), 231 K at Mars's (1.524 AU).
   - Relaxation: dT/dt = (T_eq − T) / τ, τ = 900 s, updated exactly per step for constant flux, T ← T_eq + (T − T_eq) e^(−h/τ). τ is the plate's linearised time constant C / (8 ε σ T³) at 350 K, with C = 2,700 kg/m³ × 4 mm × 1.5 (frames) × 900 J/(kg K) = 14,580 J/(m² K): 882 s.
@@ -578,6 +578,7 @@ Death ends the flight, never the game: the player goes on from the last checkpoi
     - "SPEED <relative to the body, as the readout's SPD>".
     - "LAT <|lat|, 2 decimals>° <N|S>  LON <|lon|, 2 decimals>° <E|W>".
     - A blank line, then "RETURN  RESTART FROM START" ("RETURN  RESTART FROM CHECKPOINT" when the clock holds one, `task 188`) and "N       NEW GAME", keys paper white, texts grey.
+  - A contact death (`task 189`, `decision 113`): "LOST: CONTACT", "<OBJECT NAME>  <UTC of the contact>", "SPEED <normal speed, 2 decimals> M/S" (a death is just above 1.0 m/s), then the blank line, Return and N as above; no latitude or longitude. The flash: the ship's emissive white #FFFFFF at radiance 1.0 ÷ the exposure, full for 0.1 s of real time, linear to 0 at 1 s (`*contact-flash-…*`, `main.lisp`'s `death-glow-radiance` and `death-glow-colour`).
   - Return and N: `game-restart!` (×1, the outside view reset, the map closed, the input cleared, so the N press does not translate); Return to the clock's latest checkpoint (`clock-checkpoint`, taken on a sim's request when safe) or else the start, N to the start, clearing the latest (`task 188`).
   - Nothing else: no debris simulation, no explosion particles (pillar "small and finished").
 - What follows: a restart from the last checkpoint ("Saving"); there is no permanent death. Before `milestone 5` the checkpoints live in memory: `milestone 2` has only the start state (Return and N are the same); `milestone 3` adds one when an autopilot plan completes and when the ship berths.

@@ -110,15 +110,29 @@ change of view (decision 83)."
 (defparameter *death-glow-end* 3d0 "Real seconds when the glow is out; decision 86.")
 (defparameter *death-glow-colour* #xFF6A1A "sRGB of the entry glow; decision 86.")
 
+(defparameter *contact-flash-radiance* 1d0 "The contact death's flash at its peak; decision 113.")
+(defparameter *contact-flash-full* 0.1d0 "Real seconds at the peak; decision 113.")
+(defparameter *contact-flash-end* 1d0 "Real seconds when the flash is out; decision 113.")
+(defparameter *contact-flash-colour* #xFFFFFF "sRGB of the contact flash; decision 113.")
+
 (defun death-glow-radiance (loss seconds-since-death)
-  "The ship's entry glow SECONDS-SINCE-DEATH real seconds after LOSS: the
-peak for the first *death-glow-full*, linear to 0 at *death-glow-end*; 0
-for a Moon impact (no air) and without a loss."
+  "The ship's glow SECONDS-SINCE-DEATH real seconds after LOSS: the peak for
+the first *death-glow-full*, linear to 0 at *death-glow-end* (a contact's
+flash: *contact-flash-…*); 0 for a Moon impact (no air) and without a loss."
   (let ((s (float seconds-since-death 1d0)))
-    (cond ((or (null loss) (eq (loss-body loss) :moon) (>= s *death-glow-end*)) 0d0)
-          ((<= s *death-glow-full*) (float *death-glow-radiance* 1d0))
-          (t (* *death-glow-radiance*
-                (/ (- *death-glow-end* s) (- *death-glow-end* *death-glow-full*)))))))
+    (multiple-value-bind (peak full end)
+        (if (and loss (eq (loss-cause loss) :contact))
+            (values *contact-flash-radiance* *contact-flash-full* *contact-flash-end*)
+            (values *death-glow-radiance* *death-glow-full* *death-glow-end*))
+      (cond ((or (null loss) (and (eq (loss-cause loss) :crash) (eq (loss-body loss) :moon))
+                 (>= s end))
+             0d0)
+            ((<= s full) (float peak 1d0))
+            (t (* peak (/ (- end s) (- end full))))))))
+
+(defun death-glow-colour (loss)
+  "The sRGB of LOSS's glow: the contact's flash or the entry glow."
+  (if (and loss (eq (loss-cause loss) :contact)) *contact-flash-colour* *death-glow-colour*))
 
 (defun notice-death! (game)
   "After the frame's steps: on a new loss the view becomes :outside (the
@@ -160,7 +174,7 @@ snapped. GAME."
   (game-restart! game))
 
 (defun death-glow! (game exposure)
-  "The ship's emissive slot (decision 80): *death-glow-colour* x
+  "The ship's emissive slot (decision 80): death-glow-colour x
 death-glow-radiance ÷ EXPOSURE, so it reads the same lit or in shadow."
   (let* ((loss (game-loss game))
          (radiance (if loss
@@ -170,7 +184,8 @@ death-glow-radiance ÷ EXPOSURE, so it reads the same lit or in shadow."
          (emissive (render-state-ship-emissive (game-render-state game))))
     (loop for i from 0 for shift in '(16 8 0)
           do (setf (aref emissive i)
-                   (/ (* radiance (srgb-channel-linear *death-glow-colour* shift)) exposure)))))
+                   (/ (* radiance (srgb-channel-linear (death-glow-colour loss) shift))
+                      exposure)))))
 
 (defun encode-game-frame (game encoder target extent elapsed)
   "ELAPSED: real seconds since the last frame, nil to snap the exposure and

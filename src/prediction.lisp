@@ -285,16 +285,20 @@ its events; PRED."
         (return))
       (when (>= steps budget)
         (return))
-      (let ((cutoff (sim-cutoff sim)))
-        (sim-step-ticks! sim *prediction-level* nil)
+      (let ((cutoff (sim-cutoff sim))
+            (zero (eql (sim-step-ticks! sim *prediction-level* nil) 0)))
         ;; The copy's notices and requests are nobody's (decision 112).
         (setf (sim-notices sim) nil
               (sim-checkpoint-request sim) nil)
         (incf steps)
+        ;; A contact answered at the step's start: its node replaced.
+        (when (and zero (> (prediction-count pred) (prediction-head pred)))
+          (decf (prediction-count pred)))
         (unless (push-node! pred sim)
           (setf (prediction-state pred) :complete)
           (return))
-        (apsis-search! pred (- (prediction-count pred) 2))
+        (unless zero
+          (apsis-search! pred (- (prediction-count pred) 2)))
         (cond ((sim-loss sim)
                (setf (prediction-impact pred) (sim-loss sim))
                (push-event! pred :impact (loss-time (sim-loss sim))))

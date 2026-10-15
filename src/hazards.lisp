@@ -5,13 +5,15 @@
 ;;; decision 34: How death works). Milestone 2: Earth (R + 100 km, the
 ;;; central body) and the Moon (R, a third body) from Earth's frame.
 
-(defstruct (loss (:constructor make-loss (cause body time speed latitude longitude)))
-  (cause :crash :type keyword :read-only t)
+(defstruct (loss (:constructor make-loss (cause body time speed latitude longitude
+                                          &optional object)))
+  (cause :crash :type keyword :read-only t)         ; :crash or :contact
   (body :earth :type keyword :read-only t)
   (time 0d0 :type double-float :read-only t)        ; s, the impact, off the grid
-  (speed 0d0 :type double-float :read-only t)       ; m/s, relative to the body
+  (speed 0d0 :type double-float :read-only t)       ; m/s, relative to the body; :contact the normal speed
   (latitude 0d0 :type double-float :read-only t)    ; rad, body-fixed
-  (longitude 0d0 :type double-float :read-only t))  ; rad, east, (−π, π]
+  (longitude 0d0 :type double-float :read-only t)   ; rad, east, (−π, π]
+  (object nil :type (or null keyword) :read-only t)) ; :contact: the object's key
 
 (defun sim-lost-p (sim) (and (sim-loss sim) t))
 
@@ -314,3 +316,555 @@ at that end. Conses nothing unless an object is removed."
                       (object-remove! sim object end :burned-up (crash-point body p end)
                                       (body-key body))))))))
     sim))
+
+;;; Contact with objects (docs/architecture.md "Collisions and the Sun";
+;;; decision 44: Contact, capture and berthing in the simulation, decision
+;;; 112, decision 113): the stack against each promoted object after the
+;;; crash tests; objects never against each other. PLACEHOLDER(190): the
+;;; grapple tip first, and a latched load's shapes and mass in the stack.
+
+(defparameter *contact-substep* 0.25d0
+  "m of relative motion between narrow-phase samples at most; decision 44.")
+(defparameter *contact-time-tolerance* 1d-4 "s: the first overlap's bisection; decision 44.")
+(defparameter *contact-restitution* 0.3d0 "decision 44.")
+(defparameter *contact-death-speed* 1d0 "m/s: a faster normal speed kills; decision 33.")
+(declaim (type double-float *contact-substep* *contact-time-tolerance* *contact-restitution*
+               *contact-death-speed*))
+
+(defstruct (contact (:constructor make-contact ()) (:copier nil))
+  "Outside the sim (decision 112): the scratch a step's start is saved
+into, and the last contact responded to."
+  (scratch nil :type (or null sim))
+  (saved nil :type boolean)                    ; the scratch holds this step's start
+  (count 0 :type fixnum)                       ; contacts responded to
+  (object 0 :type fixnum)                      ; the last one's object, by index
+  (time 0d0 :type double-float)                ; s, its t_c
+  (speed 0d0 :type double-float)               ; m/s, the points' relative velocity along n, < 0
+  (normal (make-vec3) :type vec3)              ; unit, inertial, from the stack to the object
+  (r-s (make-vec3) :type vec3)                 ; m, the point from the stack's CoM, inertial
+  (r-o (make-vec3) :type vec3))                ; m, the point from the object's CoM
+
+(defvar *contact* (make-contact))
+(declaim (type contact *contact*))
+
+(defmacro with-stack-properties ((properties sim) &body body)
+  "BODY with PROPERTIES SIM's stack's mass properties, stack-allocated."
+  (let ((com (gensym)) (inertia (gensym)) (inverse (gensym)))
+    `(let* ((,com (make-vec3)) (,inertia (make-mat3)) (,inverse (make-mat3))
+            (,properties (make-mass-properties :com ,com :inertia ,inertia
+                                               :inertia-inverse ,inverse)))
+       (declare (dynamic-extent ,com ,inertia ,inverse ,properties))
+       (locally (declare (inline ship-mass-properties))
+         (ship-mass-properties (ship-state-m-p (sim-ship ,sim)) nil ,properties))
+       ,@body)))
+
+(declaim (inline contact-candidate-p))
+(defun contact-candidate-p (sim object index)
+  "OBJECT, SIM's INDEXth, can touch the stack: promoted, not excluded, not
+the latched load or the berth station."
+  (declare (type sim sim) (type object object) (type fixnum index))
+  (and (eq (object-status object) :promoted)
+       (not (eql index (sim-excluded sim)))
+       (not (eql index (grapple-object (sim-grapple sim))))))
+
+(defun contact-within-reach-p (sim level until)
+  "True when a candidate's bounding sphere may meet the stack's in SIM's
+next step at LEVEL with UNTIL: the distance against both bounds, 1 m and
+twice the relative motion's reach (speed, full engine and RCS, the tidal
+term 4 μ d / r³). Conses nothing."
+  (declare (optimize speed) (type sim sim) (type fixnum level) (type (or null double-float) until)
+           (inline step-h stack-bound))
+  (let ((objects (sim-objects sim)))
+    (unless (loop for object across objects
+                  for i of-type fixnum from 0
+                  thereis (contact-candidate-p sim object i))
+      (return-from contact-within-reach-p nil))
+    (with-stack-properties (properties sim)
+      (let* ((ship (sim-ship sim))
+             (h (step-h sim level until))
+             (bound (stack-bound (mass-properties-com properties)))
+             (r (vec3-norm (ship-state-r ship)))
+             (mu (body-mu (body (sim-body sim))))
+             (thrust (/ (+ *engine-thrust* (* +rcs-count+ *rcs-thrust*)) *ship-dry-mass*)))
+        (declare (type double-float h r))
+        (flet ((distance (a b)
+                 (declare (type vec3 a b))
+                 (let ((dx (- (aref a 0) (aref b 0))) (dy (- (aref a 1) (aref b 1)))
+                       (dz (- (aref a 2) (aref b 2))))
+                   (sqrt (the (double-float 0d0) (+ (* dx dx) (* dy dy) (* dz dz)))))))
+          (loop for object across objects
+                for i of-type fixnum from 0
+                thereis (and (contact-candidate-p sim object i)
+                             (let* ((state (object-state object))
+                                    (d (distance (ship-state-r state) (ship-state-r ship)))
+                                    (w (distance (ship-state-v state) (ship-state-v ship)))
+                                    (a (+ thrust (/ (* 4 mu (+ d (* w h))) (* r r r)))))
+                               (<= d (+ bound (object-def-bound (object-def-of object)) 1d0
+                                        (* 2 (+ (* w h) (* 0.5d0 a h h)))))))))))))
+
+(defun same-objects-p (a b)
+  "Sims A and B hold the same objects' definitions."
+  (let ((x (sim-objects a)) (y (sim-objects b)))
+    (and (= (length x) (length y))
+         (every (lambda (o p) (eq (object-def-of o) (object-def-of p))) x y))))
+
+(defun contact-save! (sim level until)
+  "Before SIM's step (decision 112): its state saved into the scratch when a
+candidate is within reach (contact-within-reach-p); the scratch made on the
+first save. Conses nothing after that."
+  (declare (type sim sim) (type fixnum level) (type (or null double-float) until))
+  (let ((contact *contact*))
+    (setf (contact-saved contact) nil)
+    (when (contact-within-reach-p sim level until)
+      (let ((scratch (contact-scratch contact)))
+        (unless (and scratch (same-objects-p scratch sim))
+          (setf scratch (copy-sim sim)
+                (contact-scratch contact) scratch))
+        (sim-assign! scratch sim)
+        (setf (contact-saved contact) t)))
+    nil))
+
+;;; Shapes: a box is its centre, its rotation (row-major, column i its axis
+;;; i) and its half-extents; a sphere its centre and radius. OUT: depth,
+;;; normal from the stack's shape to the object's, contact point.
+
+(deftype contact-out () '(simple-array double-float (7)))
+
+(declaim (inline quat-matrix! column-dot box-support! box-closest!))
+
+(defun quat-matrix! (m q)
+  "Q's rotation matrix into M, row-major."
+  (declare (type mat3 m) (type quat q))
+  (with-quat (((w x y z) q))
+    (setf (aref m 0) (- 1 (* 2 (+ (* y y) (* z z)))) (aref m 1) (* 2 (- (* x y) (* w z)))
+          (aref m 2) (* 2 (+ (* x z) (* w y))) (aref m 3) (* 2 (+ (* x y) (* w z)))
+          (aref m 4) (- 1 (* 2 (+ (* x x) (* z z)))) (aref m 5) (* 2 (- (* y z) (* w x)))
+          (aref m 6) (* 2 (- (* x z) (* w y))) (aref m 7) (* 2 (+ (* y z) (* w x)))
+          (aref m 8) (- 1 (* 2 (+ (* x x) (* y y))))))
+  m)
+
+(defun column-dot (m i v)
+  "Column I of M dotted with V."
+  (declare (type mat3 m) (type (integer 0 2) i) (type vec3 v))
+  (+ (* (aref m i) (aref v 0)) (* (aref m (+ 3 i)) (aref v 1)) (* (aref m (+ 6 i)) (aref v 2))))
+
+(defun box-support! (out c m e direction toward)
+  "The box's farthest point along DIRECTION into OUT; an axis nearly
+perpendicular to it takes TOWARD's coordinate, clamped (a face's or edge's
+point nearest TOWARD)."
+  (declare (type vec3 out c e direction toward) (type mat3 m))
+  (let ((d (make-vec3)) (x 0d0) (y 0d0) (z 0d0))
+    (declare (dynamic-extent d) (type double-float x y z))
+    (vec3-sub! d toward c)
+    (flet ((coordinate (i)
+             (let ((s (column-dot m i direction)) (half (aref e i)))
+               (if (< (abs s) 1d-6)
+                   (max (- half) (min half (column-dot m i d)))
+                   (if (plusp s) half (- half))))))
+      (setf x (coordinate 0) y (coordinate 1) z (coordinate 2)))
+    (dotimes (k 3 out)
+      (setf (aref out k) (+ (aref c k) (* x (aref m (* 3 k))) (* y (aref m (+ 1 (* 3 k))))
+                            (* z (aref m (+ 2 (* 3 k)))))))))
+
+(defun box-closest! (out p c m e)
+  "The box's point nearest P into OUT (P itself inside)."
+  (declare (type vec3 out p c e) (type mat3 m))
+  (let ((d (make-vec3)) (x 0d0) (y 0d0) (z 0d0))
+    (declare (dynamic-extent d) (type double-float x y z))
+    (vec3-sub! d p c)
+    (flet ((coordinate (i)
+             (let ((half (aref e i))) (max (- half) (min half (column-dot m i d))))))
+      (setf x (coordinate 0) y (coordinate 1) z (coordinate 2)))
+    (dotimes (k 3 out)
+      (setf (aref out k) (+ (aref c k) (* x (aref m (* 3 k))) (* y (aref m (+ 1 (* 3 k))))
+                            (* z (aref m (+ 2 (* 3 k)))))))))
+
+(defun box-box-contact! (out ca ma ea cb mb eb)
+  "Boxes A and B by their 15 separating axes: nil when one separates them;
+else true, OUT the least penetration's depth and axis (A to B; an edge
+pair's axis must be 5 % shallower to win over a face's) and the midpoint of
+each box's deepest point brought into the other."
+  (declare (optimize speed) (type contact-out out) (type vec3 ca ea cb eb) (type mat3 ma mb))
+  (let ((d (make-vec3)) (axis (make-vec3)) (best (make-vec3)) (pa (make-vec3)) (pb (make-vec3))
+        (minus (make-vec3))
+        (best-depth most-positive-double-float))
+    (declare (dynamic-extent d axis best pa pb minus) (type double-float best-depth))
+    (vec3-sub! d cb ca)
+    (flet ((separates-p (bias)
+             ;; AXIS, unit: true when it separates; else its depth kept if least.
+             (let* ((dist (vec3-dot d axis))
+                    (depth (- (+ (* (aref ea 0) (abs (column-dot ma 0 axis)))
+                                 (* (aref ea 1) (abs (column-dot ma 1 axis)))
+                                 (* (aref ea 2) (abs (column-dot ma 2 axis)))
+                                 (* (aref eb 0) (abs (column-dot mb 0 axis)))
+                                 (* (aref eb 1) (abs (column-dot mb 1 axis)))
+                                 (* (aref eb 2) (abs (column-dot mb 2 axis))))
+                              (abs dist))))
+               (declare (type double-float bias dist depth))
+               (cond ((< depth 0d0) t)
+                     (t (when (< (* bias depth) best-depth)
+                          (setf best-depth depth)
+                          (vec3-scale! best axis (if (minusp dist) -1d0 1d0)))
+                        nil)))))
+      (flet ((faces (m)
+               (declare (type mat3 m))
+               (dotimes (i 3)
+                 (vec3-set! axis (aref m i) (aref m (+ 3 i)) (aref m (+ 6 i)))
+                 (when (separates-p 1d0)
+                   (return-from box-box-contact! nil)))))
+        (faces ma)
+        (faces mb))
+      (dotimes (i 3)
+        (dotimes (j 3)
+          (let ((ax (aref ma i)) (ay (aref ma (+ 3 i))) (az (aref ma (+ 6 i)))
+                (bx (aref mb j)) (by (aref mb (+ 3 j))) (bz (aref mb (+ 6 j))))
+            (vec3-set! axis (- (* ay bz) (* az by)) (- (* az bx) (* ax bz)) (- (* ax by) (* ay bx)))
+            (let ((length (vec3-norm axis)))
+              (when (> length 1d-9)
+                (vec3-scale! axis axis (/ length))
+                (when (separates-p 1.05d0)
+                  (return-from box-box-contact! nil))))))))
+    (box-support! pa ca ma ea best cb)
+    (vec3-scale! minus best -1d0)
+    (box-support! pb cb mb eb minus ca)
+    (box-closest! pa pa cb mb eb)
+    (box-closest! pb pb ca ma ea)
+    (setf (aref out 0) best-depth)
+    (dotimes (k 3 t)
+      (setf (aref out (+ 1 k)) (aref best k)
+            (aref out (+ 4 k)) (* 0.5d0 (+ (aref pa k) (aref pb k)))))))
+
+(declaim (inline box-sphere-contact!))
+(defun box-sphere-contact! (out ca ma ea cb radius)
+  "Box A and the sphere B by the box's point nearest B's centre: nil when
+apart; else true, OUT the depth, the normal (A to B) and the midpoint of
+the two deepest points."
+  (declare (optimize speed) (type contact-out out) (type vec3 ca ea cb) (type mat3 ma)
+           (type double-float radius))
+  (let ((q (make-vec3)) (d (make-vec3)) (n (make-vec3)) (local (make-vec3)))
+    (declare (dynamic-extent q d n local))
+    (box-closest! q cb ca ma ea)
+    (vec3-sub! d cb q)
+    (let ((dist (vec3-norm d)))
+      (when (>= dist radius)
+        (return-from box-sphere-contact! nil))
+      (cond ((> dist 1d-9)
+             (vec3-scale! n d (/ dist))
+             (setf (aref out 0) (- radius dist)))
+            (t
+             ;; The centre inside: the face it is nearest.
+             (vec3-sub! d cb ca)
+             (dotimes (i 3) (setf (aref local i) (column-dot ma i d)))
+             (let ((k 0) (least most-positive-double-float))
+               (declare (type (integer 0 2) k) (type double-float least))
+               (dotimes (i 3)
+                 (let ((gap (- (aref ea i) (abs (aref local i)))))
+                   (when (< gap least) (setf least gap k i))))
+               (let ((sign (if (minusp (aref local k)) -1d0 1d0)))
+                 (vec3-set! n (* sign (aref ma k)) (* sign (aref ma (+ 3 k))) (* sign (aref ma (+ 6 k))))
+                 (setf (aref out 0) (+ radius least))
+                 (vec3-add-scaled! q cb n least)))))
+      (dotimes (k 3 t)
+        (setf (aref out (+ 1 k)) (aref n k)
+              (aref out (+ 4 k)) (* 0.5d0 (+ (aref q k) (- (aref cb k) (* radius (aref n k))))))))))
+
+(defun stack-object-contact! (out p q-s q-o com def)
+  "The stack's shapes (its CoM at the origin, attitude Q-S, COM its CoM in
+body axes from R) against DEF's (its CoM at P, attitude Q-O), inertial
+axes: nil when none overlap; else true, OUT the deepest pair's depth,
+normal and point. Conses nothing."
+  (declare (optimize speed) (type contact-out out) (type vec3 p com) (type quat q-s q-o)
+           (type object-def def))
+  (let ((ms (make-mat3)) (mo (make-mat3)) (ca (make-vec3)) (ea (make-vec3)) (cb (make-vec3))
+        (eb (make-vec3)) (local (make-vec3))
+        (pair (make-array 7 :element-type 'double-float))
+        (hit nil))
+    (declare (dynamic-extent ms mo ca ea cb eb local pair))
+    (quat-matrix! ms q-s)
+    (quat-matrix! mo q-o)
+    (loop for box across *ship-collision-boxes*
+          do (vec3-sub! local (shape-centre box) com)
+             (mat3*vec3! ca ms local)
+             (vec3-scale! ea (shape-size box) 0.5d0)
+             (dolist (shape (object-def-shapes def))
+               (mat3*vec3! cb mo (shape-centre shape))
+               (vec3-add! cb cb p)
+               (when (if (eq (shape-kind shape) :box)
+                         (progn (vec3-scale! eb (shape-size shape) 0.5d0)
+                                (box-box-contact! pair ca ms ea cb mo eb))
+                         (box-sphere-contact! pair ca ms ea cb (shape-radius shape)))
+                 (when (or (not hit) (> (aref pair 0) (aref out 0)))
+                   (replace out pair)
+                   (setf hit t)))))
+    hit))
+
+(declaim (inline slerp-angle))
+(defun slerp-angle (a b)
+  "rad: the angle quat-slerp! turns through from A to B."
+  (declare (type quat a b))
+  (let ((d (+ (* (aref a 0) (aref b 0)) (* (aref a 1) (aref b 1))
+              (* (aref a 2) (aref b 2)) (* (aref a 3) (aref b 3)))))
+    (* 2 (acos (min 1d0 (abs d))))))
+
+(deftype contact-result () '(simple-array double-float (11)))  ; s, speed, n, r-s, r-o
+
+(declaim (inline contact-approach! contact-find!))
+
+(defun contact-approach! (result s h out p dp q-s q-o s0 s1 o0 o1)
+  "At S of the step (OUT the overlap there, P and DP the relative Hermite,
+Q-S and Q-O the attitudes, ω linear from the states S0 to S1 and O0 to
+O1): true when the contact points approach, RESULT then filled."
+  (declare (optimize speed) (type contact-result result) (type double-float s h)
+           (type contact-out out) (type vec3 p dp) (type quat q-s q-o)
+           (type ship-state s0 s1 o0 o1))
+  (let ((n (make-vec3)) (r-s (make-vec3)) (r-o (make-vec3)) (w (make-vec3)) (wi (make-vec3))
+        (u (make-vec3)) (x (make-vec3)))
+    (declare (dynamic-extent n r-s r-o w wi u x))
+    (vec3-set! n (aref out 1) (aref out 2) (aref out 3))
+    (vec3-set! r-s (aref out 4) (aref out 5) (aref out 6))
+    (vec3-sub! r-o r-s p)
+    (vec3-scale! u dp (/ h))
+    (vec3-lerp! w (ship-state-w o0) (ship-state-w o1) s)
+    (quat-rotate! wi q-o w)
+    (vec3-add! u u (vec3-cross! x wi r-o))
+    (vec3-lerp! w (ship-state-w s0) (ship-state-w s1) s)
+    (quat-rotate! wi q-s w)
+    (vec3-sub! u u (vec3-cross! x wi r-s))
+    (let ((speed (vec3-dot u n)))
+      (when (< speed 0d0)
+        (setf (aref result 0) s
+              (aref result 1) speed)
+        (replace result n :start1 2)
+        (replace result r-s :start1 5)
+        (replace result r-o :start1 8)
+        t))))
+
+
+(defun contact-find! (result sim scratch index com bound h)
+  "SIM's step of H from SCRATCH against its INDEXth object: the broad phase
+on the relative Hermite against BOUND and the object's, then samples from
+the spheres' meeting at most *contact-substep* of relative motion apart (or
+as far as the spheres' gap allows), the first overlap bisected to
+*contact-time-tolerance*. True when it is approaching, RESULT then s, the
+normal speed, n, r-s and r-o at it."
+  (declare (optimize speed) (type contact-result result) (type sim sim scratch)
+           (type fixnum index) (type vec3 com) (type double-float bound h))
+  (let* ((object (svref (sim-objects sim) index))
+         (def (object-def-of object))
+         (o0 (object-state (svref (sim-objects scratch) index)))
+         (o1 (object-state object))
+         (s0 (sim-ship scratch))
+         (s1 (sim-ship sim))
+         (c (make-array 12 :element-type 'double-float))
+         (p0 (make-vec3)) (u0 (make-vec3)) (p1 (make-vec3)) (u1 (make-vec3))
+         (reach (+ bound (object-def-bound def))))
+    (declare (dynamic-extent c p0 u0 p1 u1) (type double-float reach))
+    (vec3-sub! p0 (ship-state-r o0) (ship-state-r s0))
+    (vec3-sub! u0 (ship-state-v o0) (ship-state-v s0))
+    (vec3-sub! p1 (ship-state-r o1) (ship-state-r s1))
+    (vec3-sub! u1 (ship-state-v o1) (ship-state-v s1))
+    (hermite-set! c p0 u0 p1 u1 h)
+    (let ((s-enter (hermite-crossing c reach (hermite-sag c))))
+      (declare (type double-float s-enter))
+      (when (< s-enter 0d0)
+        (return-from contact-find! nil))
+      (let ((rate (max 1d-12
+                       (+ (sqrt (+ (expt (aref c 3) 2) (expt (aref c 4) 2) (expt (aref c 5) 2)))
+                          (* 2 (sqrt (+ (expt (aref c 6) 2) (expt (aref c 7) 2) (expt (aref c 8) 2))))
+                          (* 3 (sqrt (+ (expt (aref c 9) 2) (expt (aref c 10) 2) (expt (aref c 11) 2))))
+                          (* (slerp-angle (ship-state-q s0) (ship-state-q s1)) bound)
+                          (* (slerp-angle (ship-state-q o0) (ship-state-q o1))
+                             (object-def-bound def)))))
+            (p (make-vec3)) (dp (make-vec3)) (q-s (make-quat)) (q-o (make-quat))
+            (out (make-array 7 :element-type 'double-float)))
+        (declare (dynamic-extent p dp q-s q-o out) (type double-float rate))
+        (flet ((overlap-p (s)
+                 (declare (type double-float s))
+                 (hermite-point! p dp c s)
+                 (quat-slerp! q-s (ship-state-q s0) (ship-state-q s1) s)
+                 (quat-slerp! q-o (ship-state-q o0) (ship-state-q o1) s)
+                 (stack-object-contact! out p q-s q-o com def)))
+          (let ((s s-enter) (previous -1d0))
+            (declare (type double-float s previous))
+            (loop
+              (when (overlap-p s)
+                (let ((hit s))
+                  (declare (type double-float hit))
+                  (when (>= previous 0d0)
+                    (let ((lo previous) (hi s))
+                      (declare (type double-float lo hi))
+                      (loop while (> (* (- hi lo) h) *contact-time-tolerance*)
+                            do (let ((mid (* 0.5d0 (+ lo hi))))
+                                 (if (overlap-p mid) (setf hi mid) (setf lo mid))))
+                      (setf hit hi)
+                      (overlap-p hit)))
+                  (return-from contact-find!
+                    (contact-approach! result hit h out p dp q-s q-o s0 s1 o0 o1))))
+              (when (>= s 1d0)
+                (return-from contact-find! nil))
+              (setf previous s
+                    s (min 1d0 (+ s (/ (max *contact-substep* (- (vec3-norm p) reach)) rate)))))))))))
+
+(defun contact-normal-speed (sim index n r-s r-o)
+  "m/s: the contact points' relative velocity (the INDEXth object's less the
+stack's) along N in SIM now; R-S and R-O the point from each CoM, inertial."
+  (declare (type sim sim) (type fixnum index) (type vec3 n r-s r-o))
+  (let ((a (make-vec3)) (b (make-vec3)) (w (make-vec3)))
+    (declare (dynamic-extent a b w))
+    (flet ((point-velocity! (out state r)
+             (quat-rotate! w (ship-state-q state) (ship-state-w state))
+             (vec3-cross! out w r)
+             (vec3-add! out out (ship-state-v state))))
+      (point-velocity! a (object-state (svref (sim-objects sim) index)) r-o)
+      (point-velocity! b (sim-ship sim) r-s)
+      (vec3-sub! a a b)
+      (vec3-dot a n))))
+
+(defun contact-impulse! (sim index n r-s r-o &optional (restitution *contact-restitution*))
+  "The frictionless impulse j along N at the contact point (R-S from the
+stack's CoM, R-O from the INDEXth object's; inertial) with RESTITUTION, to
+both bodies' v and ω (decision 44): j = −(1 + e) v_n / (1/m_s + 1/m_o +
+n·((I_s⁻¹ (r_s × n)) × r_s) + n·((I_o⁻¹ (r_o × n)) × r_o)); a berth or
+fixed object's terms zero, and the ship's while berthed. Nil when the
+points don't approach or neither body moves; else j."
+  (declare (type sim sim) (type fixnum index) (type vec3 n r-s r-o)
+           (type double-float restitution))
+  (let ((v-n (contact-normal-speed sim index n r-s r-o)))
+    (when (>= v-n 0d0)
+      (return-from contact-impulse! nil))
+    (with-stack-properties (properties sim)
+      (let* ((ship (sim-ship sim))
+             (object (svref (sim-objects sim) index))
+             (def (object-def-of object))
+             (state (object-state object))
+             (ship-free (not (sim-berthed sim)))
+             (object-free (eq (object-def-kind def) :towable))
+             (x-s (make-vec3)) (x-o (make-vec3)) (rb (make-vec3)) (nb (make-vec3))
+             (y (make-vec3)) (conjugate (make-quat))
+             (k 0d0))
+        (declare (dynamic-extent x-s x-o rb nb y conjugate) (type double-float k))
+        (flet ((arm! (x q inverse r)
+                 ;; X = I⁻¹ (r × n), body axes; n·(X × r).
+                 (quat-conjugate! conjugate q)
+                 (quat-rotate! rb conjugate r)
+                 (quat-rotate! nb conjugate n)
+                 (vec3-cross! y rb nb)
+                 (mat3*vec3! x inverse y)
+                 (vec3-dot (vec3-cross! y x rb) nb)))
+          (when ship-free
+            (incf k (+ (/ (mass-properties-mass properties))
+                       (arm! x-s (ship-state-q ship) (mass-properties-inertia-inverse properties)
+                             r-s))))
+          (when object-free
+            (incf k (+ (/ (object-def-mass def))
+                       (arm! x-o (ship-state-q state) (object-def-tensor-inverse def) r-o))))
+          (when (<= k 0d0)
+            (return-from contact-impulse! nil))
+          (let ((j (/ (* (- (+ 1 restitution)) v-n) k)))
+            (when ship-free
+              (vec3-add-scaled! (ship-state-v ship) (ship-state-v ship) n
+                                (- (/ j (mass-properties-mass properties))))
+              (vec3-add-scaled! (ship-state-w ship) (ship-state-w ship) x-s (- j)))
+            (when object-free
+              (vec3-add-scaled! (ship-state-v state) (ship-state-v state) n (/ j (object-def-mass def)))
+              (vec3-add-scaled! (ship-state-w state) (ship-state-w state) x-o j))
+            j))))))
+
+(defun contact-death! (sim scratch index s ticks speed)
+  "Death by contact at S of SIM's step of TICKS from SCRATCH: the ship and
+the promoted objects at their Hermite states there (attitudes slerped, ω
+and m_p of the step's end), t the contact time, the loss :contact with the
+INDEXth object's key and the normal SPEED."
+  (declare (type sim sim scratch) (type fixnum index ticks) (type double-float s speed))
+  (let* ((h (* ticks +fine-step+))
+         (time (+ (sim-t scratch) (* s h)))
+         (c (make-array 12 :element-type 'double-float))
+         (dp (make-vec3)) (q (make-quat)))
+    (flet ((at! (old new)
+             (hermite-set! c (ship-state-r old) (ship-state-v old) (ship-state-r new)
+                           (ship-state-v new) h)
+             (hermite-point! (ship-state-r new) dp c s)
+             (vec3-scale! (ship-state-v new) dp (/ h))
+             (replace (ship-state-q new) (quat-slerp! q (ship-state-q old) (ship-state-q new) s))))
+      (at! (sim-ship scratch) (sim-ship sim))
+      (loop for object across (sim-objects sim)
+            for old across (sim-objects scratch)
+            when (and (object-promoted-p object) (object-promoted-p old))
+              do (at! (object-state old) (object-state object))))
+    (multiple-value-bind (latitude longitude)
+        (latitude-longitude (body (sim-body sim)) (ship-state-r (sim-ship sim)) time)
+      (setf (sim-t sim) time
+            (sim-loss sim) (make-loss :contact (sim-body sim) time speed latitude longitude
+                                      (object-key (svref (sim-objects sim) index)))))
+    sim))
+
+(defun contact-respond! (sim scratch level ticks index result)
+  "The response to the contact in RESULT with SIM's INDEXth object, found
+in its step of TICKS at LEVEL from SCRATCH: above *contact-death-speed*
+death at t_c; else the step redone from SCRATCH to the grid point g at or
+before t_c (none when g is the start; the end state when it is the end)
+and the impulse there. The ticks the step took."
+  (declare (type sim sim scratch) (type fixnum level ticks index) (type contact-result result))
+  (let* ((contact *contact*)
+         (s (aref result 0))
+         (speed (aref result 1))
+         (t0 (sim-t scratch)))
+    (setf (contact-object contact) index
+          (contact-time contact) (+ t0 (* s ticks +fine-step+))
+          (contact-speed contact) speed)
+    (replace (contact-normal contact) result :start2 2)
+    (replace (contact-r-s contact) result :start2 5)
+    (replace (contact-r-o contact) result :start2 8)
+    (incf (contact-count contact))
+    (when (> (- speed) *contact-death-speed*)
+      (contact-death! sim scratch index s ticks (- speed))
+      (return-from contact-respond! ticks))
+    (let ((g (min ticks (floor (* s ticks)))))
+      (declare (type fixnum g))
+      (unless (= g ticks)
+        (sim-assign! sim scratch)
+        (when (> g 0)
+          (let ((*contact-redo* t))
+            (sim-step-ticks! sim level (+ t0 (* g +fine-step+))))))
+      (unless (sim-loss sim)
+        ;; The point kept from the stack's CoM, so both bodies take the
+        ;; impulse at one point.
+        (let ((r-o (contact-r-o contact)))
+          (vec3-sub! r-o (contact-r-s contact)
+                     (vec3-sub! r-o (ship-state-r (object-state (svref (sim-objects sim) index)))
+                                (ship-state-r (sim-ship sim)))))
+        (contact-impulse! sim index (contact-normal contact) (contact-r-s contact)
+                          (contact-r-o contact))
+        (when (= g ticks)
+          (sim-update-objects! sim)))
+      g)))
+
+(defun contact-test! (sim level ticks)
+  "After SIM's step of TICKS at LEVEL and its crash tests, when contact-save!
+saved its start: each candidate's contact-find!, the earliest answered by
+contact-respond!. Nil without a contact (promotion and demotion are the
+caller's), else the ticks the step took. Conses nothing without a contact."
+  (declare (type sim sim) (type fixnum level ticks))
+  (let ((contact *contact*))
+    (unless (contact-saved contact)
+      (return-from contact-test! nil))
+    (setf (contact-saved contact) nil)
+    (let ((scratch (contact-scratch contact))
+          (h (* ticks +fine-step+))
+          (result (make-array 11 :element-type 'double-float))
+          (best (make-array 11 :element-type 'double-float))
+          (found -1))
+      (declare (dynamic-extent result best) (type fixnum found) (type double-float h))
+      (with-stack-properties (properties sim)
+        (let* ((com (mass-properties-com properties))
+               (bound (locally (declare (inline stack-bound)) (stack-bound com))))
+          (loop for object across (sim-objects sim)
+                for i of-type fixnum from 0
+                when (and (contact-candidate-p sim object i)
+                          (object-promoted-p (svref (sim-objects scratch) i))
+                          (contact-find! result sim scratch i com bound h)
+                          (or (< found 0) (< (aref result 0) (aref best 0))))
+                  do (replace best result)
+                     (setf found i))))
+      (and (>= found 0)
+           (contact-respond! sim scratch level ticks found best)))))

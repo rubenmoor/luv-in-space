@@ -472,26 +472,37 @@ box's colour; a flashing run in its :off phase not at all. OUT."
 (defun lost-panel-lines (loss &optional checkpoint)
   "The LOST panel of LOSS (decision 86): the title red inverted and steady,
 the body and the impact's UTC, its speed relative to the body as the
-readout's SPD, latitude and longitude, a blank line, Return (to the latest
-checkpoint when CHECKPOINT, decision 112) and N."
+readout's SPD, latitude and longitude; for a contact (decision 113) the
+object's name and the UTC, the normal speed to 0.01 m/s; a blank line, Return (to the
+latest checkpoint when CHECKPOINT, decision 112) and N."
   (flet ((label (text) (readout-run text *readout-label-colour*))
          (value (text) (readout-run text *readout-value-colour*))
          (degrees (angle) (format-fixed (abs (rad->deg angle)) 2)))
-    (list (list (readout-run (format nil "LOST: ~A" (symbol-name (loss-cause loss)))
-                             *readout-danger-colour* :inverted))
-          (list (value (format nil "~:[EARTH~;MOON~]  ~A" (eq (loss-body loss) :moon)
-                               (format-utc (loss-time loss)))))
-          (list (label "SPEED ") (value (format-speed (loss-speed loss))))
-          (list (label "LAT ")
-                (value (format nil "~A° ~:[N~;S~]" (degrees (loss-latitude loss))
-                               (minusp (loss-latitude loss))))
-                (label "  LON ")
-                (value (format nil "~A° ~:[E~;W~]" (degrees (loss-longitude loss))
-                               (minusp (loss-longitude loss)))))
-          '()
-          (list (value "RETURN")
-                (label (if checkpoint "  RESTART FROM CHECKPOINT" "  RESTART FROM START")))
-          (list (value "N") (label "       NEW GAME")))))
+    (append
+     (list (list (readout-run (format nil "LOST: ~A" (symbol-name (loss-cause loss)))
+                              *readout-danger-colour* :inverted)))
+     (if (eq (loss-cause loss) :contact)
+         (list (list (value (format nil "~A  ~A"
+                                    (object-def-name (object-definition (loss-object loss)))
+                                    (format-utc (loss-time loss)))))
+               ;; Two decimals: a death is just above 1.0 m/s.
+               (list (label "SPEED ")
+                     (value (if (< (loss-speed loss) 100d0)
+                                (format nil "~A M/S" (format-fixed (loss-speed loss) 2))
+                                (format-speed (loss-speed loss))))))
+         (list (list (value (format nil "~:[EARTH~;MOON~]  ~A" (eq (loss-body loss) :moon)
+                                    (format-utc (loss-time loss)))))
+               (list (label "SPEED ") (value (format-speed (loss-speed loss))))
+               (list (label "LAT ")
+                     (value (format nil "~A° ~:[N~;S~]" (degrees (loss-latitude loss))
+                                    (minusp (loss-latitude loss))))
+                     (label "  LON ")
+                     (value (format nil "~A° ~:[E~;W~]" (degrees (loss-longitude loss))
+                                    (minusp (loss-longitude loss)))))))
+     (list '()
+           (list (value "RETURN")
+                 (label (if checkpoint "  RESTART FROM CHECKPOINT" "  RESTART FROM START")))
+           (list (value "N") (label "       NEW GAME"))))))
 
 (defun lost-panel-origin (lines extent)
   "The top left pixel of the panel's box for LINES in a frame of EXTENT

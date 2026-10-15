@@ -5,10 +5,10 @@
 ;;; 72: Simulation state and the one step function in clock.lisp).
 
 (defun step-sim (sim n level &optional until)
-  "N sim-step!s of SIM at LEVEL, fewer if it reaches UNTIL; SIM."
+  "N sim-step!s of SIM at LEVEL, fewer if it reaches UNTIL or is lost; SIM."
   (declare (type fixnum n level) (inline lis::sim-step!))
   (dotimes (i n sim)
-    (when (and until (>= (lis::sim-t sim) until))
+    (when (or (and until (>= (lis::sim-t sim) until)) (lis::sim-loss sim))
       (return sim))
     (lis::sim-step! sim level :until until)))
 
@@ -677,10 +677,16 @@ from START to END under :full, the Moon and the Sun read by the step."
     (is = (lis::sim-t without) (lis::sim-t with))))
 
 (define-test clock-objects-frame-rates-and-checkpoint
-  ;; 30 m/s prograde from 1 km behind Tern Station: promoted, then beyond
-  ;; 200 km within the orbit and demoted; every frame rate and a restore
-  ;; give the same objects bit for bit.
-  (flet ((departing () (ship-near :tern-station -1000d0 :dv 30d0)))
+  ;; 30 m/s prograde from 1 km behind Tern Station and 200 m off its plane
+  ;; (passing it, not hitting it): promoted, then beyond 200 km within the
+  ;; orbit and demoted; every frame rate and a restore give the same
+  ;; objects bit for bit.
+  (flet ((departing ()
+           (let* ((sim (ship-near :tern-station -1000d0 :dv 30d0))
+                  (r (lis::vec3-copy (lis::ship-state-r (lis::sim-ship sim))))
+                  (v (lis::vec3-copy (lis::ship-state-v (lis::sim-ship sim)))))
+             (place-ship! sim (lis::vec3-add-scaled r (lis::vec3-normalize (lis::vec3-cross r v)) 200d0)
+                          v))))
     (dolist (level '(4 1000))
       (let ((end (+ (lis::start-t) (if (= level 4) 30d0 (* 1.2d0 (drift-period))))))
         (dolist (frames (list '(1/60) *irregular-frames*))

@@ -222,12 +222,14 @@ PERIGEE-ALTITUDE from apogee at the start; the ship far away."
 
 (defun k-17-promoted (perigee-altitude start)
   "K-17-SIM at START (a grid time), the ship on two-body 800 × 130 km from
-the same apogee, K-17 promoted."
+the same apogee, 500 m off its plane (clear of K-17's shapes), K-17
+promoted."
   (let ((sim (k-17-sim perigee-altitude)))
     (setf (lis::sim-t sim) start)
     (multiple-value-bind (r v)
         (rails-point (lis::make-rails (k-17-orbit 130d3) (lis::start-t) :j2 nil) start)
-      (place-ship! sim r v))))
+      (place-ship! sim (lis::vec3-add-scaled r (lis::vec3-normalize (lis::vec3-cross r v)) 500d0)
+                   v))))
 
 (defun removal-point (sim)
   "The closed form's crash point of K-17 on its rails: (latitude longitude)."
@@ -347,3 +349,242 @@ the same apogee, K-17 promoted."
       (false (lis::sim-notices sim)))
     (step-sim sim 10 1)
     (is eq :removed (lis::object-status pod))))
+
+;;; Contact (docs/architecture.md "Testing" → "Contact"; decision 44:
+;;; Contact, capture and berthing in the simulation, decision 113). A wet
+;;; Mule, two-body, beside an object promoted by hand on a 500 km circular
+;;; orbit at (r, 0, 0) moving along +y.
+
+(defun contact-scene (key centre &key (v-rel (lis::vec3 0 0 0)) (q-rel (lis::quat 0 0 0 1))
+                                      (q-o (lis::quat 1 0 0 0)) (w-o (lis::make-vec3)))
+  "The start's sim, :point, object KEY promoted by hand on the orbit (a
+towable at Q-O and W-O, body axes; a berth object in its mode's attitude),
+the ship turned Q-REL from the object's axes, direct mode, at rest
+relative to it but for V-REL: the object's CoM at CENTRE in ship axes from
+R, moving at V-REL (ship axes) relative to the ship's CoM. (values sim
+index)."
+  (let* ((sim (lis::new-game-sim))
+         (index (position key (lis::sim-objects sim) :key #'lis::object-key))
+         (object (lis::sim-object sim key))
+         (radius (+ lis::+radius-earth+ 500d3))
+         (r-o (lis::vec3 radius 0 0))
+         (v-o (lis::vec3 0 (sqrt (/ lis::+mu-earth+ radius)) 0))
+         (q-o (lis::quat-copy q-o))
+         (w-o (lis::vec3-copy w-o)))
+    (unless (eq (lis::object-def-kind (lis::object-def-of object)) :towable)
+      (let ((w (lis::make-vec3)))
+        (lis::object-attitude-into! q-o w (lis::object-attitude object) r-o v-o (lis::sim-t sim))
+        (setf w-o (lis::quat-rotate (lis::quat-conjugate q-o) w))))
+    (let* ((q-s (lis::quat-mul q-o q-rel))
+           (com (lis::mass-properties-com (lis::ship-mass-properties 28000d0 nil)))
+           (r-s (lis::vec3-sub r-o (lis::quat-rotate q-s (lis::vec3-sub centre com))))
+           (v-s (lis::vec3-sub v-o (lis::quat-rotate q-s v-rel))))
+      (setf (lis::sim-model sim) :point
+            (lis::object-status object) :promoted)
+      (lis::ship-state-assign! (lis::object-state object)
+                               (lis::make-ship-state r-o v-o q-o w-o 0d0))
+      (lis::ship-state-assign! (lis::sim-ship sim)
+                               (lis::make-ship-state r-s v-s q-s (lis::make-vec3) 28000d0))
+      (setf (lis::controls-attitude-mode (lis::sim-controls sim)) :direct)
+      (lis::sim-recheck-objects! sim)
+      (values sim index))))
+
+(defparameter *yard-3-radius* 1.814d0)
+
+(defun aft-scene (speed &key (gap 0.2d0) (key :skua-yard-3) (radius *yard-3-radius*))
+  "A sphere GAP m behind the truss box's aft face (x −2.0 from R), 0.5 m
+off its axis, closing at SPEED."
+  (contact-scene key (lis::vec3 (- -2d0 gap radius) 0.5d0 0) :v-rel (lis::vec3 speed 0 0)))
+
+(defun contact-count () (lis::contact-count lis::*contact*))
+
+(defun step-to-contact (sim level end)
+  "Steps of SIM at LEVEL until a contact is answered, it is lost or reaches
+END: (values sim the state before the contact's step, or nil)."
+  (loop until (or (lis::sim-lost-p sim) (>= (lis::sim-t sim) end))
+        do (let ((before (lis::copy-sim sim))
+                 (count (contact-count)))
+             (lis::sim-step! sim level :until end)
+             (unless (= count (contact-count))
+               (return-from step-to-contact (values sim before)))))
+  (values sim nil))
+
+(defun record-normal-speed (sim)
+  "The last contact's normal speed of its points in SIM now."
+  (let ((contact lis::*contact*))
+    (lis::contact-normal-speed sim (lis::contact-object contact) (lis::contact-normal contact)
+                               (lis::contact-r-s contact) (lis::contact-r-o contact))))
+
+(defun stack-momenta (sim index)
+  "(values p L) of SIM's ship and INDEXth object: linear momentum, and
+angular momentum about their common CoM, inertial."
+  (let* ((ship (lis::sim-ship sim))
+         (properties (lis::ship-mass-properties (lis::ship-state-m-p ship) nil))
+         (state (lis::object-state (svref (lis::sim-objects sim) index)))
+         (def (lis::object-def-of (svref (lis::sim-objects sim) index)))
+         (bodies (list (list (lis::mass-properties-mass properties) ship
+                             (lis::mass-properties-inertia properties))
+                       (list (lis::object-def-mass def) state (lis::object-def-tensor def))))
+         (mass (+ (first (first bodies)) (first (second bodies))))
+         (cm (lis::vec3-scale (lis::vec3-add (lis::vec3-scale (lis::ship-state-r ship)
+                                                              (first (first bodies)))
+                                             (lis::vec3-scale (lis::ship-state-r state)
+                                                              (first (second bodies))))
+                              (/ mass)))
+         (p (lis::make-vec3)) (l (lis::make-vec3)))
+    (loop for (m s tensor) in bodies
+          do (setf p (lis::vec3-add p (lis::vec3-scale (lis::ship-state-v s) m))
+                   l (lis::vec3-add l (lis::vec3-add
+                                       (lis::quat-rotate (lis::ship-state-q s)
+                                                         (lis::mat3*vec3 tensor (lis::ship-state-w s)))
+                                       (lis::vec3-scale (lis::vec3-cross
+                                                         (lis::vec3-sub (lis::ship-state-r s) cm)
+                                                         (lis::ship-state-v s))
+                                                        m)))))
+    (values p l)))
+
+(defun vector-error (a b &optional (scale (lis::vec3-norm b)))
+  (/ (lis::vec3-norm (lis::vec3-sub a b)) scale))
+
+(define-test contact-bounce
+  ;; The truss box's aft face into Skua Yard 3 (50 t) at 0.50 m/s, 0.5 m
+  ;; off axis: answered on the step's start at the fine step.
+  (multiple-value-bind (sim index) (aft-scene 0.5d0)
+    (multiple-value-bind (sim before) (step-to-contact sim 1 (+ (lis::start-t) 2))
+      (true before)
+      (false (lis::sim-lost-p sim))
+      (is = index (lis::contact-object lis::*contact*))
+      (is = (lis::sim-t before) (lis::sim-t sim))
+      (true (on-grid-p (lis::sim-t sim)))
+      (true (< (vector-error (lis::contact-normal lis::*contact*)
+                               (lis::quat-rotate (lis::ship-state-q (lis::sim-ship sim))
+                                                 (lis::vec3 -1 0 0)))
+               1d-9))
+      (let ((v0 (record-normal-speed before))
+            (v1 (record-normal-speed sim)))
+        (true (< (abs (+ v0 0.5d0)) 1d-3) "~F m/s before" v0)
+        (true (< (abs (/ (+ v1 (* 0.3d0 v0)) v0)) 1d-9) "~F after ~F" v1 v0))
+      ;; Momentum, the impulse alone in the object's frame (velocities of
+      ;; 0.5 m/s, not 7.6 km/s, so their rounding stays below 1e-12).
+      (let ((shifted (lis::copy-sim before))
+            (v-o (lis::vec3-copy (lis::ship-state-v (lis::object-state (svref (lis::sim-objects before)
+                                                                                index))))))
+        (dolist (state (list (lis::sim-ship shifted)
+                             (lis::object-state (svref (lis::sim-objects shifted) index))))
+          (lis::vec3-sub! (lis::ship-state-v state) (lis::ship-state-v state) v-o))
+        (multiple-value-bind (p0 l0) (stack-momenta shifted index)
+          (let ((contact lis::*contact*))
+            (true (lis::contact-impulse! shifted index (lis::contact-normal contact)
+                                         (lis::contact-r-s contact) (lis::contact-r-o contact))))
+          (multiple-value-bind (p1 l1) (stack-momenta shifted index)
+            (true (< (vector-error p1 p0) 1d-12) "p ~,3E" (vector-error p1 p0))
+            (true (< (vector-error l1 l0) 1d-12) "L ~,3E" (vector-error l1 l0)))
+          (true (< (abs (/ (+ (record-normal-speed shifted) (* 0.3d0 (record-normal-speed before)))
+                           (record-normal-speed before)))
+                   1d-9))))
+      ;; Apart after it: no second contact.
+      (let ((count (contact-count)))
+        (step-sim sim 128 1)
+        (is = count (contact-count))
+        (true (> (record-normal-speed sim) 0d0))))))
+
+(define-test contact-bounce-coarse
+  ;; At ×1,000 the step is redone to the grid point before t_c.
+  (let ((sim (aft-scene 0.5d0 :gap 0.6d0)))
+    (multiple-value-bind (sim before) (step-to-contact sim 1000 (+ (lis::start-t) 10))
+      (true before)
+      (false (lis::sim-lost-p sim))
+      (true (on-grid-p (lis::sim-t sim)))
+      (true (< (lis::sim-t before) (lis::sim-t sim) (lis::contact-time lis::*contact*)))
+      (true (< (- (lis::contact-time lis::*contact*) (lis::sim-t sim)) (/ 1d0 64)))
+      (true (< (abs (- (lis::contact-time lis::*contact*) (lis::sim-t before) 1.2d0)) 1d-3))
+      (true (< 0.1d0 (record-normal-speed sim) 0.2d0) "~F m/s" (record-normal-speed sim)))))
+
+(define-test contact-berth-immovable
+  ;; The ship's aft face (x −2.0 from R) into Tern Station's +x end (17.58 m
+  ;; from its CoM) at 0.5 m/s; the station's state is its own run's.
+  (multiple-value-bind (sim index)
+      (contact-scene :tern-station (lis::vec3 (- -2d0 0.2d0 17.58d0) 0 0)
+                     :v-rel (lis::vec3 0.5d0 0 0) :q-rel (lis::quat 1 0 0 0))
+    (let ((alone (lis::copy-sim sim))
+          (end (+ (lis::start-t) 3)))
+      (setf (lis::sim-excluded alone) index)
+      (multiple-value-bind (sim before) (step-to-contact sim 1 end)
+        (true before)
+        (let ((v0 (record-normal-speed before))
+              (v1 (record-normal-speed sim)))
+          ;; The station's LVLH turn moves its face's point by ~1 mm/s.
+          (true (< (abs (+ v0 0.5d0)) 3d-3) "~F m/s before" v0)
+          (true (< (abs (- v1 0.15d0)) 1d-3) "~F m/s after" v1)
+          (true (< (abs (/ (+ v1 (* 0.3d0 v0)) v0)) 1d-9)))
+        (step-sim sim most-positive-fixnum 1 end)
+        (step-sim alone most-positive-fixnum 1 end)
+        (is = end (lis::sim-t sim))
+        (true (equalp (lis::object-state (svref (lis::sim-objects alone) index))
+                      (lis::object-state (svref (lis::sim-objects sim) index))))))))
+
+(define-test contact-death-speed
+  ;; 0.99 m/s bounces, 1.01 m/s kills at t_c, 0.2 m / 1.01 m/s after the start.
+  (let ((sim (step-to-contact (aft-scene 0.99d0) 1 (+ (lis::start-t) 2))))
+    (false (lis::sim-lost-p sim))
+    (true (on-grid-p (lis::sim-t sim))))
+  (multiple-value-bind (sim index) (aft-scene 1.01d0)
+    (declare (ignore index))
+    (step-to-contact sim 1 (+ (lis::start-t) 2))
+    (let ((loss (lis::sim-loss sim)))
+      (true loss)
+      (when loss
+        (is eq :contact (lis::loss-cause loss))
+        (is eq :skua-yard-3 (lis::loss-object loss))
+        (is = (lis::loss-time loss) (lis::sim-t sim))
+        (true (< (abs (- (lis::loss-speed loss) 1.01d0)) 1d-4) "~F m/s" (lis::loss-speed loss))
+        (true (< (abs (- (lis::loss-time loss) (lis::start-t) (/ 0.2d0 1.01d0))) 1d-4)
+              "~,6F s" (- (lis::loss-time loss) (lis::start-t)))
+        (false (lis::sim-step! sim 1))))))
+
+(define-test contact-no-tunnelling
+  ;; The cone's box (x 15.0–16.6 from R, ±0.8) 1.0 m into the path of Skua
+  ;; Yard 6 (r 2.616 m) passing along +y at 100 m/s: caught at the fine
+  ;; step, and in one coarse step of 2 s from 100 m away. First touch at
+  ;; the box's edge, y = −0.8 − √(r² − (r − 1)²).
+  (let* ((r 2.616d0)
+         (y-touch (- -0.8d0 (sqrt (- (* r r) (expt (- r 1) 2))))))
+    (loop for (level y0 bound) in '((1 -10d0 1d-4) (1000 -100d0 1d-3))
+          do (let ((sim (contact-scene :skua-yard-6 (lis::vec3 (+ 16.6d0 r -1d0) y0 0)
+                                       :v-rel (lis::vec3 0 100 0))))
+               (when (= level 1000)
+                 (is = 2d0 (lis::step-h sim level nil)))
+               (step-to-contact sim level (+ (lis::start-t) 5))
+               (let ((loss (lis::sim-loss sim)))
+                 (true loss "×~D" level)
+                 (when loss
+                   (is eq :skua-yard-6 (lis::loss-object loss))
+                   (true (< (abs (- (lis::loss-time loss) (lis::start-t) (/ (- y-touch y0) 100)))
+                            bound)
+                         "×~D: ~,6F s" level (- (lis::loss-time loss) (lis::start-t)))))))))
+
+(define-test contact-touching-or-receding
+  ;; Overlapping 1 mm at rest, and 1 cm receding at 0.05 m/s, radially
+  ;; outward (the tide parts them): no impulse, the run its own without the
+  ;; object.
+  (loop for (gap speed) in '((-0.001d0 0d0) (-0.01d0 -0.05d0))
+        do (multiple-value-bind (sim index) (aft-scene speed :gap gap)
+             (let ((alone (lis::copy-sim sim))
+                   (count (contact-count)))
+               (setf (lis::sim-excluded alone) index)
+               (step-sim sim 256 1)
+               (step-sim alone 256 1)
+               (is = count (contact-count))
+               (setf (lis::sim-excluded alone) nil)
+               (true (equalp alone sim) "~F m, ~F m/s" gap speed)))))
+
+(define-test contact-cons-nothing
+  ;; 10,000 fine steps beside a promoted object out of reach (1 km), and
+  ;; 2,048 within reach, saved every step (30 m, at rest).
+  (loop for (distance steps) in '((1000d0 10000) (30d0 2048))
+        do (let ((sim (contact-scene :skua-yard-3 (lis::vec3 (- distance) 0 0))))
+             (step-sim sim 10 1)
+             (let ((consed (least-bytes-consed (lambda () (step-sim sim steps 1)))))
+               (true (< consed 1024) "~F m: ~D bytes" distance consed)
+               (false (lis::sim-lost-p sim))
+               (is equal '(:skua-yard-3) (promoted-keys sim))))))

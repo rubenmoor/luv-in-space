@@ -406,7 +406,14 @@ top, or nil."
           do (true (< (abs (- (lis::death-glow-radiance earth seconds) expected)) 1d-12)
                    "~A s" seconds))
     (dolist (seconds '(0 1 2))
-      (is = 0d0 (lis::death-glow-radiance moon seconds)))))
+      (is = 0d0 (lis::death-glow-radiance moon seconds)))
+    (is = #xFF6A1A (lis::death-glow-colour earth)))
+  ;; A contact's white flash (decision 113): full 0.1 s, out at 1 s.
+  (let ((contact (lis::make-loss :contact :earth 0d0 1.01d0 0d0 0d0 :skua-yard-3)))
+    (loop for (seconds expected) in '((0 1d0) (0.1d0 1d0) (0.55d0 0.5d0) (1 0d0) (3 0d0))
+          do (true (< (abs (- (lis::death-glow-radiance contact seconds) expected)) 1d-12)
+                   "~A s" seconds))
+    (is = #xFFFFFF (lis::death-glow-colour contact))))
 
 ;;; The LOST panel (decision 86: Death view, LOST panel and restart in milestone 2)
 
@@ -453,6 +460,20 @@ top, or nil."
                 (lis::lost-panel-lines (lis::make-loss :crash :earth 0d0 950d0 0.1d0 0.2d0)))))
     (is string= "SPEED 950.0 M/S" (third texts))
     (is string= "LAT 5.73° N  LON 11.46° E" (fourth texts))))
+
+(define-test lost-panel-lines-contact
+  ;; decision 113: the object's name and the UTC, the normal speed.
+  (let* ((loss (lis::make-loss :contact :earth (lis::start-t) 1.01d0 0.1d0 0.2d0 :skua-yard-3))
+         (lines (lis::lost-panel-lines loss t)))
+    (is equal (list "LOST: CONTACT"
+                    (format nil "SKUA YARD 3  ~A" (lis::format-utc (lis::start-t)))
+                    "SPEED 1.01 M/S"
+                    ""
+                    "RETURN  RESTART FROM CHECKPOINT"
+                    "N       NEW GAME")
+        (readout-texts lines))
+    (is eq :inverted (lis::run-style (first (first lines))))
+    (check-glyphs lines)))
 
 (define-test lost-panel-origin
   (let ((lines (lis::lost-panel-lines (lis::make-loss :crash :earth 0d0 7800d0 0d0 0d0))))

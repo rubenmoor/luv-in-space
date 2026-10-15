@@ -246,12 +246,23 @@ ends it; changes nothing (a cut due before the step counts as made)."
         (setf h (- until time) cut-after nil))
       (values h cut-after))))
 
+(defvar *contact-redo* nil
+  "True while hazards.lisp redoes a step to a contact's grid point: no save, no contact test.")
+
+(declaim (ftype (function (sim fixnum (or null double-float)) (values null &optional))
+                contact-save!)
+         (ftype (function (sim fixnum fixnum) (values (or null fixnum) &optional))
+                contact-test!))
+
 (defun sim-step-ticks! (sim level until)
-  "sim-step!, returning h in 1/64 s ticks (a fixnum: nothing boxed) or nil."
+  "sim-step!, returning h in 1/64 s ticks (a fixnum: nothing boxed; 0 for a
+contact answered at the step's start) or nil."
   (declare (optimize speed) (type sim sim) (type fixnum level)
            (type (or null double-float) until) (inline flight-step! step-h object-step!))
   (when (sim-loss sim)
     (return-from sim-step-ticks! nil))
+  (unless *contact-redo*
+    (contact-save! sim level until))
   (let* ((ship (sim-ship sim))
          (controls (sim-controls sim))
          (time (sim-t sim))
@@ -303,9 +314,10 @@ ends it; changes nothing (a cut due before the step counts as made)."
         (let* ((ticks (truncate (* h (/ +fine-step+))))
                (lost (crash-test! sim r0 v0 q0 ticks)))
           (object-crash-tests! sim before ticks)
-          (unless lost
-            (sim-update-objects! sim))
-          ticks)))))
+          (or (and (not lost) (not *contact-redo*) (contact-test! sim level ticks))
+              (progn (unless lost
+                       (sim-update-objects! sim))
+                     ticks)))))))
 
 (declaim (inline sim-step!))
 (defun sim-step! (sim level &key until)
@@ -316,9 +328,11 @@ ends it; changes nothing (a cut due before the step counts as made)."
 flight-step! with SIM's model and each promoted object's object-step!
 (the Moon and the Sun read once for all), then the crash test (a crash
 leaves SIM lost at the impact, hazards.lisp), the objects' crash tests and
-rails removals (object-crash-tests!), then, unless lost, promotion and
-demotion.
-Returns h, or nil for a lost sim. Hot callers declare it inline: a full
+rails removals (object-crash-tests!), contact with promoted objects
+(contact-test!: a bounce redoes the step to the grid point before it, a
+fast one kills), then, unless lost, promotion and demotion.
+Returns h (0 for a contact answered at the step's start), or nil for a
+lost sim. Hot callers declare it inline: a full
 call boxes h."
   (let ((ticks (sim-step-ticks! sim level until)))
     (and ticks (* ticks +fine-step+))))

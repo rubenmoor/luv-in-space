@@ -37,6 +37,7 @@
           ./luv-in-space.asd
           ./src
           ./assets
+          ./flights
           ./scripts/build.lisp
         ];
       };
@@ -48,6 +49,7 @@
           ./luv-in-space.asd
           ./src
           ./assets
+          ./flights
           ./tests
           ./scripts/test
         ];
@@ -145,11 +147,12 @@
             find "$out/lib/fasl" -type f \( -name '*__grovel' \
               -o -name '*__grovel.c' -o -name '*__grovel.o' \) -delete
             cd "$out"
-            # The assets outlive the build tree (decision 13: Asset storage and attribution).
-            mv "$out/share/${name}/assets" "$TMPDIR/assets"
+            # The assets outlive the build tree (decision 13: Asset storage and attribution);
+            # the flight scripts too, where asdf:system-relative-pathname finds them.
+            mv "$out/share/${name}/assets" "$out/share/${name}/flights" "$TMPDIR/"
             rm -rf "$out/share/${name}"
             mkdir -p "$out/share/${name}"
-            mv "$TMPDIR/assets" "$out/share/${name}/assets"
+            mv "$TMPDIR/assets" "$TMPDIR/flights" "$out/share/${name}/"
 
             cat > "$out/bin/${name}" <<'LUV_LAUNCHER'
             #!${pkgs.runtimeShell}

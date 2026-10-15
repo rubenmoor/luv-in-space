@@ -216,3 +216,62 @@
       (true (equalp sim fall)))
     ;; Not lost: the restart is refused.
     (true (search "NOT LOST" (failure-text (lis::run-flight "((:restart))"))))))
+
+;;; The milestone-2 scripts (flights/*.sexp)
+
+(defun script-record-lines (record)
+  (format nil "~{~A~%~}" (lis::flight-record-lines record)))
+
+(defun record-equal (a b)
+  "Records equal entry by entry, every slot (doubles bit for bit)."
+  (and (= (length a) (length b))
+       (every #'equalp a b)))
+
+(define-test flights-scripts
+  (dolist (name '("burn" "raise-orbit" "deorbit"))
+    (multiple-value-bind (record sim) (lis::run-flight name)
+      (true (lis::flight-record-passed-p record) "~A:~%~A" name (script-record-lines record))
+      (true (find :expect record :key #'lis::flight-entry-kind))
+      ;; Determinism: a second run gives the same end sim and record.
+      (multiple-value-bind (again again-sim) (lis::run-flight name)
+        (true (equalp sim again-sim) "~A: end sims differ" name)
+        (true (record-equal record again) "~A: records differ" name))
+      (cond ((equal name "burn")
+             (let ((m-p (lis::ship-state-m-p (lis::sim-ship sim))))
+               (true (< (abs (- m-p 27769d0)) 5d0) "propellant ~,1F kg" m-p))
+             (is = 1 (count :burn record :key #'lis::flight-entry-kind)))
+            ((equal name "raise-orbit")
+             (is = 2 (count :burn record :key #'lis::flight-entry-kind)))
+            (t
+             ;; Crashed at the predicted time, restarted at the start state.
+             (is = 1 (count :burn record :key #'lis::flight-entry-kind))
+             (let ((lost (shot record "lost")))
+               (true lost)
+               (when lost
+                 (let ((loss (lis::flight-entry-loss lost)))
+                   (is eq :crash (lis::loss-cause loss))
+                   (true (realp (lis::loss-latitude loss)))
+                   (true (realp (lis::loss-longitude loss)))
+                   (true (search "LAT " (script-record-lines record))))))
+             (true (equalp sim (lis::new-game-sim))))))))
+
+(define-test flights-raise-orbit-two-body
+  ;; decision 87: the 400 km raise within 1 % two-body; the script's bands
+  ;; (for the full model) left out.
+  (let* ((steps (remove-if (lambda (s)
+                             (and (eq (lis::flight-step-kind s) :expect)
+                                  (member (lis::flight-step-name s)
+                                          '(:apoapsis-above :apoapsis-below
+                                            :periapsis-above :periapsis-below))))
+                           (lis::read-flight "raise-orbit")))
+         (record (lis::run-flight steps :model :point)))
+    (true (lis::flight-record-passed-p record) "~A" (script-record-lines record))
+    (flet ((within (m) (< (abs (- m 800d3)) 4d3)))
+      (let ((transfer (shot record "transfer"))
+            (raised (shot record "raised")))
+        (true (within (lis::flight-entry-apoapsis transfer))
+              "transfer apoapsis ~,3F km" (/ (lis::flight-entry-apoapsis transfer) 1d3))
+        (true (within (lis::flight-entry-apoapsis raised))
+              "raised apoapsis ~,3F km" (/ (lis::flight-entry-apoapsis raised) 1d3))
+        (true (within (lis::flight-entry-periapsis raised))
+              "raised periapsis ~,3F km" (/ (lis::flight-entry-periapsis raised) 1d3))))))

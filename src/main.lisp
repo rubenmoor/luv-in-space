@@ -28,6 +28,10 @@
    (frame-count :initform 0 :accessor game-frame-count)
    (real-time :initform 0d0 :accessor game-real-time
               :documentation "Real seconds summed over the frames: the readout's flashing.")
+   (loss :initform nil :accessor game-loss
+         :documentation "The sim's loss the frame last saw, nil while flying (decision 86).")
+   (death-time :initform nil :accessor game-death-time
+               :documentation "The real time (game-real-time) the frame first saw the loss.")
    (readout-p :initarg :readout :initform t :accessor game-readout-p
               :documentation "Whether the frame draws the readout (decision 85).")
    (input :initform (make-input) :reader game-input
@@ -91,16 +95,89 @@ change of view (decision 83)."
                      target))
       (setf (game-view-changed-p game) nil))))
 
+;;; Death and restart (decision 86: Death view, LOST panel and restart in
+;;; milestone 2; decision 34: How death works).
+
+(defparameter *death-glow-radiance* 4d0
+  "The entry glow's peak on the radiance scale of decision 76; decision 86.")
+(defparameter *death-glow-full* 1d0 "Real seconds at the peak; decision 86.")
+(defparameter *death-glow-end* 3d0 "Real seconds when the glow is out; decision 86.")
+(defparameter *death-glow-colour* #xFF6A1A "sRGB of the entry glow; decision 86.")
+
+(defun death-glow-radiance (loss seconds-since-death)
+  "The ship's entry glow SECONDS-SINCE-DEATH real seconds after LOSS: the
+peak for the first *death-glow-full*, linear to 0 at *death-glow-end*; 0
+for a Moon impact (no air) and without a loss."
+  (let ((s (float seconds-since-death 1d0)))
+    (cond ((or (null loss) (eq (loss-body loss) :moon) (>= s *death-glow-end*)) 0d0)
+          ((<= s *death-glow-full*) (float *death-glow-radiance* 1d0))
+          (t (* *death-glow-radiance*
+                (/ (- *death-glow-end* s) (- *death-glow-end* *death-glow-full*)))))))
+
+(defun notice-death! (game)
+  "After the frame's steps: on a new loss the view becomes :outside (the
+outside view's pose kept) and the death time is recorded; without a loss
+the record clears."
+  (let ((loss (sim-loss (game-sim game))))
+    (cond ((null loss)
+           (setf (game-loss game) nil (game-death-time game) nil))
+          ((not (eq loss (game-loss game)))
+           (setf (game-loss game) loss
+                 (game-death-time game) (game-real-time game))
+           (when (map-p game)
+             (setf (game-view game) :outside
+                   (game-view-changed-p game) t))))))
+
+(defun game-restart! (game)
+  "Return and N on the LOST panel: the start checkpoint restored by
+clock-restart! (×1, unpaused), the outside view at its default pose, the
+map closed, the input cleared, the death record cleared, the exposure
+snapped. GAME."
+  (clock-restart! (game-clock game) (game-sim game) (game-start-checkpoint game))
+  (outside-view-reset! (game-outside-view game))
+  (when (input-drag (game-input game))
+    (set-relative-pointer-mode game nil))
+  (input-clear! (game-input game))
+  (setf (game-view game) :outside
+        (game-view-changed-p game) t
+        (game-loss game) nil
+        (game-death-time game) nil)
+  game)
+
+(defun death-glow! (game exposure)
+  "The ship's emissive slot (decision 80): *death-glow-colour* x
+death-glow-radiance ÷ EXPOSURE, so it reads the same lit or in shadow."
+  (let* ((loss (game-loss game))
+         (radiance (if loss
+                       (death-glow-radiance loss (- (game-real-time game) (game-death-time game)))
+                       0d0))
+         (emissive (render-state-ship-emissive (game-render-state game))))
+    (loop for i from 0 for shift in '(16 8 0)
+          do (setf (aref emissive i)
+                   (/ (* radiance (srgb-channel-linear *death-glow-colour* shift)) exposure)))))
+
 (defun encode-game-frame (game encoder target extent elapsed)
   "ELAPSED: real seconds since the last frame, nil to snap the exposure and
 the outside view's distance."
   (update-view! game elapsed)
-  (encode-frame (game-renderer game) encoder target extent
-                (game-render-state game) (game-camera game)
-                (update-exposure! game extent elapsed) (game-view game)
-                (and (game-readout-p game)
-                     (readout-lines (game-render-state game) (game-clock game)
-                                    (game-real-time game)))))
+  (let ((exposure (update-exposure! game extent elapsed)))
+    (death-glow! game exposure)
+    (encode-frame (game-renderer game) encoder target extent
+                  (game-render-state game) (game-camera game)
+                  exposure (game-view game)
+                  (and (game-readout-p game)
+                       (readout-lines (game-render-state game) (game-clock game)
+                                      (game-real-time game))))))
+
+(defun game-frame! (game elapsed)
+  "One frame's simulation, ELAPSED real seconds: the real time, the input,
+the clock's steps, the death record, the lights' clock. No GPU."
+  (incf (game-real-time game) elapsed)
+  (input-frame! game elapsed)
+  (clock-frame! (game-clock game) (game-sim game) elapsed)
+  (notice-death! game)
+  (unless (clock-paused (game-clock game))
+    (incf (render-state-lights-t (game-render-state game)) elapsed)))
 
 (defun draw (game)
   (let ((context (game-context game)))
@@ -113,11 +190,7 @@ the outside view's distance."
        (let ((elapsed (frame-elapsed! game time))
              (extent (luv:canvas-extent context)))
          (note-swapchain-target (game-renderer game) texture extent)
-         (incf (game-real-time game) elapsed)
-         (input-frame! game elapsed)
-         (clock-frame! (game-clock game) (game-sim game) elapsed)
-         (unless (clock-paused (game-clock game))
-           (incf (render-state-lights-t (game-render-state game)) elapsed))
+         (game-frame! game elapsed)
          (encode-game-frame game encoder texture extent elapsed))))))
 
 (defmethod luv:capture-canvas ((game game)) (game-canvas game))

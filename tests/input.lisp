@@ -6,7 +6,8 @@
 
 (defun input-game ()
   (let ((sim (lis::new-game-sim)))
-    (make-instance 'lis::game :sim sim :clock (lis::new-clock sim))))
+    (make-instance 'lis::game :sim sim :clock (lis::new-clock sim)
+                              :start-checkpoint (lis::take-checkpoint sim))))
 
 (defun key-event (game kind key &key modifiers repeat)
   (lis::handle-event game (make-instance (ecase kind
@@ -403,3 +404,67 @@ digits inside the 1–6 range, the rest by name."
         (true (< (abs (- (lis::map-view-target view) (* 10 opening))) (* 1d-12 opening))))
       (input-tap game :m)
       (is eq :outside (lis::game-view game)))))
+;;; Death and restart (decision 86: Death view, LOST panel and restart in
+;;; milestone 2): game-frame! is draw's frame without the GPU.
+
+(defun game-frames (game n)
+  (dotimes (i n) (lis::game-frame! game 1/60)))
+
+(defun deorbit-game ()
+  "A game 5 s before the deorbit impact of hazards' tests, in :map."
+  (let* ((orbit (dive-orbit (- *earth-crash-radius* 50d3)))
+         (impact (lis::orbit-radius-crossings orbit *earth-crash-radius* (lis::start-t)))
+         (sim (orbit-sim orbit (lis::grid-ceiling (- impact 5))))
+         (game (make-instance 'lis::game :sim sim :clock (lis::new-clock sim)
+                                         :start-checkpoint (lis::take-checkpoint
+                                                            (lis::new-game-sim)))))
+    (lis::toggle-map! game)
+    game))
+
+(define-test game-death-record
+  (let* ((game (deorbit-game))
+         (lis::*frame-step-time-limit* nil))
+    (lis::outside-view-drag! (outside-view game) 40d0 10d0)
+    (let ((pose (copy-structure (outside-view game))))
+      (is eq :map (lis::game-view game))
+      (game-frames game 1)
+      (false (lis::game-death-time game))
+      (loop repeat 600 until (lis::sim-lost-p (lis::game-sim game))
+            do (game-frames game 1))
+      (true (lis::sim-lost-p (lis::game-sim game)))
+      (is eq :outside (lis::game-view game))
+      (is equalp pose (outside-view game))
+      (is eq (lis::sim-loss (lis::game-sim game)) (lis::game-loss game))
+      (let ((death (lis::game-death-time game)))
+        (true (and death (= death (lis::game-real-time game))))
+        (game-frames game 10)
+        (is = death (lis::game-death-time game))))))
+
+(define-test game-restart
+  (let* ((game (deorbit-game))
+         (lis::*frame-step-time-limit* nil))
+    (loop repeat 600 until (lis::sim-lost-p (lis::game-sim game))
+          do (game-frames game 1))
+    (true (lis::sim-lost-p (lis::game-sim game)))
+    (lis::outside-view-drag! (outside-view game) 40d0 10d0)
+    (lis::toggle-map! game)
+    (lis::clock-toggle-pause (lis::game-clock game))
+    (key-event game :press :n)
+    (pointer-event game 'luv:canvas-pointer-button-press-event :button :right)
+    (lis::game-restart! game)
+    (true (equalp (lis::game-sim game) (lis::new-game-sim)))
+    (is = 1 (lis::clock-level (lis::game-clock game)))
+    (false (lis::clock-paused (lis::game-clock game)))
+    (is eq :outside (lis::game-view game))
+    (is equalp (lis::new-outside-view) (outside-view game))
+    (false (lis::input-held (lis::game-input game)))
+    (false (lis::input-drag (lis::game-input game)))
+    (false (lis::game-loss game))
+    (false (lis::game-death-time game))
+    (true (lis::game-view-changed-p game))
+    (game-frames game 1)
+    (is equalp #(0 0 0) (translation-keys game))
+    (let ((fresh (input-game)))
+      (game-frames game 999)
+      (game-frames fresh 1000)
+      (true (equalp (lis::game-sim game) (lis::game-sim fresh))))))

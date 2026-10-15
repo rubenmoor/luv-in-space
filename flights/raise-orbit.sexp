@@ -11,6 +11,10 @@
 ;;; apoapsis by :before. tests/flights.lisp flies it two-body (:model
 ;;; :point): both apsides 800 +- 4 km, the 400 km raise within 1 %.
 ;;;
+;;; PNGs: start (map, the ring), transfer (map, the ellipse, PE in front),
+;;; at-apoapsis (map, the ship at AP 8xx KM), raised (map, the raised ring),
+;;; raised-outside.
+;;;
 ;;; Render it: scripts/fly raise-orbit <dir>.
 ((:warp :coast)
  (:screenshot "start" :view :map)
@@ -26,6 +30,7 @@
  (:expect :periapsis-below 405e3)
  (:screenshot "transfer" :view :map)
  (:wait :apoapsis :before 18.3)         ; half the second burn: 36.6 s flown
+ (:screenshot "at-apoapsis" :view :map) ; the AP marker beside the ship
  (:throttle 1.0)
  (:after-dv 107.6 :throttle 0)
  (:expect :apoapsis-above 785e3)

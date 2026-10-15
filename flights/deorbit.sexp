@@ -9,6 +9,11 @@
 ;;; m) has 7,566.26 m/s at its apoapsis: 102.30 m/s retrograde (35.7 s at
 ;;; v_e 4,410 m/s).
 ;;;
+;;; PNGs: retrograde (outside); falling (map: the ship at the AP, the red arc
+;;; and the impact still behind Earth); entry (outside, 150 km); entry-map
+;;; (map: the red arc and the IMPACT marker in front, AP 380 KM); lost (the
+;;; glow and the LOST panel); restarted (the start state).
+;;;
 ;;; Render it: scripts/fly deorbit <dir>.
 ((:hold :retrograde)
  (:wait :settled :within 120)
@@ -20,6 +25,7 @@
  (:screenshot "falling" :view :map)
  (:wait :altitude-below 150e3)
  (:screenshot "entry")
+ (:screenshot "entry-map" :view :map)   ; the red arc and IMPACT in front
  (:wait :impact)
  (:expect :lost :crash)
  (:expect :impact-as-predicted 0.1)

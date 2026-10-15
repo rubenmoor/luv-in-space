@@ -24,7 +24,7 @@ height, the packed pixels and their colour format."
         do (when (> (get-internal-real-time) deadline)
              (error "Only ~D of ~D frames drawn in ~D s."
                     (- count (- target (game-frame-count game))) count timeout))
-           (sleep 0.01)))
+           (sleep 0.001)))
 
 (defun game-load-state! (game sim)
   "GAME's sim becomes a copy of SIM, its clock restarted on it (×1,

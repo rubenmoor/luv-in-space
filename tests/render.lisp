@@ -903,6 +903,9 @@ after it."
 
 (define-test render-frames
   (let ((width 320) (height 200))
+    ;; offscreen-frame decodes the Blue Marble on its canvas; this one shares
+    ;; the assets tests' decode.
+    (share-earth-pixels)
     (luv:call-with-sdl-main-thread
      (lambda ()
        ;; :readout nil: at 320 x 200 the readout's box would cover nearly
@@ -1055,14 +1058,16 @@ after it."
              (is = images (hash-table-count (lis::renderer-color-views renderer)))
              (dolist (size (list (list 240 160) (list 400 250) (list width height)))
                (luv:resize-canvas (lis::game-canvas game) (first size) (second size))
-               (lis::wait-for-frames game 6)
+               ;; 3 frames, not 6: the swapchain is replaced on the first
+               ;; (task 258: Bring scripts/test back under its ~15 s budget).
+               (lis::wait-for-frames game 3)
                (is equal size (luv:canvas-extent (lis::game-context game))))
              (true (<= (luv:canvas-frame-resource-count frames) images)
                    "~D frame slots after resizes, ~D images"
                    (luv:canvas-frame-resource-count frames) images)
              (true (<= (hash-table-count (lis::renderer-color-views renderer)) images)))
            (luv:resize-canvas (lis::game-canvas game) 1280 800)
-           (lis::wait-for-frames game 6)
+           (lis::wait-for-frames game 3)
            (readout-checks game png 1280 800)
            (lost-checks game png 1280 800)
            (fly-screenshot-checks game)))))))

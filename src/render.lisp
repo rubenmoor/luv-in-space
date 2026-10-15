@@ -103,6 +103,9 @@ not below t or the sim is lost. Conses nothing; OUT."
 (defparameter *background* '(0.0 0.0 0.0002) "Radiance the HDR target is cleared to.")
 (defparameter *earth-texture* "earth/blue-marble-5400.jpg"
   "decision 40: Earth's look and drag.")
+(defvar *earth-pixels* nil
+  "Nil, or (pixels . coarse copy) taken instead of decoding *earth-texture*:
+the tests' one decode for every canvas they open.")
 
 (defconstant +frame-uniform-floats+ 116 "shaders.lisp's frame block: 29 vec4s.")
 (defconstant +impostor-uniform-index+ 48 "The Sun's block, the Moon's, Earth's, the halo's.")
@@ -162,16 +165,15 @@ not below t or the sim is lost. Conses nothing; OUT."
                                                   (:binding 2 :type :sampler)
                                                   (:binding 3 :type :texture)))))
          (stars (star-instances (load-star-table))))
-    (let ((pixels (load-image-pixels (asset-path *earth-texture*))))
+    (let* ((pixels (or (car *earth-pixels*) (load-image-pixels (asset-path *earth-texture*))))
+           (coarse (or (cdr *earth-pixels*) (downsample-pixels pixels *earth-coarse-factor*))))
       (multiple-value-bind (texture view sampler) (texture-from-pixels renderer pixels "earth")
         (declare (ignore texture))
         (reinitialize-instance renderer :earth-view view :earth-sampler sampler
                                         :earth-rows (array-dimension pixels 0)
                                         :earth-coarse-view
-                                        (nth-value 1 (texture-from-pixels
-                                                      renderer
-                                                      (downsample-pixels pixels *earth-coarse-factor*)
-                                                      "earth 1/8")))))
+                                        (nth-value 1 (texture-from-pixels renderer coarse
+                                                                          "earth 1/8")))))
     (reinitialize-instance
      renderer
      :layout layout

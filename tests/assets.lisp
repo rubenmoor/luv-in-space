@@ -29,6 +29,17 @@
   (or *blue-marble*
       (setf *blue-marble* (lis::load-image-pixels (lis::asset-path "earth/blue-marble-5400.jpg")))))
 
+(defvar *blue-marble-eighth* nil)
+
+(defun blue-marble-eighth ()
+  (or *blue-marble-eighth*
+      (setf *blue-marble-eighth* (lis::downsample-pixels (blue-marble) lis::*earth-coarse-factor*))))
+
+(defun share-earth-pixels ()
+  "The canvases the tests open take the one decode and its copy, ~0.23 s
+each (task 258: Bring scripts/test back under its ~15 s budget)."
+  (setf lis::*earth-pixels* (cons (blue-marble) (blue-marble-eighth))))
+
 (define-test blue-marble-decodes
   (let* ((start (get-internal-real-time))
          (pixels (setf *blue-marble*
@@ -68,7 +79,8 @@
   ;; The far Earth's copy (decision 78: Sky in numbers: stars, Sun, Moon
   ;; and Earth's look): 2700 / 8 rounded up, its means the full map's.
   (let* ((pixels (blue-marble))
-         (coarse (lis::downsample-pixels pixels 8)))
+         (coarse (blue-marble-eighth)))
+    (is = 8 lis::*earth-coarse-factor*)
     (is equal '(338 675) (array-dimensions coarse))
     (loop for full in (channel-means pixels)
           for small in (channel-means coarse)

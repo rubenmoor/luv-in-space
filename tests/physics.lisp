@@ -225,8 +225,12 @@ periods."
 ;; ΔE/E 1.5e-13, ΔL/L 1.1e-13 and 3e-5 m over 10 circular orbits).
 (define-drift-test drift-fine-circular 0d0 5 nil 1d-11 1d-11 0.05d0)
 (define-drift-test drift-fine-e0.5 0.5d0 1 nil 1d-11 1d-11 0.05d0)
-(define-drift-test drift-coarse-circular 0d0 1000 t 1d-10 1d-10 5d0)
-(define-drift-test drift-coarse-e0.5 0.5d0 1000 t 1d-9 1d-9 100d0)
+;; The coarse circular and e = 0.5 rows run 500 orbits, not 1,000, bounds
+;; unchanged: 0.55 s each (task 258: Bring scripts/test back under its ~15 s
+;; budget). Measured over 500: circular 5.3e-12, 2.6e-12, 0.10 m; e = 0.5
+;; 4.1e-11, 1.4e-11, 2.9 m.
+(define-drift-test drift-coarse-circular 0d0 500 t 1d-10 1d-10 5d0)
+(define-drift-test drift-coarse-e0.5 0.5d0 500 t 1d-9 1d-9 100d0)
 (define-drift-test drift-coarse-e0.9 0.9d0 200 t 1d-8 1d-9 5000d0)
 
 (defun rotation-run (inertia)

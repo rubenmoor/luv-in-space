@@ -652,11 +652,12 @@ from START to END under :full, the Moon and the Sun read by the step."
 
 (define-test clock-tern-beside-parked-ship
   ;; Promoted beside a parked ship (1 km ahead, :full, ×4 steps), Tern
-  ;; Station flies as a reference integration of the station alone: 1 h.
-  ;; 0.5 s, over the planned ~0.4 s, kept at the fine step the plan asks for.
+  ;; Station flies as a reference integration of the station alone: 30 min
+  ;; (planned 1 h; both read 0 m, so half the run checks the same, task 258:
+  ;; Bring scripts/test back under its ~15 s budget). 0.3 s at the fine step.
   (let* ((sim (ship-near :tern-station 1000d0))
          (tern (lis::sim-object sim :tern-station))
-         (end (+ (lis::sim-t sim) 3600d0))
+         (end (+ (lis::sim-t sim) 1800d0))
          (state (berth-object-alone tern (lis::sim-t sim) end)))
     (step-sim sim most-positive-fixnum 4 end)
     (is = end (lis::sim-t sim))

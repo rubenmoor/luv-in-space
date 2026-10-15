@@ -159,7 +159,7 @@ INSERT INTO milestone (id, subject, status, body, created_at, implemented_at, qu
 ## Done when
 - The four documents exist, agree with each other, and the feature list assigns every feature to a later milestone or cuts it.
 - The skeleton builds and runs from a clean checkout with the commands in `AGENTS.md`, and its test passes.', '2026-10-14T16:06:30Z', '2026-10-14T21:56:19Z', 0);
-INSERT INTO milestone (id, subject, status, body, created_at, implemented_at, queue_index) VALUES (2, 'Flight core: Newtonian flight in near-Earth orbit', 'open', 'The flight core: a ship flying under Newtonian physics in near-Earth orbit, from which every other milestone builds. The design in `docs/` (from `milestone 1`) is the specification; this milestone implements what `docs/design.md` assigns to it.
+INSERT INTO milestone (id, subject, status, body, created_at, implemented_at, queue_index) VALUES (2, 'Flight core: Newtonian flight in near-Earth orbit', 'implemented', 'The flight core: a ship flying under Newtonian physics in near-Earth orbit, from which every other milestone builds. The design in `docs/` (from `milestone 1`) is the specification; this milestone implements what `docs/design.md` assigns to it.
 
 ## Outcome
 - The game starts with the ship in a low Earth orbit.
@@ -175,7 +175,7 @@ INSERT INTO milestone (id, subject, status, body, created_at, implemented_at, qu
 
 ## Done when
 - From a clean checkout an agent can start the game, fly a burn that raises the orbit, and deorbit into Earth, with screenshots of each.
-- Tests pass; `AGENTS.md` and `docs/` match what was built.', '2026-10-14T16:06:59Z', NULL, 1);
+- Tests pass; `AGENTS.md` and `docs/` match what was built.', '2026-10-14T16:06:59Z', '2026-10-15T06:00:10Z', 1);
 INSERT INTO milestone (id, subject, status, body, created_at, implemented_at, queue_index) VALUES (3, 'Cockpit and autopilot: the DIY cockpit, orbits and Earth-orbit presets', 'open', 'The cockpit and the autopilot: piloting becomes the heart of the game. The design in `docs/` is the specification; this milestone implements what `docs/design.md` assigns to it.
 
 ## Outcome

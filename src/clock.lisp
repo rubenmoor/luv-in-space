@@ -164,7 +164,9 @@ callers declare it inline: a full call boxes h."
   "SIM becomes CHECKPOINT, consing nothing; SIM."
   (sim-assign! sim checkpoint))
 
-(defun checkpoint-safe-p (sim)
-  "Throttle off, not lost; PLACEHOLDER(105): no impact predicted."
+(defun checkpoint-safe-p (sim &optional prediction)
+  "Throttle off, not lost, no impact predicted (PREDICTION, the clock's, run
+to its horizon; without it a fresh one, prediction.lisp)."
   (and (= (controls-throttle (sim-controls sim)) 0d0)
-       (null (sim-loss sim))))
+       (null (sim-loss sim))
+       (not (prediction-impact-p sim prediction))))

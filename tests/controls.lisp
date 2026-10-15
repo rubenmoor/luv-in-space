@@ -118,6 +118,26 @@ every couple at once is not: its corners need more nozzles than there are.)"
       (true (< (abs (aref f 0)) 1d-6))
       (true (< (abs (aref f 2)) 1d-6)))))
 
+(define-test mixer-lateral-loaded
+  ;; Task 256: with 50 t and 100 t at stack-design-pose the CoM lies ahead of
+  ;; the front blocks; the capability is met without torque and is all that
+  ;; fits (a 10 kN command gets the same).
+  (dolist (key '(:skua-yard-3 :skua-yard-5))
+    (let* ((com (lis::mass-properties-com
+                 (lis::ship-mass-properties
+                  28000d0 (lis::stack-design-pose (lis::object-definition key)))))
+           (nominal (lis::rcs-translation-capability 1 com)))
+      (dolist (force (list (list 0 nominal 0) (list 0 0 (- nominal))))
+        (multiple-value-bind (u f torque) (mix 28000 '(0 0 0) force com)
+          (true (every (lambda (x) (<= 0d0 x 1d0)) u))
+          (true (< (lis::vec3-norm (lis::vec3-sub f (apply #'lis::vec3 force))) 1d-6)
+                "~A ~A" key f)
+          (true (< (lis::vec3-norm torque) 1d-6) "~A ~A" key torque)))
+      (multiple-value-bind (u f torque) (mix 28000 '(0 0 0) '(0 10000 0) com)
+        (declare (ignore u))
+        (true (< (relative-error (aref f 1) nominal) 1d-9) "~A ~A" key f)
+        (true (< (lis::vec3-norm torque) 1d-6))))))
+
 ;;; Direct mode, translation and propellant through flight-step!
 
 (defun rest-state (m-p)
@@ -172,6 +192,23 @@ every couple at once is not: its corners need more nozzles than there are.)"
     (let ((dv (aref (lis::ship-state-v state) 0)))
       (true (< (relative-error dv 0.77d-3) 0.01d0))
       (true (< (relative-error dv (/ 1780 35961d0 64)) 1d-6)))))
+
+(define-test translation-loaded
+  ;; Task 256: J held 1 s in direct mode with 100 t latched: the
+  ;; capability's acceleration and no rotation beyond the mixer's residual.
+  (let* ((state (rest-state 28000d0))
+         (c (direct-controls :translation '((:y 1))))
+         (load (lis::stack-design-pose (lis::object-definition :skua-yard-5)))
+         (p (lis::ship-mass-properties 28000d0 load))
+         (expected (/ (lis::rcs-translation-capability 1 (lis::mass-properties-com p))
+                      (lis::mass-properties-mass p))))
+    (dotimes (i 64)
+      (lis::flight-step! state c lis::+fine-step+ (* i lis::+fine-step+) :none nil nil load))
+    (let ((v (lis::ship-state-v state)))
+      (true (< (relative-error (aref v 1) expected) 1d-4) "~A ~A" v expected)
+      (true (< (abs (aref v 0)) (* 1d-9 expected)))
+      (true (< (abs (aref v 2)) (* 1d-9 expected))))
+    (true (< (lis::vec3-norm (lis::ship-state-w state)) 1d-12) "~A" (lis::ship-state-w state))))
 
 (define-test rcs-propellant
   ;; One second of every key held, with and without the engine: the tanks

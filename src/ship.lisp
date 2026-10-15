@@ -554,12 +554,19 @@ torque about COM (rows 3–5, N m), body axes."
 
 (defun rcs-translation-capability (axis com)
   "N along body AXIS without torque (decision 70): ±x the four axial
-nozzles; ±y, ±z 2F (1 + min(a_f, a_r)/max(a_f, a_r)), a_f and a_r the front
-and aft blocks' arms from the CoM between them (milestone 3 adds a CoM ahead
-of the front blocks)."
+nozzles; ±y, ±z with the CoM between the blocks 2F (1 + min(a_f, a_r)/max(a_f,
+a_r)), a_f and a_r the front and aft blocks' arms; with the CoM ahead of the
+front blocks (a latched load) both pairs' torques add, so the axial nozzles'
+couple 4Fd cancels it: the front pair up to 2F, the aft pair with what is
+left (task 256)."
   (declare (type (integer 0 2) axis) (type vec3 com))
   (if (= axis 0)
       (* 4 *rcs-thrust*)
       (let ((a-f (- *rcs-block-front-x* (aref com 0)))
-            (a-r (- (aref com 0) *rcs-block-aft-x*)))
-        (* 2 *rcs-thrust* (+ 1 (/ (min a-f a-r) (max a-f a-r)))))))
+            (a-r (- (aref com 0) *rcs-block-aft-x*))
+            (pair (* 2 *rcs-thrust*)))
+        (if (>= a-f 0d0)
+            (* pair (+ 1 (/ (min a-f a-r) (max a-f a-r))))
+            (let* ((couple (* 4 *rcs-thrust* *rcs-block-offset*))
+                   (front (min pair (/ couple (- a-f)))))
+              (+ front (min pair (/ (- couple (* front (- a-f))) a-r))))))))

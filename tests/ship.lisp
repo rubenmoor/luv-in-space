@@ -145,7 +145,17 @@
   (loop for (m-p force) in '((28000 1266) (0 1391))
         for com = (lis::mass-properties-com (mass-properties m-p))
         do (dolist (axis '(1 2))
-             (true (< (abs (- (lis::rcs-translation-capability axis com) force)) 1)))))
+             (true (< (abs (- (lis::rcs-translation-capability axis com) force)) 1))))
+  ;; The CoM ahead of the front blocks (task 256): wet + 50 t (x 15.21) and
+  ;; wet + 100 t (x 16.85) at stack-design-pose.
+  (loop for (key force) in '((:skua-yard-3 1065) (:skua-yard-5 958))
+        for com = (lis::mass-properties-com
+                   (lis::ship-mass-properties
+                    28000d0 (lis::stack-design-pose (lis::object-definition key))))
+        do (true (> (aref com 0) 14.5d0))
+           (dolist (axis '(1 2))
+             (let ((f (lis::rcs-translation-capability axis com)))
+               (true (< (abs (- f force)) 1) "~A ~D: ~F" key axis f)))))
 
 (defun burn (seconds m-p)
   "A full-throttle burn in field-free space (:none) from rest, 1 s steps

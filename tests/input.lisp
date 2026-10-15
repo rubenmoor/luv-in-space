@@ -600,6 +600,29 @@ digits inside the 1–6 range, the rest by name."
       (input-tap game :b)
       (false (lis::sim-transfer (lis::game-sim game))))))
 
+(define-test input-engine-locked
+  ;; Berthed: throttle and RCS keys give the message once per press, held
+  ;; or tapped, and leave the controls as they were.
+  (let* ((game (berth-at! (input-game) :tern-station))
+         (controls (lis::copy-controls (game-controls game))))
+    (dolist (key '(:w :q :h :l :z :shift-left :control-left))
+      (setf (lis::clock-message-list (input-clock game)) nil)
+      (key-event game :press key)
+      (input-frames game 30 1/60)
+      (is equal '("ENGINE LOCKED: BERTHED") (lis::clock-messages (input-clock game)) "~A" key)
+      (key-event game :release key)
+      (input-frame game)
+      (is = 1 (count "ENGINE LOCKED: BERTHED" (lis::clock-log (input-clock game))
+                     :key #'second :test #'equal)
+          "~A" key)
+      (setf (lis::clock-log (input-clock game)) nil))
+    (true (equalp controls (game-controls game))))
+  ;; Unberthed the same keys act.
+  (let ((game (input-game)))
+    (input-tap game :z)
+    (is = 1d0 (input-throttle game))
+    (false (lis::clock-messages (input-clock game)))))
+
 (define-test input-acknowledge-key
   (let* ((game (input-game))
          (clock (input-clock game)))

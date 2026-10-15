@@ -14,6 +14,8 @@
   (state :stowed :type (member :stowed :armed :closing :latched))
   (object nil :type (or null fixnum))           ; the attached object's index
   (fixture nil :type (or null fixnum))          ; its fixture's index
+  ;; Berthed: R in the station's axes from its CoM, and the ship's axes ->
+  ;; the station's.
   (com (make-vec3) :type vec3 :read-only t)     ; m, its CoM in body axes from R
   (q (quat 1 0 0 0) :type quat :read-only t)    ; its body axes -> the ship's
   (closing-end 0d0 :type double-float))         ; s, :closing until then
@@ -221,7 +223,8 @@ ends it; changes nothing (a cut due before the step counts as made)."
          (coarse (> level *fine-levels-max*))
          (cutoff (sim-cutoff sim))
          (engine-on (and (> (ship-engine-force (controls-throttle controls)) 0d0)
-                         (> (ship-state-m-p ship) 0d0)))
+                         (> (ship-state-m-p ship) 0d0)
+                         (not (sim-berthed sim))))
          (cut-after nil))
     (declare (type double-float time))
     (when (and cutoff engine-on (>= (ship-state-dv ship) cutoff))
@@ -234,7 +237,8 @@ ends it; changes nothing (a cut due before the step counts as made)."
       (when (and coarse cutoff engine-on)
         (let* ((force (ship-engine-force (controls-throttle controls)))
                (mdot (ship-engine-mdot (controls-throttle controls)))
-               (m0 (+ *ship-dry-mass* (ship-state-m-p ship)))
+               (m0 (+ *ship-dry-mass* (ship-state-m-p ship)
+                         (with-stack-load (load sim) (stack-load-mass load))))
                (h-cut (grid-ceiling-step
                        (min 1d6 (* (/ m0 mdot)
                                    (- 1 (exp (- (/ (* (- cutoff (ship-state-dv ship)) mdot)
@@ -251,6 +255,7 @@ ends it; changes nothing (a cut due before the step counts as made)."
 
 (declaim (ftype (function (sim fixnum (or null double-float)) (values null &optional))
                 contact-save!)
+         (ftype (function (sim) (values sim &optional)) berth-hold! latched-load-update!)
          (ftype (function (sim fixnum fixnum) (values (or null fixnum) &optional))
                 contact-test!))
 
@@ -285,7 +290,8 @@ contact answered at the step's start) or nil."
                    (> (ship-state-m-p ship) 0d0)
                    (>= (ship-state-dv ship) cutoff))
           (cut!)))
-      (when (and coarse (not (eq (controls-attitude-mode controls) :hold)))
+      (when (and coarse (not (sim-berthed sim))
+                 (not (eq (controls-attitude-mode controls) :hold)))
         (controls-inertial-hold controls (ship-state-q ship)))
       (multiple-value-bind (h cut-after) (step-h sim level until)
         (declare (type (double-float 0d0 1d6) h))
@@ -294,10 +300,17 @@ contact answered at the step's start) or nil."
         (replace q0 (ship-state-q ship))
         (when (eq model :full)
           (third-bodies-step-into! third-bodies time h))
-        (if coarse
-            (let ((*hold-controls* controls))
-              (flight-step! ship controls h time model #'kinematic-hold-attitude third-bodies))
-            (flight-step! ship controls h time model nil third-bodies))
+        ;; Berthed (decision 112): not integrated, set from the station below.
+        (cond ((sim-berthed sim)
+               (fill (controls-duties controls) 0d0))
+              (coarse
+               (let ((*hold-controls* controls))
+                 (with-stack-load (load sim)
+                   (flight-step! ship controls h time model #'kinematic-hold-attitude
+                                 third-bodies load))))
+              (t
+               (with-stack-load (load sim)
+                 (flight-step! ship controls h time model nil third-bodies load))))
         (loop for object across objects
               for i of-type fixnum from 1 by 6
               when (eq (object-status object) :promoted)
@@ -305,7 +318,14 @@ contact answered at the step's start) or nil."
                      (replace before (ship-state-r state) :start1 i)
                      (replace before (ship-state-v state) :start1 (+ i 3))
                      (object-step! object h time model third-bodies)))
+        (if (sim-berthed sim)
+            (berth-hold! sim)
+            (latched-load-update! sim))
         (setf (sim-t sim) (+ time h))
+        (let ((grapple (sim-grapple sim)))
+          (when (and (eq (grapple-state grapple) :closing)
+                     (>= (sim-t sim) (grapple-closing-end grapple)))
+            (setf (grapple-state grapple) :latched)))
         (incf (sim-steps sim))
         (let ((cutoff (sim-cutoff sim)))
           (when (or cut-after (and cutoff (>= (ship-state-dv ship) cutoff)))
@@ -323,10 +343,14 @@ contact answered at the step's start) or nil."
 (defun sim-step! (sim level &key until)
   "One step of SIM at warp LEVEL (×1, ×4, ×10 …) with every rule (decision
 72): the fine step to ×4, above it the coarse step with kinematic attitude
-(an inertial hold engaged first if no hold is), shortened to land on UNTIL
-(a grid time; one not ahead is ignored) and on the Δv cut-off, then
-flight-step! with SIM's model and each promoted object's object-step!
-(the Moon and the Sun read once for all), then the crash test (a crash
+(an inertial hold engaged first if no hold is, unless berthed), shortened
+to land on UNTIL (a grid time; one not ahead is ignored) and on the Δv
+cut-off, then flight-step! with SIM's model and the stack's mass (its
+latched load's too) and each promoted object's object-step! (the Moon and
+the Sun read once for all), the berthed ship held at its station
+(berth-hold!, no flight-step!) or a latched load written from the stack
+(latched-load-update!), the claws latched at their closing end, then the
+crash test (a crash
 leaves SIM lost at the impact, hazards.lisp), the objects' crash tests and
 rails removals (object-crash-tests!), contact with promoted objects
 (contact-test!: a bounce redoes the step to the grid point before it, a
@@ -458,9 +482,10 @@ to its horizon; without it a fresh one, prediction.lisp)."
          (type double-float *warp-rotation-limit* *dropout-real-time*))
 
 (defun sim-engine-on-p (sim)
-  "Thrust on: the throttle up with propellant left."
+  "Thrust on: the throttle up with propellant left, not berthed."
   (and (> (ship-engine-force (controls-throttle (sim-controls sim))) 0d0)
-       (> (ship-state-m-p (sim-ship sim)) 0d0)))
+       (> (ship-state-m-p (sim-ship sim)) 0d0)
+       (not (sim-berthed sim))))
 
 (defun thrust-warp-limit (sim)
   (if (sim-cutoff sim) *cutoff-warp-limit* *thrust-warp-limit*))

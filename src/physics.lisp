@@ -391,7 +391,7 @@ advanced by their rates, M from MEAN-ANOMALY at START by MEAN-RATE (n + Ṁ)."
                        (def-of status rails attitude state next-check removal))
                    (:copier nil))
   (def-of nil :type object-def :read-only t)
-  (status :rails :type (member :rails :promoted :removed))
+  (status :rails :type (member :rails :promoted :latched :removed)) ; :latched: in the stack
   (rails nil :type list)                            ; segments, replaced whole
   (attitude nil :type attitude)                     ; replaced whole
   (state nil :type ship-state :read-only t)         ; promoted: r, v, q, ω (body); m_p 0
@@ -594,11 +594,11 @@ the Sun, z the ecliptic south pole made perpendicular to x. :inertial: q.
   "Write OBJECT's state at TIME into R, V (m, m/s, Earth-centred), Q (body ->
 inertial) and W (rad/s, body axes); true, or nil for a removed object or a
 time past its rails' crash end. A promoted object's state is the integrated
-one, valid only at the sim's t."
+one, a latched load's the stack's (decision 112), valid only at the sim's t."
   (declare (type vec3 r v w) (type quat q) (type object object) (type double-float time))
   (ecase (object-status object)
     (:removed nil)
-    (:promoted
+    ((:promoted :latched)
      (let ((state (object-state object)))
        (replace r (ship-state-r state))
        (replace v (ship-state-v state))

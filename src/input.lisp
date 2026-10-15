@@ -75,6 +75,7 @@
 (defparameter *throttle-up-key* :shift-left)
 (defparameter *throttle-down-key* :control-left)
 (defparameter *rcs-off-message* "RCS OFF ABOVE ×4" "decision 31: Warp choices within the time-warp rules.")
+(defparameter *engine-locked-message* "ENGINE LOCKED: BERTHED" "decision 113.")
 
 (defparameter *script-commands* '(:warp-up :warp-down :warp-reset :restart :new-game)
   "Ignored, with the flight commands, while a flight script runs: the script owns them (decision 87).")
@@ -139,8 +140,15 @@ view as it was. The frame snaps the exposure (view-changed-p)."
              (setf (game-view game) :map)))
   (setf (game-view-changed-p game) t))
 
+(defun engine-key-p (key command)
+  "KEY (its COMMAND) works the engine or the RCS: locked while berthed."
+  (or (assoc key *flight-keys*)
+      (eq command :throttle-full)
+      (member key (list *throttle-up-key* *throttle-down-key*))))
+
 (defun key-pressed! (game key)
-  "A new press of KEY: its command (Return and N only while lost), or the
+  "A new press of KEY: its command (Return and N only while lost), the
+locked engine's message for an engine or RCS key while berthed, or the
 RCS-off message for a flight key above ×4."
   (let ((command (cdr (assoc key *key-map*))))
     (when (and (member command *lost-commands*) (not (sim-lost-p (game-sim game))))
@@ -149,7 +157,10 @@ RCS-off message for a flight key above ×4."
       (return-from key-pressed!))
     (when (and (member command *script-commands*) (flight-running-p game))
       (return-from key-pressed!))
-    (cond ((and command (member command *flight-commands*))
+    (cond ((and (sim-berthed (game-sim game)) (engine-key-p key command))
+           (unless (flight-keys-ignored-p game)
+             (clock-message! (game-clock game) :engine-locked *engine-locked-message*)))
+          ((and command (member command *flight-commands*))
            (unless (flight-keys-ignored-p game)
              (run-command game command)))
           (command (run-command game command))
@@ -233,14 +244,14 @@ below 0.1 off (controls-set-throttle)."
 
 (defun input-frame! (game elapsed)
   "Once per frame, before clock-frame!: the held and tapped keys to the
-sim's controls (none while paused, lost or above ×4; not written while a
-flight runs, whose :keys own them) and the throttle ramp (not while paused,
-lost or flying), the pointer to the view (always); then the latches clear.
-ELAPSED: real seconds."
+sim's controls (none while paused, lost, berthed or above ×4; not written
+while a flight runs, whose :keys own them) and the throttle ramp (not while
+paused, lost, berthed or flying), the pointer to the view (always); then the
+latches clear. ELAPSED: real seconds."
   (let* ((input (game-input game))
          (controls (sim-controls (game-sim game)))
          (keys (input-frame-keys input))
-         (ignored (flight-keys-ignored-p game)))
+         (ignored (or (flight-keys-ignored-p game) (sim-berthed (game-sim game)))))
     (unless (flight-running-p game)
       (controls-apply-held-keys! controls
                                  (if (or ignored (clock-kinematic-p (game-clock game))) '() keys)))

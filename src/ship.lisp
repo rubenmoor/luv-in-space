@@ -177,10 +177,30 @@ CoM (I = J − m (|C|² 𝟙 − C Cᵀ)) and its inverse."
 ;;; state, notices to the clock, the latest checkpoint): its definition and
 ;;; its pose in ship axes, fixed at the capture.
 
+(declaim (inline make-stack-load))
 (defstruct (stack-load (:constructor make-stack-load (def com q)) (:copier nil))
-  (def nil :type object-def)
+  (def nil :type (or null object-def))         ; nil only while with-stack-load fills it
   (com (make-vec3) :type vec3)                 ; m, its CoM in body axes from R
   (q (quat 1 0 0 0) :type quat))               ; its body axes -> the ship's
+
+(defmacro with-stack-load ((load sim) &body body)
+  "BODY with LOAD the sim SIM's latched load as a stack-load sharing the
+grapple's pose (stack-allocated), or nil: none, or berthed."
+  (let ((cell (gensym)) (grapple (gensym)) (index (gensym)))
+    `(let* ((,grapple (sim-grapple ,sim))
+            (,index (grapple-object ,grapple))
+            (,cell (make-stack-load nil (grapple-com ,grapple) (grapple-q ,grapple))))
+       (declare (dynamic-extent ,cell))
+       (let ((,load (when (and ,index (not (sim-berthed ,sim)))
+                      (setf (stack-load-def ,cell)
+                            (object-def-of (svref (sim-objects ,sim) ,index)))
+                      ,cell)))
+         ,@body))))
+
+(declaim (inline stack-load-mass))
+(defun stack-load-mass (load)
+  "kg: LOAD's mass, 0 for nil."
+  (if load (object-def-mass (stack-load-def load)) 0d0))
 
 (declaim (inline rotated-tensor!))
 
@@ -324,90 +344,106 @@ ship's boxes or to LOAD's bounding sphere."
   (angle-ok nil :type boolean)
   (rotation-ok nil :type boolean))
 
+(defun fixture-reading-into! (out sim index fixture-index com)
+  "OUT, a grapple-reading, for SIM's INDEXth object's fixture FIXTURE-INDEX,
+the stack's CoM at COM (body axes from R); OUT. Conses nothing."
+  (declare (optimize speed) (type grapple-reading out) (type fixnum index fixture-index)
+           (type vec3 com))
+  (let* ((ship (sim-ship sim))
+         (q-s (ship-state-q ship))
+         (object (svref (the simple-vector (sim-objects sim)) index))
+         (fixture (nth fixture-index (object-def-fixtures (object-def-of object))))
+         (state (object-state object))
+         (q-s* (make-quat)) (tip-b (make-vec3)) (tip (make-vec3)) (w-s (make-vec3))
+         (w-o (make-vec3)) (pin (make-vec3)) (axis (make-vec3)) (d (make-vec3))
+         (d-b (make-vec3)) (u (make-vec3)) (u-v (make-vec3)))
+    (declare (dynamic-extent q-s* tip-b tip w-s w-o pin axis d d-b u u-v))
+    (quat-conjugate! q-s* q-s)
+    ;; The tip in inertial axes: r + q (tip − com).
+    (vec3-sub! tip-b *grapple-tip* com)
+    (quat-rotate! tip q-s tip-b)
+    (vec3-add! tip tip (ship-state-r ship))
+    (quat-rotate! pin (ship-state-q state) (fixture-pin fixture))
+    (vec3-add! pin pin (ship-state-r state))
+    (quat-rotate! axis (ship-state-q state) (fixture-axis fixture))
+    (vec3-sub! d pin tip)
+    (quat-rotate! d-b q-s* d)
+    ;; Rates: ω in inertial axes; the pin's and the tip's velocities.
+    (quat-rotate! w-o (ship-state-q state) (ship-state-w state))
+    (quat-rotate! w-s q-s (ship-state-w ship))
+    (vec3-sub! u pin (ship-state-r state))
+    (vec3-cross! u w-o u)
+    (vec3-add! u u (ship-state-v state))     ; the pin's velocity
+    (quat-rotate! u-v q-s tip-b)
+    (vec3-cross! u-v w-s u-v)
+    (vec3-add! u-v u-v (ship-state-v ship))  ; the tip's
+    (vec3-sub! u u u-v)
+    (let ((closing (+ (vec3-dot axis u)
+                      (vec3-dot (vec3-cross! u-v w-o axis) d))))
+      (vec3-sub! w-s w-s w-o)
+      (quat-rotate! u q-s* axis)
+      (let ((y (aref d-b 1)) (z (aref d-b 2))
+            (angle (acos (max -1d0 (min 1d0 (- (aref u 0))))))
+            (rotation (vec3-norm w-s)))
+        (setf (grapple-reading-object out) index
+              (grapple-reading-fixture out) fixture-index
+              (grapple-reading-range out) (- (vec3-dot axis d))
+              (grapple-reading-closing-speed out) closing
+              (grapple-reading-offset-y out) y
+              (grapple-reading-offset-z out) z
+              (grapple-reading-angle out) angle
+              (grapple-reading-rotation out) rotation
+              (grapple-reading-closing-ok out) (<= *capture-closing-min* closing
+                                                   *capture-closing-max*)
+              (grapple-reading-offset-ok out) (<= (sqrt (+ (* y y) (* z z))) *capture-offset*)
+              (grapple-reading-angle-ok out) (<= angle *capture-angle*)
+              (grapple-reading-rotation-ok out) (<= rotation *capture-rotation*))
+        out))))
+
 (defun grapple-range-into! (out sim)
   "OUT, a grapple-reading, for the nearest free fixture of a promoted object
-whose pin lies ahead of the tip (body x) within *grapple-range-max* and
-whose axis faces it; nil when there is none. Pure; conses nothing."
+(not the grapple's) whose pin lies ahead of the tip (body x) within
+*grapple-range-max* and whose axis faces it; nil when there is none. The
+stack's CoM with its latched load. Pure; conses nothing."
   (declare (optimize speed) (type grapple-reading out)
            (inline ship-mass-properties make-mass-properties))
   (let* ((ship (sim-ship sim))
          (q-s (ship-state-q ship))
          (com (make-vec3)) (inertia (make-mat3)) (inverse (make-mat3))
          (properties (make-mass-properties :com com :inertia inertia :inertia-inverse inverse))
-         (q-s* (make-quat)) (tip-b (make-vec3)) (tip (make-vec3)) (w-s (make-vec3))
-         (w-o (make-vec3))
+         (q-s* (make-quat)) (tip-b (make-vec3)) (tip (make-vec3))
          (pin (make-vec3)) (axis (make-vec3)) (d (make-vec3)) (d-b (make-vec3))
-         (u (make-vec3)) (u-v (make-vec3))
+         (grapple-object (grapple-object (sim-grapple sim)))
          (best-object -1) (best-fixture 0) (best 0d0))
-    (declare (dynamic-extent com inertia inverse properties q-s* tip-b tip w-s w-o
-                             pin axis d d-b u u-v)
+    (declare (dynamic-extent com inertia inverse properties q-s* tip-b tip pin axis d d-b)
              (type fixnum best-object best-fixture) (type double-float best))
-    ;; PLACEHOLDER(188): the latched load's mass and exclusion, once the sim
-    ;; holds the grapple; until then every promoted object is free.
-    (ship-mass-properties (ship-state-m-p ship) nil properties)
+    (with-stack-load (load sim)
+      (ship-mass-properties (ship-state-m-p ship) load properties))
     (quat-conjugate! q-s* q-s)
-    ;; The tip in inertial axes: r + q (tip − com).
     (vec3-sub! tip-b *grapple-tip* com)
     (quat-rotate! tip q-s tip-b)
     (vec3-add! tip tip (ship-state-r ship))
-    (flet ((fixture-geometry (state fixture)
-             ;; PIN, AXIS (inertial) and D = pin − tip, D-B in ship axes.
-             (quat-rotate! pin (ship-state-q state) (fixture-pin fixture))
-             (vec3-add! pin pin (ship-state-r state))
-             (quat-rotate! axis (ship-state-q state) (fixture-axis fixture))
-             (vec3-sub! d pin tip)
-             (quat-rotate! d-b q-s* d)))
-      ;; A promoted object's state is the sim's own (object-state-into!).
-      (loop for object across (the simple-vector (sim-objects sim))
-            for i of-type fixnum from 0
-            when (object-promoted-p object)
-              do (loop for fixture in (object-def-fixtures (object-def-of object))
-                       for j of-type fixnum from 0
-                       when (fixture-free fixture)
-                         do (fixture-geometry (object-state object) fixture)
-                            (let ((distance (vec3-norm d)))
-                              (when (and (> (aref d-b 0) 0d0)
-                                         (<= distance *grapple-range-max*)
-                                         (< (vec3-dot axis d) 0d0)
-                                         (or (< best-object 0) (< distance best)))
-                                (setf best-object i best-fixture j best distance)))))
-      (when (>= best-object 0)
-        (let* ((object (aref (the simple-vector (sim-objects sim)) best-object))
-               (fixture (nth best-fixture (object-def-fixtures (object-def-of object))))
-               (state (object-state object)))
-          (fixture-geometry state fixture)
-          ;; Rates: ω in inertial axes; the pin's and the tip's velocities.
-          (quat-rotate! w-o (ship-state-q state) (ship-state-w state))
-          (quat-rotate! w-s q-s (ship-state-w ship))
-          (vec3-sub! u pin (ship-state-r state))
-          (vec3-cross! u w-o u)
-          (vec3-add! u u (ship-state-v state))     ; the pin's velocity
-          (quat-rotate! u-v q-s tip-b)
-          (vec3-cross! u-v w-s u-v)
-          (vec3-add! u-v u-v (ship-state-v ship))  ; the tip's
-          (vec3-sub! u u u-v)
-          (let ((closing (+ (vec3-dot axis u)
-                            (vec3-dot (vec3-cross! u-v w-o axis) d))))
-            (vec3-sub! w-s w-s w-o)
-            (quat-rotate! u q-s* axis)
-            (let ((y (aref d-b 1)) (z (aref d-b 2))
-                  (angle (acos (max -1d0 (min 1d0 (- (aref u 0))))))
-                  (rotation (vec3-norm w-s)))
-              (setf (grapple-reading-object out) best-object
-                    (grapple-reading-fixture out) best-fixture
-                    (grapple-reading-range out) (- (vec3-dot axis d))
-                    (grapple-reading-closing-speed out) closing
-                    (grapple-reading-offset-y out) y
-                    (grapple-reading-offset-z out) z
-                    (grapple-reading-angle out) angle
-                    (grapple-reading-rotation out) rotation
-                    (grapple-reading-closing-ok out) (<= *capture-closing-min* closing
-                                                         *capture-closing-max*)
-                    (grapple-reading-offset-ok out) (<= (sqrt (+ (* y y) (* z z)))
-                                                        *capture-offset*)
-                    (grapple-reading-angle-ok out) (<= angle *capture-angle*)
-                    (grapple-reading-rotation-ok out) (<= rotation *capture-rotation*))
-              out)))))))
+    ;; A promoted object's state is the sim's own (object-state-into!).
+    (loop for object across (the simple-vector (sim-objects sim))
+          for i of-type fixnum from 0
+          when (and (object-promoted-p object) (not (eql i grapple-object)))
+            do (loop for fixture in (object-def-fixtures (object-def-of object))
+                     for j of-type fixnum from 0
+                     when (fixture-free fixture)
+                       do (let ((state (object-state object)))
+                            (quat-rotate! pin (ship-state-q state) (fixture-pin fixture))
+                            (vec3-add! pin pin (ship-state-r state))
+                            (quat-rotate! axis (ship-state-q state) (fixture-axis fixture))
+                            (vec3-sub! d pin tip)
+                            (quat-rotate! d-b q-s* d))
+                          (let ((distance (vec3-norm d)))
+                            (when (and (> (aref d-b 0) 0d0)
+                                       (<= distance *grapple-range-max*)
+                                       (< (vec3-dot axis d) 0d0)
+                                       (or (< best-object 0) (< distance best)))
+                              (setf best-object i best-fixture j best distance)))))
+    (when (>= best-object 0)
+      (fixture-reading-into! out sim best-object best-fixture com))))
 
 ;;; Main engine (docs/design.md "Propulsion"): thrust along +x through the
 ;;; CoM, the gimbal trimmed, no torque.

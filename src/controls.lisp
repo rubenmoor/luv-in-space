@@ -531,17 +531,17 @@ offset. Translation is always direct, the axis's torque-free force.
 ;; Hot callers declare it inline: a full call boxes h and t.
 (declaim (sb-ext:maybe-inline flight-step!))
 
-(defun flight-step! (state controls h time model &optional attitude-fn third-bodies)
-  "Advance STATE by h from TIME under CONTROLS: mass properties from m_p,
-flight computer (its state into CONTROLS), mixer (duties into CONTROLS),
-engine plus RCS force,
-torque and ṁ, then rk4-step! (with THIRD-BODIES, the step's shared Moon and
-Sun). With ATTITUDE-FN (kinematic, above ×4) the engine only. Conses
-nothing."
+(defun flight-step! (state controls h time model &optional attitude-fn third-bodies load)
+  "Advance STATE by h from TIME under CONTROLS: mass properties from m_p and
+the latched LOAD (a stack-load or nil), flight computer (its state into
+CONTROLS), mixer (duties into CONTROLS), engine plus RCS force, torque and
+ṁ, then rk4-step! (with THIRD-BODIES, the step's shared Moon and Sun). With
+ATTITUDE-FN (kinematic, above ×4) the engine only. Conses nothing."
   (declare (optimize speed) (type ship-state state) (type controls controls)
            (type double-float h time) (type keyword model)
            (type (or null function) attitude-fn) (type (or null third-bodies) third-bodies)
-           (inline ship-mass-properties rk4-step!))
+           (type (or null stack-load) load)
+           (inline ship-mass-properties rk4-step! stack-load-mass))
   (let* ((com (make-vec3)) (inertia (make-mat3)) (inverse (make-mat3))
          (properties (make-mass-properties :com com :inertia inertia
                                            :inertia-inverse inverse))
@@ -554,7 +554,7 @@ nothing."
          (mdot (ship-engine-mdot throttle)))
     (declare (dynamic-extent com inertia inverse properties b tau-c f-c force torque)
              (type double-float mdot))
-    (ship-mass-properties m-p nil properties)
+    (ship-mass-properties m-p load properties)
     (cond (attitude-fn
            ;; Kinematic: the attitude is the hold's.
            (fill u 0d0)
@@ -576,5 +576,5 @@ nothing."
             (incf (aref torque 1) (* ui (aref b 4 i)))
             (incf (aref torque 2) (* ui (aref b 5 i)))
             (incf mdot (* ui rcs-mdot))))))
-    (rk4-step! state h time model force torque mdot *ship-dry-mass* inertia inverse
-               attitude-fn third-bodies)))
+    (rk4-step! state h time model force torque mdot (+ *ship-dry-mass* (stack-load-mass load))
+               inertia inverse attitude-fn third-bodies)))

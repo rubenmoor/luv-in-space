@@ -356,10 +356,12 @@ promoted."
 ;;; orbit at (r, 0, 0) moving along +y.
 
 (defun contact-scene (key centre &key (v-rel (lis::vec3 0 0 0)) (q-rel (lis::quat 0 0 0 1))
-                                      (q-o (lis::quat 1 0 0 0)) (w-o (lis::make-vec3)))
+                                      (q-o (lis::quat 1 0 0 0)) (w-o (lis::make-vec3))
+                                      (m-p 28000d0))
   "The start's sim, :point, object KEY promoted by hand on the orbit (a
 towable at Q-O and W-O, body axes; a berth object in its mode's attitude),
-the ship turned Q-REL from the object's axes, direct mode, at rest
+the ship with M-P kg of propellant turned Q-REL from the object's axes,
+direct mode, at rest
 relative to it but for V-REL: the object's CoM at CENTRE in ship axes from
 R, moving at V-REL (ship axes) relative to the ship's CoM. (values sim
 index)."
@@ -376,7 +378,7 @@ index)."
         (lis::object-attitude-into! q-o w (lis::object-attitude object) r-o v-o (lis::sim-t sim))
         (setf w-o (lis::quat-rotate (lis::quat-conjugate q-o) w))))
     (let* ((q-s (lis::quat-mul q-o q-rel))
-           (com (lis::mass-properties-com (lis::ship-mass-properties 28000d0 nil)))
+           (com (lis::mass-properties-com (lis::ship-mass-properties m-p nil)))
            (r-s (lis::vec3-sub r-o (lis::quat-rotate q-s (lis::vec3-sub centre com))))
            (v-s (lis::vec3-sub v-o (lis::quat-rotate q-s v-rel))))
       (setf (lis::sim-model sim) :point
@@ -384,7 +386,7 @@ index)."
       (lis::ship-state-assign! (lis::object-state object)
                                (lis::make-ship-state r-o v-o q-o w-o 0d0))
       (lis::ship-state-assign! (lis::sim-ship sim)
-                               (lis::make-ship-state r-s v-s q-s (lis::make-vec3) 28000d0))
+                               (lis::make-ship-state r-s v-s q-s (lis::make-vec3) m-p))
       (setf (lis::controls-attitude-mode (lis::sim-controls sim)) :direct)
       (lis::sim-recheck-objects! sim)
       (values sim index))))
@@ -594,11 +596,11 @@ angular momentum about their common CoM, inertial."
 ;;; grapple armed, a fixture straight ahead of the tip.
 
 (defun fixture-scene (key &key (fixture 0) (gap 0.05d0) (speed 0.1d0) (offset 0d0) (angle 0d0)
-                               (w-o (lis::make-vec3)))
+                               (w-o (lis::make-vec3)) (m-p 28000d0) (armed t))
   "KEY's FIXTURE ahead of the tip: its plate GAP m beyond it along the
 fixture's axis, the pin OFFSET m along ship y, its inward axis turned ANGLE
-rad about ship z from +x, closing at SPEED along ship x; the grapple armed.
-(values sim index)."
+rad about ship z from +x, closing at SPEED along ship x; M-P kg of
+propellant; the grapple ARMED (else stowed). (values sim index)."
   (let* ((def (lis::object-definition key))
          (f (nth fixture (lis::object-def-fixtures def)))
          (q-l (lis::quat-mul (lis::quat-from-axis-angle (lis::vec3 0 0 1) angle)
@@ -609,8 +611,9 @@ rad about ship z from +x, closing at SPEED along ship x; the grapple armed.
          (centre (lis::vec3-sub pin (lis::quat-rotate q-l (lis::fixture-pin f)))))
     (multiple-value-bind (sim index)
         (contact-scene key centre :v-rel (lis::vec3 (- speed) 0 0)
-                                  :q-rel (lis::quat-conjugate q-l) :w-o w-o)
-      (setf (lis::grapple-state (lis::sim-grapple sim)) :armed)
+                                  :q-rel (lis::quat-conjugate q-l) :w-o w-o :m-p m-p)
+      (when armed
+        (setf (lis::grapple-state (lis::sim-grapple sim)) :armed))
       (values sim index))))
 
 (defun shifted-sim (sim index)
@@ -1147,3 +1150,184 @@ object), the notices cleared: (values sim index)."
           (is = (lis::removal-time (lis::object-removal (svref (lis::sim-objects first-run) index)))
               (lis::removal-time (lis::object-removal (svref (lis::sim-objects sim) index))))
           (true (equalp sim first-run)))))))
+
+;;; Plan 24's round (task 194): from hand-placed starts beside each place,
+;;; the sim driven only by its controls, grapple-key! and transfer-key!.
+
+(defun notice-texts (sim) (mapcar #'second (lis::sim-notices sim)))
+
+(defun arm-grapple (sim)
+  (false (lis::grapple-key! sim))
+  (is eq :armed (lis::grapple-state (lis::sim-grapple sim))))
+
+(defun hold-translation (sim sign seconds)
+  "The ±x translation key held SECONDS at ×1, then released; SIM."
+  (let ((controls (lis::sim-controls sim)))
+    (lis::controls-set-translation-key controls :x sign)
+    (step-sim sim (* 64 seconds) 1)
+    (lis::controls-set-translation-key controls :x 0)
+    sim))
+
+(defun place-highport-ahead! (sim index distance)
+  "Highport promoted by hand, its body axes the ship's, its plant's pin
+DISTANCE m ahead of the INDEXth object's CoM along ship +x (the fixture
+facing it), at that object's velocity; Highport's index."
+  (let* ((highport (lis::sim-object sim :highport))
+         (load (lis::object-state (svref (lis::sim-objects sim) index)))
+         (q (lis::quat-copy (lis::ship-state-q (lis::sim-ship sim))))
+         (pin (lis::fixture-pin (first (lis::object-def-fixtures (lis::object-def-of highport)))))
+         (r (lis::vec3-sub (lis::vec3-add-scaled (lis::ship-state-r load)
+                                                 (lis::quat-rotate q (lis::vec3 1 0 0)) distance)
+                           (lis::quat-rotate q pin))))
+    (setf (lis::object-status highport) :promoted)
+    (lis::ship-state-assign! (lis::object-state highport)
+                             (lis::make-ship-state r (lis::vec3-copy (lis::ship-state-v load)) q
+                                                   (lis::make-vec3) 0d0))
+    (position highport (lis::sim-objects sim))))
+
+(defun tow-errors (sim index h-index range)
+  "(values p u), ship axes: the INDEXth object's CoM from the point RANGE m
+out along Highport's plant axis, and its velocity relative to Highport."
+  (let* ((q* (lis::quat-conjugate (lis::ship-state-q (lis::sim-ship sim))))
+         (station (lis::object-state (svref (lis::sim-objects sim) h-index)))
+         (fixture (first (lis::object-def-fixtures (lis::object-definition :highport))))
+         (stop (lis::vec3-add (lis::ship-state-r station)
+                              (lis::quat-rotate (lis::ship-state-q station)
+                                                (lis::vec3-add-scaled (lis::fixture-pin fixture)
+                                                                      (lis::fixture-axis fixture)
+                                                                      range))))
+         (load (lis::object-state (svref (lis::sim-objects sim) index))))
+    (values (lis::quat-rotate q* (lis::vec3-sub (lis::ship-state-r load) stop))
+            (lis::quat-rotate q* (lis::vec3-sub (lis::ship-state-v load)
+                                                (lis::ship-state-v station))))))
+
+(defun tow! (sim index h-index range)
+  "Translation keys at ×1 until the INDEXth object's CoM rests within 1 m and
+1 cm/s of RANGE m out on Highport's plant axis: towards it at 0.5 m/s at
+most, braking over 40 s. The steps taken, or nil."
+  (let ((controls (lis::sim-controls sim)))
+    (loop for steps from 0 below 40000
+          do (multiple-value-bind (p u) (tow-errors sim index h-index range)
+               (when (and (< (lis::vec3-norm p) 1d0) (< (lis::vec3-norm u) 0.01d0))
+                 (loop for axis in '(:x :y :z)
+                       do (lis::controls-set-translation-key controls axis 0))
+                 (return steps))
+               (loop for axis in '(:x :y :z)
+                     for i from 0
+                     for e = (- (aref u i) (max -0.5d0 (min 0.5d0 (/ (aref p i) -40d0))))
+                     do (lis::controls-set-translation-key
+                         controls axis (cond ((> e 0.005d0) -1) ((< e -0.005d0) 1) (t 0)))))
+             (lis::sim-step! sim 1)
+             (when (lis::sim-lost-p sim)
+               (return nil)))))
+
+(defun round-tow-and-deliver ()
+  ;; Skua Yard 3 grappled, towed 80 m to 70 m off Highport's plant, released
+  ;; there and taken in at release + 600 s.
+  (multiple-value-bind (sim index) (fixture-scene :skua-yard-3 :armed nil)
+    (arm-grapple sim)
+    (step-to-contact sim 1 (+ (lis::start-t) 2))
+    (is equal '("LATCHED SKUA YARD 3") (notice-texts sim))
+    (setf (lis::sim-notices sim) nil)
+    (step-sim sim 200 1)
+    (is eq :latched (lis::grapple-state (lis::sim-grapple sim)))
+    (lis::controls-toggle-rate-damping (lis::sim-controls sim))
+    (let ((h-index (place-highport-ahead! sim index 150d0)))
+      (true (tow! sim index h-index 70d0) "towed")
+      (step-sim sim 64 1)
+      (multiple-value-bind (p u) (tow-errors sim index h-index 70d0)
+        (true (< (lis::vec3-norm p) 2d0) "~,3F m off the stop" (lis::vec3-norm p))
+        (true (< (lis::vec3-norm u) 0.02d0) "~,4F m/s" (lis::vec3-norm u))))
+    (false (lis::grapple-key! sim))
+    (let ((t0 (lis::sim-t sim))
+          (load (svref (lis::sim-objects sim) index)))
+      (true (lis::sim-delivery sim) "pending")
+      (hold-translation sim -1 2)
+      (step-sim sim most-positive-fixnum 1000 (+ t0 700))
+      (false (lis::sim-lost-p sim))
+      (let ((removal (lis::object-removal load)))
+        (true removal)
+        (when removal
+          (is eq :delivered (lis::removal-cause removal))
+          (is = (+ t0 600) (lis::removal-time removal))
+          (is equal '(:highport "plant") (lis::removal-point removal))))
+      (is equal '("SKUA YARD 3 DELIVERED") (notice-texts sim)))))
+
+(defun round-berth (key &key (m-p 28000d0))
+  "Berthed at KEY's first fixture after G armed the grapple, the claws
+latched: SIM."
+  (let ((sim (fixture-scene key :armed nil :m-p m-p))
+        (name (lis::object-def-name (lis::object-definition key))))
+    (arm-grapple sim)
+    (step-to-contact sim 1 (+ (lis::start-t) 2))
+    (true (lis::sim-berthed sim) "~A" name)
+    (is equal (list (format nil "BERTHED ~A" name)) (notice-texts sim))
+    (setf (lis::sim-notices sim) nil)
+    (step-sim sim 200 1)
+    (is eq :latched (lis::grapple-state (lis::sim-grapple sim)))
+    sim))
+
+(defun round-refuel (sim seconds)
+  "B, then SECONDS at ×1,000: m_p rises by 10 kg/s exactly."
+  (let ((m0 (lis::ship-state-m-p (lis::sim-ship sim)))
+        (t0 (lis::sim-t sim)))
+    (false (lis::transfer-key! sim))
+    (true (lis::sim-transfer sim))
+    (step-sim sim most-positive-fixnum 1000 (+ t0 seconds))
+    (is = (min 28000d0 (+ m0 (* 10 seconds))) (lis::ship-state-m-p (lis::sim-ship sim)))))
+
+(defun round-fulmar (sim)
+  "From the berth at Fulmar Depot with 27,000 kg: refuelled to full, released,
+backed off, a bounce into the depot at ~0.2 m/s, then the engine into it:
+(values sim the bounce's normal speeds before and after)."
+  (round-refuel sim 150)
+  (false (lis::sim-transfer sim))
+  (is equal '("TANKS FULL") (notice-texts sim))
+  (false (lis::grapple-key! sim))
+  (false (lis::grapple-key! sim))
+  (is eq :stowed (lis::grapple-state (lis::sim-grapple sim)))
+  (hold-translation sim -1 4)
+  (step-sim sim (* 64 20) 1)
+  (hold-translation sim 1 8)
+  (multiple-value-bind (sim before) (step-to-contact sim 1 (+ (lis::sim-t sim) 120))
+    (let ((speeds (and before (list (record-normal-speed before) (record-normal-speed sim)))))
+      (step-sim sim (* 64 30) 1)
+      (lis::controls-throttle-full (lis::sim-controls sim))
+      (step-sim sim (* 64 30) 1)
+      (values sim speeds))))
+
+(define-test round-at-every-place
+  (round-tow-and-deliver)
+  ;; Tern Station: no propellant there.
+  (let ((sim (round-berth :tern-station)))
+    (is equal "NO PROPELLANT HERE" (lis::transfer-key! sim))
+    (false (lis::grapple-key! sim))
+    (false (lis::sim-berthed sim)))
+  ;; Highport: refuelled.
+  (round-refuel (round-berth :highport :m-p 20000d0) 100)
+  ;; Fulmar Depot under a clock: the berth's checkpoint, a bounce, a death,
+  ;; Return, and the same flight again bit for bit.
+  (let* ((sim (fixture-scene :fulmar-depot :armed nil :m-p 27000d0))
+         (clock (clock-at sim 1)))
+    (arm-grapple sim)
+    (loop repeat 256 until (lis::sim-berthed sim) do (lis::clock-step! clock sim))
+    (true (lis::sim-berthed sim))
+    (true (equalp sim (lis::clock-checkpoint clock)))
+    (let ((checkpoint (lis::copy-sim sim)))
+      (multiple-value-bind (sim speeds) (round-fulmar sim)
+        (true speeds "bounced")
+        (when speeds
+          (destructuring-bind (v0 v1) speeds
+            (true (< 0.1d0 (- v0) 0.3d0) "~F m/s" v0)
+            (true (< (abs (/ (+ v1 (* 0.3d0 v0)) v0)) 1d-9) "~F after ~F" v1 v0)))
+        (let ((loss (lis::sim-loss sim)))
+          (true loss)
+          (when loss
+            (is eq :contact (lis::loss-cause loss))
+            (is eq :fulmar-depot (lis::loss-object loss))
+            (true (> (lis::loss-speed loss) 1d0) "~F m/s" (lis::loss-speed loss))))
+        (let ((lost (lis::copy-sim sim)))
+          (lis::clock-restart! clock sim (lis::clock-checkpoint clock))
+          (true (equalp sim checkpoint))
+          (round-fulmar sim)
+          (true (equalp sim lost)))))))

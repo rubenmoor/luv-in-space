@@ -83,50 +83,68 @@ controls-attitude-fn's, without a closure per step."
   (declare (type (double-float 0d0 1d6) h))
   (* +fine-step+ (fceiling (* h (/ +fine-step+)))))
 
+(declaim (inline step-h))
+(defun step-h (sim level until)
+  "The h of SIM's next step at LEVEL with UNTIL, and whether the Δv cut-off
+ends it; changes nothing (a cut due before the step counts as made)."
+  (declare (type sim sim) (type fixnum level) (type (or null double-float) until))
+  (let* ((ship (sim-ship sim))
+         (controls (sim-controls sim))
+         (time (sim-t sim))
+         (coarse (> level *fine-levels-max*))
+         (cutoff (sim-cutoff sim))
+         (engine-on (and (> (ship-engine-force (controls-throttle controls)) 0d0)
+                         (> (ship-state-m-p ship) 0d0)))
+         (cut-after nil))
+    (declare (type double-float time))
+    (when (and cutoff engine-on (>= (ship-state-dv ship) cutoff))
+      (setf cutoff nil engine-on nil))
+    (let ((h (if coarse
+                 (coarse-step (ship-state-r ship) time engine-on (sim-body sim))
+                 +fine-step+)))
+      (declare (type (double-float 0d0 1d6) h))
+      ;; A coarse burn ends at the engine-only closed form, rounded up.
+      (when (and coarse cutoff engine-on)
+        (let* ((force (ship-engine-force (controls-throttle controls)))
+               (mdot (ship-engine-mdot (controls-throttle controls)))
+               (m0 (+ *ship-dry-mass* (ship-state-m-p ship)))
+               (h-cut (grid-ceiling-step
+                       (min 1d6 (* (/ m0 mdot)
+                                   (- 1 (exp (- (/ (* (- cutoff (ship-state-dv ship)) mdot)
+                                                   force)))))))))
+          (declare (type double-float force mdot m0))
+          (when (<= h-cut h)
+            (setf h h-cut cut-after t))))
+      (when (and until (> until time) (< (- until time) h))
+        (setf h (- until time) cut-after nil))
+      (values h cut-after))))
+
 (defun sim-step-ticks! (sim level until)
   "sim-step!, returning h in 1/64 s ticks (a fixnum: nothing boxed) or nil."
   (declare (optimize speed) (type sim sim) (type fixnum level)
-           (type (or null double-float) until) (inline flight-step!))
+           (type (or null double-float) until) (inline flight-step! step-h))
   (when (sim-loss sim)
     (return-from sim-step-ticks! nil))
   (let* ((ship (sim-ship sim))
          (controls (sim-controls sim))
          (time (sim-t sim))
          (coarse (> level *fine-levels-max*))
-         (cut-after nil)
          (r0 (make-vec3)) (v0 (make-vec3)) (q0 (make-quat)))
     (declare (type double-float time) (dynamic-extent r0 v0 q0))
-    (flet ((engine-on-p ()
-             (and (> (ship-engine-force (controls-throttle controls)) 0d0)
-                  (> (ship-state-m-p ship) 0d0)))
-           (cut! ()
+    (flet ((cut! ()
              (controls-throttle-cut controls)
              (setf (sim-cutoff sim) nil)))
-      (declare (inline engine-on-p cut!))
+      (declare (inline cut!))
       (let ((cutoff (sim-cutoff sim)))
-        (when (and cutoff (engine-on-p) (>= (ship-state-dv ship) cutoff))
+        (when (and cutoff
+                   (> (ship-engine-force (controls-throttle controls)) 0d0)
+                   (> (ship-state-m-p ship) 0d0)
+                   (>= (ship-state-dv ship) cutoff))
           (cut!)))
       (when (and coarse (not (eq (controls-attitude-mode controls) :hold)))
         (controls-inertial-hold controls (ship-state-q ship)))
-      (let ((h (if coarse
-                   (coarse-step (ship-state-r ship) time (engine-on-p) (sim-body sim))
-                   +fine-step+))
-            (cutoff (sim-cutoff sim)))
+      (multiple-value-bind (h cut-after) (step-h sim level until)
         (declare (type (double-float 0d0 1d6) h))
-        ;; A coarse burn ends at the engine-only closed form, rounded up.
-        (when (and coarse cutoff (engine-on-p))
-          (let* ((force (ship-engine-force (controls-throttle controls)))
-                 (mdot (ship-engine-mdot (controls-throttle controls)))
-                 (m0 (+ *ship-dry-mass* (ship-state-m-p ship)))
-                 (h-cut (grid-ceiling-step
-                         (min 1d6 (* (/ m0 mdot)
-                                     (- 1 (exp (- (/ (* (- cutoff (ship-state-dv ship)) mdot)
-                                                     force)))))))))
-            (declare (type double-float force mdot m0))
-            (when (<= h-cut h)
-              (setf h h-cut cut-after t))))
-        (when (and until (> until time) (< (- until time) h))
-          (setf h (- until time) cut-after nil))
         (replace r0 (ship-state-r ship))
         (replace v0 (ship-state-v ship))
         (replace q0 (ship-state-q ship))
@@ -170,3 +188,158 @@ to its horizon; without it a fresh one, prediction.lisp)."
   (and (= (controls-throttle (sim-controls sim)) 0d0)
        (null (sim-loss sim))
        (not (prediction-impact-p sim prediction))))
+
+;;; The clock: frames, warp levels, pause, the actual rate (docs/architecture.md
+;;; "The clock", "Time warp"; decision 72, decision 19: Time-warp rules). Not
+;;; part of the simulation state; checkpoints don't copy it.
+
+(defparameter *warp-levels* '(1 4 10 100 1000 10000 100000 1000000)
+  "In order; decision 19: Time-warp rules.")
+(defparameter *frame-step-limit* 4096 "sim-step!s per frame at most; decision 16, decision 72.")
+(defparameter *frame-step-time-limit* 0.004d0
+  "s of wall clock per frame's steps, checked every 64 steps; nil: no limit
+(tests). Decision 72.")
+(defparameter *frame-elapsed-cap* 0.1d0 "s: a frame's elapsed time at most; decision 16.")
+(defparameter *rate-meter-frames* 256 "Frames the rate meter keeps, more than a second's.")
+(declaim (type fixnum *frame-step-limit* *rate-meter-frames*)
+         (type (or null double-float) *frame-step-time-limit*)
+         (type double-float *frame-elapsed-cap*))
+
+(defconstant +time-check-interval+ 64)
+
+(defstruct (clock (:constructor %make-clock (previous prediction rate-real rate-game))
+                  (:copier nil))
+  (level-index 0 :type fixnum)                  ; into *warp-levels*
+  (accumulator 0d0 :type double-float)          ; game s owed to the sim
+  (paused nil)
+  (real-time 0d0 :type double-float)            ; summed elapsed: messages' stamps
+  (rate-real nil :type (simple-array double-float (*))) ; per frame, a ring
+  (rate-game nil :type (simple-array double-float (*)))
+  (rate-index 0 :type fixnum)                   ; the next ring slot
+  (messages nil)                                ; piece 5's
+  (previous nil :type ship-state)               ; the ship before the last step
+  (previous-t 0d0 :type double-float)
+  (frame-steps 0 :type fixnum)                  ; steps in the last frame
+  (hook nil :type (or null function))           ; (fn clock sim) → a grid until or nil
+  (prediction nil))
+
+(defun new-clock (sim)
+  "A clock at ×1, unpaused, its previous state SIM's."
+  (let ((clock (%make-clock (copy-ship-state (sim-ship sim)) (new-prediction)
+                            (make-array *rate-meter-frames* :element-type 'double-float
+                                                            :initial-element 0d0)
+                            (make-array *rate-meter-frames* :element-type 'double-float
+                                                            :initial-element 0d0))))
+    (setf (clock-previous-t clock) (sim-t sim))
+    clock))
+
+(defun clock-level (clock)
+  "The warp level, ×1 … ×1,000,000."
+  (the fixnum (nth (clock-level-index clock) *warp-levels*)))
+
+(defun clock-kinematic-p (clock)
+  "Above ×4: attitude kinematic, rotation and translation keys ignored (decision 31)."
+  (> (clock-level clock) *fine-levels-max*))
+
+(defun clock-previous-state (clock)
+  "(values ship-state t) before the last step, for interpolation."
+  (values (clock-previous clock) (clock-previous-t clock)))
+
+;;; Commands: between frames, so at a step boundary; never touching the sim.
+
+(defun clock-set-level-index! (clock index)
+  "Warp level INDEX; the accumulator scales by new/old, so the real time
+owed stays."
+  (let ((old (clock-level clock)))
+    (setf (clock-level-index clock) index)
+    (setf (clock-accumulator clock)
+          (* (clock-accumulator clock) (/ (float (clock-level clock) 1d0) old)))
+    clock))
+
+(defun clock-warp-up (clock)
+  (clock-set-level-index! clock (min (1+ (clock-level-index clock)) (1- (length *warp-levels*)))))
+
+(defun clock-warp-down (clock)
+  (clock-set-level-index! clock (max (1- (clock-level-index clock)) 0)))
+
+(defun clock-warp-reset (clock)
+  "×1, never refused."
+  (clock-set-level-index! clock 0))
+
+(defun clock-toggle-pause (clock)
+  "Pause or resume; the level is kept."
+  (setf (clock-paused clock) (not (clock-paused clock)))
+  clock)
+
+;;; The frame
+
+(defun clock-steps! (clock sim)
+  "Steps while the accumulator holds the next h, within the frame's caps;
+the rest dropped. The step count."
+  (declare (optimize speed) (type clock clock) (type sim sim)
+           (inline step-h sim-step-ticks!))
+  (let ((steps 0)
+        (deadline (and *frame-step-time-limit*
+                       (+ (get-internal-real-time)
+                          (the fixnum (ceiling (* *frame-step-time-limit*
+                                                  internal-time-units-per-second))))))
+        (previous (clock-previous clock))
+        (hook (clock-hook clock)))
+    (declare (type fixnum steps) (type (or null fixnum) deadline))
+    (flet ((drop! ()
+             (setf (clock-accumulator clock) 0d0)
+             (return-from clock-steps! steps)))
+      (loop
+        (when (or (sim-loss sim)
+                  (>= steps *frame-step-limit*)
+                  (and deadline (> steps 0) (zerop (mod steps +time-check-interval+))
+                       (> (get-internal-real-time) deadline)))
+          (drop!))
+        (let* ((level (clock-level clock))
+               (until (and hook (funcall hook clock sim))))
+          (declare (type (or null double-float) until))
+          (when (< (clock-accumulator clock) (the double-float (step-h sim level until)))
+            (return steps))
+          (ship-state-assign! previous (sim-ship sim))
+          (setf (clock-previous-t clock) (sim-t sim))
+          (let ((ticks (sim-step-ticks! sim level until)))
+            (decf (clock-accumulator clock) (* (the fixnum ticks) +fine-step+))
+            (incf steps)))))))
+
+(defun rate-meter-record! (clock real game)
+  (let ((i (clock-rate-index clock)))
+    (setf (aref (clock-rate-real clock) i) real
+          (aref (clock-rate-game clock) i) game
+          (clock-rate-index clock) (mod (1+ i) *rate-meter-frames*))))
+
+(defun clock-actual-rate (clock)
+  "Game seconds per real second over the frames of the last second; 0d0
+before any frame."
+  (let ((real 0d0) (game 0d0) (n *rate-meter-frames*))
+    (declare (type double-float real game))
+    (loop for k from 1 to n
+          for i = (mod (- (clock-rate-index clock) k) n)
+          while (< real 1d0)
+          do (incf real (aref (clock-rate-real clock) i))
+             (incf game (aref (clock-rate-game clock) i)))
+    (if (> real 0d0) (/ game real) 0d0)))
+
+(defun clock-frame! (clock sim elapsed)
+  "One frame of ELAPSED real seconds: the prediction updated, then the
+accumulator fed min(ELAPSED, 0.1 s) × level and stepped down (the hook
+before each step gives its until); none paused (the accumulator emptied)
+or lost. The steps taken."
+  (let ((elapsed (float elapsed 1d0))
+        (start (sim-t sim)))
+    (prediction-update! (clock-prediction clock) sim)
+    (incf (clock-real-time clock) elapsed)
+    (setf (clock-frame-steps clock)
+          (cond ((or (clock-paused clock) (sim-loss sim))
+                 (setf (clock-accumulator clock) 0d0)
+                 0)
+                (t
+                 (incf (clock-accumulator clock)
+                       (* (min elapsed *frame-elapsed-cap*) (clock-level clock)))
+                 (clock-steps! clock sim))))
+    (rate-meter-record! clock elapsed (- (sim-t sim) start))
+    (clock-frame-steps clock)))

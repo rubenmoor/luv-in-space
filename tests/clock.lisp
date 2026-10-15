@@ -164,3 +164,139 @@ inertial hold) and a cut-off; SIM."
                     (- (sb-ext:get-bytes-consed) before))))
       (true (< consed 1024) "~D bytes" consed))
     (true (equalp a b))))
+
+;;; The clock: frames, warp levels, pause, the actual rate (docs/architecture.md
+;;; "The clock", "Drift bounds" through the clock; decision 72).
+
+(defun drift-sim ()
+  "The circular test orbit of \"Drift bounds\" as a sim: :point, direct
+mode, no keys, at rest."
+  (let ((sim (lis::new-game-sim)))
+    (multiple-value-bind (r v) (lis::orbit-state (drift-orbit 0d0) (lis::start-t))
+      (lis::ship-state-assign! (lis::sim-ship sim)
+                               (lis::make-ship-state r v (lis::quat 1 0 0 0) (lis::make-vec3)
+                                                     28000d0)))
+    (setf (lis::sim-model sim) :point
+          (lis::controls-attitude-mode (lis::sim-controls sim)) :direct)
+    sim))
+
+(defun drift-period () (lis::orbit-period (drift-orbit 0d0)))
+
+(defun level-index (level) (position level lis::*warp-levels*))
+
+(defun clock-run (sim level end frames &key (hook-until nil))
+  "A clock at LEVEL flies SIM to END, fed the elapsed times FRAMES in turn
+(cycled); before every step SIM is compared with a direct sim-step! loop
+at LEVEL. (values mismatches checks steps-per-frame clock)."
+  (let ((direct (lis::copy-sim sim))
+        (clock (lis::new-clock sim))
+        (mismatches 0) (checks 0) (per-frame '())
+        (lis::*frame-step-time-limit* nil))
+    (declare (inline lis::sim-step!))
+    (setf (lis::clock-hook clock)
+          (lambda (clock s)
+            (declare (ignore clock))
+            (loop while (< (lis::sim-t direct) (lis::sim-t s))
+                  do (lis::sim-step! direct level :until hook-until))
+            (incf checks)
+            (unless (equalp direct s) (incf mismatches))
+            hook-until))
+    (lis::clock-set-level-index! clock (level-index level))
+    (loop with pending = frames
+          while (< (lis::sim-t sim) end)
+          do (when (null pending) (setf pending frames))
+             (push (lis::clock-frame! clock sim (pop pending)) per-frame))
+    (loop while (< (lis::sim-t direct) (lis::sim-t sim))
+          do (lis::sim-step! direct level :until hook-until))
+    (unless (equalp direct sim) (incf mismatches))
+    (values mismatches checks (nreverse per-frame) clock)))
+
+(define-test clock-levels-equal-direct-steps
+  ;; Shortened as plan 15 allows, to keep the part's tests under 1.5 s: ×1
+  ;; and ×4 over 120 s (not 600 s), the coarse levels over 5 orbits (not 10).
+  (dolist (level lis::*warp-levels*)
+    (let* ((sim (drift-sim))
+           (end (+ (lis::sim-t sim) (if (<= level 4) 120d0 (* 5 (drift-period))))))
+      (multiple-value-bind (mismatches checks per-frame) (clock-run sim level end '(1/60))
+        (is = 0 mismatches "×~D" level)
+        (true (> checks 100) "×~D: ~D checks" level checks)
+        (true (>= (lis::sim-t sim) end))
+        (when (= level 1000000)
+          (true (every (lambda (n) (= n 4096)) (butlast per-frame)) "~A" per-frame))))))
+
+(defparameter *irregular-frames*
+  '(0.016d0 0.5d0 0.007d0 0.0331d0 1d-4 0.02d0 0.1d0 0.25d0 0.0123d0 0.04d0)
+  "Elapsed times; 0.5 and 0.25 are clamped to 0.1.")
+
+(define-test clock-frame-rate-changes-nothing
+  (dolist (level '(1 4 1000))
+    (let ((end (+ (lis::start-t) (if (<= level 4) 60d0 (drift-period)))))
+      (dolist (frames (list '(1/60) '(1/144) *irregular-frames*))
+        (let ((sim (drift-sim)))
+          (is = 0 (clock-run sim level end frames) "×~D ~A" level frames))))))
+
+(define-test clock-warp-change
+  (let* ((sim (drift-sim))
+         (clock (lis::new-clock sim))
+         (lis::*frame-step-time-limit* nil))
+    (dotimes (i 10) (lis::clock-frame! clock sim 1/60))
+    (let ((copy (lis::copy-sim sim))
+          (t0 (lis::sim-t sim)))
+      (dotimes (i 3)
+        (lis::clock-warp-up clock)
+        (true (equalp copy sim)))
+      (is = 100 (lis::clock-level clock))
+      (true (lis::clock-kinematic-p clock))
+      ;; ≤ 1/64 s owed at ×1 is ≤ 1.6 s at ×100: 10 to 11.6 s, five 2 s steps.
+      (is = 5 (lis::clock-frame! clock sim 0.1d0))
+      (is = (* 5 (lis::coarse-step (lis::ship-state-r (lis::sim-ship copy)) t0 nil :earth))
+          (- (lis::sim-t sim) t0))
+      (lis::clock-warp-reset clock)
+      (is = 1 (lis::clock-level clock))
+      (lis::clock-warp-down clock)
+      (is = 1 (lis::clock-level clock)))))
+
+(define-test clock-warp-round-trip
+  ;; ×1 → ×1,000 → ×1 over one orbit, against ×1 throughout.
+  (let* ((reference (drift-sim))
+         (sim (drift-sim))
+         (clock (lis::new-clock sim))
+         (end (lis::grid-ceiling (+ (lis::start-t) (drift-period))))
+         (lis::*frame-step-time-limit* nil))
+    (dotimes (i 60) (lis::clock-frame! clock sim 1/60))
+    (lis::clock-set-level-index! clock (level-index 1000))
+    (loop while (< (lis::sim-t sim) (- end 100)) do (lis::clock-frame! clock sim 1/60))
+    (lis::clock-warp-reset clock)
+    (loop while (< (lis::sim-t sim) end) do (lis::clock-frame! clock sim 0.1d0))
+    (step-sim reference most-positive-fixnum 1 (lis::sim-t sim))
+    (is = (lis::sim-t sim) (lis::sim-t reference))
+    (let ((d (lis::vec3-norm (lis::vec3-sub (lis::ship-state-r (lis::sim-ship sim))
+                                            (lis::ship-state-r (lis::sim-ship reference))))))
+      (true (< d 5d0) "~F m" d))))
+
+(define-test clock-pause
+  (let* ((sim (drift-sim))
+         (clock (lis::new-clock sim))
+         (lis::*frame-step-time-limit* nil))
+    (lis::clock-warp-up clock)
+    (lis::clock-frame! clock sim 1/60)
+    (let ((copy (lis::copy-sim sim)))
+      (lis::clock-toggle-pause clock)
+      (dotimes (i 100)
+        (is = 0 (lis::clock-frame! clock sim 1/60)))
+      (true (equalp copy sim))
+      (is = 0d0 (lis::clock-accumulator clock))
+      (lis::clock-toggle-pause clock)
+      (is = 4 (lis::clock-level clock))
+      (true (> (lis::clock-frame! clock sim 1/60) 0)))))
+
+(define-test clock-actual-rate
+  (let* ((sim (drift-sim))
+         (clock (lis::new-clock sim))
+         (h (lis::coarse-step (lis::ship-state-r (lis::sim-ship sim)) (lis::sim-t sim) nil :earth))
+         (expected (* 4096 h 60))
+         (lis::*frame-step-time-limit* nil))
+    (lis::clock-set-level-index! clock (level-index 1000000))
+    (dotimes (i 61) (lis::clock-frame! clock sim 1/60))
+    (let ((rate (lis::clock-actual-rate clock)))
+      (true (< (relative-error rate expected) 0.01) "~F against ~F" rate expected))))

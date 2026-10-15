@@ -616,7 +616,7 @@ digits inside the 1–6 range, the rest by name."
       (key-event game :release key)
       (input-frame game)
       (is = 1 (count "ENGINE LOCKED: BERTHED" (lis::clock-log (input-clock game))
-                     :key #'second :test #'equal)
+                     :key #'third :test #'equal)
           "~A" key)
       (setf (lis::clock-log (input-clock game)) nil))
     (true (equalp controls (game-controls game))))

@@ -30,13 +30,14 @@
   (args nil :type list)                         ; its arguments, parsed
   (within nil :type (or null double-float))     ; waits: s, on the grid
   (before nil :type (or null double-float))     ; event waits: s
-  (view nil :type (member nil :outside :map))   ; :screenshot
+  (view nil :type (member nil :outside :map :cockpit)) ; :screenshot
   (for nil :type (or null double-float)))       ; :keys: s, on the grid
 
 ;;; The vocabulary (docs/architecture.md "Actions", "Waits and expectations")
 
 (defparameter *flight-actions*
-  '(:start :warp :hold :throttle :after-dv :keys :fine :screenshot :restart))
+  '(:start :warp :hold :throttle :after-dv :keys :fine :screenshot :restart
+    :target :grapple :release :transfer :translate))
 
 (defparameter *flight-conditions*
   '((:apoapsis :event) (:periapsis :event) (:impact :event)
@@ -45,29 +46,38 @@
     (:crashed :any) (:settled :any) (:rate-below :any :real) (:date :any :date)
     (:propellant-above :any :real) (:propellant-full :any)
     (:drop-out :wait :drop-out)
-    (:lost :expect :cause) (:impact-as-predicted :expect :real) (:start-state :expect))
-  "(condition where argument-type …); where is :event (a wait on the
-prediction), :wait, :expect or :any.")
+    (:lost :any :cause) (:impact-as-predicted :expect :real) (:start-state :expect)
+    (:latched :any &optional :object) (:berthed :any :fixture) (:on-station :any :station)
+    (:removed :any :object &optional :removal) (:date-between :expect :date :date))
+  "(condition where argument-type … [&optional type …]); where is :event (a
+wait on the prediction), :wait, :expect or :any.")
 
 (defparameter *later-vocabulary*
-  '((:action (:target . 3) (:autopilot . 3) (:grapple . 3) (:release . 3) (:transfer . 3)
-     (:translate . 3) (:approach . 3) (:ack . 5))
+  '((:action (:autopilot . 3) (:approach . 3) (:ack . 5))
     (:condition (:soi . 4) (:dominant . 4) (:sun-distance-below . 4) (:sun-distance-above . 4)
-     (:latched . 3) (:berthed . 3) (:on-station . 3) (:removed . 3) (:hull-above . 4)
-     (:hull-below . 4) (:autopilot-done . 3) (:quest-step . 5) (:quest-skipped . 5)
-     (:quest-line-done . 5) (:dv-below . 3) (:date-between . 3) (:elapsed-below . 3)
+     (:hull-above . 4) (:hull-below . 4) (:autopilot-done . 3) (:quest-step . 5)
+     (:quest-skipped . 5) (:quest-line-done . 5) (:dv-below . 3) (:elapsed-below . 3)
      (:burn . 3) (:since-burn . 3) (:clearance-above . 3) (:aim-point . 3) (:offer . 5))
     (:start (:after . 5) (:file . 5))
     (:state-key (:consumables . 4) (:quest . 5))
     (:body (:moon . 4) (:sun . 4))
     (:preset (:tli . 4) (:capture . 4) (:return . 4))
-    (:hold (:target . 3) (:anti-target . 3) (:rel-prograde . 3) (:rel-retrograde . 3))
-    (:drop-out (:burn . 3) (:contact . 3) (:soi . 4) (:sun-zone . 4) (:life-support . 4))
-    (:cause (:contact . 3) (:heat . 4) (:life-support . 4)))
+    (:drop-out (:soi . 4) (:sun-zone . 4) (:life-support . 4))
+    (:cause (:heat . 4) (:life-support . 4)))
   "Per kind, (keyword . milestone) of what later milestones bring.")
 
 (defparameter *flight-holds*
-  '(:prograde :retrograde :normal :anti-normal :radial-out :radial-in :inertial))
+  '(:prograde :retrograde :normal :anti-normal :radial-out :radial-in :inertial
+    :target :anti-target :rel-prograde :rel-retrograde))
+
+(defparameter *flight-target-holds*
+  '((:target . :target) (:anti-target . :anti-target)
+    (:rel-prograde . :relative-prograde) (:rel-retrograde . :relative-retrograde))
+  "(script hold . controls-set-target-hold's kind): keys 7–0.")
+
+(defparameter *flight-translations*
+  '((:fwd . :h) (:aft . :n) (:up . :i) (:down . :k) (:left . :j) (:right . :l))
+  "(:translate axis . its key in *flight-keys*).")
 
 (defun check-not-later (kind key line)
   "Reject KEY with \"NOT BEFORE MILESTONE <n>\" if a later milestone brings it."
@@ -254,6 +264,11 @@ lead nil or (place rad); (:near place how m); (:on-axis object fixture m);
            (script-error line ":ELEMENTS WANTS A > 0 AND 0 ≤ E < 1"))
          (list* :elements a e (mapcar #'deg->rad angles))))
       (t (script-error line "UNKNOWN ORBIT ~S" kind)))))
+
+(defun station-point-p (x)
+  "X is a place without a fixture (Skua Yard): on station by its stop point."
+  (let ((place (and (keywordp x) (find x *places* :key #'place-key))))
+    (and place (null (place-object place)))))
 
 (defun target-key-p (key)
   "KEY is a place or a towable object: what ] and [ can target."
@@ -524,7 +539,6 @@ new-game-sim."
             (:hold
              (arity 1)
              (let ((mode (first args)))
-               (check-not-later :hold mode line)
                (unless (or (null mode) (member mode *flight-holds*))
                  (script-error line "UNKNOWN HOLD ~S" mode))
                args))
@@ -566,13 +580,41 @@ new-game-sim."
                  (script-error line ":SCREENSHOT WANTS A LABEL, A STRING"))
                (let* ((options (parse-options (rest args) '(:view) line :screenshot))
                       (view (getf options :view :outside)))
-                 (unless (member view '(:outside :map))
-                   (script-error line ":VIEW ~S: :OUTSIDE OR :MAP" view))
+                 (unless (member view '(:outside :map :cockpit))
+                   (script-error line ":VIEW ~S: :OUTSIDE, :MAP OR :COCKPIT" view))
                  (setf (flight-step-view step) view))
                (list label)))
             (:restart
              (arity 0)
-             nil)))))
+             nil)
+            (:target
+             (arity 1)
+             (unless (and (keywordp (first args)) (target-key-p (first args)))
+               (script-error line "UNKNOWN TARGET ~S" (first args)))
+             args)
+            (:grapple
+             (arity 1)
+             (unless (member (first args) '(:arm :stow))
+               (script-error line ":GRAPPLE :ARM OR :STOW, NOT ~S" (first args)))
+             args)
+            (:release
+             (arity 0)
+             nil)
+            (:transfer
+             (arity 1)
+             (unless (member (first args) '(:on :off))
+               (script-error line ":TRANSFER :ON OR :OFF, NOT ~S" (first args)))
+             args)
+            (:translate
+             (unless (and (= (length args) 3) (eq (second args) :dv))
+               (script-error line "WRITE (:TRANSLATE <AXIS> :DV <M/S>)"))
+             (unless (assoc (first args) *flight-translations*)
+               (script-error line "UNKNOWN AXIS ~S: ONE OF ~{~S~^ ~}" (first args)
+                             (mapcar #'first *flight-translations*)))
+             (let ((dv (script-real (third args) line :translate)))
+               (unless (plusp dv)
+                 (script-error line ":TRANSLATE WANTS A Δv ABOVE 0, NOT ~S" (third args)))
+               (list (first args) dv)))))))
 
 ;;; Waits and expectations
 
@@ -584,13 +626,23 @@ new-game-sim."
     (check-not-later :condition name line)
     (unless spec
       (script-error line "UNKNOWN CONDITION ~S" name))
-    (destructuring-bind (where &rest types) (rest spec)
+    (destructuring-bind (where &rest spec-types) (rest spec)
       (when (or (and (eq kind :wait) (eq where :expect))
                 (and (eq kind :expect) (member where '(:wait :event))))
         (script-error line "~S IS NOT ~:[AN EXPECTATION~;A WAIT~]" name (eq kind :wait)))
-      (let ((given (rest args)))
-        (when (< (length given) (length types))
-          (script-error line "~S WANTS ~D ARGUMENT~:P" name (length types)))
+      (let* ((given (rest args))
+             (allowed (cond ((eq kind :expect) nil)
+                            ((eq where :event) '(:within :before))
+                            (t '(:within))))
+             (required (ldiff spec-types (member '&optional spec-types)))
+             ;; An optional argument is there unless an option's key stands in its place.
+             (types (append required
+                            (loop for type in (rest (member '&optional spec-types))
+                                  for x in (nthcdr (length required) given)
+                                  until (member x allowed)
+                                  collect type))))
+        (when (< (length given) (length required))
+          (script-error line "~S WANTS ~D ARGUMENT~:P" name (length required)))
         (setf (flight-step-kind step) kind
               (flight-step-name step) name
               (flight-step-args step)
@@ -601,19 +653,28 @@ new-game-sim."
                               (:date (parse-utc x line))
                               (:drop-out
                                (check-not-later :drop-out x line)
-                               (unless (eq x :impact)
+                               (unless (member x '(:impact :burn :contact))
                                  (script-error line "UNKNOWN DROP-OUT ~S" x))
                                x)
                               (:cause
                                (check-not-later :cause x line)
-                               (unless (eq x :crash)
+                               (unless (member x '(:crash :contact))
                                  (script-error line "UNKNOWN CAUSE ~S" x))
+                               x)
+                              (:object
+                               (unless (and (keywordp x) (find x *objects* :key #'object-def-key))
+                                 (script-error line "UNKNOWN OBJECT ~S" x))
+                               x)
+                              (:removal
+                               (unless (member x '(:burned-up :delivered :impact))
+                                 (script-error line "UNKNOWN CAUSE ~S: :BURNED-UP, :DELIVERED OR :IMPACT" x))
+                               x)
+                              (:fixture (state-fixture x line) x)
+                              (:station
+                               (unless (station-point-p x)
+                                 (state-fixture x line))
                                x))))
-        (let ((options (parse-options (nthcdr (length types) given)
-                                      (cond ((eq kind :expect) nil)
-                                            ((eq where :event) '(:within :before))
-                                            (t '(:within)))
-                                      line kind)))
+        (let ((options (parse-options (nthcdr (length types) given) allowed line kind)))
           (when (eq kind :wait)
             (setf (flight-step-within step)
                   (script-duration (getf options :within *flight-default-within*) line :within))
@@ -757,11 +818,22 @@ parsed; a flight-script-error naming the line for anything else."
 ;;; (run-flight) and live alike.
 
 (defparameter *flight-coast-limit* 1000000
-  "(:warp :coast)'s highest level; milestone 3 adds its close-work caps.")
+  "(:warp :coast)'s highest level away from close work (decision 122).")
+(defparameter *flight-close-distance* 1000d0
+  "m beyond a promoted object's bound within which (:warp :coast) stops at ×4; decision 122.")
 (defparameter *flight-burn-prediction-interval* 1d0
-  "s of game time between run-flight's prediction-update!s while the
-throttle is on: each restarts the prediction, ~1 ms (decision 108:
-run-flight's prediction during burns and the hook's order in clock-step!).")
+  "s of game time between run-flight's prediction-update!s above ×4 while
+the prediction would restart (the throttle on): each restart costs ~1 ms
+(decision 108: run-flight's prediction during burns and the hook's order in
+clock-step!).")
+(defparameter *flight-close-prediction-interval* 10d0
+  "s of game time between run-flight's prediction-update!s at ×1 and ×4
+while the prediction would restart (decision 122): every step is fine there
+whatever the prediction says.")
+(defparameter *flight-translate-limit* 600d0
+  "s a (:translate …) may take; decision 122.")
+(defparameter *on-station-distance* 150d0 "m: docs/story.md \"On station at F\".")
+(defparameter *on-station-speed* 0.10d0 "m/s: docs/story.md \"On station at F\".")
 
 (defstruct (flight-entry (:copier nil))
   (kind :end :type (member :screenshot :expect :burn :failure :end))
@@ -779,7 +851,9 @@ run-flight's prediction during burns and the hook's order in clock-step!).")
   (periapsis 0d0 :type double-float)
   (speed 0d0 :type double-float)
   (propellant 0d0 :type double-float)
-  (loss nil))
+  (loss nil)
+  (target nil)                                  ; the target's name, or nil
+  (range nil))                                  ; m to the target's CoM, or nil
 
 (defstruct (flight (:constructor %make-flight (script start origin)) (:copier nil))
   (script #() :type simple-vector)              ; flight-steps
@@ -797,7 +871,8 @@ run-flight's prediction during burns and the hook's order in clock-step!).")
   (burn nil)                                    ; an open burn: (t . odometer)
   (loss-seen nil)
   (level 1 :type fixnum)                        ; the clock's at the last hook
-  (dropout nil)                                 ; t of the last drop-out to :impact
+  (dropout nil)                                 ; (t . kind) of the last drop-out
+  (translate nil)                               ; a running (:translate …): the odometer to reach
   (failure nil)                                 ; the failure entry
   (done nil)
   (restart nil)                                 ; live: (:restart)'s function, else clock-restart!
@@ -822,6 +897,8 @@ run-flight's prediction during burns and the hook's order in clock-step!).")
          (r (ship-state-r ship)) (v (ship-state-v ship))
          (orbit (state->orbit r v (body-mu body) (sim-t sim)))
          (radius (body-radius body))
+         (target (sim-target sim))
+         (target-r (make-vec3)) (target-v (make-vec3))
          (entry (apply #'make-flight-entry
                        :kind kind :t (sim-t sim)
                        :elapsed (- (sim-t sim) (flight-origin flight))
@@ -831,6 +908,9 @@ run-flight's prediction during burns and the hook's order in clock-step!).")
                        :speed (vec3-norm v)
                        :propellant (ship-state-m-p ship)
                        :loss (sim-loss sim)
+                       :target (and target (target-name target))
+                       :range (and target (target-state-into! target-r target-v sim)
+                                   (vec3-norm (vec3-sub target-r r)))
                        args)))
     (push entry (flight-entries flight))
     entry))
@@ -877,7 +957,7 @@ or the flight's END."
 (defun condition-value-text (name x)
   "X, an argument or a measure of condition NAME, in display units."
   (cond ((not (realp x)) (format nil "~A" x))
-        ((eq name :date) (format-utc x))
+        ((member name '(:date :date-between)) (format-utc x))
         ((member name '(:altitude-below :periapsis-below :periapsis-above
                         :apoapsis-below :apoapsis-above))
          (km-text x))
@@ -909,6 +989,40 @@ apoapsis."
                            (orbit-periapsis-radius orbit))))))
     (and radius (- radius (body-radius body)))))
 
+(defun sim-held-object (sim)
+  "The object the grapple holds, latched or berthed, or nil."
+  (let ((grapple (sim-grapple sim)))
+    (and (eq (grapple-state grapple) :latched) (grapple-object grapple)
+         (svref (sim-objects sim) (grapple-object grapple)))))
+
+(defun on-station-measure (sim station)
+  "(values distance speed) of docs/story.md's \"On station at F\" for
+STATION (a fixture as state-fixture reads it): the grapple's tip from the
+pin, the tip's velocity relative to the object's rigid motion there (its
+frame's, so a stop point turning with the object keeps still); for a place
+without a fixture (Skua Yard) the stack's CoM against its stop point
+(rendezvous-fixture, decision 121). Nil when the object has no state."
+  (let* ((ship (sim-ship sim))
+         (r (ship-state-r ship)) (v (ship-state-v ship))
+         (time (sim-t sim)))
+    (if (station-point-p station)
+        (let ((p (make-vec3)) (u (make-vec3)))
+          (when (stop-point-into! p u sim station (rendezvous-fixture sim station) 0d0 time)
+            (values (vec3-norm (vec3-sub p r)) (vec3-norm (vec3-sub u v)))))
+        (destructuring-bind (key index) (state-fixture station nil)
+          (let ((fixture (nth index (object-def-fixtures (object-definition key))))
+                (r-o (make-vec3)) (v-o (make-vec3)) (q-o (make-quat)) (w-o (make-vec3)))
+            (when (object-state-into! r-o v-o q-o w-o (sim-object sim key) time)
+              (let* ((pin (vec3-add r-o (quat-rotate q-o (fixture-pin fixture))))
+                     (com (with-stack-properties (properties sim)
+                            (vec3-copy (mass-properties-com properties))))
+                     (arm (quat-rotate (ship-state-q ship) (vec3-sub *grapple-tip* com)))
+                     (tip (vec3-add r arm))
+                     (tip-v (vec3-add v (vec3-cross (quat-rotate (ship-state-q ship) (ship-state-w ship))
+                                                    arm)))
+                     (frame-v (vec3-add v-o (vec3-cross (quat-rotate q-o w-o) (vec3-sub tip r-o)))))
+                (values (vec3-norm (vec3-sub tip pin)) (vec3-norm (vec3-sub tip-v frame-v))))))))))
+
 (defun condition-holds (flight clock sim step)
   "(values holds measured) of STEP's condition now."
   (let* ((name (flight-step-name step))
@@ -936,9 +1050,32 @@ apoapsis."
         (:propellant-above (values (> (ship-state-m-p ship) x) (ship-state-m-p ship)))
         (:propellant-full (values (>= (ship-state-m-p ship) *propellant-full*)
                                   (ship-state-m-p ship)))
-        (:drop-out (values (and (flight-dropout flight)
-                                (>= (flight-dropout flight) (flight-begun flight)))
-                           nil))
+        (:drop-out (let ((dropout (flight-dropout flight)))
+                     (values (and dropout (>= (car dropout) (flight-begun flight))
+                                  (eq (cdr dropout) x))
+                             nil)))
+        (:latched
+         (let ((object (sim-held-object sim)))
+           (values (and object (not (sim-berthed sim)) (or (null x) (eq (object-key object) x)))
+                   (and object (object-key object)))))
+        (:berthed
+         (let ((object (sim-held-object sim)))
+           (values (and object (sim-berthed sim)
+                        (equal (list (object-key object) (grapple-fixture (sim-grapple sim)))
+                               (state-fixture x nil)))
+                   nil)))
+        (:on-station
+         (multiple-value-bind (distance speed) (on-station-measure sim x)
+           (values (and distance (<= distance *on-station-distance*) (<= speed *on-station-speed*))
+                   (and distance (format nil "~,1F M ~,3F M/S" distance speed)))))
+        (:removed
+         (let* ((object (sim-object sim x))
+                (cause (and (object-removed-p object) (removal-cause (object-removal object)))))
+           (values (and cause (or (null (second (flight-step-args step)))
+                                  (eq cause (second (flight-step-args step)))))
+                   cause)))
+        (:date-between
+         (values (<= x (sim-t sim) (second (flight-step-args step))) (sim-t sim)))
         (:lost (values (and loss (eq (loss-cause loss) x) t) (and loss (loss-cause loss))))
         (:impact-as-predicted
          (let ((late (and loss (flight-impact-time flight)
@@ -977,6 +1114,15 @@ apoapsis."
   (loop while (< (clock-level clock) level)
         do (unless (clock-warp-up clock sim)
              (return (second (assoc :refused (clock-message-list clock)))))))
+
+(defun flight-key-result (refusal)
+  "A key's REFUSAL text as flight-begin!'s values: over, or failed with it."
+  (if refusal (values nil refusal) t))
+
+(defun flight-pilot-input! (clock sim)
+  "A pilot's key disengages an engaged autopilot first (decision 118)."
+  (when (sim-plan sim)
+    (autopilot-disengage! clock sim t)))
 
 (defun flight-begin! (flight clock sim step)
   "Begin STEP at its due time: an action applied (a refusal's text as the
@@ -1020,7 +1166,42 @@ second value), a wait set up. True when STEP is over at once."
                   (t (setf (flight-coast flight) nil)
                      (let ((refusal (flight-warp! clock sim level)))
                        (if refusal (values nil refusal) t))))))
-         (:hold (flight-set-hold! controls (first args) (sim-ship sim)) t)
+         (:hold
+          (flight-pilot-input! clock sim)
+          (let ((kind (cdr (assoc (first args) *flight-target-holds*))))
+            (cond ((null kind) (flight-set-hold! controls (first args) (sim-ship sim)) t)
+                  ((and (controls-target-hold-p controls) (eq (controls-hold controls) kind)) t)
+                  (t (flight-key-result (sim-target-hold! sim kind))))))
+         (:target
+          (let ((key (first args)))
+            (if (target-available-p sim key)
+                (progn (sim-set-target! sim key) t)
+                (values nil (format nil "NO TARGET ~A" key)))))
+         (:grapple
+          (let ((state (grapple-state (sim-grapple sim))))
+            (cond ((eq state (if (eq (first args) :arm) :armed :stowed)) t)
+                  ((member state '(:stowed :armed)) (flight-key-result (grapple-key! sim)))
+                  (t (values nil (format nil "(:GRAPPLE ~S): ~:[~A~;BERTHED~*~], (:RELEASE) FIRST"
+                                         (first args) (sim-berthed sim) state))))))
+         (:release
+          (if (member (grapple-state (sim-grapple sim)) '(:closing :latched))
+              (flight-key-result (grapple-key! sim))
+              (values nil "(:RELEASE): NOTHING HELD")))
+         (:transfer
+          (if (eq (sim-transfer sim) (eq (first args) :on))
+              t
+              (flight-key-result (transfer-key! sim))))
+         (:translate
+          (if (sim-berthed sim)
+              (values nil *engine-locked-message*)
+              (progn
+                (flight-pilot-input! clock sim)
+                (flight-warp! clock sim 1)
+                (controls-apply-held-keys! controls
+                                           (list (cdr (assoc (first args) *flight-translations*))))
+                (setf (flight-translate flight) (+ (ship-state-dv (sim-ship sim)) (second args))
+                      (flight-deadline flight) (+ now *flight-translate-limit*))
+                nil)))
          (:throttle
           (controls-set-throttle controls (first args))
           (when (= (controls-throttle controls) 0d0)
@@ -1049,7 +1230,8 @@ second value), a wait set up. True when STEP is over at once."
                          (clock-restart! clock sim (flight-start flight)))
                      (setf (flight-loss-seen flight) nil
                            (flight-coast flight) nil
-                           (flight-burn flight) nil)
+                           (flight-burn flight) nil
+                           (flight-translate flight) nil)
                      t)
               (values nil "(:RESTART): NOT LOST"))))))))
 
@@ -1066,6 +1248,13 @@ second value), a wait set up. True when STEP is over at once."
                  (controls-apply-held-keys! (sim-controls sim) nil)
                  t)
                 (t (values nil until))))
+         (:translate
+          (flet ((release! ()
+                   (controls-apply-held-keys! (sim-controls sim) nil)
+                   (setf (flight-translate flight) nil)))
+            (cond ((>= (ship-state-dv (sim-ship sim)) (flight-translate flight)) (release!) t)
+                  ((>= now deadline) (release!) (values nil nil "(:TRANSLATE): NO ΔV"))
+                  (t (values nil deadline)))))
          (:after-dv
           (cond ((= (controls-throttle (sim-controls sim)) 0d0) t)
                 ((>= now deadline) (values nil nil "(:AFTER-DV): NO CUT-OFF"))
@@ -1097,7 +1286,7 @@ second value), a wait set up. True when STEP is over at once."
       (flight-burn-check! flight sim)
       (let ((step (flight-current flight)))
         (when (and step (eq (flight-phase flight) :running) (eq (flight-step-kind step) :wait)
-                   (member (flight-step-name step) '(:impact :crashed)))
+                   (member (flight-step-name step) '(:impact :crashed :lost)))
           (flight-step-end! flight sim)))
       (let ((step (flight-current flight)))
         (unless (and step (eq (flight-step-kind step) :expect) (eq (flight-step-name step) :lost))
@@ -1126,22 +1315,47 @@ second value), a wait set up. True when STEP is over at once."
                  (over (flight-step-end! flight sim))
                  (t (return until)))))))))
 
-(defun flight-coast! (clock sim)
-  "Up to the highest level the clock accepts, refusing nothing aloud."
-  (loop for index = (1+ (clock-level-index clock))
-        while (< index (length *warp-levels*))
-        do (let ((level (nth index *warp-levels*)))
-             (when (or (> level *flight-coast-limit*) (warp-refusal clock sim level))
-               (return))
-             (clock-warp-up clock sim))))
+(defun flight-close-object-p (sim)
+  "A promoted object (not the latched load) within *flight-close-distance*
+plus its bound of the stack's CoM."
+  (let ((r (ship-state-r (sim-ship sim))))
+    (loop for object across (sim-objects sim)
+          thereis (and (object-promoted-p object)
+                       (<= (vec3-norm (vec3-sub (ship-state-r (object-state object)) r))
+                           (+ *flight-close-distance* (object-def-bound (object-def-of object))))))))
+
+(defun flight-coast-cap (flight sim)
+  "(:warp :coast)'s highest level now (decision 122): ×1 while :approach or
+:translate runs; ×4 in a plan's :terminal or :station, or near a promoted
+object unless berthed; else *flight-coast-limit*."
+  (let ((step (flight-current flight)))
+    (cond ((and step (eq (flight-phase flight) :running)
+                (member (flight-step-name step) '(:approach :translate)))
+           1)
+          ((or (plan-terminal-p sim) (and (not (sim-berthed sim)) (flight-close-object-p sim)))
+           *fine-levels-max*)
+          (t *flight-coast-limit*))))
+
+(defun flight-coast! (flight clock sim)
+  "Down to the cap, else up to the highest level the clock accepts under
+it, refusing nothing aloud."
+  (let ((cap (flight-coast-cap flight sim)))
+    (loop while (> (clock-level clock) cap) do (clock-warp-down clock))
+    (loop for index = (1+ (clock-level-index clock))
+          while (< index (length *warp-levels*))
+          do (let ((level (nth index *warp-levels*)))
+               (when (or (> level cap) (warp-refusal clock sim level))
+                 (return))
+               (clock-warp-up clock sim)))))
 
 (defun flight-dropout-check! (flight clock sim)
-  "Note a lowering by the drop-out rule since the last look."
+  "Note a lowering by the drop-out rule since the last look, with its kind
+(:impact, :contact or :burn)."
   (let ((before (flight-level flight)))
     (when (< (clock-level clock) before)
       (multiple-value-bind (delta kind) (clock-dropout clock sim)
-        (when (and delta (eq kind :impact) (< delta (* *dropout-real-time* before)))
-          (setf (flight-dropout flight) (sim-t sim)))))
+        (when (and delta (< delta (* *dropout-real-time* before)))
+          (setf (flight-dropout flight) (cons (sim-t sim) kind)))))
     (setf (flight-level flight) (clock-level clock))))
 
 (defun flight-step-hook (flight clock sim)
@@ -1157,19 +1371,27 @@ runs once."
     (unless (flight-done flight)
       (flight-burn-check! flight sim)
       (when (flight-coast flight)
-        (flight-coast! clock sim))
+        (flight-coast! flight clock sim))
       (clock-check-level! clock sim)
       (flight-dropout-check! flight clock sim))
     (setf (flight-cache flight) (list* (sim-t sim) (sim-steps sim) until))
     until))
 
+(defun flight-prediction-restarts-p (sim)
+  "SIM's prediction would restart at every update: the throttle on, a
+translation key held, a plan's :terminal or :station (decision 122)."
+  (or (thrust-like-p sim)
+      (notevery #'zerop (controls-translation-keys (sim-controls sim)))))
+
 (defun run-flight (script &key model sim)
   "Fly SCRIPT (read-flight's source, or a list of flight-steps) headless
 from its start state (flight-start-sim), or from SIM (a copy; the script's
 :start then ignored), with the gravity MODEL if given: per step prediction-update!,
-the hook, clock-step! with no accumulator; while the throttle is on the
-prediction is updated once per *flight-burn-prediction-interval*. (values
-record end-sim flight)."
+the hook, clock-step! with no accumulator; while the prediction would
+restart (flight-prediction-restarts-p) it is updated once per
+*flight-burn-prediction-interval* above ×4, once per
+*flight-close-prediction-interval* at ×1 and ×4 (decision 122). (values
+record end-sim flight clock)."
   (let* ((steps (if (and (listp script) (every #'flight-step-p script))
                     script
                     (read-flight script)))
@@ -1178,13 +1400,16 @@ record end-sim flight)."
       (setf (sim-model sim) model))
     (let* ((flight (new-flight steps sim))
            (clock (new-clock sim))
-           (predicted (sim-t sim)))
+           (predicted nil))
       (setf (clock-hook clock) (lambda (clock sim) (flight-step-hook flight clock sim)))
       (loop
-        (when (or (= (controls-throttle (sim-controls sim)) 0d0)
-                  (>= (sim-t sim) predicted))
+        (when (or (null predicted)
+                  (not (flight-prediction-restarts-p sim))
+                  (>= (sim-t sim) (+ predicted (if (clock-kinematic-p clock)
+                                                   *flight-burn-prediction-interval*
+                                                   *flight-close-prediction-interval*))))
           (prediction-update! (clock-prediction clock) sim)
-          (setf predicted (+ (sim-t sim) *flight-burn-prediction-interval*)))
+          (setf predicted (sim-t sim)))
         (flight-step-hook flight clock sim)
         (when (flight-done flight)
           (return))
@@ -1193,17 +1418,20 @@ record end-sim flight)."
             (flight-step-hook flight clock sim))
           (unless (flight-done flight)
             (flight-finish! flight sim "STUCK"))))
-      (values (flight-record flight) sim flight))))
+      (values (flight-record flight) sim flight clock))))
 
 ;;; Lines
 
 (defun flight-entry-state-text (entry)
-  (format nil "T+~,3F S ~A ALT ~A AP ~:[ESCAPE~;~:*~A~] PE ~A SPD ~,1F M/S PROP ~,1F KG~@[ ~A~]"
+  (format nil "T+~,3F S ~A ALT ~A AP ~:[ESCAPE~;~:*~A~] PE ~A SPD ~,1F M/S PROP ~,1F KG~@[ ~A~]~@[ ~A~]"
           (flight-entry-elapsed entry) (format-utc (flight-entry-t entry))
           (km-text (flight-entry-altitude entry))
           (and (flight-entry-apoapsis entry) (km-text (flight-entry-apoapsis entry)))
           (km-text (flight-entry-periapsis entry))
           (flight-entry-speed entry) (flight-entry-propellant entry)
+          (and (flight-entry-target entry)
+               (format nil "TGT ~A~@[ RNG ~A~]" (flight-entry-target entry)
+                       (and (flight-entry-range entry) (km-text (flight-entry-range entry)))))
           (let ((loss (flight-entry-loss entry)))
             (and loss (format nil "~A ~A AT ~,3F S ~,3F M/S LAT ~,3F° LON ~,3F°"
                               (loss-reason loss) (loss-body loss)

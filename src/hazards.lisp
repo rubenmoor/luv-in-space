@@ -1182,6 +1182,8 @@ Conses nothing without a contact."
 
 (defparameter *release-rotation-max* (deg->rad 0.5d0) "rad/s; decision 113.")
 (defparameter *transfer-rate* 10d0 "kg/s; decision 26.")
+(defparameter *engine-locked-message* "ENGINE LOCKED: BERTHED"
+  "An engine or RCS key while berthed; decision 113.")
 (declaim (type double-float *release-rotation-max* *transfer-rate*))
 
 ;;; Deliveries (docs/architecture.md "Removal of objects"; decision 53:

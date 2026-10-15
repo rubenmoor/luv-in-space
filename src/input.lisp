@@ -91,7 +91,6 @@ a flight runs; Return is :autopilot-return unless lost (decision 118).")
 (defparameter *throttle-up-key* :shift-left)
 (defparameter *throttle-down-key* :control-left)
 (defparameter *rcs-off-message* "RCS OFF ABOVE ×4" "decision 31: Warp choices within the time-warp rules.")
-(defparameter *engine-locked-message* "ENGINE LOCKED: BERTHED" "decision 113.")
 
 (defparameter *pilot-commands* (remove-if (lambda (c) (member c '(:grapple :transfer)))
                                           *flight-commands*)

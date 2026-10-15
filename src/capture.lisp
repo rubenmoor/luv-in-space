@@ -129,7 +129,10 @@ luv's SDL main thread."
                    collect path into paths
                    collect (nth-value 3 (capture-game-state
                                          game path :sim (flight-entry-sim entry)
-                                                   :view (or (flight-entry-view entry) :outside)
+                                                   ;; PLACEHOLDER(165): :cockpit drawn from outside.
+                                                   :view (case (flight-entry-view entry)
+                                                           ((nil :cockpit) :outside)
+                                                           (t (flight-entry-view entry)))
                                                    :frames frames :readout t :death-elapsed 0d0))
                      into pixels
                    finally (return (values paths pixels)))))

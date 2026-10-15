@@ -1070,7 +1070,7 @@ the clock's, run to its horizon; without it a fresh one, prediction.lisp)."
   (hook nil :type (or null function))           ; (fn clock sim) → a grid until or nil
   (prediction nil)
   (game-t 0d0 :type double-float)               ; the sim's t last seen: the log's stamps
-  (log nil :type list)                          ; the SHIP log, (t text), newest first
+  (log nil :type list)                          ; the SHIP log, (t key text), newest first
   (log-read nil)                                ; the log's newest entry when Y was pressed
   (checkpoint nil)                              ; the latest checkpoint, a sim, or nil
   ;; The autopilot's preset menu, its planning job and the plan last
@@ -1108,11 +1108,12 @@ prediction two periods ahead while coasting (decision 116)."
 (declaim (type fixnum *log-length*))
 
 (defun clock-message! (clock key text)
-  "TEXT shown as the message of KEY, and in the SHIP log at the game t."
+  "TEXT shown as the message of KEY, and in the SHIP log at the game t with
+KEY (decision 122)."
   (setf (clock-message-list clock)
         (append (remove key (clock-message-list clock) :key #'first)
                 (list (list key text (clock-real-time clock)))))
-  (let ((log (cons (list (clock-game-t clock) text) (clock-log clock))))
+  (let ((log (cons (list (clock-game-t clock) key text) (clock-log clock))))
     (when (> (length log) *log-length*)
       (setf log (subseq log 0 *log-length*)))
     (setf (clock-log clock) log)))

@@ -114,7 +114,7 @@
     (true (>= (lis::sim-t sim) end))
     (false (lis::sim-notices sim))
     (is equal '("K-17 BURNED UP") (lis::clock-messages clock))
-    (is equal (list (list (lis::sim-t sim) "K-17 BURNED UP")) (lis::clock-log clock))
+    (is equal (list (list (lis::sim-t sim) :removal "K-17 BURNED UP")) (lis::clock-log clock))
     (dotimes (i 100) (lis::clock-step! clock sim))
     (is = 1 (length (lis::clock-log clock)))
     ;; The read mark; the log keeps the last 200.
@@ -124,7 +124,7 @@
     (dotimes (i 250) (lis::clock-message! clock :refused (format nil "M~D" i)))
     (is = 200 (length (lis::clock-log clock)))
     (is = 200 (length (lis::clock-log-unread clock)))
-    (is equal "M249" (second (first (lis::clock-log clock))))))
+    (is equal "M249" (third (first (lis::clock-log clock))))))
 
 (define-test clock-checkpoint-request
   (let* ((sim (lis::new-game-sim))
@@ -1176,7 +1176,7 @@ the cons RECORD, the live messages it has seen onto its cdr."
             nil))
     clock))
 
-(defun log-texts (clock) (mapcar #'second (lis::clock-log clock)))
+(defun log-texts (clock) (mapcar #'third (lis::clock-log clock)))
 
 (define-test autopilot-flown-through-clock
   ;; The Hohmann 400 → 800 km planned and engaged, flown through

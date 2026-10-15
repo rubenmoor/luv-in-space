@@ -107,7 +107,6 @@ not below t or the sim is lost. Conses nothing; OUT."
 (defconstant +frame-uniform-floats+ 116 "shaders.lisp's frame block: 29 vec4s.")
 (defconstant +impostor-uniform-index+ 48 "The Sun's block, the Moon's, Earth's, the halo's.")
 (defconstant +halo-dusk-index+ 112)
-(defparameter *marker-max-vertices* 12288 "Capacity of the map markers' overlay buffer.")
 
 (defclass frame-renderer (renderer)
   ((context :initarg :context :reader frame-renderer-context)
@@ -129,12 +128,10 @@ not below t or the sim is lost. Conses nothing; OUT."
    (ribbon-corners :initarg :ribbon-corners :reader frame-renderer-ribbon-corners)
    (markers :initform (make-map-markers) :reader frame-renderer-markers
             :documentation "The map's markers (src/ribbons.lisp).")
-   (marker-overlay :initform (make-overlay-buffer *marker-max-vertices*)
-                   :reader frame-renderer-marker-overlay)
-   (marker-floats :reader frame-renderer-marker-floats
-                  :documentation "The used part of marker-overlay's floats, for write-buffer.")
-   (label :initarg :label :reader frame-renderer-label)
-   (label-count :initarg :label-count :reader frame-renderer-label-count)
+   (overlay :initform (make-overlay-buffer) :reader frame-renderer-overlay
+            :documentation "The frame's overlay vertices: the map's markers, the readout.")
+   (overlay-floats :reader frame-renderer-overlay-floats
+                   :documentation "The used part of overlay's floats, for write-buffer.")
    (post :initarg :post :reader frame-renderer-post)
    (post-sampler :initarg :post-sampler :reader frame-renderer-post-sampler)
    (test-quads :initform nil :accessor frame-renderer-test-quads
@@ -150,8 +147,8 @@ not below t or the sim is lost. Conses nothing; OUT."
    (eye :initform (make-vec3) :reader frame-renderer-eye)))
 
 (defmethod initialize-instance :after ((renderer frame-renderer) &key)
-  (let ((floats (overlay-buffer-floats (frame-renderer-marker-overlay renderer))))
-    (setf (slot-value renderer 'marker-floats)
+  (let ((floats (overlay-buffer-floats (frame-renderer-overlay renderer))))
+    (setf (slot-value renderer 'overlay-floats)
           (make-array (length floats) :element-type 'single-float
                                       :displaced-to floats :fill-pointer 0))))
 
@@ -164,8 +161,7 @@ not below t or the sim is lost. Conses nothing; OUT."
                                                   (:binding 1 :type :texture)
                                                   (:binding 2 :type :sampler)
                                                   (:binding 3 :type :texture)))))
-         (stars (star-instances (load-star-table)))
-         (label (label-vertices *label*)))
+         (stars (star-instances (load-star-table))))
     (let ((pixels (load-image-pixels (asset-path *earth-texture*))))
       (multiple-value-bind (texture view sampler) (texture-from-pixels renderer pixels "earth")
         (declare (ignore texture))
@@ -184,8 +180,6 @@ not below t or the sim is lost. Conses nothing; OUT."
      :star-count (/ (length stars) +star-instance-floats+)
      :impostor-corners (vertex-buffer renderer (impostor-corners) "impostor corners")
      :ribbon-corners (vertex-buffer renderer (ribbon-corners) "ribbon corners")
-     :label (vertex-buffer renderer label "label")
-     :label-count (/ (length label) +overlay-vertex-floats+)
      :post (vertex-buffer renderer (post-vertices) "post")
      :post-sampler (gpu-create renderer (luv:make-sampler-descriptor
                                          :label "post"
@@ -205,14 +199,14 @@ not below t or the sim is lost. Conses nothing; OUT."
 
 (defstruct frame-slot
 "A target's frame block, its scene bind group, its ship-slot, its ribbon
-instance buffer, its map markers' overlay vertices, and the bind groups
-sampling the post levels in POST-VIEWS."
-  buffer bind-group ship ribbon markers (post-views '()) (post-bind-groups '()))
+instance buffer, its overlay vertices, and the bind groups sampling the
+post levels in POST-VIEWS."
+  buffer bind-group ship ribbon overlay (post-views '()) (post-bind-groups '()))
 
 (defun release-frame-resources (slot)
   (release-ship-slot (frame-slot-ship slot))
   (luv:destroy (frame-slot-ribbon slot))
-  (luv:destroy (frame-slot-markers slot))
+  (luv:destroy (frame-slot-overlay slot))
   (mapc #'luv:destroy (frame-slot-post-bind-groups slot))
   (luv:destroy (frame-slot-bind-group slot))
   (luv:destroy (frame-slot-buffer slot)))
@@ -246,11 +240,11 @@ again once it is acquired (luv's canvas-frame-resource-cache)."
                 :ship (make-ship-target-slot renderer (frame-renderer-ship renderer) buffer)
                 :ribbon (make-ribbon-buffer (renderer-device renderer)
                                             (frame-renderer-ribbon renderer))
-                :markers (luv:create (renderer-device renderer)
+                :overlay (luv:create (renderer-device renderer)
                                      (luv:make-buffer-descriptor
-                                      :label "map markers"
+                                      :label "overlay"
                                       :size (* 4 (array-total-size
-                                                  (frame-renderer-marker-floats renderer)))
+                                                  (frame-renderer-overlay-floats renderer)))
                                       :usage '(:vertex :copy-dst)))))))))
 
 (defun post-bind-groups (renderer slot views)
@@ -334,12 +328,16 @@ and the four draw forms."
                               (frame-renderer-earth-rows renderer))
         (values data (list sun-form moon-form earth-form halo-form))))))
 
-(defun encode-map-markers (pass renderer bind-group buffer state camera extent)
-  "The map's markers and labels (decision 84) into the open overlay PASS
-through BUFFER."
-  (let ((out (overlay-clear! (frame-renderer-marker-overlay renderer)))
-        (floats (frame-renderer-marker-floats renderer)))
-    (map-marker-vertices! out (map-markers state camera extent (frame-renderer-markers renderer)))
+(defun encode-overlay (pass renderer bind-group buffer state camera extent view readout)
+  "The overlay into the open PASS through BUFFER: in :map the markers and
+their labels (decision 84), then READOUT, nil or readout-lines' lines, top
+left (decision 85)."
+  (let ((out (overlay-clear! (frame-renderer-overlay renderer)))
+        (floats (frame-renderer-overlay-floats renderer)))
+    (when (eq view :map)
+      (map-marker-vertices! out (map-markers state camera extent (frame-renderer-markers renderer))))
+    (when readout
+      (readout-vertices! out readout *readout-margin-px* *readout-margin-px*))
     (setf (fill-pointer floats) (* +overlay-vertex-floats+ (overlay-buffer-count out)))
     (when (plusp (overlay-buffer-count out))
       (luv:write-buffer buffer floats)
@@ -348,13 +346,15 @@ through BUFFER."
       (luv:set-vertex-buffer pass 0 buffer)
       (luv:draw pass (overlay-buffer-count out)))))
 
-(defun encode-frame (renderer encoder target extent state camera exposure &optional (view :outside))
+(defun encode-frame (renderer encoder target extent state camera exposure
+                     &optional (view :outside) readout)
   "The frame into TARGET of EXTENT (width height) from the render STATE seen
 by CAMERA, in three stages (decision 76: Frame passes, radiance scale and
 exposure): the scene pass into the HDR target (the stars, the Sun, the
 Moon, Earth, Earth's halo, the Mule, in :map the orbit's ribbon); the bloom
 chain; one pass on TARGET, the tone map at EXPOSURE and then the overlay
-(in :map the markers and their labels first). VIEW: :outside or :map."
+(in :map the markers and their labels, then READOUT, readout-lines' lines
+or nil). VIEW: :outside or :map."
   (let* ((slot (frame-resources renderer target))
          (views (post-views renderer extent))
          (bind-groups (post-bind-groups renderer slot views))
@@ -403,8 +403,6 @@ chain; one pass on TARGET, the tone map at EXPOSURE and then the overlay
                       `((:view ,(color-view renderer target) :load-op :clear :store-op :store
                          :clear-value #(0.0 0.0 0.0 1.0)))))))
           (draw-tone-map renderer pass (car (last bind-groups)) (frame-renderer-post renderer))
-          (when (eq view :map)
-            (encode-map-markers pass renderer bind-group (frame-slot-markers slot)
-                                state camera extent))
-          (draw pass :overlay (frame-renderer-label renderer) (frame-renderer-label-count renderer))
+          (encode-overlay pass renderer bind-group (frame-slot-overlay slot)
+                          state camera extent view readout)
           (luv:end-pass pass))))))

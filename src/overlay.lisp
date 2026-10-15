@@ -3,9 +3,6 @@
 ;;; The screen-space overlay: dot-matrix labels (decision 7: Placeholder
 ;;; labels: dot-matrix overlay quads) and their pipeline.
 
-(defparameter *label* "PLACEHOLDER(80)"
-  "Top left until the parts that replace the placeholders land.")
-
 (defparameter *glyphs*
   '((#\P "####." "#...#" "#...#" "####." "#...." "#...." "#....")
     (#\L "#...." "#...." "#...." "#...." "#...." "#...." "#####")
@@ -61,14 +58,15 @@
 % / ! + , ° × …; a character missing here draws blank (decision 85: the
 tests require every one used, glyph-missing).")
 
-(defparameter *label-colour* #xFFBF33 "The placeholder label, amber, sRGB.")
 (defparameter *label-dot-px* 2 "Dot pitch of labels, cap 14 px; decision 85.")
 (defparameter *marker-line-px* 2 "Ring and cross line width; decision 84.")
 (defparameter *marker-ring-px* 12 "The ship's ring; decision 84.")
 (defparameter *marker-diamond-px* 9 "Apsis diamonds; decision 84.")
 (defparameter *marker-cross-px* 12 "The impact X; decision 84.")
 (defparameter *marker-dot-px* 7 "Bodies below 6 px; decision 84.")
-(defparameter *overlay-max-vertices* 24576 "Capacity of an overlay buffer.")
+(defparameter *overlay-max-vertices* 73728
+  "Capacity of the frame's overlay buffer (a multiple of 6, so whole quads
+are kept): the readout, the map's markers and labels and the LOST panel.")
 
 (defun glyph (char)
   "CHAR's seven rows, upcased, or nil."
@@ -419,6 +417,53 @@ summed seconds; then CLOCK's live messages."
        (mapcar (lambda (text) (list (caution (cut-text text))))
                (last (clock-messages clock) *readout-messages*))))))
 
+(defparameter *readout-cell-width-px* 12 "A character's cell, 6 dots of 2 px; decision 85.")
+(defparameter *readout-cell-height-px* 22 "A line's height; decision 85.")
+(defparameter *readout-margin-px* 16 "The box from the frame's top left edges; decision 85.")
+(defparameter *readout-padding-px* 8 "The text inside the box's edges.")
+(defparameter *readout-box-colour* #x0A0C0C "The opaque box, near-black, sRGB; decision 85.")
+(defparameter *readout-invert-px* 2 "An inverted run's block around its cells.")
+
+(defun run-chars (line)
+  (loop for run in line sum (length (run-text run))))
+
+(defun readout-box-size (lines)
+  "The width and height in px of the box READOUT-VERTICES! draws for LINES."
+  (let ((chars (loop for line in lines maximize (run-chars line))))
+    (values (+ (* 2 *readout-padding-px*)
+               (max 0 (- (* chars *readout-cell-width-px*) *label-dot-px*)))
+            (+ (* 2 *readout-padding-px*) (* (length lines) *readout-cell-height-px*)))))
+
+(defun readout-vertices! (out lines x y)
+  "LINES (readout-lines' runs) into OUT: the opaque *readout-box-colour* box
+with its top left at pixel X, Y, sized to the lines, then each run's text
+(decision 85); an :inverted run as its colour's block with the text in the
+box's colour; a flashing run in its :off phase not at all. OUT."
+  (multiple-value-bind (width height) (readout-box-size lines)
+    (let ((x0 (float x 1f0)) (y0 (float y 1f0))
+          (x1 (float (+ x width) 1f0)) (y1 (float (+ y height) 1f0)))
+      (with-linear-colour (r g b) *readout-box-colour*
+        (overlay-quad! out x0 y0 x1 y0 x1 y1 x0 y1 r g b))))
+  (loop for line in lines
+        for centre from (+ y *readout-padding-px* (/ *readout-cell-height-px* 2))
+          by *readout-cell-height-px*
+        do (let ((left (+ x *readout-padding-px*)))
+             (dolist (run line)
+               (let ((text (run-text run)))
+                 (unless (eq (run-flash run) :off)
+                   (if (eq (run-style run) :inverted)
+                       (let* ((pad *readout-invert-px*)
+                              (x0 (float (- left pad) 1f0))
+                              (x1 (float (+ left (label-width text) pad) 1f0))
+                              (h (+ (* 3.5f0 *label-dot-px*) pad))
+                              (y0 (float (- centre h) 1f0)) (y1 (float (+ centre h) 1f0)))
+                         (with-linear-colour (r g b) (run-colour run)
+                           (overlay-quad! out x0 y0 x1 y0 x1 y1 x0 y1 r g b))
+                         (label-at! out text left centre *readout-box-colour*))
+                       (label-at! out text left centre (run-colour run))))
+                 (incf left (* (length text) *readout-cell-width-px*))))))
+  out)
+
 (defun quad (anchor-x anchor-y left top size color)
   "Two triangles of overlay vertices: a SIZE-pixel square at pixel offset
 LEFT, TOP from the clip-space anchor."
@@ -428,13 +473,6 @@ LEFT, TOP from the clip-space anchor."
 (defun overlay-floats (out)
   "OUT's vertices as a fresh single-float vector."
   (subseq (overlay-buffer-floats out) 0 (* +overlay-vertex-floats+ (overlay-buffer-count out))))
-
-(defun label-vertices (string &key (dot 3) (margin 16) (colour *label-colour*))
-  "Overlay vertices drawing STRING in dot-matrix glyphs at the top left."
-  (let ((out (make-overlay-buffer (* 6 35 (length string)))))
-    (label-at! out string margin (+ margin (* 3.5 dot)) colour dot)
-    (overlay-floats out)))
-
 
 (defun overlay-vertex-buffers ()
   `((:array-stride ,(* 4 +overlay-vertex-floats+)

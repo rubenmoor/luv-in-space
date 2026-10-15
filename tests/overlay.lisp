@@ -182,11 +182,6 @@ top, or nil."
                           (lis::overlay-clear! out)
                           (lis::map-marker-vertices! out markers)))))))
 
-(define-test label-vertices-whole
-  (let ((lit (loop for char across lis::*label*
-                   sum (loop for row in (lis::glyph char) sum (count #\# row)))))
-    (is = (* 6 lit lis::+overlay-vertex-floats+) (length (lis::label-vertices lis::*label*)))))
-
 (define-test overlay-conses-nothing
   (let ((out (lis::make-overlay-buffer)))
     (is = 0 (least-bytes-consed
@@ -333,3 +328,58 @@ top, or nil."
          (state (lis::render-state-update! (lis::make-render-state) clock sim)))
     (true (< (least-bytes-consed (lambda () (lis::readout-lines state clock 0d0)) 5)
              16384))))
+
+(define-test readout-vertices
+  (let* ((sim (lis::new-game-sim))
+         (lines (readout sim (lis::new-clock sim)))
+         (out (lis::make-overlay-buffer))
+         (box (linear-rgb #x0A0C0C)))
+    (lis::readout-vertices! out lines 16 16)
+    (multiple-value-bind (width height) (lis::readout-box-size lines)
+      ;; 9 lines of 22 px, MODE's 26 cells of 12 px less the last gap, 8 px inside
+      (is = (+ 16 (* 9 22)) height)
+      (is = (+ 16 (- (* 26 12) 2)) width)
+      (is equal box (overlay-colour-at out 16.5 16.5))
+      (is equal box (overlay-colour-at out (+ 16 width -0.5) (+ 16 height -0.5)))
+      (false (overlay-colour-at out (+ 16 width 0.5) 20.0)))
+    ;; ALT's A, top row .###.: its second dot at x 26 .. 28, the first line's
+    ;; rows 24 + 11 − 7 = 28 .. 30
+    (is equal (linear-rgb #x8A8A80) (overlay-colour-at out 27.0 29.0))
+    (is equal box (overlay-colour-at out 25.0 29.0))
+    ;; the value after "ALT ": 4 cells on
+    (is equal (linear-rgb #xE8E4D8) (overlay-colour-at out (+ 24 48 1.0) (+ 24 11 0.0))))
+  ;; Inverted: a red block, the text in the box's colour; flashing off: nothing.
+  (let ((on (list (list (lis::readout-run "EARTH IMPACT IN 1 S" #xFF3030 :inverted :on))))
+        (off (list (list (lis::readout-run "EARTH IMPACT IN 1 S" #xFF3030 :inverted :off))))
+        (a (lis::make-overlay-buffer)) (b (lis::make-overlay-buffer)))
+    (lis::readout-vertices! a on 0 0)
+    (lis::readout-vertices! b off 0 0)
+    (is equal (linear-rgb #xFF3030) (overlay-colour-at a 7.0 12.0))
+    ;; E's top row ##### from x 8, rows 12 .. 14
+    (is equal (linear-rgb #x0A0C0C) (overlay-colour-at a 9.0 13.0))
+    (is = 6 (lis::overlay-buffer-count b))
+    (is equal (linear-rgb #x0A0C0C) (overlay-colour-at b 9.0 13.0)))
+  ;; Past the capacity the text is cut, whole triangles kept.
+  (let ((out (lis::make-overlay-buffer 600))
+        (lines (loop repeat 20 collect (list (lis::readout-run "WWWWWWWWWWWWWWWWWWWW" #xE8E4D8)))))
+    (lis::readout-vertices! out lines 16 16)
+    (is = 600 (lis::overlay-buffer-count out))))
+
+(define-test overlay-capacity
+  ;; The fullest readout: every row long, both alarms, three 40-character
+  ;; messages; with the map's markers and a LOST panel of as many characters
+  ;; again it fits in *overlay-max-vertices*.
+  (let* ((runs (lambda (text) (list (lis::readout-run text #xE8E4D8))))
+         (lines (append (mapcar runs '("ALT 99999.9 KM" "SPD 999.9 M/S" "AP ESCAPE" "PE 99999.9 KM"
+                                       "THR 100% ON" "PROP 28000 KG 100%"
+                                       "MODE HOLD ANTI-NORMAL SLEWING FINE"
+                                       "WARP ×1000000 ! ACT ×490000 PAUSED"
+                                       "UTC 2040-12-31 23:59:59" "! PE BELOW 100 KM"
+                                       "EARTH IMPACT IN 999 D 23 H"))
+                        (loop repeat 3 collect (funcall runs (make-string 42 :initial-element #\W)))))
+         (out (lis::make-overlay-buffer 200000)))
+    (lis::readout-vertices! out lines 16 16)
+    (let ((readout (lis::overlay-buffer-count out)))
+      (true (< (+ (* 2 readout) 12288) lis::*overlay-max-vertices*)
+            "~D readout vertices" readout)
+      (is = 0 (mod lis::*overlay-max-vertices* 6)))))

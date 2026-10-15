@@ -176,12 +176,6 @@
 (defun srgb-byte (x)
   (round (* 255 (if (<= x 0.0031308) (* 12.92 x) (- (* 1.055 (expt x (/ 2.4))) 0.055)))))
 
-(defun label-colour-bytes (format)
-  "The overlay label's colour as the target stores it, in red, green, blue."
-  (declare (ignore format))
-  (let ((rgb lis::*label-colour*))
-    (list (ldb (byte 8 16) rgb) (ldb (byte 8 8) rgb) (ldb (byte 8 0) rgb))))
-
 (defun pixel-rgb (pixels format width x y)
   (multiple-value-bind (red blue) (pixel-red-blue pixels format width x y)
     (list red (aref pixels (+ 1 (* 4 (+ (* y width) x)))) blue)))
@@ -802,11 +796,46 @@ exact (the GPU's rounding aside)."
     (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))
     (lis::game-load-state! game (lis::new-game-sim))))
 
+(defun readout-checks (game png width height)
+  "The start state's readout at WIDTH x HEIGHT (decision 85): inside its box
+only the box's, the labels' and the values' exact colours, each present;
+without it the scene shows there."
+  (let ((lines (lis::call-on-canvas-thread
+                game (lambda () (lis::readout-lines (lis::game-render-state game) (lis::game-clock game)
+                                                    (lis::game-real-time game)))))
+        (allowed (mapcar #'rgb-bytes '(#x0A0C0C #x8A8A80 #xE8E4D8)))
+        (x0 lis::*readout-margin-px*) (y0 lis::*readout-margin-px*))
+    (multiple-value-bind (box-width box-height) (lis::readout-box-size lines)
+      (true (and (< (+ x0 box-width) width) (< (+ y0 box-height) height)))
+      (flet ((colours (readout)
+               (multiple-value-bind (path w h pixels format)
+                   (lis::capture-game-state game png :sim (lis::new-game-sim) :frames 1 :readout readout)
+                 (declare (ignore path w h))
+                 (let ((counts (make-hash-table :test #'equal)))
+                   (loop for y from y0 below (+ y0 box-height)
+                         do (loop for x from x0 below (+ x0 box-width)
+                                  do (incf (gethash (pixel-rgb pixels format width x y) counts 0))))
+                   counts))))
+        (let ((counts (colours t)))
+          (dolist (colour allowed)
+            (true (plusp (gethash colour counts 0)) "no pixel of ~A in the readout" colour))
+          (loop for colour being the hash-keys of counts using (hash-value n)
+                do (true (member colour allowed :test #'equal)
+                         "~D pixels of ~A in the readout" n colour)))
+        (let ((counts (colours nil)))
+          (true (loop for colour being the hash-keys of counts
+                      thereis (not (equal colour (first allowed))))
+                "the scene under the readout's box"))))
+    (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))))
+
 (define-test render-frames
   (let ((width 320) (height 200))
     (luv:call-with-sdl-main-thread
      (lambda ()
-       (lis::with-capture-game (game :width width :height height)
+       ;; :readout nil: at 320 x 200 the readout's box would cover nearly
+       ;; the whole frame and every region check below; readout-checks
+       ;; turns it on at 1280 x 800.
+       (lis::with-capture-game (game :width width :height height :readout nil)
          (uiop:with-temporary-file (:pathname png :type "png")
            ;; The start state from the default outside view.
            (multiple-value-bind (path w h pixels)
@@ -833,18 +862,6 @@ exact (the GPU's rounding aside)."
              (let ((mean (rows-luminance pixels width 0 height)))
                (true (< mean 200) "mean luminance ~,1F: white-out" mean))
              (true (find-if #'plusp pixels) "fully black frame"))
-           ;; The label is drawn after the tone map: exactly its colour (the
-           ;; GPU's rounding aside), not bloomed. P's top row: dots 0-3 of 5,
-           ;; 3 px each at the 16 px margin.
-           (multiple-value-bind (path w h pixels format) (lis::capture-game-state game png :frames 1)
-             (declare (ignore path w h))
-             (let ((colour (label-colour-bytes format)))
-               (dolist (x '(17 20 23 26))
-                 (let ((pixel (pixel-rgb pixels format width x 17)))
-                   (true (every (lambda (a b) (<= (abs (- a b)) 1)) colour pixel)
-                         "label pixel ~D: ~A, not ~A" x pixel colour)))
-               (false (equal colour (pixel-rgb pixels format width 29 17)))))
-           (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))
            ;; Nadir: the sub-ship point fills the centre, open Pacific.
            (multiple-value-bind (path w h pixels format)
                (lis::capture-game-state game png :frames 1 :camera-fn #'nadir-camera)
@@ -970,4 +987,7 @@ exact (the GPU's rounding aside)."
              (true (<= (luv:canvas-frame-resource-count frames) images)
                    "~D frame slots after resizes, ~D images"
                    (luv:canvas-frame-resource-count frames) images)
-             (true (<= (hash-table-count (lis::renderer-color-views renderer)) images)))))))))
+             (true (<= (hash-table-count (lis::renderer-color-views renderer)) images)))
+           (luv:resize-canvas (lis::game-canvas game) 1280 800)
+           (lis::wait-for-frames game 6)
+           (readout-checks game png 1280 800)))))))

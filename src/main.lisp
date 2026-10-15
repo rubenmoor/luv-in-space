@@ -26,6 +26,10 @@
    (frame-time :initform nil :accessor game-frame-time
                :documentation "luv's time of the last frame, nil before the first.")
    (frame-count :initform 0 :accessor game-frame-count)
+   (real-time :initform 0d0 :accessor game-real-time
+              :documentation "Real seconds summed over the frames: the readout's flashing.")
+   (readout-p :initarg :readout :initform t :accessor game-readout-p
+              :documentation "Whether the frame draws the readout (decision 85).")
    (input :initform (make-input) :reader game-input
           :documentation "Held keys, taps and the pointer (input.lisp); not in the sim.")
    (view :initform :outside :accessor game-view :documentation "The view: :outside or :map.")
@@ -93,7 +97,10 @@ the outside view's distance."
   (update-view! game elapsed)
   (encode-frame (game-renderer game) encoder target extent
                 (game-render-state game) (game-camera game)
-                (update-exposure! game extent elapsed) (game-view game)))
+                (update-exposure! game extent elapsed) (game-view game)
+                (and (game-readout-p game)
+                     (readout-lines (game-render-state game) (game-clock game)
+                                    (game-real-time game)))))
 
 (defun draw (game)
   (let ((context (game-context game)))
@@ -106,6 +113,7 @@ the outside view's distance."
        (let ((elapsed (frame-elapsed! game time))
              (extent (luv:canvas-extent context)))
          (note-swapchain-target (game-renderer game) texture extent)
+         (incf (game-real-time game) elapsed)
          (input-frame! game elapsed)
          (clock-frame! (game-clock game) (game-sim game) elapsed)
          (unless (clock-paused (game-clock game))
@@ -134,9 +142,11 @@ the outside view's distance."
                                 (setf result (funcall function))))
     result))
 
-(defun start (&key (visible t) (width 1280) (height 800) (sim (new-game-sim)) paused)
+(defun start (&key (visible t) (width 1280) (height 800) (sim (new-game-sim)) paused
+                (readout t))
   "Open the game window on SIM (used as is, the start checkpoint taken of
-it) and start drawing; PAUSED starts with the clock paused. Returns the game."
+it) and start drawing; PAUSED starts with the clock paused, READOUT nil
+without the readout. Returns the game."
   (let* ((canvas (luv:make-sdl-canvas :title (window-title) :width width :height height
                                       :visible-p visible))
          (_ (luv:open-canvas canvas))
@@ -149,7 +159,7 @@ it) and start drawing; PAUSED starts with the clock paused. Returns the game."
          (clock (new-clock sim))
          (game (make-instance 'game :canvas canvas :device device :context context
                                     :renderer (make-frame-renderer device context)
-                                    :sim sim :clock clock
+                                    :sim sim :clock clock :readout readout
                                     :start-checkpoint (take-checkpoint sim))))
     (declare (ignore _))
     (setf (clock-paused clock) (and paused t))

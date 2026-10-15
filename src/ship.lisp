@@ -143,6 +143,8 @@ weights in kg per member before the ×1.15 that scales them to the row."
 
 ;;; Mass properties
 
+;; Inline, so the step path can stack-allocate one (controls.lisp).
+(declaim (inline make-mass-properties))
 (defstruct (mass-properties (:copier nil))
   (mass 0d0 :type double-float)                ; kg
   (com (make-vec3) :type vec3)                 ; m, body, from R

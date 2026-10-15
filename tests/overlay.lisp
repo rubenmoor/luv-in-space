@@ -389,7 +389,7 @@ top, or nil."
   (let* ((runs (lambda (text) (list (lis::readout-run text #xE8E4D8))))
          (lines (append (mapcar runs '("ALT 99999.9 KM" "SPD 999.9 M/S" "AP ESCAPE" "PE 99999.9 KM"
                                        "THR 100% ON" "PROP 28000 KG 100%"
-                                       "MODE HOLD ANTI-NORMAL SLEWING FINE"
+                                       "MODE HOLD REL RETROGRADE SLEWING FINE"
                                        "WARP ×1000000 ! ACT ×490000 PAUSED"
                                        "UTC 2040-12-31 23:59:59" "! PE BELOW 100 KM"
                                        "EARTH IMPACT IN 999 D 23 H"))
@@ -482,3 +482,17 @@ top, or nil."
     (multiple-value-bind (x y) (lis::lost-panel-origin lines '(1280 800))
       (is = 480 y)
       (is = (floor (- 1280 (lis::readout-box-size lines)) 2) x))))
+
+(define-test overlay-target-hold-modes
+  ;; decision 85 extended by decision 114: the target holds' MODE names.
+  (let ((sim (lis::new-game-sim)))
+    (lis::sim-set-target! sim :tern-station)
+    (loop for kind in '(:target :anti-target :relative-prograde :relative-retrograde)
+          for name in '("HOLD TARGET SLEWING" "HOLD ANTI-TARGET SLEWING"
+                        "HOLD REL PROGRADE SLEWING" "HOLD REL RETROGRADE SLEWING")
+          do (lis::sim-target-hold! sim kind)
+             (is equal name (lis::mode-text (lis::sim-controls sim))))
+    (setf (lis::controls-settled (lis::sim-controls sim)) t)
+    (lis::controls-toggle-fine (lis::sim-controls sim))
+    (is equal "HOLD REL RETROGRADE SETTLED FINE" (lis::mode-text (lis::sim-controls sim)))
+    (false (lis::glyph-missing "MODE HOLD REL RETROGRADE SLEWING FINE"))))

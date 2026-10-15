@@ -11,11 +11,18 @@
 (deftype key-axes () '(simple-array fixnum (3)))
 (deftype duty-cycles () '(simple-array double-float (24)))
 (deftype hold-kind ()
-  '(member :prograde :retrograde :normal :anti-normal :radial-out :radial-in :inertial))
+  '(member :prograde :retrograde :normal :anti-normal :radial-out :radial-in :inertial
+    :target :anti-target :relative-prograde :relative-retrograde))
+(deftype target-hold-kind ()
+  '(member :target :anti-target :relative-prograde :relative-retrograde))
+;; The target hold's target at its time: r_T, v_T, a_T (point-mass), t, and
+;; on rails the drift of its position's rate from v_T.
+(deftype target-scratch () '(simple-array double-float (13)))
 
-(declaim (inline make-key-axes make-duty-cycles))
+(declaim (inline make-key-axes make-duty-cycles make-target-scratch))
 (defun make-key-axes () (make-array 3 :element-type 'fixnum :initial-element 0))
 (defun make-duty-cycles () (make-array 24 :element-type 'double-float :initial-element 0d0))
+(defun make-target-scratch () (make-array 13 :element-type 'double-float :initial-element 0d0))
 
 (defstruct (controls (:constructor %make-controls) (:copier nil))
   (throttle 0d0 :type double-float)                     ; lever: 0 or 0.1–1
@@ -27,7 +34,9 @@
   (inertial-target (quat 1 0 0 0) :type quat)           ; body -> inertial, for :inertial
   (roll-offset 0d0 :type double-float)                  ; rad about the hold axis
   (settled nil :type boolean)
-  (duties (make-duty-cycles) :type duty-cycles))        ; the last step's, *rcs-positions* order
+  (duties (make-duty-cycles) :type duty-cycles)         ; the last step's, *rcs-positions* order
+  (target-state (make-target-scratch) :type target-scratch)
+  (target-attitude (quat 1 0 0 0) :type quat))          ; the last target attitude, before roll
 
 (defun new-controls ()
   "The start's controls: a prograde hold over rate damping, throttle off
@@ -40,7 +49,9 @@
     (setf (controls-rotation-keys copy) (copy-seq (controls-rotation-keys controls))
           (controls-translation-keys copy) (copy-seq (controls-translation-keys controls))
           (controls-inertial-target copy) (quat-copy (controls-inertial-target controls))
-          (controls-duties copy) (copy-seq (controls-duties controls)))
+          (controls-duties copy) (copy-seq (controls-duties controls))
+          (controls-target-state copy) (copy-seq (controls-target-state controls))
+          (controls-target-attitude copy) (quat-copy (controls-target-attitude controls)))
     copy))
 
 (defun controls-assign! (out controls)
@@ -56,6 +67,8 @@
   (replace (controls-translation-keys out) (controls-translation-keys controls))
   (replace (controls-inertial-target out) (controls-inertial-target controls))
   (replace (controls-duties out) (controls-duties controls))
+  (replace (controls-target-state out) (controls-target-state controls))
+  (replace (controls-target-attitude out) (controls-target-attitude controls))
   out)
 
 ;;; Commands (docs/design.md "Controls"); each returns CONTROLS.
@@ -148,6 +161,49 @@ hold's key again releases it to rate damping."
             (controls-roll-offset controls) 0d0
             (controls-inertial-target controls) (replace (controls-inertial-target controls) q)))
   (setf (controls-settled controls) nil)
+  controls)
+
+(defun controls-target-hold-p (controls)
+  "A target hold (7–0) is active."
+  (and (eq (controls-attitude-mode controls) :hold)
+       (typep (controls-hold controls) 'target-hold-kind)))
+
+(defun controls-set-target-hold (controls kind q)
+  "7–0: hold KIND (:target … :relative-retrograde), its roll transported
+from the attitude Q (the ship's, body -> inertial); the active hold's key
+again releases it to rate damping (decision 114). The caller refuses it
+without a target."
+  (declare (type quat q))
+  (check-type kind target-hold-kind)
+  (if (and (eq (controls-attitude-mode controls) :hold) (eq (controls-hold controls) kind))
+      (setf (controls-attitude-mode controls) :rate-damping)
+      (setf (controls-attitude-mode controls) :hold
+            (controls-hold controls) kind
+            (controls-roll-offset controls) 0d0
+            (controls-target-attitude controls) (replace (controls-target-attitude controls) q)))
+  (setf (controls-settled controls) nil)
+  controls)
+
+(defun controls-release-target-hold (controls)
+  "An active target hold to rate damping (its target cleared); CONTROLS."
+  (when (controls-target-hold-p controls)
+    (setf (controls-attitude-mode controls) :rate-damping
+          (controls-settled controls) nil))
+  controls)
+
+(declaim (inline controls-target-state-set!))
+(defun controls-target-state-set! (controls r v time)
+  "The target hold's target at TIME: R, V and point-mass gravity at R, no
+drift; CONTROLS. Conses nothing."
+  (declare (type controls controls) (type vec3 r v) (type double-float time))
+  (let ((s (controls-target-state controls))
+        (k (let ((rn (vec3-norm r))) (/ (- +mu-earth+) (* rn rn rn)))))
+    (dotimes (i 3)
+      (setf (aref s i) (aref r i)
+            (aref s (+ i 3)) (aref v i)
+            (aref s (+ i 6)) (* k (aref r i))
+            (aref s (+ i 10)) 0d0))
+    (setf (aref s 9) time))
   controls)
 
 (defun controls-toggle-rate-damping (controls)
@@ -342,44 +398,71 @@ force F-C as fits; zero command gives zeros. Conses nothing."
 ;;; Holds (docs/design.md "Control modes"; docs/architecture.md "Frames"):
 ;;; the target attitude and its frame's rate.
 
-(declaim (inline hold-attitude-into!))
+;; decision 114: below these the target hold's direction is frozen.
+(defparameter *target-hold-min-range* 1d0 "m, holds 7 and 8.")
+(defparameter *target-hold-min-speed* 0.01d0 "m/s, holds 9 and 0.")
+(declaim (type double-float *target-hold-min-range* *target-hold-min-speed*))
 
-(defun hold-attitude-into! (q w-t kind r v roll-offset inertial-target)
-  "Write the hold's target attitude (body -> inertial) into Q and its frame's
-rate (rad/s, inertial axes) into W-T. Orbital holds: the nose along the
-hold direction of the orbital frame (prograde v, normal r × v, radial out
-completing the triple), the cab (−z) radial out, towards normal for the
-radial holds; :inertial holds INERTIAL-TARGET. Then ROLL-OFFSET (rad) about
-the nose."
-  (declare (type quat q inertial-target) (type vec3 w-t r v) (type hold-kind kind)
-           (type double-float roll-offset))
-  (if (eq kind :inertial)
-      (progn (replace q inertial-target)
-             (vec3-set! w-t 0d0 0d0 0d0))
-      (let ((p (make-vec3)) (n (make-vec3)) (o (make-vec3))
-            (x (make-vec3)) (y (make-vec3)) (z (make-vec3)))
-        (declare (dynamic-extent p n o x y z))
-        (vec3-normalize! p v)
-        (vec3-normalize! n (vec3-cross! n r v))
-        (vec3-cross! o p n)
-        (flet ((axes (nose nose-sign cab cab-sign)
-                 (declare (type vec3 nose cab) (type double-float nose-sign cab-sign))
-                 (vec3-scale! x nose nose-sign)
-                 (vec3-scale! z cab (- cab-sign))))
-          (declare (inline axes))
-          (ecase kind
-            (:prograde (axes p 1d0 o 1d0))
-            (:retrograde (axes p -1d0 o 1d0))
-            (:normal (axes n 1d0 o 1d0))
-            (:anti-normal (axes n -1d0 o 1d0))
-            (:radial-out (axes o 1d0 n 1d0))
-            (:radial-in (axes o -1d0 n 1d0))))
-        (vec3-cross! y z x)
-        (quat-from-basis! q x y z)
-        ;; The frame turns as point-mass gravity bends v: ω_t = v̂ × a / |v|.
-        (let* ((rn (vec3-norm r))
-               (k (/ (- +mu-earth+) (* rn rn rn))))
-          (vec3-scale! w-t (vec3-cross! w-t p r) (/ k (vec3-norm v))))))
+(declaim (inline target-attitude-into! roll-offset-apply! hold-attitude-into!))
+
+(defun target-attitude-into! (q w-t kind r v target-state last tau)
+  "The target hold's attitude before the roll offset into Q and its frame's
+rate (inertial axes) into W-T, the ship at R, V and the target at TAU s past
+TARGET-STATE's time as r_T + (v_T + drift) τ + a_T τ²/2, v_T + a_T τ
+(decision 114, decision 144).
+The direction d: :target and :anti-target ±(r_T − r), the relative holds
+±(v − v_T); the attitude LAST (the last target attitude) turned by the
+shortest arc from its nose to d̂, the frame's rate d × ḋ / |d|² (ḋ the
+relative velocity, or point-mass gravity's difference). Below
+*target-hold-min-range* or *target-hold-min-speed* LAST and no rate. Q may
+be LAST."
+  (declare (type quat q last) (type vec3 w-t r v) (type target-hold-kind kind)
+           (type target-scratch target-state) (type double-float tau))
+  (let ((d (make-vec3)) (d-dot (make-vec3)) (nose (make-vec3)) (axis (make-vec3))
+        (arc (make-quat))
+        (sign (if (member kind '(:target :relative-prograde)) 1d0 -1d0))
+        (relative (member kind '(:relative-prograde :relative-retrograde))))
+    (declare (dynamic-extent d d-dot nose axis arc) (type double-float sign))
+    (dotimes (i 3)
+      (let* ((a (aref target-state (+ i 6)))
+             (v-t (+ (aref target-state (+ i 3)) (* tau a)))
+             (r-t (+ (aref target-state i)
+                     (* tau (+ (aref target-state (+ i 3)) (aref target-state (+ i 10))
+                               (* 0.5d0 tau a))))))
+        (if relative
+            (setf (aref d i) (* sign (- (aref v i) v-t))
+                  (aref nose i) r-t)
+            (setf (aref d i) (* sign (- r-t (aref r i)))
+                  (aref d-dot i) (* sign (- (+ v-t (aref target-state (+ i 10))) (aref v i)))))))
+    (when relative
+      ;; ḋ: point-mass gravity at the ship less at the target (in NOSE).
+      (let* ((rn (vec3-norm r)) (k (/ (- +mu-earth+) (* rn rn rn)))
+             (tn (vec3-norm nose)) (k-t (/ (- +mu-earth+) (* tn tn tn))))
+        (dotimes (i 3)
+          (setf (aref d-dot i) (* sign (- (* k (aref r i)) (* k-t (aref nose i))))))))
+    (let ((n (vec3-norm d)))
+      (if (< n (if relative *target-hold-min-speed* *target-hold-min-range*))
+          (progn (replace q last)
+                 (vec3-set! w-t 0d0 0d0 0d0))
+          (progn
+            (vec3-scale! w-t (vec3-cross! w-t d d-dot) (/ (* n n)))
+            (vec3-scale! d d (/ n))
+            (quat-rotate! nose last (vec3-set! nose 1d0 0d0 0d0))
+            (vec3-cross! axis nose d)
+            (let ((c (vec3-dot nose d)))
+              (if (and (< c 0d0) (< (vec3-dot axis axis) 1d-24))
+                  ;; Opposite: half a turn about the cab's axis.
+                  (progn (quat-rotate! axis last (vec3-set! axis 0d0 0d0 1d0))
+                         (quat-set! arc 0d0 (aref axis 0) (aref axis 1) (aref axis 2)))
+                  (quat-set! arc (+ 1d0 c) (aref axis 0) (aref axis 1) (aref axis 2))))
+            (quat-normalize! arc arc)
+            (quat-mul! q arc last)
+            (quat-normalize! q q)))))
+  q)
+
+(defun roll-offset-apply! (q roll-offset)
+  "Q turned by ROLL-OFFSET (rad) about its nose; Q."
+  (declare (type quat q) (type double-float roll-offset))
   (unless (= roll-offset 0d0)
     (let ((roll (make-quat)))
       (declare (dynamic-extent roll))
@@ -387,25 +470,79 @@ the nose."
       (quat-mul! q q roll)))
   q)
 
-(defun hold-attitude (kind r v roll-offset &optional (inertial-target (quat 1 0 0 0)))
+(defun hold-attitude-into! (q w-t kind r v roll-offset inertial-target
+                            target-state target-attitude tau)
+  "Write the hold's target attitude (body -> inertial) into Q and its frame's
+rate (rad/s, inertial axes) into W-T. Orbital holds: the nose along the
+hold direction of the orbital frame (prograde v, normal r × v, radial out
+completing the triple), the cab (−z) radial out, towards normal for the
+radial holds; :inertial holds INERTIAL-TARGET; target holds as
+target-attitude-into! from TARGET-STATE, TARGET-ATTITUDE and TAU. Then
+ROLL-OFFSET (rad) about the nose."
+  (declare (type quat q inertial-target target-attitude) (type vec3 w-t r v)
+           (type hold-kind kind) (type double-float roll-offset tau)
+           (type target-scratch target-state))
+  (case kind
+    (:inertial
+     (replace q inertial-target)
+     (vec3-set! w-t 0d0 0d0 0d0))
+    ((:target :anti-target :relative-prograde :relative-retrograde)
+     (target-attitude-into! q w-t kind r v target-state target-attitude tau))
+    (t
+     (let ((p (make-vec3)) (n (make-vec3)) (o (make-vec3))
+           (x (make-vec3)) (y (make-vec3)) (z (make-vec3)))
+       (declare (dynamic-extent p n o x y z))
+       (vec3-normalize! p v)
+       (vec3-normalize! n (vec3-cross! n r v))
+       (vec3-cross! o p n)
+       (flet ((axes (nose nose-sign cab cab-sign)
+                (declare (type vec3 nose cab) (type double-float nose-sign cab-sign))
+                (vec3-scale! x nose nose-sign)
+                (vec3-scale! z cab (- cab-sign))))
+         (declare (inline axes))
+         (ecase kind
+           (:prograde (axes p 1d0 o 1d0))
+           (:retrograde (axes p -1d0 o 1d0))
+           (:normal (axes n 1d0 o 1d0))
+           (:anti-normal (axes n -1d0 o 1d0))
+           (:radial-out (axes o 1d0 n 1d0))
+           (:radial-in (axes o -1d0 n 1d0))))
+       (vec3-cross! y z x)
+       (quat-from-basis! q x y z)
+       ;; The frame turns as point-mass gravity bends v: ω_t = v̂ × a / |v|.
+       (let* ((rn (vec3-norm r))
+              (k (/ (- +mu-earth+) (* rn rn rn))))
+         (vec3-scale! w-t (vec3-cross! w-t p r) (/ k (vec3-norm v)))))))
+  (roll-offset-apply! q roll-offset))
+
+(defun hold-attitude (kind r v roll-offset &optional (inertial-target (quat 1 0 0 0))
+                                                     (target-state (make-target-scratch))
+                                                     (target-attitude (quat 1 0 0 0))
+                                                     (tau 0d0))
   "The hold's target attitude and its frame's rate (inertial axes), fresh:
 (values q w-t); see hold-attitude-into!."
   (let ((q (make-quat)) (w-t (make-vec3)))
-    (hold-attitude-into! q w-t kind r v (float roll-offset 1d0) inertial-target)
+    (hold-attitude-into! q w-t kind r v (float roll-offset 1d0) inertial-target
+                         target-state target-attitude (float tau 1d0))
     (values q w-t)))
 
 (defun controls-attitude-fn (controls)
   "The active hold's attitude function for rk4-step!'s kinematic mode (above
-×4), or nil without a hold. It keeps the hold, roll offset and inertial
-target of this moment."
+×4), or nil without a hold. It keeps the hold, roll offset, inertial target
+and target scratch of this moment."
   (when (eq (controls-attitude-mode controls) :hold)
     (let ((kind (controls-hold controls))
           (roll-offset (controls-roll-offset controls))
-          (target (quat-copy (controls-inertial-target controls))))
-      (declare (type hold-kind kind) (type double-float roll-offset) (type quat target))
+          (target (quat-copy (controls-inertial-target controls)))
+          (target-state (copy-seq (controls-target-state controls)))
+          (target-attitude (quat-copy (controls-target-attitude controls))))
+      (declare (type hold-kind kind) (type double-float roll-offset) (type quat target target-attitude)
+               (type target-scratch target-state))
       (lambda (q w-t time-cell r v)
-        (declare (optimize speed) (ignore time-cell) (type quat q) (type vec3 w-t r v))
-        (hold-attitude-into! q w-t kind r v roll-offset target)))))
+        (declare (optimize speed) (type quat q) (type vec3 w-t r v)
+                 (type (simple-array double-float (1)) time-cell))
+        (hold-attitude-into! q w-t kind r v roll-offset target target-state target-attitude
+                             (- (aref time-cell 0) (aref target-state 9)))))))
 
 ;;; The target for instruments (decision 114: Targets and target holds in
 ;;; the sim): range, closing speed, relative velocity and direction.
@@ -474,19 +611,31 @@ LIMIT × its couple."
       (let ((c (* limit (rcs-couple axis))))
         (setf (aref tau-c axis) (max (- c) (min c (aref tau-c axis))))))))
 
-(defun hold-rate-command! (w-c controls state inertia fine roll-rate)
+(defun hold-rate-command! (w-c controls state inertia fine roll-rate time)
   "The hold's commanded rate (body axes) into W-C: the frame's rate, the
 roll keys' and a slew towards the target, √(2 × 0.8 α |φ|) braking,
-*hold-tail-gain* |φ| near it, at most *damping-rate*; updates settled."
+*hold-tail-gain* |φ| near it, at most *damping-rate*; updates settled, and
+a target hold's last target attitude (at TIME, the step's start)."
   (declare (type vec3 w-c) (type controls controls) (type ship-state state)
-           (type mat3 inertia) (type double-float fine roll-rate))
+           (type mat3 inertia) (type double-float fine roll-rate time))
   (let ((q (ship-state-q state)) (w (ship-state-w state))
         (q-t (make-quat)) (q-e (make-quat)) (w-t (make-vec3)) (axis (make-vec3))
         (i-axis (make-vec3)))
     (declare (dynamic-extent q-t q-e w-t axis i-axis))
-    (hold-attitude-into! q-t w-t (controls-hold controls)
-                         (ship-state-r state) (ship-state-v state)
-                         (controls-roll-offset controls) (controls-inertial-target controls))
+    (if (typep (controls-hold controls) 'target-hold-kind)
+        ;; Transported: this step's attitude is the next one's start.
+        (let ((last (controls-target-attitude controls)))
+          (target-attitude-into! q-t w-t (controls-hold controls)
+                                 (ship-state-r state) (ship-state-v state)
+                                 (controls-target-state controls) last
+                                 (- time (aref (controls-target-state controls) 9)))
+          (replace last q-t)
+          (roll-offset-apply! q-t (controls-roll-offset controls)))
+        (hold-attitude-into! q-t w-t (controls-hold controls)
+                             (ship-state-r state) (ship-state-v state)
+                             (controls-roll-offset controls) (controls-inertial-target controls)
+                             (controls-target-state controls) (controls-target-attitude controls)
+                             0d0))
     ;; The frame's rate in body axes: q* ω_t q.
     (quat-conjugate! q-e q)
     (quat-rotate! w-c q-e w-t)
@@ -522,15 +671,15 @@ roll keys' and a slew towards the target, √(2 × 0.8 α |φ|) braking,
                                  (* *hold-tail-gain* angle)))))
       w-c)))
 
-(defun flight-commands! (tau-c f-c controls state com inertia h)
+(defun flight-commands! (tau-c f-c controls state com inertia h time)
   "The commanded torque (N m) and force (N), body axes, about the CoM COM,
-for the step of h from STATE. Direct: a held rotation key commands its
+for the step of h from STATE at TIME. Direct: a held rotation key commands its
 axis's couple. Rate damping: held keys command *damping-rate*, none zero.
 Hold: the slew and hold of hold-rate-command!, roll keys turning the roll
 offset. Translation is always direct, the axis's torque-free force.
 ×*fine-control* in fine."
   (declare (type vec3 tau-c f-c com) (type controls controls) (type ship-state state)
-           (type mat3 inertia) (type double-float h))
+           (type mat3 inertia) (type double-float h time))
   (let ((fine (if (controls-fine controls) *fine-control* 1d0))
         (rotation (controls-rotation-keys controls))
         (translation (controls-translation-keys controls))
@@ -549,7 +698,7 @@ offset. Translation is always direct, the axis's torque-free force.
       (:hold
        (let ((roll-rate (* fine *damping-rate* (float (aref rotation 0) 1d0))))
          (incf (controls-roll-offset controls) (* roll-rate h))
-         (hold-rate-command! w-c controls state inertia fine roll-rate)
+         (hold-rate-command! w-c controls state inertia fine roll-rate time)
          (rate-law! tau-c w-c (ship-state-w state) inertia (* *hold-torque-fraction* fine)))))
     (dotimes (axis 3)
       (setf (aref f-c axis)
@@ -567,7 +716,8 @@ offset. Translation is always direct, the axis's torque-free force.
 the latched LOAD (a stack-load or nil), flight computer (its state into
 CONTROLS), mixer (duties into CONTROLS), engine plus RCS force, torque and
 ṁ, then rk4-step! (with THIRD-BODIES, the step's shared Moon and Sun). With
-ATTITUDE-FN (kinematic, above ×4) the engine only. Conses nothing."
+ATTITUDE-FN (kinematic, above ×4) the engine only, and a target hold's last
+target attitude set to the step's end. Conses nothing."
   (declare (optimize speed) (type ship-state state) (type controls controls)
            (type double-float h time) (type keyword model)
            (type (or null function) attitude-fn) (type (or null third-bodies) third-bodies)
@@ -593,7 +743,7 @@ ATTITUDE-FN (kinematic, above ×4) the engine only. Conses nothing."
           ((<= m-p 0d0) (fill u 0d0))
           (t
            (rcs-matrix! b com)
-           (flight-commands! tau-c f-c controls state com inertia h)
+           (flight-commands! tau-c f-c controls state com inertia h time)
            (rcs-mix! u b tau-c f-c)))
     (vec3-set! force (ship-engine-force throttle) 0d0 0d0)
     (let ((rcs-mdot (/ *rcs-thrust* (* *rcs-isp* +g0+))))
@@ -608,4 +758,12 @@ ATTITUDE-FN (kinematic, above ×4) the engine only. Conses nothing."
             (incf (aref torque 2) (* ui (aref b 5 i)))
             (incf mdot (* ui rcs-mdot))))))
     (rk4-step! state h time model force torque mdot (+ *ship-dry-mass* (stack-load-mass load))
-               inertia inverse attitude-fn third-bodies)))
+               inertia inverse attitude-fn third-bodies)
+    ;; Kinematic under a target hold: the step's end attitude is the next start.
+    (when (and attitude-fn (controls-target-hold-p controls))
+      (let ((target-state (controls-target-state controls))
+            (last (controls-target-attitude controls)))
+        (target-attitude-into! last torque (controls-hold controls)
+                               (ship-state-r state) (ship-state-v state) target-state last
+                               (- (+ time h) (aref target-state 9)))))
+    state))

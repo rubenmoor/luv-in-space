@@ -235,8 +235,19 @@ objects skipped."
                                  collect key))))
 
 (defun sim-set-target! (sim key)
-  "SIM's target KEY, or none for nil; KEY."
+  "SIM's target KEY, or none for nil (an active target hold released to
+rate damping); KEY."
+  (unless key
+    (controls-release-target-hold (sim-controls sim)))
   (setf (sim-target sim) key))
+
+(defun sim-target-hold! (sim kind)
+  "7–0: controls-set-target-hold of KIND from the ship's attitude; without a
+target refused: \"NO TARGET\", else nil (decision 114)."
+  (if (sim-target sim)
+      (progn (controls-set-target-hold (sim-controls sim) kind (ship-state-q (sim-ship sim)))
+             nil)
+      "NO TARGET"))
 
 (defun sim-cycle-target! (sim direction)
   "The next candidate (DIRECTION +1, ]) or the previous (−1, [), wrapping;
@@ -261,7 +272,8 @@ sim's t as r + v τ + a τ²/2 + j τ³/6, τ = TIME − t, a the sim's gravity
 (J2 at most), j point-mass gravity's jerk (decision 143: The target at the
 render time: the sim's gravity and the jerk). True, or nil without a target
 or its state. Conses nothing."
-  (declare (type vec3 r v) (type sim sim) (type double-float time))
+  (declare (type vec3 r v) (type sim sim) (type double-float time)
+           (inline rails-state-into!))
   (let ((key (sim-target sim)))
     (when key
       (let ((object-key (target-object-key key)))
@@ -270,10 +282,15 @@ or its state. Conses nothing."
               (rails-state-into! r v (rails-segment-at rails time) time)
               t)
             (let ((object (sim-object sim object-key))
-                  (q (make-quat)) (w (make-vec3)) (a (make-vec3)))
-              (declare (dynamic-extent q w a))
+                  (a (make-vec3)))
+              (declare (dynamic-extent a))
               (case (object-status object)
-                (:rails (and (object-state-into! r v q w object time) t))
+                (:rails
+                 (let ((segment (rails-segment-at (object-rails object) time)))
+                   (unless (and (eq (rails-segment-end-kind segment) :crash)
+                                (> time (rails-segment-end segment)))
+                     (rails-state-into! r v segment time)
+                     t)))
                 ((:promoted :latched)
                  (let ((state (object-state object)))
                    (replace r (ship-state-r state))
@@ -297,13 +314,25 @@ or its state. Conses nothing."
                    t))
                 (t nil))))))))
 
+(declaim (inline target-rails-segment))
+(defun target-rails-segment (sim time)
+  "The rails segment SIM's target is on at TIME, or nil: none, promoted or
+latched."
+  (let* ((key (sim-target sim))
+         (object-key (and key (target-object-key key))))
+    (cond ((null key) nil)
+          ((null object-key) (rails-segment-at (place-rails (place key)) time))
+          (t (let ((object (sim-object sim object-key)))
+               (and (eq (object-status object) :rails)
+                    (rails-segment-at (object-rails object) time)))))))
+
 (defun target-check! (sim)
   "After a step's removals and captures: a target whose object is removed
-or latched is cleared with the notice \"TARGET LOST: <NAME>\"."
+or latched is cleared with the notice \"TARGET LOST: <NAME>\", an active
+target hold released to rate damping."
   (let ((key (sim-target sim)))
     (when (and key (not (target-available-p sim key)))
-      (setf (sim-target sim) nil)
-      ;; PLACEHOLDER(196): an active target hold goes to rate damping.
+      (sim-set-target! sim nil)
       (sim-notice! sim :target (format nil "TARGET LOST: ~A" (target-name key)))))
   sim)
 
@@ -318,11 +347,14 @@ or latched is cleared with the notice \"TARGET LOST: <NAME>\"."
 (defun kinematic-hold-attitude (q w-t time-cell r v)
   "rk4-step!'s attitude function for the hold of *hold-controls*: as
 controls-attitude-fn's, without a closure per step."
-  (declare (optimize speed) (ignore time-cell) (type quat q) (type vec3 w-t r v))
+  (declare (optimize speed) (type quat q) (type vec3 w-t r v)
+           (type (simple-array double-float (1)) time-cell))
   (let ((controls *hold-controls*))
     (declare (type controls controls))
     (hold-attitude-into! q w-t (controls-hold controls) r v
-                         (controls-roll-offset controls) (controls-inertial-target controls))))
+                         (controls-roll-offset controls) (controls-inertial-target controls)
+                         (controls-target-state controls) (controls-target-attitude controls)
+                         (- (aref time-cell 0) (aref (controls-target-state controls) 9)))))
 
 (declaim (inline grid-ceiling-step))
 (defun grid-ceiling-step (h)
@@ -387,7 +419,8 @@ nothing (a cut due before the step counts as made)."
   "sim-step!, returning h in 1/64 s ticks (a fixnum: nothing boxed; 0 for a
 contact answered at the step's start) or nil."
   (declare (optimize speed) (type sim sim) (type fixnum level)
-           (type (or null double-float) until) (inline flight-step! step-h object-step!))
+           (type (or null double-float) until)
+           (inline flight-step! step-h object-step! target-state-into!))
   (when (sim-loss sim)
     (return-from sim-step-ticks! nil))
   (unless *contact-redo*
@@ -414,6 +447,18 @@ contact answered at the step's start) or nil."
                    (> (ship-state-m-p ship) 0d0)
                    (>= (ship-state-dv ship) cutoff))
           (cut!)))
+      ;; A target hold's target at the step's start (decision 114), with a
+      ;; rails target's drift (decision 144).
+      (when (controls-target-hold-p controls)
+        (if (target-state-into! r0 v0 sim time)
+            (let ((segment (target-rails-segment sim time)))
+              (controls-target-state-set! controls r0 v0 time)
+              (when segment
+                (let ((s (controls-target-state controls)))
+                  (rails-rate-into! v0 r0 segment)
+                  (dotimes (i 3)
+                    (setf (aref s (+ i 10)) (- (aref v0 i) (aref s (+ i 3))))))))
+            (controls-release-target-hold controls)))
       (when (and coarse (not (sim-berthed sim))
                  (not (eq (controls-attitude-mode controls) :hold)))
         (controls-inertial-hold controls (ship-state-q ship)))

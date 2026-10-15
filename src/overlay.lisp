@@ -339,7 +339,8 @@ last, then the labels in *marker-label-colour*, rows centred on the marker
 (defparameter *hold-names*
   '((:prograde . "PROGRADE") (:retrograde . "RETROGRADE") (:normal . "NORMAL")
     (:anti-normal . "ANTI-NORMAL") (:radial-out . "RADIAL OUT") (:radial-in . "RADIAL IN")
-    (:inertial . "INERTIAL")))
+    (:inertial . "INERTIAL") (:target . "TARGET") (:anti-target . "ANTI-TARGET")
+    (:relative-prograde . "REL PROGRADE") (:relative-retrograde . "REL RETROGRADE")))
 
 (defun mode-text (controls)
   (format nil "~A~:[~; FINE~]"

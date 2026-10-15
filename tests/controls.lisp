@@ -623,3 +623,217 @@ then on, the final time)."
     (true (< (abs (- (aref out 5) (- (sqrt 0.5d0)))) 1d-12))
     (true (< (abs (- (aref out 7) (sqrt 0.5d0))) 1d-12))
     (is = 0 (least-bytes-consed (lambda () (lis::target-relative-into! out r v q r-t v-t))))))
+
+;;; Target holds 7–0 (decision 114: Targets and target holds in the sim)
+
+(defparameter *target-holds* '(:target :anti-target :relative-prograde :relative-retrograde))
+
+(defun point-gravity (r)
+  (lis::vec3-scale r (/ (- lis::+mu-earth+) (expt (lis::vec3-norm r) 3))))
+
+(defun target-direction (sim kind)
+  "KIND's direction d̂ and its frame's rate (inertial) at SIM's t, from the
+target's exact state."
+  (let ((r-t (lis::make-vec3)) (v-t (lis::make-vec3))
+        (r (lis::ship-state-r (lis::sim-ship sim))) (v (lis::ship-state-v (lis::sim-ship sim)))
+        (sign (if (member kind '(:target :relative-prograde)) 1d0 -1d0)))
+    (lis::target-state-into! r-t v-t sim)
+    (multiple-value-bind (d d-dot)
+        (if (member kind '(:target :anti-target))
+            (values (lis::vec3-sub r-t r) (lis::vec3-sub v-t v))
+            (values (lis::vec3-sub v v-t) (lis::vec3-sub (point-gravity r) (point-gravity r-t))))
+      (values (lis::vec3-scale (lis::vec3-normalize d) sign)
+              (lis::vec3-scale (lis::vec3-cross d d-dot) (/ (lis::vec3-dot d d)))))))
+
+(defun nose (q) (lis::quat-rotate q (lis::vec3 1 0 0)))
+
+(defun target-hold-errors (sim kind)
+  "The nose's angle (°) from KIND's direction and the rate error (°/s)."
+  (multiple-value-bind (d w-t) (target-direction sim kind)
+    (let ((ship (lis::sim-ship sim)))
+      (values (angle-between-deg (nose (lis::ship-state-q ship)) d)
+              (degrees (lis::vec3-norm
+                        (lis::vec3-sub (lis::ship-state-w ship)
+                                       (lis::quat-rotate (lis::quat-conjugate (lis::ship-state-q ship))
+                                                         w-t))))))))
+
+(defun target-sim (&optional (target :tern-station))
+  (let ((sim (lis::new-game-sim)))
+    (lis::sim-set-target! sim target)
+    sim))
+
+(defun target-sim-steps (sim n level)
+  (declare (type fixnum n level) (inline lis::sim-step!))
+  (dotimes (i n sim)
+    (lis::sim-step! sim level)))
+
+(define-test target-holds-settle
+  ;; Tern Station 2,370 km ahead, the nose yawed 90° from each direction.
+  ;; Measured: each settled after 24.9 s, then within 0.025° and 0.0196°/s.
+  (dolist (kind *target-holds*)
+    (let* ((sim (target-sim))
+           (ship (lis::sim-ship sim))
+           (d (target-direction sim kind))
+           (q (lis::ship-state-q ship))
+           (arc (lis::quat-from-axis-angle (lis::vec3-normalize (lis::vec3-cross (nose q) d))
+                                           (lis::deg->rad (angle-between-deg (nose q) d)))))
+      (replace q (lis::quat-mul (lis::quat-mul arc q)
+                                (lis::quat-from-axis-angle (lis::vec3 0 0 1) (/ pi 2))))
+      (lis::vec3-set! (lis::ship-state-w ship) 0d0 0d0 0d0)
+      (true (< 89.999d0 (angle-between-deg (nose q) d) 90.001d0))
+      (false (lis::sim-target-hold! sim kind))
+      ;; The transported roll: a yaw keeps the cab (−z).
+      (let ((cab (lis::quat-rotate q (lis::vec3 0 0 -1))))
+        (target-sim-steps sim 1 1)
+        (true (< (angle-between cab (lis::quat-rotate (lis::controls-target-attitude
+                                                        (lis::sim-controls sim))
+                                                       (lis::vec3 0 0 -1)))
+                 1d-9)
+              "~A" kind))
+      (let ((settled (loop for i from 2 to (* 64 40)
+                           do (target-sim-steps sim 1 1)
+                           when (lis::controls-settled (lis::sim-controls sim))
+                             return (/ i 64d0)))
+            (angle 0d0) (rate 0d0))
+        (true settled "~A" kind)
+        (dotimes (i (* 64 120))
+          (target-sim-steps sim 1 1)
+          (multiple-value-bind (a w) (target-hold-errors sim kind)
+            (setf angle (max angle a) rate (max rate w))))
+        (format t "~&~A settled ~A s, ~,4F°, ~,5F°/s~%" kind settled angle rate)
+        (true (< angle 0.1d0) "~A ~A" kind angle)
+        (true (< rate 0.02d0) "~A ~A" kind rate)
+        (is eq :hold (lis::controls-attitude-mode (lis::sim-controls sim)))))))
+
+(define-test target-hold-promoted
+  ;; Tern Station promoted 1 km ahead, :j2: hold 7 for a quarter orbit,
+  ;; checked each second. Measured: within 0.00016°.
+  (let* ((sim (lis::new-game-sim))
+         (tern (lis::sim-object sim :tern-station))
+         (r-t (lis::make-vec3)) (v-t (lis::make-vec3)))
+    (lis::object-state-into! r-t v-t (lis::make-quat) (lis::make-vec3) tern (lis::sim-t sim))
+    (let* ((u (lis::vec3-normalize v-t))
+           (o (lis::vec3-normalize r-t))
+           (q (lis::quat-from-basis u (lis::vec3-cross (lis::vec3-scale o -1d0) u)
+                                    (lis::vec3-scale o -1d0))))
+      (lis::ship-state-assign! (lis::sim-ship sim)
+                               (lis::make-ship-state (lis::vec3-add-scaled r-t u -1000d0) v-t q
+                                                     (lis::make-vec3) 28000d0))
+      (setf (lis::sim-model sim) :j2)
+      (lis::sim-recheck-objects! sim)
+      (true (lis::object-promoted-p tern))
+      (lis::sim-set-target! sim :tern-station)
+      (multiple-value-bind (d w-t) (target-direction sim :target)
+        (declare (ignore d))
+        (replace (lis::ship-state-w (lis::sim-ship sim)) (lis::quat-rotate (lis::quat-conjugate q) w-t)))
+      (false (lis::sim-target-hold! sim :target))
+      (let ((angle 0d0)
+            (quarter (* 0.25d0 (lis::osculating-period sim))))
+        (loop with end = (+ (lis::sim-t sim) quarter)
+              while (< (lis::sim-t sim) end)
+              do (target-sim-steps sim 64 1)
+                 (setf angle (max angle (target-hold-errors sim :target))))
+        (format t "~&promoted: ~,5F°~%" angle)
+        (true (lis::object-promoted-p tern))
+        (true (< angle 0.1d0) "~A" angle)))))
+
+(define-test target-hold-kinematic
+  ;; At ×1,000 (2 s steps) the nose along the true d̂ (Kepler) at every
+  ;; step's end. Measured: 2.2e-8 rad; 1.7e-6 without the rails drift
+  ;; (decision 144).
+  (let ((sim (target-sim)) (worst 0d0))
+    (false (lis::sim-target-hold! sim :target))
+    (dotimes (i 200)
+      (target-sim-steps sim 1 1000)
+      (setf worst (max worst (lis::deg->rad (target-hold-errors sim :target)))))
+    (format t "~&kinematic: ~,3E rad over ~,1F s~%" worst (- (lis::sim-t sim) (lis::start-t)))
+    (true (< worst 1d-6) "~A" worst)
+    (is eq :hold (lis::controls-attitude-mode (lis::sim-controls sim)))))
+
+(define-test target-hold-transport
+  ;; The direction swept through radial out in 1° steps from prograde to
+  ;; retrograde: the cab never turns more than the nose.
+  (let* ((s (start-state)) (r (lis::ship-state-r s)) (v (lis::ship-state-v s))
+         (c (lis::new-controls))
+         (target-state (lis::controls-target-state c))
+         (last (lis::quat-copy (lis::ship-state-q s)))
+         (q (lis::make-quat)) (w-t (lis::make-vec3)))
+    (multiple-value-bind (p n o) (orbital-frame r v)
+      (declare (ignore n))
+      (loop for k from 1 to 180
+            for angle = (lis::deg->rad k)
+            for d = (lis::vec3-add (lis::vec3-scale p (cos angle)) (lis::vec3-scale o (sin angle)))
+            do (lis::controls-target-state-set! c (lis::vec3-add-scaled r d 1000d0) v 0d0)
+               (lis::target-attitude-into! q w-t :target r v target-state last 0d0)
+               (let ((nose-turn (angle-between (nose last) (nose q)))
+                     (cab-turn (angle-between (lis::quat-rotate last (lis::vec3 0 0 -1))
+                                              (lis::quat-rotate q (lis::vec3 0 0 -1)))))
+                 (true (< (angle-between (nose q) d) 1d-12))
+                 (true (<= cab-turn (+ nose-turn 1d-12)) "~D: ~A ~A" k cab-turn nose-turn))
+               (replace last q)))
+    ;; Swept in the nose's and cab's plane (a pitch): body y stays.
+    (true (< (angle-between (lis::quat-rotate last (lis::vec3 0 1 0))
+                            (lis::quat-rotate (lis::ship-state-q s) (lis::vec3 0 1 0)))
+             1d-9))))
+
+(define-test target-hold-frozen
+  ;; Below 1 m (7, 8) and 0.01 m/s (9, 0) the last attitude, no rate.
+  (let* ((s (start-state)) (r (lis::ship-state-r s)) (v (lis::ship-state-v s))
+         (c (lis::new-controls))
+         (last (lis::quat-from-axis-angle (lis::vec3 1 2 3) 0.7d0)))
+    (dolist (case `((:target ,(lis::vec3-add r (lis::vec3 0.5d0 0.5d0 0)) ,v t)
+                    (:anti-target ,(lis::vec3-add r (lis::vec3 2d0 0 0)) ,v nil)
+                    (:relative-prograde ,r ,(lis::vec3-add v (lis::vec3 0 0.009d0 0)) t)
+                    (:relative-retrograde ,r ,(lis::vec3-add v (lis::vec3 0 0.02d0 0)) nil)))
+      (destructuring-bind (kind r-t v-t frozen) case
+        (lis::controls-target-state-set! c r-t v-t 0d0)
+        (multiple-value-bind (q w-t)
+            (lis::hold-attitude kind r v 0d0 (lis::quat 1 0 0 0) (lis::controls-target-state c) last)
+          (if frozen
+              (progn (is equalp last q "~A" kind)
+                     (is equalp (lis::vec3 0 0 0) w-t))
+              (false (equalp last q) "~A" kind)))))))
+
+(define-test target-hold-keys
+  (let ((sim (lis::new-game-sim)))
+    (flet ((mode () (list (lis::controls-attitude-mode (lis::sim-controls sim))
+                          (lis::controls-hold (lis::sim-controls sim)))))
+      ;; No target: refused, the hold kept.
+      (is equal "NO TARGET" (lis::sim-target-hold! sim :target))
+      (is equal '(:hold :prograde) (mode))
+      (lis::sim-set-target! sim :tern-station)
+      (dolist (kind *target-holds*)
+        (false (lis::sim-target-hold! sim kind))
+        (is equal (list :hold kind) (mode))
+        (is equalp (lis::ship-state-q (lis::sim-ship sim))
+            (lis::controls-target-attitude (lis::sim-controls sim))))
+      ;; Again: rate damping.
+      (lis::sim-target-hold! sim :relative-retrograde)
+      (is eq :rate-damping (first (mode)))
+      ;; Cleared by \: released; an orbital hold is not.
+      (lis::sim-target-hold! sim :target)
+      (lis::sim-set-target! sim nil)
+      (is eq :rate-damping (first (mode)))
+      (lis::sim-set-target! sim :tern-station)
+      (lis::controls-set-hold (lis::sim-controls sim) :normal)
+      (lis::sim-set-target! sim nil)
+      (is equal '(:hold :normal) (mode))
+      ;; A latched target: released with the notice.
+      (lis::sim-set-target! sim :skua-yard-4)
+      (lis::sim-target-hold! sim :anti-target)
+      (setf (lis::object-status (lis::sim-object sim :skua-yard-4)) :latched)
+      (lis::target-check! sim)
+      (false (lis::sim-target sim))
+      (is eq :rate-damping (first (mode)))
+      (is equal '((:target "TARGET LOST: SKUA YARD 4")) (lis::sim-notices sim)))))
+
+(define-test target-hold-cons-nothing
+  (let ((sim (target-sim)))
+    (lis::sim-target-hold! sim :target)
+    (target-sim-steps sim 640 1)
+    (let ((consed (least-bytes-consed (lambda () (target-sim-steps sim 6400 1)) 1)))
+      (true (< consed 1024) "~D bytes" consed))
+    (let ((copy (lis::copy-sim sim)))
+      (true (equalp sim copy))
+      (false (eq (lis::controls-target-state (lis::sim-controls sim))
+                 (lis::controls-target-state (lis::sim-controls copy)))))))

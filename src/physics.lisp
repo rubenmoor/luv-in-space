@@ -522,6 +522,23 @@ R. Conses nothing."
         (setf (aref r i) (+ (* x (aref pv i)) (* y (aref qv i)))
               (aref v i) (+ (* vx (aref pv i)) (* vy (aref qv i))))))))
 
+(defun rails-rate-into! (v r segment)
+  "V, the Kepler velocity rails-state-into! wrote with R on SEGMENT, made the
+rate of SEGMENT's position: × (n + Ṁ) / n, plus Ω̇ ẑ × r and ω̇ ĥ × r (J2's
+secular rates move the position ~11 m/s from v in LEO); V. Conses nothing."
+  (declare (optimize speed) (type vec3 v r) (type rails-segment segment))
+  (let* ((orbit (rails-segment-orbit segment))
+         (a (abs (/ (orbit-q orbit) (- 1 (orbit-e orbit)))))
+         (n (sqrt (the (double-float 0d0) (/ (orbit-mu orbit) (* a a a)))))
+         (raan-rate (rails-segment-raan-rate segment))
+         (h (make-vec3)) (c (make-vec3)))
+    (declare (dynamic-extent h c) (type double-float a n raan-rate))
+    (vec3-normalize! h (vec3-cross! h r v))
+    (vec3-scale! v v (/ (rails-segment-mean-rate segment) n))
+    (incf (aref v 0) (* (- raan-rate) (aref r 1)))
+    (incf (aref v 1) (* raan-rate (aref r 0)))
+    (vec3-add-scaled! v v (vec3-cross! c h r) (rails-segment-argp-rate segment))))
+
 (declaim (inline rails-segment-at))
 
 (defun rails-segment-at (rails time)

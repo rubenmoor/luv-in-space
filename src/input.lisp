@@ -51,6 +51,8 @@
     (:|1| . :hold-prograde) (:|2| . :hold-retrograde)
     (:|3| . :hold-normal) (:|4| . :hold-anti-normal)
     (:|5| . :hold-radial-out) (:|6| . :hold-radial-in)
+    (:|7| . :hold-target) (:|8| . :hold-anti-target)
+    (:|9| . :hold-relative-prograde) (:|0| . :hold-relative-retrograde)
     (:|.| . :warp-up) (:|,| . :warp-down) (:/ . :warp-reset) (:p . :pause)
     (:c . :camera-frame) (:home . :camera-reset)
     (:m . :map) (:tab . :map-focus) (:page-up . :map-zoom-in) (:page-down . :map-zoom-out)
@@ -71,7 +73,8 @@
 (defparameter *flight-commands*
   '(:fine :throttle-full :throttle-cut :rate-damping :inertial-hold
     :hold-prograde :hold-retrograde :hold-normal :hold-anti-normal
-    :hold-radial-out :hold-radial-in :grapple :transfer)
+    :hold-radial-out :hold-radial-in :hold-target :hold-anti-target
+    :hold-relative-prograde :hold-relative-retrograde :grapple :transfer)
   "Ignored while paused or lost (decision 81, decision 113); the rest always act (decision 88: Warp keys while paused).")
 
 (defparameter *throttle-ramp-rate* 0.5d0 "Lever per real second, Shift-left / Control-left; decision 81.")
@@ -104,6 +107,12 @@
       (:hold-anti-normal (controls-set-hold controls :anti-normal))
       (:hold-radial-out (controls-set-hold controls :radial-out))
       (:hold-radial-in (controls-set-hold controls :radial-in))
+      (:hold-target (key-refusal! clock :target (sim-target-hold! sim :target)))
+      (:hold-anti-target (key-refusal! clock :target (sim-target-hold! sim :anti-target)))
+      (:hold-relative-prograde
+       (key-refusal! clock :target (sim-target-hold! sim :relative-prograde)))
+      (:hold-relative-retrograde
+       (key-refusal! clock :target (sim-target-hold! sim :relative-retrograde)))
       (:warp-up (clock-warp-up clock sim))
       (:warp-down (clock-warp-down clock))
       (:warp-reset (clock-warp-reset clock))
@@ -181,7 +190,7 @@ RCS-off message for a flight key above ×4."
 
 (defun window-title ()
   "The window's title: the main keys by QWERTY position (decision 81)."
-  "Luv in Space · WASD QE turn · HN IK JL move · Shift/Ctrl throttle · Z/X full/cut · T damp · R 1–6 hold · F fine · . , / warp · P pause · C/Home camera · M map · G grapple · B refuel · Y ack · [ ] \\ target · Esc quit")
+  "Luv in Space · WASD QE turn · HN IK JL move · Shift/Ctrl throttle · Z/X full/cut · T damp · R 1–6 hold · 7–0 target holds · F fine · . , / warp · P pause · C/Home camera · M map · G grapple · B refuel · Y ack · [ ] \\ target · Esc quit")
 
 ;; Runs on the canvas thread: only flag the quit; STOP runs on the caller's.
 (defun handle-event (game event)

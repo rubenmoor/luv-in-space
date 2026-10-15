@@ -439,6 +439,24 @@ angular momentum compared in inertial axes."
   "A 400 km circular orbit at 51.6° from the start date."
   (lis::make-elliptic-orbit lis::+mu-earth+ 6778d3 0d0 (deg 51.6) (deg 30) 0d0 0d0 (lis::start-t)))
 
+(define-test rails-rate
+  ;; decision 144: the rails position's rate against its centred difference
+  ;; over ±1/64 s (error ~jerk ε²/6, 1e-6 m/s); the Kepler v metres per
+  ;; second away.
+  (let* ((orbit (lis::make-elliptic-orbit lis::+mu-earth+ 6900d3 0.01d0 (deg 51.6) (deg 30)
+                                          (deg 40) 0d0 (lis::start-t)))
+         (time (+ (lis::start-t) 1000d0))
+         (segment (first (lis::make-rails orbit (lis::start-t))))
+         (eps (/ 1d0 64)))
+    (multiple-value-bind (r v) (rails-point (list segment) time)
+      (let* ((rate (lis::rails-rate-into! (lis::vec3-copy v) r segment))
+             (difference (lis::vec3-scale (lis::vec3-sub (rails-point (list segment) (+ time eps))
+                                                         (rails-point (list segment) (- time eps)))
+                                          (/ (* 2 eps)))))
+        (true (< (lis::vec3-norm (lis::vec3-sub rate difference)) 1d-5)
+              "~A" (lis::vec3-norm (lis::vec3-sub rate difference)))
+        (true (< 1d0 (lis::vec3-norm (lis::vec3-sub rate v))) "~A" (lis::vec3-norm (lis::vec3-sub rate v)))))))
+
 (define-test rails-j2-node
   (let* ((orbit (leo-51.6))
          (t0 (lis::start-t))

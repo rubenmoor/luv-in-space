@@ -284,6 +284,7 @@ digits inside the 1–6 range, the rest by name."
     (flet ((token-p (string) (member string tokens :test #'string=)))
       (case key
         ((:|1| :|2| :|3| :|4| :|5| :|6|) (token-p "1–6"))
+        ((:|7| :|8| :|9| :|0|) (token-p "7–0"))
         (:shift-left (token-p "Shift"))
         (:control-left (token-p "Ctrl"))
         (:escape (token-p "Esc"))
@@ -701,3 +702,25 @@ digits inside the 1–6 range, the rest by name."
         (dolist (key '(:] :[ :\\))
           (input-tap game key)
           (is eq :k-17 (target game) "~A" key))))))
+
+(define-test input-target-hold-keys
+  ;; 7–0 (decision 114): "NO TARGET" without one; with one each engages,
+  ;; again releases; ignored while paused.
+  (let ((game (input-game)))
+    (input-tap game :|7|)
+    (is equal '(:hold :prograde) (input-attitude game))
+    (is equal '("NO TARGET") (lis::clock-messages (input-clock game)))
+    (input-tap game :])
+    (loop for key in '(:|7| :|8| :|9| :|0|)
+          for kind in '(:target :anti-target :relative-prograde :relative-retrograde)
+          do (input-tap game key)
+             (is equal (list :hold kind) (input-attitude game)))
+    (input-tap game :|0|)
+    (is eq :rate-damping (first (input-attitude game)))
+    (input-tap game :|7|)
+    (input-tap game :\\)
+    (is eq :rate-damping (first (input-attitude game)))
+    (input-tap game :])
+    (input-tap game :p)
+    (input-tap game :|8|)
+    (is eq :rate-damping (first (input-attitude game)))))

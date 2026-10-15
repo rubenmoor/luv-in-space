@@ -5304,7 +5304,7 @@ INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, crea
 ## Done when
 - Tests pass; `nix build` and `scripts/test` pass.
 - `docs/design.md` "The autopilot" (measurement and trims as built); `docs/architecture.md` "Testing" gains "Autopilot" with every test of this plan and its bound.', '2026-10-15T07:42:42Z', '2026-10-15T15:07:11Z', 173, 0);
-INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (206, 26, 'Plan 26''s Done when: orbit manoeuvres by autopilot headless and live', 'work', 'open', NULL, NULL, 'The "Done when" of `plan 26: Autopilot: planner, orbit manoeuvres, execution and safety`, after its five pieces (`task 201` … `task 205`). Files: whatever the check finds; `docs/architecture.md`, `docs/design.md`, `AGENTS.md`.
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (206, 26, 'Plan 26''s Done when: orbit manoeuvres by autopilot headless and live', 'work', 'done', NULL, '2026-10-15, docs/architecture.md (Testing: plan 26''s tests 1.13 s together, scripts/test 16.2–16.8 s wall, the live run); headless coverage complete, live O/Return/engage/warp/burns/completion, Backspace and W checked; follow-up task 262 for the test budget', 'The "Done when" of `plan 26: Autopilot: planner, orbit manoeuvres, execution and safety`, after its five pieces (`task 201` … `task 205`). Files: whatever the check finds; `docs/architecture.md`, `docs/design.md`, `AGENTS.md`.
 
 ## What
 - Headless: confirm the tests plan each `milestone 3` orbit manoeuvre (circularise, set Ap, set Pe, change orbit with and without a plane change, change plane by inclination and to the target''s plane) from the start orbit, fly it through the clock and meet the goal within `decision 117: Autopilot in milestone 3: planning jobs, goal measures, burns, execution rules in the step, trims`''s tolerances with Δv within 3 % of impulsive; refusals for the 150 km floor and the propellant; every abort rule firing at its step. Add a missing case.
@@ -5314,7 +5314,7 @@ INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, crea
 - Small gaps fixed here; larger ones a follow-up task in this plan.
 
 ## Done when
-- `nix build` and `scripts/test` pass; the docs above match what was built.', '2026-10-15T07:42:42Z', NULL, 173, 0);
+- `nix build` and `scripts/test` pass; the docs above match what was built.', '2026-10-15T07:42:42Z', '2026-10-15T15:18:42Z', 173, 0);
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (207, 27, 'The Lambert solver', 'work', 'open', NULL, NULL, 'Piece 1 of `plan 27: Autopilot: rendezvous, phasing, clear approaches and station-keeping` (read its "The Lambert solver" and "Pieces" sections). Follows `decision 119: Rendezvous planning in milestone 3: Lambert, search, aim and stop points, checks, shooting, burns`. Files: `src/orbits.lisp`, `tests/orbits.lisp`, `docs/architecture.md`.
 
 ## What
@@ -6218,6 +6218,15 @@ INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, crea
 
 ## Done when
 - `nix build` and `scripts/test` pass; `scripts/test` ≤ ~15 s wall over three runs, recorded.', '2026-10-15T13:06:07Z', '2026-10-15T13:35:19Z', 200, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (262, 26, 'Bring scripts/test back under its ~15 s budget after plan 26', 'work', 'open', NULL, NULL, '`scripts/test` measured 16.2–16.8 s wall over three runs at load average ~2.3 after `plan 26: Autopilot: planner, orbit manoeuvres, execution and safety` (`task 206`, 2026-10-15), against its ~15 s budget (`docs/architecture.md` "Testing", "Time budget"; `task 261` measured 14.7–15.0 s at load ~2 before plan 26).
+
+## What
+- Measure each test''s time in one image (load `luv-in-space/tests`, run each test twice with `parachute:test … :report ''parachute:quiet`, time the second round) and find the largest; plan 26''s 32 autopilot tests are 1.13 s together, the most `autopilot-flown-through-clock` 0.26 s, `autopilot-replan` 0.21 s, `autopilot-trim` 0.15 s; `render-frames` was 2.65 s.
+- Shorten the costliest runs without losing what they check (as `task 258` and `task 261` did: fewer orbits, coarser sampling, sharing setup), each change''s reason in the test''s comment; or move runs to `scripts/test-slow` if `task 217: Approach and rendezvous scripts and scripts/test-slow` has built it.
+- Record the new wall times (three runs, with load average) in `docs/architecture.md` "Testing", "Time budget".
+
+## Done when
+- `scripts/test` near ~15 s wall at load average ~2; `nix build` and `scripts/test` pass; "Testing" updated.', '2026-10-15T15:18:07Z', NULL, 206, 0);
 
 INSERT INTO decision (id, subject, status, options, body, answer, reason, created_at, closed_at, created_by_task, signoff, kind, decided_by_task, consequences) VALUES (1, 'How the game consumes luv', 'answered', '[]', 'Findings of `task 17: Build and run luv''s programs and test suite; record the runs` (docs/luv-capabilities.md, Packaging and Runs).
 - luv''s flake exports apps, devShells, packages and lib; lib has only environmentFor, which returns everything the packaging needs (pkgs, lisp, applicationEnvironment/Packages, developmentEnvironmentHook, slynkSource, swashPackage, …). No overlays.
@@ -6636,6 +6645,7 @@ INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, b
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (208, 203, '2026-10-15T14:19:51Z', '2026-10-15T14:37:22Z', 'done', NULL, 0, '60a09018adac67c30e15c03a847dfe6c3dd611f6', 'claude-opus-5-5[1m]', '3dcaa1f6-7057-4958-a444-eb35a5289f49', 104, 162, 81465, 17947398, 303825, 7.6500276000000023, 2373073);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (209, 204, '2026-10-15T14:37:22Z', '2026-10-15T14:52:26Z', 'done', NULL, 0, '8681457f0d5cbe165bc916d810c2edbd9217e023', 'claude-opus-5-5[1m]', '8594a7c2-8c09-4b8e-9b9c-ee2a92240848', 54, 100, 66894, 8672252, 203605, 4.7015704000000005, 2373073);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (210, 205, '2026-10-15T14:52:26Z', '2026-10-15T15:07:26Z', 'done', NULL, 0, 'c38e80c6923c71dee1144e207d92872495eb2011', 'claude-opus-5-5[1m]', 'a9e9099a-7056-4732-b979-73f2c79ddb35', 57, 108, 72516, 9273824, 227476, 5.1253247999999987, 2373073);
+INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (211, 206, '2026-10-15T15:07:26Z', '2026-10-15T15:18:51Z', 'done', NULL, 0, '5e577060477cd5a81959b30175febd77fdf179e4', 'claude-opus-5-5[1m]', '0fbe4356-d61b-4eaf-a0f7-92ea4efe1602', 68, 130, 23293, 5811324, 111393, 2.5197888, 2373073);
 
 INSERT INTO task_decision (task_id, decision_id) VALUES (44, 28);
 INSERT INTO task_decision (task_id, decision_id) VALUES (44, 45);

@@ -123,6 +123,9 @@ not below t or the sim is lost. Conses nothing; OUT."
    (impostor-corners :initarg :impostor-corners :reader frame-renderer-impostor-corners)
    (ship :initarg :ship :reader frame-renderer-ship
          :documentation "The Mule's static resources (src/meshes.lisp).")
+   (ribbon :initform (make-ribbon) :reader frame-renderer-ribbon
+           :documentation "The map's orbit points and instances (src/ribbons.lisp).")
+   (ribbon-corners :initarg :ribbon-corners :reader frame-renderer-ribbon-corners)
    (label :initarg :label :reader frame-renderer-label)
    (label-count :initarg :label-count :reader frame-renderer-label-count)
    (post :initarg :post :reader frame-renderer-post)
@@ -167,6 +170,7 @@ not below t or the sim is lost. Conses nothing; OUT."
      :star-corners (vertex-buffer renderer (star-corners) "star corners")
      :star-count (/ (length stars) +star-instance-floats+)
      :impostor-corners (vertex-buffer renderer (impostor-corners) "impostor corners")
+     :ribbon-corners (vertex-buffer renderer (ribbon-corners) "ribbon corners")
      :label (vertex-buffer renderer label "label")
      :label-count (/ (length label) +overlay-vertex-floats+)
      :post (vertex-buffer renderer (post-vertices) "post")
@@ -178,6 +182,7 @@ not below t or the sim is lost. Conses nothing; OUT."
     (stars-pipeline renderer layout +hdr-format+)
     (impostor-pipelines renderer layout +hdr-format+)
     (reinitialize-instance renderer :ship (make-ship-gpu renderer +hdr-format+))
+    (ribbon-pipeline renderer layout +hdr-format+)
     (live-pipeline renderer :quads layout (overlay-vertex-buffers) :format +hdr-format+
                    :depth-stencil '(:format :depth32-float :depth-write-enabled nil
                                     :depth-compare :always))
@@ -186,12 +191,13 @@ not below t or the sim is lost. Conses nothing; OUT."
     renderer))
 
 (defstruct frame-slot
-  "A target's frame block, its scene bind group, its ship-slot, and the
-bind groups sampling the post levels in POST-VIEWS."
-  buffer bind-group ship (post-views '()) (post-bind-groups '()))
+"A target's frame block, its scene bind group, its ship-slot, its ribbon
+instance buffer, and the bind groups sampling the post levels in POST-VIEWS."
+  buffer bind-group ship ribbon (post-views '()) (post-bind-groups '()))
 
 (defun release-frame-resources (slot)
   (release-ship-slot (frame-slot-ship slot))
+  (luv:destroy (frame-slot-ribbon slot))
   (mapc #'luv:destroy (frame-slot-post-bind-groups slot))
   (luv:destroy (frame-slot-bind-group slot))
   (luv:destroy (frame-slot-buffer slot)))
@@ -222,7 +228,9 @@ again once it is acquired (luv's canvas-frame-resource-cache)."
                                               (frame-renderer-earth-view renderer)
                                               (frame-renderer-earth-sampler renderer)
                                               (frame-renderer-earth-coarse-view renderer))
-                :ship (make-ship-target-slot renderer (frame-renderer-ship renderer) buffer)))))))
+                :ship (make-ship-target-slot renderer (frame-renderer-ship renderer) buffer)
+                :ribbon (make-ribbon-buffer (renderer-device renderer)
+                                            (frame-renderer-ribbon renderer))))))))
 
 (defun post-bind-groups (renderer slot views)
   "SLOT's bind groups sampling VIEWS, remade when the post targets were."
@@ -272,7 +280,7 @@ means luv rebuilt the swapchain: forget its old textures first."
 (defun frame-uniforms! (renderer extent state camera exposure)
   "The frame block: clip rows, the halo's colours, the Sun's direction and
 (1 AU / d)^2, clip units per pixel, Earth's body-fixed matrix, the post and
-stars vec4s, the impostors of the Sun, the Moon, Earth and its halo (centres
+stars vec4s, the ribbon's width and radiance, the impostors of the Sun, the Moon, Earth and its halo (centres
 relative to the eye, decision 5: Precision of positions). Returns the block
 and the four draw forms."
   (destructuring-bind (width height) extent
@@ -289,7 +297,8 @@ and the four draw forms."
         (setf (aref data 23) (coerce (expt (/ +au+ d) 2) 'single-float)))
       (setf (aref data 24) (coerce (/ 2 width) 'single-float)
             (aref data 25) (coerce (/ 2 height) 'single-float)
-            (aref data 26) 0f0 (aref data 27) 0f0)
+            (aref data 26) (coerce *ribbon-width-px* 'single-float)
+            (aref data 27) (coerce *ribbon-radiance* 'single-float))
       (dotimes (row 3)
         (dotimes (k 3)
           (setf (aref data (+ 28 (* 4 row) k)) (coerce (aref matrix (+ (* 3 row) k)) 'single-float)))
@@ -308,9 +317,9 @@ and the four draw forms."
   "The frame into TARGET of EXTENT (width height) from the render STATE seen
 by CAMERA, in three stages (decision 76: Frame passes, radiance scale and
 exposure): the scene pass into the HDR target (the stars, the Sun, the
-Moon, Earth, Earth's halo, the Mule); the bloom chain; one pass on TARGET, the tone
-map at EXPOSURE and then the overlay. VIEW: :outside or :map."
-  (declare (ignorable view))
+Moon, Earth, Earth's halo, the Mule, in :map the orbit's ribbon); the bloom
+chain; one pass on TARGET, the tone map at EXPOSURE and then the overlay.
+VIEW: :outside or :map."
   (let* ((slot (frame-resources renderer target))
          (views (post-views renderer extent))
          (bind-groups (post-bind-groups renderer slot views))
@@ -344,6 +353,10 @@ map at EXPOSURE and then the overlay. VIEW: :outside or :map."
                   do (draw-impostor pass renderer role form bind-group corners)))
           (encode-ship pass renderer (frame-renderer-ship renderer) (frame-slot-ship slot)
                        state (frame-renderer-eye renderer))
+          (when (eq view :map)
+            (encode-ribbon pass renderer bind-group (frame-renderer-ribbon renderer)
+                           (frame-slot-ribbon slot) (frame-renderer-ribbon-corners renderer)
+                           state camera (frame-renderer-eye renderer) (second extent)))
           (let ((quads (frame-renderer-test-quads renderer)))
             (when quads (draw pass :quads (car quads) (cdr quads))))
           (luv:end-pass pass))

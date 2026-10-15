@@ -7,7 +7,8 @@
 
 ;; One uniform block for every pipeline: clip rows for camera-relative
 ;; points, the halo's day colour (w: its radiance), the direction to the Sun
-;; (w: (1 AU / d)^2), screen (xy: clip units per pixel), the rows of Earth's
+;; (w: (1 AU / d)^2), screen (xy: clip units per pixel; z, w: the ribbon's
+;; width in pixels and radiance), the rows of Earth's
 ;; body-fixed matrix (ICRF -> body-fixed), post (exposure, bloom strength,
 ;; sRGB encoding 0 or 1), stars (radiance limit, sigma, sigma per magnitude,
 ;; sigma max; src/stars.lisp), per impostor four vec4s (centre and radius;
@@ -467,6 +468,51 @@
          (edge 0.00033546262))
     (set-output color (vec4 (* radiance (/ (max (- g edge) 0.0) (- 1.0 edge))) 0.0))))
 
+;;; The map's ribbon (src/ribbons.lisp; decision 84: Map ribbons and
+;;; markers: osculating orbit, adaptive segments, overlay markers and
+;;; visibility): one segment per instance, FROM and TO relative to the eye,
+;;; a 6-vertex quad (CORNER: along 0 or 1, across ±1) SCREEN.z px wide plus
+;;; a 1 px fringe; an endpoint behind the near plane moved along the segment
+;;; to it, a segment wholly behind collapsed. ACROSS: pixels from the centre line.
+(define-frame-shader ribbon-vertex
+    (:stage :vertex
+     :inputs ((corner :vec2 :location 0)
+              (from :vec4 :location 1)
+              (to :vec4 :location 2)
+              (tint :vec4 :location 3))
+     :outputs ((clip-position :vec4 :built-in :position)
+               (across :float :location 0)
+               (shade :vec3 :location 1)))
+  (let* ((a0 (vec4 (dot clip-x from) (dot clip-y from) (dot clip-z from) (dot clip-w from)))
+         (b0 (vec4 (dot clip-x to) (dot clip-y to) (dot clip-z to) (dot clip-w to)))
+         (limit (* (swizzle clip-z :w) 1.001))
+         (wa (swizzle a0 :w)) (wb (swizzle b0 :w))
+         (a (if (< wa limit) (mix a0 b0 (/ (- limit wa) (- wb wa))) a0))
+         (b (if (< wb limit) (mix b0 a0 (/ (- limit wb) (- wa wb))) b0))
+         (pixels (swizzle screen :xy))
+         (sa (/ (/ (swizzle a :xy) (swizzle a :w)) pixels))
+         (sb (/ (/ (swizzle b :xy) (swizzle b :w)) pixels))
+         (along (normalize (+ (- sb sa) (vec2 1e-6 0.0))))
+         (normal (vec2 (- 0.0 (swizzle along :y)) (swizzle along :x)))
+         (half (+ (* 0.5 (swizzle screen :z)) 0.5))
+         (p (mix a b (swizzle corner :x)))
+         (offset (* normal (* (swizzle corner :y) half (swizzle p :w)) pixels))
+         (visible (if (and (< wa limit) (< wb limit)) 0.0 1.0)))
+    (set-output clip-position (* (vec4 (+ (swizzle p :xy) offset) (swizzle p :zw)) visible))
+    (set-output across (* (swizzle corner :y) half))
+    (set-output shade (swizzle tint :xyz))))
+
+;; Additive through premultiplied alpha: alpha 0. Radiance SHADE x SCREEN.w
+;; over the exposure, so the line reads the same at any exposure; the
+;; fringe's coverage antialiases the edges.
+(define-frame-shader ribbon-fragment
+    (:stage :fragment
+     :inputs ((across :float :location 0)
+              (shade :vec3 :location 1))
+     :outputs ((color :vec4 :location 0)))
+  (let* ((coverage (clamp (- (+ (* 0.5 (swizzle screen :z)) 0.5) (abs across)) 0.0 1.0)))
+    (set-output color (vec4 (* shade (/ (* (swizzle screen :w) coverage) (swizzle post :x))) 0.0))))
+
 ;; ANCHOR is a point in clip space, OFFSET a displacement in pixels.
 (define-frame-shader overlay-vertex
     (:stage :vertex
@@ -628,6 +674,10 @@ angle in degrees), weighted by a Gaussian of SIGMA texels, normalised."
   (ship-glow-vertex))
 (defmethod shader-specification-for ((role (eql :ship-glow)) (stage (eql :fragment)))
   (ship-glow-fragment))
+(defmethod shader-specification-for ((role (eql :ribbon)) (stage (eql :vertex)))
+  (ribbon-vertex))
+(defmethod shader-specification-for ((role (eql :ribbon)) (stage (eql :fragment)))
+  (ribbon-fragment))
 (defmethod shader-specification-for ((role (eql :quads)) (stage (eql :vertex)))
   (overlay-vertex))
 (defmethod shader-specification-for ((role (eql :quads)) (stage (eql :fragment)))

@@ -566,6 +566,83 @@ at the background, neither black nor white-out."
   (lis::capture-game-state game png :frames 1)
   (is eq :outside (lis::game-view game)))
 
+;; The map's ribbon (decision 84: Map ribbons and markers: osculating
+;; orbit, adaptive segments, overlay markers and visibility).
+
+(defun map-camera-fn (elevation)
+  "A camera-fn: the map's opening frame at ELEVATION degrees above the orbit plane."
+  (lambda (camera state)
+    (let ((view (lis::new-map-view)))
+      (lis::map-view-open! view state)
+      (setf (lis::map-view-elevation view) (deg elevation))
+      (lis::map-camera-update! camera view state nil))))
+
+(defun ribbon-pixel-p (rgb)
+  "Cyan: green and blue each 60 or more above red."
+  (destructuring-bind (red green blue) rgb
+    (and (>= (- green red) 60) (>= (- blue red) 60))))
+
+(defun orbit-pixels (state camera width height)
+  "Pixels (x y) of the osculating orbit's points in front of the eye, as two
+lists: those seen and those behind Earth from the eye (double, CPU)."
+  (let* ((orbit (lis::state->orbit (lis::render-state-r state) (lis::render-state-v state)
+                                   lis::+mu-earth+ (lis::render-state-t state)))
+         (eye (lis::camera-offset camera))
+         (seen '()) (hidden '()))
+    (dotimes (k 2048 (values seen hidden))
+      (let* ((p (conic-point orbit (* 2 pi (/ k 2048))))
+             (d (lis::vec3-sub p eye))
+             (s (max 0d0 (min 1d0 (/ (- (lis::vec3-dot eye d)) (lis::vec3-dot d d)))))
+             (behind (< (lis::vec3-norm (lis::vec3-add-scaled eye d s)) lis::+radius-earth+)))
+        (multiple-value-bind (x y w) (project camera d width height)
+          (when (and (plusp w) (<= 0 x (1- width)) (<= 0 y (1- height)))
+            (if behind (push (list x y) hidden) (push (list x y) seen))))))))
+
+(defun near-any-p (x y points radius)
+  (some (lambda (p) (<= (+ (expt (- (first p) x) 2) (expt (- (second p) y) 2)) (* radius radius)))
+        points))
+
+(defun ribbon-checks (game png width height)
+  "The start orbit's ring on the map's opening frame; Earth hiding its far
+side by depth. Edge-on (el 0) both halves fall on one line, so the depth
+check looks from el 10 deg, where the far half lies apart."
+  (flet ((capture (camera-fn)
+           (multiple-value-bind (path w h pixels format)
+               (lis::capture-game-state game png :sim (lis::new-game-sim) :view :map :frames 1
+                                                 :camera-fn camera-fn)
+             (declare (ignore path w h))
+             (values pixels format)))
+         (count-pixels (test)
+           (loop for y below height
+                 sum (loop for x below width count (funcall test x y (+ x 0.5) (+ y 0.5))))))
+    (flet ((cyan (pixels format test)
+             (count-pixels (lambda (x y cx cy)
+                             (and (ribbon-pixel-p (pixel-rgb pixels format width x y))
+                                  (funcall test cx cy))))))
+      (let* ((camera-fn (map-camera-fn 30))
+             (state (sim-render-state (lis::new-game-sim)))
+             (camera (posed-camera camera-fn state))
+             (seen (orbit-pixels state camera width height)))
+        (flet ((on-ring (x y) (near-any-p x y seen 2)))
+          ;; Cyan pixels within 2 px of the ring: the first measured frame,
+          ;; 631 (lavapipe), x 0.5; none with the ribbon's radiance at 0.
+          (multiple-value-bind (pixels format) (capture camera-fn)
+            (let ((n (cyan pixels format #'on-ring)))
+              (true (>= n 315) "ribbon: ~D cyan pixels on the ring" n)))
+          (multiple-value-bind (pixels format)
+              (with-canvas-values (game (lis::*ribbon-radiance* 0d0)) (capture camera-fn))
+            (is = 0 (cyan pixels format #'on-ring)))))
+      (let* ((camera-fn (map-camera-fn 10))
+             (state (sim-render-state (lis::new-game-sim)))
+             (camera (posed-camera camera-fn state)))
+        (multiple-value-bind (seen hidden) (orbit-pixels state camera width height)
+          (flet ((far-side (x y) (and (near-any-p x y hidden 1) (not (near-any-p x y seen 3)))))
+            (multiple-value-bind (pixels format) (capture camera-fn)
+              (true (> (count-pixels (lambda (x y cx cy) (declare (ignore x y)) (far-side cx cy))) 100))
+              (true (> (cyan pixels format (lambda (x y) (near-any-p x y seen 2))) 0))
+              (is = 0 (cyan pixels format #'far-side)))))))
+    (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))))
+
 (defun ship-checks (game png width height)
   (flet ((capture (sim camera-fn)
            (nth-value 3 (lis::capture-game-state game png :sim sim :frames 1 :camera-fn camera-fn))))
@@ -841,6 +918,7 @@ at the background, neither black nor white-out."
            (ship-checks game png width height)
            (light-checks game png width height)
            (map-checks game png width height)
+           (ribbon-checks game png width height)
            (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))
            ;; Resizes replace the swapchain's textures; what the renderer kept
            ;; for the old ones goes, so its per-target state stays bounded.

@@ -209,3 +209,52 @@ segment count. Conses nothing."
                   (setf (aref out (+ o 8)) cr (aref out (+ o 9)) cg (aref out (+ o 10)) cb))
               (setf (aref out (+ o 11)) 1f0))))))
     count))
+
+;;; The GPU half: the :ribbon live pipeline and the draw in the map's scene
+;;; pass, after the meshes (docs/architecture.md "Rendering precision").
+
+(defparameter *ribbon-width-px* 2.0d0 "The line's width in pixels; decision 84.")
+(defparameter *ribbon-radiance* 1.0d0 "Times the colour, over the exposure; decision 84.")
+
+(defun ribbon-corners ()
+  "The 6-vertex quad: along 0 or 1, across ±1."
+  (map '(simple-array single-float (*)) (lambda (x) (float x 1f0)) '(0 -1 1 -1 1 1 0 -1 1 1 0 1)))
+
+(defun ribbon-vertex-buffers ()
+  `((:array-stride 8 :attributes ((:shader-location 0 :offset 0 :format :float32x2)))
+    (:array-stride ,(* 4 +ribbon-instance-floats+) :step-mode :instance
+     :attributes ((:shader-location 1 :offset 0 :format :float32x4)
+                  (:shader-location 2 :offset 16 :format :float32x4)
+                  (:shader-location 3 :offset 32 :format :float32x4)))))
+
+(defun ribbon-pipeline (renderer layout format)
+  "The :ribbon live pipeline into FORMAT: additive, depth compared :greater,
+not written (decision 4: Depth strategy)."
+  (live-pipeline renderer :ribbon layout (ribbon-vertex-buffers)
+                 :format format :blend :premultiplied-alpha
+                 :depth-stencil '(:format :depth32-float :depth-write-enabled nil
+                                  :depth-compare :greater)))
+
+(defun make-ribbon-buffer (device ribbon)
+  "A target's instance buffer for RIBBON's capacity."
+  (luv:create device (luv:make-buffer-descriptor
+                      :label "ribbon" :size (* 4 (length (ribbon-instances ribbon)))
+                      :usage '(:vertex :copy-dst))))
+
+(defun encode-ribbon (pass renderer bind-group ribbon buffer corners state camera eye height)
+  "The ship's osculating orbit about Earth into the open scene PASS: points
+and instances for the eye EYE (relative to Earth's centre) and a frame
+HEIGHT px tall, written to BUFFER. Nothing for a state without an orbit
+plane (r × v = 0). state->orbit conses its struct."
+  (let ((r (render-state-r state)) (v (render-state-v state)))
+    (when (> (vec3-norm (vec3-cross r v)) (* 1d-9 (vec3-norm r) (vec3-norm v)))
+      (orbit-ribbon-points! ribbon (state->orbit r v +mu-earth+ (render-state-t state))
+                            eye (camera-focal-px camera height))
+      (let ((count (orbit-ribbon-instances! ribbon eye)))
+        (when (plusp count)
+          (luv:write-buffer buffer (ribbon-instances ribbon))
+          (luv:set-pipeline pass (renderer-pipeline renderer :ribbon))
+          (luv:set-bind-group pass 0 bind-group)
+          (luv:set-vertex-buffer pass 0 corners)
+          (luv:set-vertex-buffer pass 1 buffer)
+          (luv:draw pass 6 count))))))

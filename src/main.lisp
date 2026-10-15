@@ -32,6 +32,8 @@
          :documentation "The sim's loss the frame last saw, nil while flying (decision 86).")
    (death-time :initform nil :accessor game-death-time
                :documentation "The real time (game-real-time) the frame first saw the loss.")
+   (death-elapsed :initform nil :accessor game-death-elapsed
+                  :documentation "nil, or the seconds since the death the glow shows (captures).")
    (readout-p :initarg :readout :initform t :accessor game-readout-p
               :documentation "Whether the frame draws the readout (decision 85).")
    (input :initform (make-input) :reader game-input
@@ -149,7 +151,8 @@ snapped. GAME."
 death-glow-radiance ÷ EXPOSURE, so it reads the same lit or in shadow."
   (let* ((loss (game-loss game))
          (radiance (if loss
-                       (death-glow-radiance loss (- (game-real-time game) (game-death-time game)))
+                       (death-glow-radiance loss (or (game-death-elapsed game)
+                                                     (- (game-real-time game) (game-death-time game))))
                        0d0))
          (emissive (render-state-ship-emissive (game-render-state game))))
     (loop for i from 0 for shift in '(16 8 0)
@@ -167,7 +170,8 @@ the outside view's distance."
                   exposure (game-view game)
                   (and (game-readout-p game)
                        (readout-lines (game-render-state game) (game-clock game)
-                                      (game-real-time game))))))
+                                      (game-real-time game)))
+                  (and (game-loss game) (lost-panel-lines (game-loss game))))))
 
 (defun game-frame! (game elapsed)
   "One frame's simulation, ELAPSED real seconds: the real time, the input,

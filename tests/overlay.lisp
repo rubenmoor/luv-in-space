@@ -392,3 +392,51 @@ top, or nil."
                    "~A s" seconds))
     (dolist (seconds '(0 1 2))
       (is = 0d0 (lis::death-glow-radiance moon seconds)))))
+
+;;; The LOST panel (decision 86: Death view, LOST panel and restart in milestone 2)
+
+(define-test lost-panel-lines
+  (let* ((r0 (+ lis::+radius-earth+ 1000d3))
+         (sim (fly-until-lost (crash-sim (lis::vec3 0 (- r0) 0) (lis::vec3 0 0 0))
+                              1000 (+ (lis::start-t) 1000)))
+         (loss (lis::sim-loss sim))
+         (lines (lis::lost-panel-lines loss))
+         (texts (readout-texts lines)))
+    (true loss)
+    (is equal (list "LOST: CRASH"
+                    (format nil "EARTH  ~A" (lis::format-utc (lis::loss-time loss)))
+                    (format nil "SPEED ~A" (lis::format-speed (lis::loss-speed loss)))
+                    (format nil "LAT ~A° ~A  LON ~A° ~A"
+                            (lis::format-fixed (abs (lis::rad->deg (lis::loss-latitude loss))) 2)
+                            (if (minusp (lis::loss-latitude loss)) "S" "N")
+                            (lis::format-fixed (abs (lis::rad->deg (lis::loss-longitude loss))) 2)
+                            (if (minusp (lis::loss-longitude loss)) "W" "E"))
+                    ""
+                    "RETURN  RESTART FROM START"
+                    "N       NEW GAME")
+        texts)
+    (let ((title (first (first lines))))
+      (is = #xFF3030 (lis::run-colour title))
+      (is eq :inverted (lis::run-style title))
+      (false (lis::run-flash title)))
+    (is equal '(#xE8E4D8 #x8A8A80) (mapcar #'lis::run-colour (sixth lines)))
+    (check-glyphs lines))
+  ;; Hemisphere letters and 2 decimals from a crafted record.
+  (let ((texts (readout-texts
+                (lis::lost-panel-lines
+                 (lis::make-loss :crash :moon (lis::start-t) 2400d0 (lis::deg->rad -12.3456d0)
+                                 (lis::deg->rad -170.5d0))))))
+    (is string= "MOON  2040-01-01 00:00:00" (second texts))
+    (is string= "SPEED 2.400 KM/S" (third texts))
+    (is string= "LAT 12.35° S  LON 170.50° W" (fourth texts))
+    (dolist (text texts) (false (lis::glyph-missing text) "~S" text)))
+  (let ((texts (readout-texts
+                (lis::lost-panel-lines (lis::make-loss :crash :earth 0d0 950d0 0.1d0 0.2d0)))))
+    (is string= "SPEED 950.0 M/S" (third texts))
+    (is string= "LAT 5.73° N  LON 11.46° E" (fourth texts))))
+
+(define-test lost-panel-origin
+  (let ((lines (lis::lost-panel-lines (lis::make-loss :crash :earth 0d0 7800d0 0d0 0d0))))
+    (multiple-value-bind (x y) (lis::lost-panel-origin lines '(1280 800))
+      (is = 480 y)
+      (is = (floor (- 1280 (lis::readout-box-size lines)) 2) x))))

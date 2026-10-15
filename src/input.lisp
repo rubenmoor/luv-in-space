@@ -53,8 +53,12 @@
     (:|5| . :hold-radial-out) (:|6| . :hold-radial-in)
     (:|.| . :warp-up) (:|,| . :warp-down) (:/ . :warp-reset) (:p . :pause)
     (:c . :camera-frame) (:home . :camera-reset)
-    (:m . :map) (:tab . :map-focus) (:page-up . :map-zoom-in) (:page-down . :map-zoom-out))
+    (:m . :map) (:tab . :map-focus) (:page-up . :map-zoom-in) (:page-down . :map-zoom-out)
+    (:return . :restart) (:n . :restart))
   "(key . command): luv's physical key names; run-command's commands.")
+
+(defparameter *lost-commands* '(:restart)
+  "Act only while lost; otherwise their keys are as if unbound, N translating (decision 86).")
 
 (defparameter *flight-commands*
   '(:fine :throttle-full :throttle-cut :rate-damping :inertial-hold
@@ -98,6 +102,7 @@
                          (open-map-view! game)
                          (outside-view-reset! (game-outside-view game))))
       (:map (toggle-map! game))
+      (:restart (game-restart! game))
       (:map-focus (when (map-p game) (map-view-cycle-focus! (game-map-view game))))
       (:map-zoom-in (when (map-p game) (map-view-zoom! (game-map-view game) (/ *map-page-factor*))))
       (:map-zoom-out (when (map-p game) (map-view-zoom! (game-map-view game) *map-page-factor*))))))
@@ -120,9 +125,11 @@ view as it was. The frame snaps the exposure (view-changed-p)."
   (setf (game-view-changed-p game) t))
 
 (defun key-pressed! (game key)
-  "A new press of KEY: its command, or the RCS-off message for a flight
-key above ×4."
+  "A new press of KEY: its command (Return and N only while lost), or the
+RCS-off message for a flight key above ×4."
   (let ((command (cdr (assoc key *key-map*))))
+    (when (and (member command *lost-commands*) (not (sim-lost-p (game-sim game))))
+      (setf command nil))
     (cond ((and command (member command *flight-commands*))
            (unless (flight-keys-ignored-p game)
              (run-command game command)))

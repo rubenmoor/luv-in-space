@@ -55,26 +55,32 @@ thread (LUV:CALL-WITH-SDL-MAIN-THREAD)."
 
 (defun capture-game-state (game pathname &key sim camera-fn (view :outside)
                                               (frames *screenshot-frames*)
-                                              (readout (game-readout-p game)))
+                                              (readout (game-readout-p game))
+                                              (death-elapsed 0d0))
   "Write a PNG of GAME showing SIM (default its current state) after FRAMES
 frames in VIEW (:outside, or :map framed as on opening); CAMERA-FN (fn
 camera render-state) sets a pose other than the view's; READOUT nil leaves
-the readout out (default: as GAME draws it now). Returns as SCREENSHOT."
+the readout out (default: as GAME draws it now). A lost sim shows the LOST
+panel and the death glow DEATH-ELAPSED real seconds after the death
+(default 0, the peak; decision 86). Returns as SCREENSHOT."
   (when sim
     (game-load-state! game sim))
-  (setf (game-readout-p game) (and readout t))
+  (setf (game-readout-p game) (and readout t)
+        (game-death-elapsed game) (float death-elapsed 1d0))
   (game-set-view! game view)
   (setf (game-camera-fn game) camera-fn)
   (wait-for-frames game frames)
   (screenshot pathname :game game))
 
 (defun capture-state (pathname sim &key camera-fn (view :outside) (frames *screenshot-frames*)
-                                       (width 1280) (height 800) (readout t))
+                                       (width 1280) (height 800) (readout t) (death-elapsed 0d0))
   "A PNG showing exactly SIM's state (a copy, the clock paused) on a hidden
 canvas in VIEW (:outside or :map), with the readout unless READOUT is nil
-(decision 85). Call on luv's SDL main thread."
+(decision 85); a lost SIM with the LOST panel and the glow DEATH-ELAPSED
+real seconds after the death (decision 86). Call on luv's SDL main thread."
   (with-capture-game (game :width width :height height :sim sim :readout readout)
-    (capture-game-state game pathname :camera-fn camera-fn :view view :frames frames)))
+    (capture-game-state game pathname :camera-fn camera-fn :view view :frames frames
+                                      :death-elapsed death-elapsed)))
 
 (defun capture-scene (pathname &key (frames *screenshot-frames*) (width 1280) (height 800))
   "The start state from the outside view: scripts/screenshot's picture."

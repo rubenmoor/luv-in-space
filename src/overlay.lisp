@@ -464,6 +464,40 @@ box's colour; a flashing run in its :off phase not at all. OUT."
                  (incf left (* (length text) *readout-cell-width-px*))))))
   out)
 
+;;; The LOST panel (decision 86: Death view, LOST panel and restart in
+;;; milestone 2): lines in the readout's format, a pure function of the loss.
+
+(defparameter *lost-panel-top* 0.6d0 "The panel's top, a fraction of the height; decision 86.")
+
+(defun lost-panel-lines (loss)
+  "The LOST panel of LOSS (decision 86): the title red inverted and steady,
+the body and the impact's UTC, its speed relative to the body as the
+readout's SPD, latitude and longitude, a blank line, Return and N."
+  (flet ((label (text) (readout-run text *readout-label-colour*))
+         (value (text) (readout-run text *readout-value-colour*))
+         (degrees (angle) (format-fixed (abs (rad->deg angle)) 2)))
+    (list (list (readout-run (format nil "LOST: ~A" (symbol-name (loss-cause loss)))
+                             *readout-danger-colour* :inverted))
+          (list (value (format nil "~:[EARTH~;MOON~]  ~A" (eq (loss-body loss) :moon)
+                               (format-utc (loss-time loss)))))
+          (list (label "SPEED ") (value (format-speed (loss-speed loss))))
+          (list (label "LAT ")
+                (value (format nil "~A° ~:[N~;S~]" (degrees (loss-latitude loss))
+                               (minusp (loss-latitude loss))))
+                (label "  LON ")
+                (value (format nil "~A° ~:[E~;W~]" (degrees (loss-longitude loss))
+                               (minusp (loss-longitude loss)))))
+          '()
+          (list (value "RETURN") (label "  RESTART FROM START"))
+          (list (value "N") (label "       NEW GAME")))))
+
+(defun lost-panel-origin (lines extent)
+  "The top left pixel of the panel's box for LINES in a frame of EXTENT
+(width height): centred horizontally, its top at *lost-panel-top*."
+  (destructuring-bind (width height) extent
+    (values (max 0 (floor (- width (readout-box-size lines)) 2))
+            (floor (* *lost-panel-top* height)))))
+
 (defun quad (anchor-x anchor-y left top size color)
   "Two triangles of overlay vertices: a SIZE-pixel square at pixel offset
 LEFT, TOP from the clip-space anchor."

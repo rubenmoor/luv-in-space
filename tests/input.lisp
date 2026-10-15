@@ -238,7 +238,8 @@
   (let* ((game (input-game))
          (sim (lis::game-sim game)))
     (setf (lis::sim-loss sim) (lis::make-loss :crash :earth 0d0 100d0 0d0 0d0))
-    (dolist (key (append (mapcar #'first lis::*flight-keys*)
+    ;; N restarts while lost (input-return-and-n).
+    (dolist (key (append (remove :n (mapcar #'first lis::*flight-keys*))
                          '(:f :z :t :r :|2| :|5| :shift-left)))
       (key-event game :press key))
     (input-frames game 3 1/60)
@@ -274,8 +275,9 @@ digits inside the 1–6 range, the rest by name."
     (dolist (key (append (mapcar #'first lis::*flight-keys*)
                          (mapcar #'car lis::*key-map*)
                          '(:shift-left :control-left :escape)))
-      ;; Tab and the Page keys are the map's, not main keys (decision 81).
-      (unless (member key '(:tab :page-up :page-down))
+      ;; Tab and the Page keys are the map's, not main keys (decision 81);
+      ;; the LOST panel names Return (decision 86).
+      (unless (member key '(:tab :page-up :page-down :return))
         (true (title-names-key-p title key) "~A" key)))))
 
 ;;; The pointer and the camera keys (decision 82: Outside view camera:
@@ -468,3 +470,45 @@ digits inside the 1–6 range, the rest by name."
       (game-frames game 999)
       (game-frames fresh 1000)
       (true (equalp (lis::game-sim game) (lis::game-sim fresh))))))
+
+(defun lost-game ()
+  "A game lost at the deorbit impact, run there by game-frame!."
+  (let ((game (deorbit-game))
+        (lis::*frame-step-time-limit* nil))
+    (loop repeat 600 until (lis::sim-lost-p (lis::game-sim game))
+          do (game-frames game 1))
+    game))
+
+(define-test input-return-and-n
+  ;; Flying: N translates, Return is unbound.
+  (let ((game (input-game)))
+    (key-event game :press :n)
+    (input-frame game)
+    (is equalp #(-1 0 0) (translation-keys game))
+    (key-event game :release :n)
+    (key-event game :press :return)
+    (input-frame game)
+    (is equalp #(0 0 0) (translation-keys game))
+    (true (equalp (lis::game-sim game) (lis::new-game-sim))))
+  ;; Lost: W and 1 change nothing; Return and N restart, to the same sim.
+  (let ((sims '()))
+    (dolist (key '(:return :n))
+      (let* ((game (lost-game))
+             (sim (lis::game-sim game))
+             (attitude (input-attitude game)))
+        (true (lis::sim-lost-p sim))
+        (input-tap game :w)
+        (input-tap game :|1|)
+        (input-frame game)
+        (is equalp #(0 0 0) (rotation-keys game))
+        (is equal attitude (input-attitude game))
+        (true (lis::sim-lost-p sim))
+        (key-event game :press key)
+        (false (lis::sim-lost-p sim))
+        (true (equalp sim (lis::new-game-sim)))
+        (key-event game :release key)
+        (false (lis::input-held (lis::game-input game)))
+        (input-frame game)
+        (is equalp #(0 0 0) (translation-keys game))
+        (push (lis::copy-sim sim) sims)))
+    (true (equalp (first sims) (second sims)))))

@@ -209,7 +209,7 @@ Keyboard and mouse through luv's canvas events (`docs/luv-capabilities.md` "Wind
 - What is ignored (`decision 81`, `decision 88: Warp keys while paused`):
   - Paused: the flight keys (rotation, translation, F, Z, X, T, R, 1–6, Shift-left, Control-left; the ramp stops); P, the warp keys `.` `,` `/` (they set the level P's resume restores), C, Home, M, Tab, the Page keys, the mouse and quit act.
   - Above ×4: rotation and translation keys; each press shows "RCS OFF ABOVE ×4"; holds, T, R, F and the throttle act.
-  - Lost: every flight key; the LOST panel's keys act ("Dying and what follows").
+  - Lost: every flight key; the LOST panel's keys act ("Dying and what follows"): in `milestone 2` Return and N both restart from the start state (`game-restart!`); N is translate −x only while flying (`*key-map*`'s `:restart`, `*lost-commands*`, `decision 86: Death view, LOST panel and restart in milestone 2`).
 - The window title until `milestone 6`'s F1 help: "Luv in Space · WASD QE turn · HN IK JL move · Shift/Ctrl throttle · Z/X full/cut · T damp · R 1–6 hold · F fine · . , / warp · P pause · C/Home camera · M map · Esc quit" (QWERTY positions; luv has no key-name → character function, `docs/luv-wishlist.md`).
 
 | Function | Keys | From milestone |
@@ -571,6 +571,13 @@ Death ends the flight, never the game: the player goes on from the last checkpoi
   - The view switches to outside, the camera fixed at its last position, looking at the ship; for an Earth impact a 3 s orange glow on the ship (entry heating), for a contact a white flash, for heat the ship's lights going out, for life support the cab's lights going out.
   - As built in `milestone 2` (`decision 86: Death view, LOST panel and restart in milestone 2`): the view becomes outside with the outside view's pose kept, so the camera stays put around the stopped ship; the mouse may still orbit it and M still opens the map. The Earth-impact glow is the ship's emissive orange #FF6A1A at radiance 4.0 ÷ the exposure (reads the same lit or in shadow): full for 1 s of real time after the death, linear to 0 at 3 s; none for a Moon impact.
   - A panel: "LOST: <cause>" with the facts (body, speed, latitude and longitude; or hull temperature and distance in AU; or days), and the choices: Return restarts from the last checkpoint, N starts a new game.
+  - The panel as built in `milestone 2` (`lost-panel-lines`, `overlay.lisp`; `decision 86`): the readout's text on an opaque #0A0C0C box, centred horizontally, its top at 60 % of the height (`*lost-panel-top*`); the readout stays, showing the impact state. Lines:
+    - "LOST: CRASH", red #FF3030 inverted, steady.
+    - "EARTH  <UTC of the impact>" (or MOON).
+    - "SPEED <relative to the body, as the readout's SPD>".
+    - "LAT <|lat|, 2 decimals>° <N|S>  LON <|lon|, 2 decimals>° <E|W>".
+    - A blank line, then "RETURN  RESTART FROM START" and "N       NEW GAME", keys paper white, texts grey.
+  - Return and N in `milestone 2`: the same restart, `game-restart!` (the start state, ×1, the outside view reset, the map closed, the input cleared, so the N press does not translate).
   - Nothing else: no debris simulation, no explosion particles (pillar "small and finished").
 - What follows: a restart from the last checkpoint ("Saving"); there is no permanent death. Before `milestone 5` the checkpoints live in memory: `milestone 2` has only the start state (Return and N are the same); `milestone 3` adds one when an autopilot plan completes and when the ship berths.
 - Quests (`milestone 5`): death never fails or skips a quest; the checkpoint is at or after the start of the current quest step, so the step is flown again. A quest may set its own checkpoint (e.g. before a dangerous burn).

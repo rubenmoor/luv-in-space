@@ -828,6 +828,68 @@ without it the scene shows there."
                 "the scene under the readout's box"))))
     (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))))
 
+(defun lost-sim ()
+  "The deorbit case of hazards' tests, lost at the impact."
+  (let ((sim (fly-until-lost (orbit-sim (dive-orbit (- *earth-crash-radius* 50d3)))
+                             1000 (+ (lis::start-t) 20000))))
+    (true (lis::sim-lost-p sim))
+    sim))
+
+(defun lost-checks (game png width height)
+  "A lost sim at WIDTH x HEIGHT (decision 86): the LOST panel's box in its
+exact colours only, each present; the ship redder at the glow's peak than
+after it."
+  (let* ((sim (lost-sim))
+         (lines (lis::lost-panel-lines (lis::sim-loss sim)))
+         (allowed (mapcar #'rgb-bytes '(#x0A0C0C #xFF3030 #xE8E4D8 #x8A8A80))))
+    (multiple-value-bind (x0 y0) (lis::lost-panel-origin lines (list width height))
+      (multiple-value-bind (box-width box-height) (lis::readout-box-size lines)
+        (true (and (< (+ x0 box-width) width) (< (+ y0 box-height) height)))
+        (multiple-value-bind (path w h pixels format)
+            (lis::capture-game-state game png :sim sim :frames 2)
+          (declare (ignore path w h))
+          (let ((counts (make-hash-table :test #'equal)))
+            (loop for y from y0 below (+ y0 box-height)
+                  do (loop for x from x0 below (+ x0 box-width)
+                           do (incf (gethash (pixel-rgb pixels format width x y) counts 0))))
+            (dolist (colour allowed)
+              (true (plusp (gethash colour counts 0)) "no pixel of ~A in the panel" colour))
+            (loop for colour being the hash-keys of counts using (hash-value n)
+                  do (true (member colour allowed :test #'equal)
+                           "~D pixels of ~A in the panel" n colour))))))
+    ;; The glow: mean R − B over the ship's box, above the panel, at 0 s and 3.5 s.
+    (let* ((cab '(12.75d0 0 -3.5d0))
+           (camera-fn (ship-view *cab-view* 40 cab))
+           (state (sim-render-state sim))
+           (camera (posed-camera camera-fn state))
+           (com (ship-point state camera (ship-com state)))
+           (radius (lis::ship-bounding-radius (lis::mule) (lis::render-state-m-p state)))
+           (d (lis::vec3-norm com))
+           (r (/ (* 0.5 height (/ radius (sqrt (- (* d d) (* radius radius)))))
+                 (tan (* 0.5d0 (lis::camera-field-of-view camera))))))
+      (multiple-value-bind (cx cy) (project camera com width height)
+        (flet ((redness (elapsed)
+                 (multiple-value-bind (path w h pixels format)
+                     (lis::capture-game-state game png :sim sim :frames 1 :camera-fn camera-fn
+                                                       :readout nil :death-elapsed elapsed)
+                   (declare (ignore path w h))
+                   (loop with sum = 0 with n = 0
+                         for y from (max 0 (floor (- cy r)))
+                           below (min (floor (* lis::*lost-panel-top* height)) (ceiling (+ cy r)))
+                         do (loop for x from (max 0 (floor (- cx r))) below (min width (ceiling (+ cx r)))
+                                  do (destructuring-bind (red green blue)
+                                         (pixel-rgb pixels format width x y)
+                                       (declare (ignore green))
+                                       (incf sum (- red blue))
+                                       (incf n)))
+                         finally (return (/ sum (max n 1)))))))
+          ;; Margin: about half the first measured frame's 31.9 (lavapipe).
+          (let ((peak (redness 0)) (after (redness 3.5d0)))
+            (true (> (- peak after) 15) "glow: mean R - B ~,2F at 0 s, ~,2F at 3.5 s"
+                  peak after)))))
+    (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))
+    (lis::game-load-state! game (lis::new-game-sim))))
+
 (define-test render-frames
   (let ((width 320) (height 200))
     (luv:call-with-sdl-main-thread
@@ -990,4 +1052,5 @@ without it the scene shows there."
              (true (<= (hash-table-count (lis::renderer-color-views renderer)) images)))
            (luv:resize-canvas (lis::game-canvas game) 1280 800)
            (lis::wait-for-frames game 6)
-           (readout-checks game png 1280 800)))))))
+           (readout-checks game png 1280 800)
+           (lost-checks game png 1280 800)))))))

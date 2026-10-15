@@ -328,16 +328,19 @@ and the four draw forms."
                               (frame-renderer-earth-rows renderer))
         (values data (list sun-form moon-form earth-form halo-form))))))
 
-(defun encode-overlay (pass renderer bind-group buffer state camera extent view readout)
+(defun encode-overlay (pass renderer bind-group buffer state camera extent view readout panel)
   "The overlay into the open PASS through BUFFER: in :map the markers and
 their labels (decision 84), then READOUT, nil or readout-lines' lines, top
-left (decision 85)."
+left (decision 85), then PANEL, nil or lost-panel-lines' lines (decision 86)."
   (let ((out (overlay-clear! (frame-renderer-overlay renderer)))
         (floats (frame-renderer-overlay-floats renderer)))
     (when (eq view :map)
       (map-marker-vertices! out (map-markers state camera extent (frame-renderer-markers renderer))))
     (when readout
       (readout-vertices! out readout *readout-margin-px* *readout-margin-px*))
+    (when panel
+      (multiple-value-bind (x y) (lost-panel-origin panel extent)
+        (readout-vertices! out panel x y)))
     (setf (fill-pointer floats) (* +overlay-vertex-floats+ (overlay-buffer-count out)))
     (when (plusp (overlay-buffer-count out))
       (luv:write-buffer buffer floats)
@@ -347,14 +350,14 @@ left (decision 85)."
       (luv:draw pass (overlay-buffer-count out)))))
 
 (defun encode-frame (renderer encoder target extent state camera exposure
-                     &optional (view :outside) readout)
+                     &optional (view :outside) readout panel)
   "The frame into TARGET of EXTENT (width height) from the render STATE seen
 by CAMERA, in three stages (decision 76: Frame passes, radiance scale and
 exposure): the scene pass into the HDR target (the stars, the Sun, the
 Moon, Earth, Earth's halo, the Mule, in :map the orbit's ribbon); the bloom
 chain; one pass on TARGET, the tone map at EXPOSURE and then the overlay
 (in :map the markers and their labels, then READOUT, readout-lines' lines
-or nil). VIEW: :outside or :map."
+or nil, then the LOST PANEL's lines or nil). VIEW: :outside or :map."
   (let* ((slot (frame-resources renderer target))
          (views (post-views renderer extent))
          (bind-groups (post-bind-groups renderer slot views))
@@ -404,5 +407,5 @@ or nil). VIEW: :outside or :map."
                          :clear-value #(0.0 0.0 0.0 1.0)))))))
           (draw-tone-map renderer pass (car (last bind-groups)) (frame-renderer-post renderer))
           (encode-overlay pass renderer bind-group (frame-slot-overlay slot)
-                          state camera extent view readout)
+                          state camera extent view readout panel)
           (luv:end-pass pass))))))

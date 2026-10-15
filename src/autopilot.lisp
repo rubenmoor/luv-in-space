@@ -600,7 +600,8 @@ pivoting; a singular J J ᵀ is regularised. OUT."
   (shot nil :type prediction)                   ; the last shot, the final plan's at the end
   (preset nil :type (or null keyword))
   (goal nil)
-  (stage :done :type (member :coast :guess :iterate :check :done :refused))
+  (stage :done :type (member :coast :search :guess :iterate :check :done :refused))
+  (search nil)                                  ; a rendezvous-search, run after :coast
   ;; A replan (decision 117): the plan flown and its first burn left to re-shoot.
   (base nil :type (or null burn-plan))
   (from 0 :type fixnum)
@@ -674,6 +675,7 @@ of SIM; refused at once outside Earth orbit, for a goal above
           (autopilot-job-measure job) nil
           (autopilot-job-burn-count job) 0
           (autopilot-job-work job) 0
+          (autopilot-job-search job) nil
           (autopilot-job-stage job) :coast)
     (let* ((ship (sim-ship snapshot))
            (orbit (state->orbit (ship-state-r ship) (ship-state-v ship) +mu-earth+ (sim-t snapshot)))
@@ -1003,8 +1005,9 @@ cut in flight)."
 
 (defun autopilot-job-work! (job budget)
   "At most BUDGET work units (the prediction's, decision 116) of JOB; its
-stage: :coast, :guess, :iterate, :check, then :done (autopilot-job-plan)
-or :refused (autopilot-job-reason)."
+stage: :coast, with a search :search (rendezvous-search-work!), :guess,
+:iterate, :check, then :done (autopilot-job-plan) or :refused
+(autopilot-job-reason)."
   (let ((left budget))
     (flet ((advance (pred)
              (prediction-extend! pred left)
@@ -1014,8 +1017,14 @@ or :refused (autopilot-job-reason)."
         (ecase (autopilot-job-stage job)
           ((:done :refused) (return))
           (:coast (if (advance (autopilot-job-coast job))
-                      (setf (autopilot-job-stage job) :guess)
+                      (setf (autopilot-job-stage job) (if (autopilot-job-search job) :search :guess))
                       (return)))
+          (:search (multiple-value-bind (done units)
+                       (rendezvous-search-advance! (autopilot-job-search job) left)
+                     (decf left units)
+                     (if done
+                         (setf (autopilot-job-stage job) :guess)
+                         (return))))
           (:guess (job-guess! job))
           (:iterate (if (advance (autopilot-job-shot job))
                         (job-shot-done! job)
@@ -1160,6 +1169,1179 @@ number r v side), SIDE the out-of-plane side of (3) (1 otherwise), or
           (cond ((and (>= m+ m-) (>= m+ 0d0)) (values 3 r+ v+ 1))
                 ((>= m- 0d0) (values 3 r- v- -1))
                 (t (values nil "NO CLEAR APPROACH"))))))))
+
+;;; Rendezvous: the search (docs/design.md "The search"; decision 119,
+;;; decision 59, decision 157: The rendezvous search as built: J2-secular
+;;; coasts, the grid's aim points, phasing points, seeds, refinement,
+;;; pruning, units). Conics on J2-secular rails: the ship's coasts, the
+;;; target's and every other object's alike. A resumable job of items in a
+;;; fixed order, each charged its work units (decision 116) and started only
+;;; while its units fit the call's budget, so any slicing gives the same
+;;; candidates.
+
+(defparameter *rendezvous-limit* (* 48 3600d0) "s: the aim point within it of planning; decision 119.")
+(defparameter *rendezvous-limit-step* (* 12 3600d0) "s; decision 119.")
+(defparameter *rendezvous-limit-max* (* 240 3600d0) "s; decision 119.")
+(defparameter *search-node-lead* 180d0
+  "s after *plan-min-lead*: the first node, room for its hold, slew and half its burn.")
+(defparameter *search-departures* 64
+  "Departures per ship period, phasing points of the next revolution; decision 119.")
+(defparameter *search-transfers* '(0.4d0 1.5d0 32) "Transfer times: target periods from, to, steps; decision 119.")
+(defparameter *search-close-transfers* '(0.02d0 0.4d0 16) "The close grid's; decision 119.")
+(defparameter *search-close-distance* 50d3 "m from the aim point: the close grid too; decision 119.")
+(defparameter *phasing-max-revolutions* 32 "decision 119.")
+(defparameter *phasing-apoapsis-max* 150000d3 "m from Earth's centre; decision 54.")
+(defparameter *aim-bucket* 600d0 "s: the grid's aim point is rendezvous-aim's choice at each multiple.")
+(defparameter *phasing-min-dv* 0.05d0 "m/s: a smaller phasing burn keeps the ship's orbit, A's.")
+(defparameter *scan-samples* 256 "Per coast; decision 119.")
+(defparameter *scan-chunk* 8 "Samples an item scans.")
+(defparameter *scan-refine-distance* 10d3 "m: a sampled minimum under it is refined; decision 119.")
+(defparameter *scan-time-tolerance* 1d-2 "s: a refined minimum's golden section.")
+(defparameter *search-seeds* 3 "Refined per group; decision 119.")
+(defparameter *search-pool* 64 "Grid points kept per group, the least Δv first, for its seeds.")
+(defparameter *search-seed-scans* 24 "Clearance scans a group spends finding its seeds.")
+(defparameter *search-time-tolerance* 1d0 "s: the golden section of departure and transfer time.")
+(defparameter *search-boundary-steps* 6 "Bisections from an unclear optimum back to its clear seed.")
+(defparameter *search-candidates* 8 "Clear candidates kept for the shooting; decision 119.")
+(defparameter *search-tie-dv* 1d0 "m/s: within it of the least the earlier arrival wins; decision 119.")
+(defparameter *search-group-margin* 0.05d0
+  "A group whose grid least lies this fraction over the 8th candidate is not refined.")
+;; Work units (decision 116), measured against a coast step (0.65 µs,
+;; decision 149): docs/architecture.md "Trajectory prediction".
+(defparameter *lambert-work* 1 "Units per grid point: its Lambert solve and aim point.")
+(defparameter *scan-evals-per-unit* 4 "Rails evaluations per unit.")
+(defparameter *aim-work* 12 "Units per exact evaluation: aim-point and coast-lambert-into!.")
+(defparameter *aim-bucket-work* 40 "Units per aim bucket (rendezvous-aim).")
+(defparameter *phasing-point-work* 8 "Units per phasing point.")
+(declaim (type double-float *rendezvous-limit* *rendezvous-limit-step* *rendezvous-limit-max*
+               *search-node-lead* *search-close-distance* *phasing-apoapsis-max* *aim-bucket*
+               *phasing-min-dv*
+               *scan-refine-distance* *scan-time-tolerance* *search-time-tolerance*
+               *search-tie-dv* *search-group-margin*)
+         (type fixnum *search-departures* *phasing-max-revolutions* *scan-samples* *scan-chunk*
+               *search-seeds* *search-pool* *search-seed-scans* *search-boundary-steps*
+               *search-candidates* *lambert-work* *scan-evals-per-unit* *aim-work*
+               *aim-bucket-work* *phasing-point-work*))
+
+(defconstant +golden+ (/ (- (sqrt 5d0) 1) 2) "1/φ.")
+
+(defun coast-rails (r v time)
+  "The rails of the state R, V at TIME about Earth, with J2's secular rates:
+the search's coasts drift as the objects' rails do."
+  (make-rails (state->orbit r v +mu-earth+ time) time))
+
+(defun rails-drift-rates (rails)
+  "(values u̇ Ω̇) rad/s: J2's secular drift of RAILS' argument of latitude
+(ω̇ + Ṁ − n) and node against its conic."
+  (let ((segment (first rails)))
+    (values (+ (rails-segment-argp-rate segment)
+               (- (rails-segment-mean-rate segment) (orbit-n (rails-segment-orbit segment))))
+            (rails-segment-raan-rate segment))))
+
+(declaim (inline rotate-into!))
+(defun rotate-into! (out v axis angle)
+  "OUT = V turned by ANGLE about the unit AXIS (Rodrigues); OUT may be V."
+  (declare (type vec3 out v axis) (type double-float angle))
+  (let* ((c (cos angle)) (s (sin angle))
+         (d (* (vec3-dot axis v) (- 1 c))))
+    (with-vec3 (((x y z) v) ((ax ay az) axis))
+      (vec3-set! out
+                 (+ (* x c) (* s (- (* ay z) (* az y))) (* ax d))
+                 (+ (* y c) (* s (- (* az x) (* ax z))) (* ay d))
+                 (+ (* z c) (* s (- (* ax y) (* ay x))) (* az d))))))
+
+(declaim (inline drift-into!))
+(defun drift-into! (out v normal du dnode)
+  "OUT = V turned by DU about NORMAL, then by DNODE about z: a conic's
+state moved on as its rails' drift."
+  (declare (type vec3 out v normal) (type double-float du dnode))
+  (rotate-into! out v normal du)
+  (unless (zerop dnode)
+    (rotate-into! out out (load-time-value (vec3 0 0 1) t) dnode))
+  out)
+
+(defun rails-radii (rails)
+  "(values q Q) of RAILS' first conic, Q infinite for a hyperbola."
+  (let ((orbit (rails-segment-orbit (first rails))))
+    (values (orbit-q orbit) (or (orbit-apoapsis-radius orbit) most-positive-double-float))))
+
+(declaim (sb-ext:maybe-inline arc-below-p))
+(defun arc-below-p (r1 v1 r2 v2 floor)
+  "The conic arc from R1, V1 to R2, V2, prograde and under one revolution,
+passes its periapsis below the radius FLOOR."
+  (declare (type vec3 r1 v1 r2 v2) (type double-float floor))
+  (let* ((mu +mu-earth+)
+         (h (with-vec3 (((ax ay az) r1) ((bx by bz) v1))
+              (sqrt (+ (expt (- (* ay bz) (* az by)) 2) (expt (- (* az bx) (* ax bz)) 2)
+                       (expt (- (* ax by) (* ay bx)) 2)))))
+         (p (/ (* h h) mu))
+         (n1 (vec3-norm r1)) (n2 (vec3-norm r2)))
+    (flet ((anomaly (r v n)
+             ;; e cos ν = p / r − 1, e sin ν = (r · v) h / (μ r)
+             (let ((nu (atan (/ (* (vec3-dot r v) h) (* mu n)) (- (/ p n) 1))))
+               (if (minusp nu) (+ nu +two-pi+) nu))))
+      (let* ((nu1 (anomaly r1 v1 n1))
+             (nu2 (anomaly r2 v2 n2))
+             (e-cos (- (/ p n1) 1))
+             (e-sin (/ (* (vec3-dot r1 v1) h) (* mu n1)))
+             (e (sqrt (+ (* e-cos e-cos) (* e-sin e-sin)))))
+        (and (< (/ p (+ 1 e)) floor)
+             (>= (+ nu1 (mod (- nu2 nu1) +two-pi+)) +two-pi+))))))
+
+;;; The objects the search clears and its arcs' scan
+
+(defstruct (search-object (:constructor make-search-object (key rails clearance target q big-q))
+                          (:copier nil))
+  (key nil :type keyword :read-only t)
+  (rails nil :type list :read-only t)           ; planning rails (object-planning-rails)
+  (clearance 0d0 :type double-float :read-only t) ; m: its bound + *object-clearance*
+  (target nil :type boolean :read-only t)
+  (q 0d0 :type double-float :read-only t)       ; its conic's radii
+  (big-q 0d0 :type double-float :read-only t))
+
+(defun search-objects (sim target)
+  "The objects a rendezvous with TARGET from SIM must clear, the target first:
+neither removed nor latched, on their planning rails."
+  (let ((object (target-object sim target))
+        (out '()))
+    (loop for other across (sim-objects sim)
+          unless (member (object-status other) '(:removed :latched))
+            do (let ((rails (object-planning-rails other sim)))
+                 (multiple-value-bind (q big-q) (rails-radii rails)
+                   (let ((entry (make-search-object (object-key other) rails
+                                                    (+ (object-def-bound (object-def-of other))
+                                                       *object-clearance*)
+                                                    (eq other object) q big-q)))
+                     (if (eq other object)
+                         (setf out (cons entry out))
+                         (setf out (append out (list entry))))))))
+    (coerce out 'simple-vector)))
+
+(defstruct (clearance-scan (:constructor %make-clearance-scan (coasts objects least last1 last2))
+                           (:copier nil))
+  (coasts #() :type simple-vector)              ; per coast (start end rails)
+  (objects #() :type simple-vector)             ; the search-objects near its radii
+  (coast 0 :type fixnum)
+  (sample 0 :type fixnum)                       ; the coast's next sample
+  (least nil :type (simple-array double-float (*))) ; m per object, CoM to CoM
+  (last1 nil :type (simple-array double-float (*))) ; at the sample before
+  (last2 nil :type (simple-array double-float (*))) ; and the one before it
+  (pending '() :type list))                     ; (object coast lo hi) minima to refine
+
+(defun make-clearance-scan (coasts objects)
+  "The scan of the arc COASTS (a list of (start end rails)) against the
+OBJECTS whose radii come within *scan-refine-distance* and their clearance
+of a coast's."
+  (let* ((near (remove-if-not
+                (lambda (object)
+                  (some (lambda (coast)
+                          (multiple-value-bind (q big-q) (rails-radii (third coast))
+                            (let ((pad (+ *scan-refine-distance* (search-object-clearance object))))
+                              (and (<= (- q pad) (search-object-big-q object))
+                                   (<= (search-object-q object) (+ big-q pad))))))
+                        coasts))
+                (coerce objects 'list)))
+         (n (length near)))
+    (flet ((doubles () (make-array n :element-type 'double-float
+                                     :initial-element most-positive-double-float)))
+      (%make-clearance-scan (coerce coasts 'simple-vector) (coerce near 'simple-vector)
+                            (doubles) (doubles) (doubles)))))
+
+(defun scan-done-p (scan)
+  (and (null (clearance-scan-pending scan))
+       (>= (clearance-scan-coast scan) (length (clearance-scan-coasts scan)))))
+
+(defun scan-margin (scan)
+  "m to spare: the least over the objects of the distance less the clearance."
+  (loop for object across (clearance-scan-objects scan)
+        for least across (clearance-scan-least scan)
+        minimize (- least (search-object-clearance object)) into margin
+        finally (return (if (zerop (length (clearance-scan-objects scan)))
+                            most-positive-double-float
+                            margin))))
+
+(defun scan-target-distance (scan)
+  "m: the least distance from the target's CoM, or nil (none near)."
+  (let ((i (position-if #'search-object-target (clearance-scan-objects scan))))
+    (and i (aref (clearance-scan-least scan) i))))
+
+(defun scan-other-distance (scan)
+  "m: the least distance from another object's CoM, or nil (none near)."
+  (loop for object across (clearance-scan-objects scan)
+        for least across (clearance-scan-least scan)
+        unless (search-object-target object) minimize least into m and count t into n
+        finally (return (and (plusp n) m))))
+
+(declaim (inline scan-object-distance scan-coast-time))
+(defun scan-object-distance (object ship-r time)
+  "m from SHIP-R to OBJECT at TIME. Conses nothing."
+  (declare (type search-object object) (type vec3 ship-r) (type double-float time)
+           (inline rails-state-into!))
+  (let ((r (make-vec3)) (v (make-vec3)))
+    (declare (dynamic-extent r v))
+    (rails-state-into! r v (rails-segment-at (search-object-rails object) time) time)
+    (vec3-norm (vec3-sub! r r ship-r))))
+
+(defun scan-coast-time (coast i)
+  (declare (type list coast) (type fixnum i))
+  (let ((start (first coast)) (end (second coast)))
+    (declare (type double-float start end))
+    (+ start (* (- end start) (/ (float i 1d0) *scan-samples*)))))
+
+(defun golden-steps (width tolerance)
+  "Golden-section steps that shrink WIDTH below TOLERANCE."
+  (if (<= width tolerance)
+      0
+      (ceiling (log (/ width tolerance)) (log (/ +golden+)))))
+
+(defun scan-item-units (scan)
+  "The units of SCAN's next item."
+  (let ((pending (first (clearance-scan-pending scan))))
+    (ceiling (if pending
+                 (* 2 (+ 2 (golden-steps (- (fourth pending) (third pending)) *scan-time-tolerance*)))
+                 (* *scan-chunk* (1+ (length (clearance-scan-objects scan)))))
+             *scan-evals-per-unit*)))
+
+(defun scan-refine! (scan object-index coast lo hi)
+  "The least distance of object OBJECT-INDEX over [LO, HI] on COAST by golden section."
+  (let* ((object (svref (clearance-scan-objects scan) object-index))
+         (rails (third coast))
+         (r (make-vec3)) (v (make-vec3)))
+    (flet ((f (time)
+             (rails-state-into! r v (first rails) time)
+             (scan-object-distance object r time)))
+      (let* ((a lo) (b hi)
+             (c (- b (* +golden+ (- b a)))) (d (+ a (* +golden+ (- b a))))
+             (fc (f c)) (fd (f d)))
+        (dotimes (i (golden-steps (- hi lo) *scan-time-tolerance*))
+          (if (< fc fd)
+              (setf b d d c fd fc c (- b (* +golden+ (- b a))) fc (f c))
+              (setf a c c d fc fd d (+ a (* +golden+ (- b a))) fd (f d))))
+        (let ((least (clearance-scan-least scan)))
+          (setf (aref least object-index) (min (aref least object-index) fc fd)))))))
+
+(defun scan-item! (scan)
+  "SCAN's next item: a pending minimum refined, else the next *scan-chunk*
+samples of the coast, each local minimum under *scan-refine-distance*
+queued; its units."
+  (declare (optimize speed) (type clearance-scan scan) (inline rails-state-into!))
+  (let ((units (scan-item-units scan))
+        (pending (pop (clearance-scan-pending scan))))
+    (if pending
+        (destructuring-bind (index coast lo hi) pending
+          (scan-refine! scan index coast lo hi))
+        (let* ((coast (svref (clearance-scan-coasts scan) (clearance-scan-coast scan)))
+               (objects (clearance-scan-objects scan))
+               (least (clearance-scan-least scan))
+               (last1 (clearance-scan-last1 scan))
+               (last2 (clearance-scan-last2 scan))
+               (r (make-vec3)) (v (make-vec3)))
+          (declare (dynamic-extent r v))
+          (loop repeat *scan-chunk*
+                for i of-type fixnum = (clearance-scan-sample scan)
+                while (<= i *scan-samples*)
+                do (let ((time (scan-coast-time coast i)))
+                     (rails-state-into! r v (first (third coast)) time)
+                     (dotimes (k (length objects))
+                       (let ((d (scan-object-distance (svref objects k) r time)))
+                         (setf (aref least k) (min (aref least k) d))
+                         (when (and (>= i 2) (< (aref last1 k) (aref last2 k))
+                                    (<= (aref last1 k) d) (< (aref last1 k) *scan-refine-distance*))
+                           (setf (clearance-scan-pending scan)
+                                 (append (clearance-scan-pending scan)
+                                         (list (list k coast (scan-coast-time coast (- i 2)) time)))))
+                         (setf (aref last2 k) (if (= i 0) most-positive-double-float (aref last1 k))
+                               (aref last1 k) d))))
+                   (incf (clearance-scan-sample scan)))
+          (when (> (clearance-scan-sample scan) *scan-samples*)
+            (setf (clearance-scan-sample scan) 0)
+            (incf (clearance-scan-coast scan)))))
+    units))
+
+;;; The search's state
+
+(defstruct (rendezvous-impulse (:constructor make-rendezvous-impulse (label time r v dv))
+                               (:copier nil))
+  (label nil :type keyword :read-only t)        ; :phasing, :departure, :arrival
+  (time 0d0 :type double-float :read-only t)    ; the node
+  (r nil :type vec3 :read-only t)               ; the state there before it
+  (v nil :type vec3 :read-only t)
+  (dv nil :type vec3 :read-only t))
+
+(defstruct (rendezvous-candidate (:constructor make-rendezvous-candidate) (:copier nil))
+  (family :a :type (member :a :b) :read-only t)
+  (revolutions 0 :type fixnum :read-only t)     ; B: N
+  (direction nil :type (member nil :catch-up :fall-back) :read-only t)
+  (impulses #() :type simple-vector :read-only t)
+  (arrival 0d0 :type double-float :read-only t) ; the aim point's t
+  (aim 1 :type fixnum :read-only t)             ; its number, (1)–(3)
+  (side 1 :type fixnum :read-only t)            ; (3)'s side
+  (aim-r nil :type vec3 :read-only t)
+  (aim-v nil :type vec3 :read-only t)
+  (total 0d0 :type double-float :read-only t)   ; m/s: every impulse and a :plane's
+  (margin 0d0 :type double-float :read-only t)  ; m the arc keeps beyond the clearances
+  (target-distance nil :type (or null double-float) :read-only t) ; m from the target's CoM
+  (other-distance nil :type (or null double-float) :read-only t)) ; from any other's, if near
+
+(defstruct (search-group (:constructor make-search-group) (:copier nil))
+  (family :a :type (member :a :b))
+  (revolutions 0 :type fixnum)
+  (direction nil)
+  (phasing nil)                                 ; B: the phasing impulse
+  (cost 0d0 :type double-float)                 ; m/s: the phasing's and a :plane's
+  (rails nil :type list)                        ; the coast the departures leave from
+  (drift 0d0 :type double-float)                ; its rails' u̇ and Ω̇ (rails-drift-rates)
+  (node-drift 0d0 :type double-float)
+  (bound 0d0 :type double-float)                ; m/s its totals are at least
+  (first-departure 0d0 :type double-float)
+  (step 0d0 :type double-float)
+  (count 0 :type fixnum)
+  (min-departure 0d0 :type double-float)
+  (pool-count 0 :type fixnum)                   ; the least-Δv grid points, sorted
+  (pool-total (make-array *search-pool* :element-type 'double-float :initial-element 0d0)
+   :type (simple-array double-float (*)))
+  (pool-departure (make-array *search-pool* :element-type 'double-float :initial-element 0d0)
+   :type (simple-array double-float (*)))
+  (pool-tof (make-array *search-pool* :element-type 'double-float :initial-element 0d0)
+   :type (simple-array double-float (*)))
+  (pool-k (make-array *search-pool* :element-type 'fixnum :initial-element 0)
+   :type (simple-array fixnum (*)))
+  (pool-j (make-array *search-pool* :element-type 'fixnum :initial-element 0)
+   :type (simple-array fixnum (*)))
+  (walk 0 :type fixnum)                         ; the next pool entry for a seed
+  (scans 0 :type fixnum)
+  (seeds '() :type list))                       ; (pool-index total departure tof aim side margin distances)
+
+(defstruct (search-refine (:constructor make-search-refine) (:copier nil))
+  "One seed's refinement: golden sections in departure then transfer time on
+Δv alone, the optimum scanned, bisected back towards the seed while unclear,
+the aim point checked at its arrival."
+  (phase :departure :type (member :departure :tof :scan :boundary :aim :rescan))
+  (aim 1 :type fixnum) (side 1 :type fixnum)
+  (a 0d0 :type double-float) (b 0d0 :type double-float)
+  (c 0d0 :type double-float) (d 0d0 :type double-float)
+  (fc 0d0 :type double-float) (fd 0d0 :type double-float)
+  (next :c :type (member :c :d :step))          ; the golden point to evaluate next
+  (best-departure 0d0 :type double-float) (best-tof 0d0 :type double-float)
+  (best-total 0d0 :type double-float)
+  (clear-departure 0d0 :type double-float) (clear-tof 0d0 :type double-float) ; known clear
+  (clear-margin 0d0 :type double-float)
+  (clear-distance nil :type list)                ; (target-distance other-distance)
+  (far-departure 0d0 :type double-float) (far-tof 0d0 :type double-float) ; known unclear
+  (steps 0 :type fixnum)
+  (probe-departure 0d0 :type double-float) (probe-tof 0d0 :type double-float))
+
+(defstruct (rendezvous-search (:constructor %make-rendezvous-search) (:copier nil))
+  (sim nil)                                     ; the snapshot, read only
+  (target nil) (fixture nil) (range 100d0 :type double-float)
+  (ship-rails nil :type list)                   ; the ship's coast before its first burn
+  (normal nil :type (or null vec3))             ; Lambert's prograde sense
+  (ship-period 0d0 :type double-float)
+  (earliest 0d0 :type double-float)             ; the first node
+  (deadline 0d0 :type double-float)             ; the latest aim point
+  (plane-dv 0d0 :type double-float)
+  (target-rails nil :type list) (target-shift 0d0 :type double-float)
+  (target-period 0d0 :type double-float)
+  (transfers nil :type (or null (simple-array double-float (*)))) ; the grid's, close ones after
+  (main-transfers 0 :type fixnum)
+  (objects #() :type simple-vector)
+  (aim-numbers #() :type simple-vector)         ; per bucket: (number side) or nil
+  (aim-offsets nil :type (or null (simple-array double-float (*)))) ; per bucket 6, LVLH
+  (phasing-best nil :type (or null simple-vector)) ; per (N, direction): (cost k period)
+  (stage :done :type (member :aims :phasing :group :grid :seeds :refine :finish :done))
+  (cursor 0 :type fixnum)
+  (groups '() :type list)                       ; left to search, the current first
+  (refine nil :type (or null search-refine))
+  (scan nil :type (or null clearance-scan))
+  (scan-key nil)                                ; what the scan is for
+  (candidates '() :type list)                   ; accepted, in the order found
+  (result #() :type simple-vector)              ; :done: the best 8 in order
+  (work 0 :type fixnum))                        ; units in the last call
+
+(defun search-floor () (+ (body-crash-radius (body :earth)) *plan-floor-margin*))
+
+(declaim (sb-ext:maybe-inline search-target-into! search-aim-into! pool-insert!))
+(defun search-target-into! (r v search time)
+  "The target's state (what the stop point moves with) at TIME on the
+search's planning rails. Conses nothing."
+  (declare (type vec3 r v) (type double-float time))
+  (let ((time (+ time (rendezvous-search-target-shift search))))
+    (rails-state-into! r v (rails-segment-at (rendezvous-search-target-rails search) time) time)))
+
+(defun search-aim-into! (r v search time)
+  "The grid's aim point at TIME into R, V: its bucket's number, (1) exactly
+on the target's rails, (2) and (3) by the bucket's offsets in the target's
+LVLH axes; nil when the bucket has no clear approach. Conses nothing."
+  (declare (type vec3 r v) (type double-float time))
+  (let* ((numbers (rendezvous-search-aim-numbers search))
+         (bucket (max 0 (min (1- (length numbers))
+                             (floor (- time (rendezvous-search-earliest search)) *aim-bucket*))))
+         (entry (svref numbers bucket)))
+    (when entry
+      (if (= (first entry) 1)
+          ;; the bucket's target speed for the shift
+          (search-target-into! r v search (- time (/ *aim-distance*
+                                                     (aref (rendezvous-search-aim-offsets search)
+                                                           (* 6 bucket)))))
+          (let ((offsets (rendezvous-search-aim-offsets search))
+                (ta (make-vec3)) (na (make-vec3)) (ra (make-vec3)))
+            (declare (dynamic-extent ta na ra))
+            (search-target-into! r v search time)
+            (vec3-normalize! na (vec3-cross! na r v))
+            (vec3-normalize! ra r)
+            (vec3-cross! ta na ra)
+            (let ((k (* 6 bucket)))
+              (vec3-add-scaled! r r ta (aref offsets k))
+              (vec3-add-scaled! r r na (aref offsets (+ k 1)))
+              (vec3-add-scaled! r r ra (aref offsets (+ k 2)))
+              (vec3-add-scaled! v v ta (aref offsets (+ k 3)))
+              (vec3-add-scaled! v v na (aref offsets (+ k 4)))
+              (vec3-add-scaled! v v ra (aref offsets (+ k 5))))))
+      t)))
+
+(defun periapsis-grid-start (rails earliest step)
+  "The first time at or after EARLIEST on a grid of STEP through RAILS'
+periapsis passage: an eccentric coast's departures include its periapsis."
+  (let ((tp (orbit-tp (rails-segment-orbit (first rails)))))
+    (+ tp (* step (ceiling (- earliest tp) step)))))
+
+(defun transfer-grid (period close)
+  "Transfer times (s) for a target of PERIOD: *search-transfers*' steps, then
+with CLOSE *search-close-transfers*'."
+  (flet ((steps (spec)
+           (destructuring-bind (from to n) spec
+             (loop for j below n collect (* period (+ from (* (- to from) (/ j (float (1- n) 1d0)))))))))
+    (coerce (append (steps *search-transfers*) (and close (steps *search-close-transfers*)))
+            '(simple-array double-float (*)))))
+
+(defun rendezvous-search-start! (search sim target fixture range
+                                 &key r v time earliest (limit *rendezvous-limit*) (plane-dv 0d0))
+  "SEARCH for a rendezvous with TARGET at FIXTURE (rendezvous-stop's) and
+RANGE from SIM, its aim point within LIMIT s of SIM's t: the ship coasting
+from R, V at TIME (default SIM's ship now; after a :plane burn its cut),
+its first node at EARLIEST or later (default SIM's t + *plan-min-lead* +
+*search-node-lead*), PLANE-DV (m/s) added to every total. SEARCH."
+  (let* ((ship (sim-ship sim))
+         (r (or r (vec3-copy (ship-state-r ship))))
+         (v (or v (vec3-copy (ship-state-v ship))))
+         (time (float (or time (sim-t sim)) 1d0))
+         (ship-rails (coast-rails r v time))
+         (object (target-object sim target))
+         (target-rails (if object
+                           (object-planning-rails object sim)
+                           (place-rails (place target))))
+         (target-period (orbit-period (rails-segment-orbit (first target-rails))))
+         (earliest (float (or earliest (+ (sim-t sim) *plan-min-lead* *search-node-lead*)) 1d0))
+         (deadline (+ (sim-t sim) (float limit 1d0)))
+         (buckets (1+ (max 0 (floor (- deadline earliest) *aim-bucket*)))))
+    (setf (rendezvous-search-sim search) sim
+          (rendezvous-search-target search) target
+          (rendezvous-search-fixture search) fixture
+          (rendezvous-search-range search) (float range 1d0)
+          (rendezvous-search-ship-rails search) ship-rails
+          (rendezvous-search-normal search) (vec3-normalize (vec3-cross r v))
+          (rendezvous-search-ship-period search)
+          (or (orbit-period (rails-segment-orbit (first ship-rails))) 0d0)
+          (rendezvous-search-earliest search) earliest
+          (rendezvous-search-deadline search) deadline
+          (rendezvous-search-plane-dv search) (float plane-dv 1d0)
+          (rendezvous-search-target-rails search) target-rails
+          (rendezvous-search-target-shift search) (if (eq fixture :front) *yard-front-lead* 0d0)
+          (rendezvous-search-target-period search) (or target-period 0d0)
+          (rendezvous-search-transfers search) (transfer-grid (or target-period 0d0) t)
+          (rendezvous-search-main-transfers search) (third *search-transfers*)
+          (rendezvous-search-objects search) (search-objects sim target)
+          (rendezvous-search-aim-numbers search) (make-array buckets :initial-element nil)
+          (rendezvous-search-aim-offsets search)
+          (make-array (* 6 buckets) :element-type 'double-float :initial-element 0d0)
+          (rendezvous-search-phasing-best search)
+          (make-array (* 2 *phasing-max-revolutions*) :initial-element nil)
+          (rendezvous-search-stage search) (if (and target-period
+                                                     (> (rendezvous-search-ship-period search) 0d0))
+                                                :aims
+                                                :finish)
+          (rendezvous-search-cursor search) 0
+          (rendezvous-search-groups search) '()
+          (rendezvous-search-refine search) nil
+          (rendezvous-search-scan search) nil
+          (rendezvous-search-candidates search) '()
+          (rendezvous-search-result search) #()
+          (rendezvous-search-work search) 0)
+    search))
+
+(defun new-rendezvous-search () (%make-rendezvous-search))
+
+;;; Stage :aims: rendezvous-aim at each bucket, its offsets in LVLH
+
+(defun search-aim-bucket! (search i)
+  (let* ((time (+ (rendezvous-search-earliest search) (* i *aim-bucket*)))
+         (sim (rendezvous-search-sim search)))
+    (multiple-value-bind (number r v side)
+        (rendezvous-aim sim (rendezvous-search-target search) (rendezvous-search-fixture search)
+                        (rendezvous-search-range search) time)
+      (when number
+        (let ((rt (make-vec3)) (vt (make-vec3))
+              (offsets (rendezvous-search-aim-offsets search))
+              (k (* 6 i)))
+          (search-target-into! rt vt search time)
+          (multiple-value-bind (ta na ra) (lvlh-axes rt vt)
+            (let ((dr (vec3-sub r rt)) (dv (vec3-sub v vt)))
+              ;; (1): the target's speed for its shift; (2), (3): the offsets
+              (setf (aref offsets k) (if (= number 1) (vec3-norm vt) (vec3-dot dr ta))
+                    (aref offsets (+ k 1)) (vec3-dot dr na)
+                    (aref offsets (+ k 2)) (vec3-dot dr ra)
+                    (aref offsets (+ k 3)) (vec3-dot dv ta)
+                    (aref offsets (+ k 4)) (vec3-dot dv na)
+                    (aref offsets (+ k 5)) (vec3-dot dv ra))))
+          (setf (svref (rendezvous-search-aim-numbers search) i) (list number side)))))))
+
+;;; Stage :phasing: per phasing point, the cheapest one of each (N, direction)
+
+(defun target-lead (search r time)
+  "s: how long ago the target passed the direction of R along its orbit, in [0, T_t)."
+  (let ((rt (make-vec3)) (vt (make-vec3)))
+    (search-target-into! rt vt search time)
+    (let* ((orbit (state->orbit rt vt +mu-earth+ time))
+           (e (orbit-e orbit)))
+      (multiple-value-bind (p q) (perifocal-axes (orbit-i orbit) (orbit-raan orbit) (orbit-argp orbit))
+        (let* ((theta (atan (vec3-dot r q) (vec3-dot r p)))
+               (ea (true->eccentric theta e))
+               (m (- ea (* e (sin ea))))
+               (n (orbit-n orbit)))
+          (/ (mod (- (orbit-mean-anomaly orbit time) m) +two-pi+) n))))))
+
+(defun phasing-orbit-ok-p (r v-new)
+  "The phasing orbit from R, V-NEW is bound, its periapsis above the floor,
+its apoapsis within *phasing-apoapsis-max*."
+  (let ((orbit (state->orbit r v-new +mu-earth+ 0d0)))
+    (and (elliptic-p orbit)
+         (>= (orbit-q orbit) (search-floor))
+         (<= (orbit-apoapsis-radius orbit) *phasing-apoapsis-max*))))
+
+(defun search-phasing-point! (search k)
+  "Phasing point K: for each N and direction its phasing burn's Δv, kept per
+(N, direction) where least (ties to the earlier point)."
+  (let* ((period (rendezvous-search-ship-period search))
+         (tt (rendezvous-search-target-period search))
+         (step (/ period *search-departures*))
+         (time (+ (periapsis-grid-start (rendezvous-search-ship-rails search)
+                                        (rendezvous-search-earliest search) step)
+                  (* k step)))
+         (deadline (rendezvous-search-deadline search))
+         (best (rendezvous-search-phasing-best search))
+         (r (make-vec3)) (v (make-vec3)))
+    (rails-state-into! r v (first (rendezvous-search-ship-rails search)) time)
+    (let ((lead (target-lead search r time))
+          (rn (vec3-norm r)) (vn (vec3-norm v)))
+      (loop for n from 1 to *phasing-max-revolutions*
+            do (loop for direction in '(:catch-up :fall-back)
+                     for d from 0
+                     for t-ph = (if (eq direction :catch-up)
+                                    (- tt (/ lead n))
+                                    (+ tt (/ (- tt lead) n)))
+                     do (when (and (> t-ph 0d0)
+                                   (<= (+ time (* n t-ph)) deadline)
+                                   (<= (+ time (* (- n 0.5d0) t-ph) (* (first *search-close-transfers*) tt))
+                                       deadline))
+                          (let* ((a (expt (* +mu-earth+ (expt (/ t-ph +two-pi+) 2)) 1/3))
+                                 (speed2 (* +mu-earth+ (- (/ 2 rn) (/ a)))))
+                            (when (> speed2 0d0)
+                              (let* ((speed (sqrt speed2))
+                                     (v-new (vec3-scale v (/ speed vn)))
+                                     (cost (abs (- speed vn)))
+                                     (i (+ (* 2 (1- n)) d))
+                                     (old (svref best i)))
+                                (when (and (or (null old) (< cost (first old)))
+                                           (phasing-orbit-ok-p r v-new))
+                                  (setf (svref best i)
+                                        (list cost time t-ph (vec3-copy r) (vec3-copy v) v-new))))))))))))
+
+(defun energy-bound (rails target-rails)
+  "m/s at least to go from RAILS' conic to TARGET-RAILS': the energy step
+over the escape speed at the lower periapsis (Δε = v · Δv)."
+  (let ((one (rails-segment-orbit (first rails)))
+        (two (rails-segment-orbit (first target-rails))))
+    (/ (abs (- (orbit-energy one) (orbit-energy two)))
+       (sqrt (/ (* 2 +mu-earth+) (min (orbit-q one) (orbit-q two)))))))
+
+(defun make-coast-group (rails &rest keys)
+  "A search-group leaving from RAILS, its drift rates set."
+  (multiple-value-bind (du dnode) (rails-drift-rates rails)
+    (apply #'make-search-group :rails rails :drift du :node-drift dnode keys)))
+
+(defun search-groups (search)
+  "The groups to search: A, then B per (N, direction) by their least total,
+the phasing Δv and energy-bound's (decision 157)."
+  (let* ((plane (rendezvous-search-plane-dv search))
+         (period (rendezvous-search-ship-period search))
+         (earliest (rendezvous-search-earliest search))
+         (deadline (rendezvous-search-deadline search))
+         (tt (rendezvous-search-target-period search))
+         (target-rails (rendezvous-search-target-rails search))
+         (step (/ period *search-departures*))
+         (ship-rails (rendezvous-search-ship-rails search))
+         (first (periapsis-grid-start ship-rails earliest step))
+         (a (make-coast-group ship-rails :family :a :cost plane
+                                         :bound (+ plane (energy-bound ship-rails target-rails))
+                                         :first-departure first :step step
+                                         :count (max 0 (1+ (floor (- deadline first
+                                                                     (* (first *search-close-transfers*) tt))
+                                                                  step)))
+                                         :min-departure earliest))
+         ;; a (N, direction) whose cheapest phasing burn is under
+         ;; *phasing-min-dv*: the ship's own orbit phases so, A's
+         (bs (loop for entry across (rendezvous-search-phasing-best search)
+                   for i from 0
+                   when (and entry (>= (first entry) *phasing-min-dv*))
+                     collect (destructuring-bind (cost time t-ph r v v-new) entry
+                               (let* ((n (1+ (floor i 2)))
+                                      (end (+ time (* n t-ph)))
+                                      (rails (coast-rails r v-new time)))
+                                 (make-coast-group
+                                  rails
+                                  :family :b :revolutions n
+                                  :direction (if (evenp i) :catch-up :fall-back)
+                                  :phasing (make-rendezvous-impulse :phasing time r v (vec3-sub v-new v))
+                                  :cost (+ plane cost)
+                                  :bound (+ plane cost (energy-bound rails target-rails))
+                                  :first-departure (- end (/ t-ph 2))
+                                  :step (/ t-ph *search-departures*)
+                                  :count *search-departures*
+                                  :min-departure (+ time (/ t-ph 2))))))))
+    (cons a (stable-sort bs #'< :key #'search-group-bound))))
+
+;;; Stage :grid: one departure an item
+
+(defun pool-insert! (group total departure tof k j)
+  "GROUP's pool of the least-Δv grid points: TOTAL's place, after equal ones."
+  (declare (type search-group group) (type double-float total departure tof) (type fixnum k j))
+  (let ((count (search-group-pool-count group))
+        (totals (search-group-pool-total group))
+        (departures (search-group-pool-departure group))
+        (tofs (search-group-pool-tof group))
+        (ks (search-group-pool-k group))
+        (js (search-group-pool-j group)))
+    (when (or (< count *search-pool*) (< total (aref totals (1- count))))
+      (let ((i (min count (1- *search-pool*))))
+        (loop while (and (> i 0) (< total (aref totals (1- i))))
+              do (setf (aref totals i) (aref totals (1- i))
+                       (aref departures i) (aref departures (1- i))
+                       (aref tofs i) (aref tofs (1- i))
+                       (aref ks i) (aref ks (1- i))
+                       (aref js i) (aref js (1- i)))
+                 (decf i))
+        (setf (aref totals i) total
+              (aref departures i) departure
+              (aref tofs i) tof
+              (aref ks i) k
+              (aref js i) j
+              (search-group-pool-count group) (min *search-pool* (1+ count)))))))
+
+(defun search-grid-departure! (search group k)
+  "Departure K of GROUP against every transfer time that fits (the close
+ones within *search-close-distance* of the aim point): each a Lambert
+solve to the grid's aim point, kept in the pool by its total Δv; its units."
+  (declare (optimize speed) (type rendezvous-search search) (type search-group group) (type fixnum k)
+           (inline search-aim-into! search-target-into! drift-into! lambert-into! arc-below-p
+                   pool-insert! rails-state-into!))
+  (let* ((t-d (+ (search-group-first-departure group) (* k (search-group-step group))))
+         (deadline (rendezvous-search-deadline search))
+         (transfers (rendezvous-search-transfers search))
+         (normal (rendezvous-search-normal search))
+         (floor (search-floor))
+         (cost (search-group-cost group))
+         (drift (search-group-drift group))
+         (node-drift (search-group-node-drift group))
+         (r-d (make-vec3)) (v-d (make-vec3)) (r-a (make-vec3)) (v-a (make-vec3))
+         (v1 (make-vec3)) (v2 (make-vec3)) (d1 (make-vec3)) (d2 (make-vec3))
+         (units 1))
+    (declare (type double-float t-d deadline floor cost drift node-drift) (type fixnum units)
+             (type (simple-array double-float (*)) transfers) (type vec3 normal)
+             (dynamic-extent r-d v-d r-a v-a v1 v2 d1 d2))
+    (rails-state-into! r-d v-d (first (search-group-rails group)) t-d)
+    (let ((close (if (search-aim-into! r-a v-a search t-d)
+                     (<= (vec3-norm (vec3-sub! r-a r-a r-d)) *search-close-distance*)
+                     nil)))
+      (loop for j of-type fixnum below (if close (length transfers) (rendezvous-search-main-transfers search))
+            for tof of-type double-float = (aref transfers j)
+            for t-a of-type double-float = (+ t-d tof)
+            when (<= t-a deadline)
+              do (incf units *lambert-work*)
+                 ;; the Lambert end set back by the rails' drift over TOF
+                 (when (and (search-aim-into! r-a v-a search t-a)
+                            (drift-into! r-a r-a normal (- (* drift tof)) (- (* node-drift tof)))
+                            (lambert-into! v1 v2 r-d r-a tof +mu-earth+ normal)
+                            (not (arc-below-p r-d v1 r-a v2 floor)))
+                   (drift-into! v2 v2 normal (* drift tof) (* node-drift tof))
+                   (pool-insert! group
+                                 (+ cost (vec3-norm (vec3-sub! d1 v1 v-d))
+                                    (vec3-norm (vec3-sub! d2 v-a v2)))
+                                 t-d tof k j))))
+    units))
+
+;;; Exact evaluations and their scans
+
+(defparameter *coast-lambert-tolerance* 1d-3 "m: coast-lambert-into!'s end against its aim.")
+(defparameter *coast-lambert-iterations* 4)
+
+(defun coast-lambert-into! (v1 v2 r-d t-d r-a tof normal group)
+  "V1 at R-D (T-D) of the conic whose rails (coast-rails) reach R-A TOF s
+later, V2 their velocity there: Lambert to R-A set back by GROUP's drift,
+then the end's miss on the rails added to the aim, *coast-lambert-iterations*
+times at most; true, or nil (no solution, or the arc below the floor)."
+  (let ((aim (make-vec3)) (r (make-vec3)) (miss (make-vec3)))
+    (drift-into! aim r-a normal (- (* (search-group-drift group) tof))
+                 (- (* (search-group-node-drift group) tof)))
+    (dotimes (i *coast-lambert-iterations* t)
+      (unless (and (lambert-into! v1 v2 r-d aim tof +mu-earth+ normal)
+                   (not (arc-below-p r-d v1 aim v2 (search-floor))))
+        (return nil))
+      (let ((rails (coast-rails r-d v1 t-d)))
+        (rails-state-into! r v2 (first rails) (+ t-d tof)))
+      (vec3-sub! miss r-a r)
+      (when (< (vec3-norm miss) *coast-lambert-tolerance*)
+        (return t))
+      (vec3-add! aim aim miss))))
+
+(defun search-evaluate (search group t-d tof aim side)
+  "The transfer leaving GROUP's coast at T-D for TOF s to aim point AIM
+(SIDE) by aim-point: (values total impulses aim-r aim-v), or nil (outside
+its times, no solution, below the floor)."
+  (let ((t-a (+ t-d tof))
+        (sim (rendezvous-search-sim search)))
+    (when (and (> tof 0d0) (>= t-d (search-group-min-departure group))
+               (<= t-a (rendezvous-search-deadline search)))
+      (multiple-value-bind (r-a v-a)
+          (aim-point sim (rendezvous-search-target search) (rendezvous-search-fixture search)
+                     (rendezvous-search-range search) aim t-a side)
+        (let ((r-d (make-vec3)) (v-d (make-vec3)) (v1 (make-vec3)) (v2 (make-vec3)))
+          (rails-state-into! r-d v-d (first (search-group-rails group)) t-d)
+          (when (coast-lambert-into! v1 v2 r-d t-d r-a tof (rendezvous-search-normal search) group)
+            (let* ((dv1 (vec3-sub v1 v-d))
+                   (dv2 (vec3-sub v-a v2))
+                   (impulses (append (and (search-group-phasing group)
+                                          (list (search-group-phasing group)))
+                                     (list (make-rendezvous-impulse :departure t-d r-d v-d dv1)
+                                           (make-rendezvous-impulse :arrival t-a (vec3-copy r-a) v2 dv2)))))
+              (values (+ (search-group-cost group) (vec3-norm dv1) (vec3-norm dv2))
+                      (coerce impulses 'simple-vector) r-a v-a))))))))
+
+(defun impulses-scan (search impulses)
+  "The clearance scan of the arc of IMPULSES: from the first to the last,
+each coast on its rails (coast-rails) after its impulse."
+  (make-clearance-scan
+   (loop for (one two) on (coerce impulses 'list)
+         while two
+         collect (list (rendezvous-impulse-time one) (rendezvous-impulse-time two)
+                       (coast-rails (rendezvous-impulse-r one)
+                                     (vec3-add (rendezvous-impulse-v one) (rendezvous-impulse-dv one))
+                                     (rendezvous-impulse-time one))))
+   (rendezvous-search-objects search)))
+
+(defun search-scan-start! (search key impulses)
+  (setf (rendezvous-search-scan search) (impulses-scan search impulses)
+        (rendezvous-search-scan-key search) key))
+
+(defun search-scan-result (search key)
+  "The finished scan for KEY: (values margin (target-distance
+other-distance) t), cleared; nil if none."
+  (let ((scan (rendezvous-search-scan search)))
+    (when (and scan (equal key (rendezvous-search-scan-key search)) (scan-done-p scan))
+      (setf (rendezvous-search-scan search) nil
+            (rendezvous-search-scan-key search) nil)
+      (values (scan-margin scan) (list (scan-target-distance scan) (scan-other-distance scan)) t))))
+
+(defun search-bucket-aim (search time)
+  "The bucket's (number side) at TIME, or nil."
+  (let ((numbers (rendezvous-search-aim-numbers search)))
+    (svref numbers (max 0 (min (1- (length numbers))
+                               (floor (- time (rendezvous-search-earliest search)) *aim-bucket*))))))
+
+;;; Stage :seeds: the pool walked in order, each clear point not beside a
+;;; seed taken, up to *search-seeds*
+
+(defun pool-beside-p (group i seed)
+  (let ((ks (search-group-pool-k group)) (js (search-group-pool-j group))
+        (main (third *search-transfers*)))
+    (and (<= (abs (- (aref ks i) (aref ks seed))) 1)
+         (<= (abs (- (aref js i) (aref js seed))) 1)
+         (eq (< (aref js i) main) (< (aref js seed) main)))))
+
+(defun search-seeds-item! (search group)
+  "The next item of GROUP's seed walk; true when it is over."
+  (let ((i (search-group-walk group)))
+    (multiple-value-bind (margin distance scanned) (search-scan-result search (list :seed i))
+      (when scanned
+        (let ((t-d (aref (search-group-pool-departure group) i))
+              (tof (aref (search-group-pool-tof group) i))
+              (aim (search-bucket-aim search (+ (aref (search-group-pool-departure group) i)
+                                                (aref (search-group-pool-tof group) i)))))
+          (when (>= margin 0d0)
+            (setf (search-group-seeds group)
+                  (append (search-group-seeds group)
+                          (list (list i (search-evaluate search group t-d tof (first aim) (second aim))
+                                      t-d tof (first aim) (second aim) margin distance))))))
+        (incf (search-group-scans group))
+        (incf (search-group-walk group))
+        (return-from search-seeds-item! nil)))
+    ;; the next entry not beside a seed
+    (loop while (and (< i (search-group-pool-count group))
+                     (some (lambda (seed) (pool-beside-p group i (first seed))) (search-group-seeds group)))
+          do (incf i))
+    (setf (search-group-walk group) i)
+    (if (or (>= i (search-group-pool-count group))
+            (>= (length (search-group-seeds group)) *search-seeds*)
+            (>= (search-group-scans group) *search-seed-scans*))
+        t
+        (let* ((t-d (aref (search-group-pool-departure group) i))
+               (tof (aref (search-group-pool-tof group) i))
+               (aim (search-bucket-aim search (+ t-d tof)))
+               (impulses (and aim (nth-value 1 (search-evaluate search group t-d tof
+                                                                (first aim) (second aim))))))
+          (if impulses
+              (search-scan-start! search (list :seed i) impulses)
+              (incf (search-group-walk group)))
+          nil))))
+
+;;; Stage :refine: one seed after another
+
+(defun search-refine-start (group seed)
+  "SEED's refinement (a seed: (pool-index total departure tof aim side margin
+distance)), its departure's golden section first."
+  (destructuring-bind (i total t-d tof aim side margin distance) seed
+    (declare (ignore i))
+    (make-search-refine :phase :departure :aim aim :side side
+                        :a (- t-d (search-group-step group)) :b (+ t-d (search-group-step group))
+                        :next :c
+                        :best-departure t-d :best-tof tof :best-total total
+                        :clear-departure t-d :clear-tof tof :clear-margin margin
+                        :clear-distance distance)))
+
+(defun transfer-step (search tof)
+  "s between TOF's grid neighbours (the close grid's below 0.4 periods)."
+  (let ((tt (rendezvous-search-target-period search)))
+    (flet ((spacing (spec) (destructuring-bind (from to n) spec (/ (* tt (- to from)) (1- n)))))
+      (if (< tof (* tt (first *search-transfers*)))
+          (spacing *search-close-transfers*)
+          (spacing *search-transfers*)))))
+
+(defun refine-golden-item! (search group refine)
+  "One golden-section evaluation of REFINE's current dimension; at its end
+the next phase."
+  (let ((departure (eq (search-refine-phase refine) :departure)))
+    (flet ((f (x)
+             (let ((total (search-evaluate search group
+                                           (if departure x (search-refine-best-departure refine))
+                                           (if departure (search-refine-best-tof refine) x)
+                                           (search-refine-aim refine) (search-refine-side refine))))
+               (when (and total (< total (search-refine-best-total refine)))
+                 (setf (search-refine-best-total refine) total)
+                 (if departure
+                     (setf (search-refine-best-departure refine) x)
+                     (setf (search-refine-best-tof refine) x)))
+               (or total most-positive-double-float))))
+      (let ((a (search-refine-a refine)) (b (search-refine-b refine)))
+        (ecase (search-refine-next refine)
+          (:c (setf (search-refine-c refine) (- b (* +golden+ (- b a)))
+                    (search-refine-fc refine) (f (search-refine-c refine))
+                    (search-refine-next refine) :d))
+          (:d (setf (search-refine-d refine) (+ a (* +golden+ (- b a)))
+                    (search-refine-fd refine) (f (search-refine-d refine))
+                    (search-refine-next refine) :step))
+          (:step
+           (if (< (search-refine-fc refine) (search-refine-fd refine))
+               (setf (search-refine-b refine) (search-refine-d refine)
+                     (search-refine-d refine) (search-refine-c refine)
+                     (search-refine-fd refine) (search-refine-fc refine)
+                     (search-refine-c refine) (- (search-refine-b refine)
+                                                 (* +golden+ (- (search-refine-b refine) a)))
+                     (search-refine-fc refine) (f (search-refine-c refine)))
+               (setf (search-refine-a refine) (search-refine-c refine)
+                     (search-refine-c refine) (search-refine-d refine)
+                     (search-refine-fc refine) (search-refine-fd refine)
+                     (search-refine-d refine) (+ (search-refine-a refine)
+                                                 (* +golden+ (- b (search-refine-a refine))))
+                     (search-refine-fd refine) (f (search-refine-d refine))))))
+        (when (and (eq (search-refine-next refine) :step)
+                   (< (- (search-refine-b refine) (search-refine-a refine)) *search-time-tolerance*))
+          (if departure
+              (let ((tof (search-refine-best-tof refine)))
+                (setf (search-refine-phase refine) :tof
+                      (search-refine-a refine) (- tof (transfer-step search tof))
+                      (search-refine-b refine) (+ tof (transfer-step search tof))
+                      (search-refine-next refine) :c))
+              (setf (search-refine-phase refine) :scan)))))))
+
+(defun refine-probe! (search group refine phase departure tof)
+  "Evaluate REFINE's probe at DEPARTURE, TOF with its aim point and start
+its scan for PHASE; nil (no scan) when infeasible."
+  (setf (search-refine-probe-departure refine) departure
+        (search-refine-probe-tof refine) tof)
+  (let ((impulses (nth-value 1 (search-evaluate search group departure tof
+                                                (search-refine-aim refine)
+                                                (search-refine-side refine)))))
+    (when impulses
+      (search-scan-start! search (list phase) impulses)
+      t)))
+
+(defun search-accept! (search group refine)
+  "REFINE's clear point as a candidate, unless one of the group lies within
+*search-time-tolerance* of it."
+  (let ((t-d (search-refine-clear-departure refine))
+        (tof (search-refine-clear-tof refine)))
+    (unless (find-if (lambda (c)
+                       (and (eq (rendezvous-candidate-family c) (search-group-family group))
+                            (= (rendezvous-candidate-revolutions c) (search-group-revolutions group))
+                            (eq (rendezvous-candidate-direction c) (search-group-direction group))
+                            (let ((departure (rendezvous-impulse-time
+                                              (find :departure (rendezvous-candidate-impulses c)
+                                                    :key #'rendezvous-impulse-label))))
+                              (and (< (abs (- departure t-d)) *search-time-tolerance*)
+                                   (< (abs (- (- (rendezvous-candidate-arrival c) departure) tof))
+                                      *search-time-tolerance*)))))
+                     (rendezvous-search-candidates search))
+      (multiple-value-bind (total impulses r-a v-a)
+          (search-evaluate search group t-d tof (search-refine-aim refine) (search-refine-side refine))
+        (when total
+          (setf (rendezvous-search-candidates search)
+                (append (rendezvous-search-candidates search)
+                        (list (make-rendezvous-candidate
+                               :family (search-group-family group)
+                               :revolutions (search-group-revolutions group)
+                               :direction (search-group-direction group)
+                               :impulses impulses :arrival (+ t-d tof)
+                               :aim (search-refine-aim refine) :side (search-refine-side refine)
+                               :aim-r r-a :aim-v v-a :total total
+                               :margin (search-refine-clear-margin refine)
+                               :target-distance (first (search-refine-clear-distance refine))
+                               :other-distance (second (search-refine-clear-distance refine)))))))))))
+
+(defun refine-item! (search group refine)
+  "REFINE's next item: (values done units), DONE once the seed is."
+  (let ((aim (eq (search-refine-phase refine) :aim)))
+    (values (refine-phase-item! search group refine)
+            (if aim (+ *aim-bucket-work* *aim-work*) *aim-work*))))
+
+(defun refine-phase-item! (search group refine)
+  "The item of REFINE's phase; true when the seed is done."
+  (ecase (search-refine-phase refine)
+    ((:departure :tof) (refine-golden-item! search group refine) nil)
+    (:scan
+     (multiple-value-bind (margin distance scanned) (search-scan-result search (list :scan))
+       (cond ((not scanned)
+              (if (and (= (search-refine-best-departure refine) (search-refine-clear-departure refine))
+                       (= (search-refine-best-tof refine) (search-refine-clear-tof refine)))
+                  (setf (search-refine-phase refine) :aim)
+                  (unless (refine-probe! search group refine :scan (search-refine-best-departure refine)
+                                         (search-refine-best-tof refine))
+                    (setf (search-refine-phase refine) :aim)))
+              nil)
+             ((>= margin 0d0)
+              (setf (search-refine-clear-departure refine) (search-refine-best-departure refine)
+                    (search-refine-clear-tof refine) (search-refine-best-tof refine)
+                    (search-refine-clear-margin refine) margin
+                    (search-refine-clear-distance refine) distance
+                    (search-refine-phase refine) :aim)
+              nil)
+             (t (setf (search-refine-far-departure refine) (search-refine-best-departure refine)
+                      (search-refine-far-tof refine) (search-refine-best-tof refine)
+                      (search-refine-steps refine) 0
+                      (search-refine-phase refine) :boundary)
+                nil))))
+    (:boundary
+     (multiple-value-bind (margin distance scanned) (search-scan-result search (list :boundary))
+       (when scanned
+         (if (>= margin 0d0)
+             (setf (search-refine-clear-departure refine) (search-refine-probe-departure refine)
+                   (search-refine-clear-tof refine) (search-refine-probe-tof refine)
+                   (search-refine-clear-margin refine) margin
+                   (search-refine-clear-distance refine) distance)
+             (setf (search-refine-far-departure refine) (search-refine-probe-departure refine)
+                   (search-refine-far-tof refine) (search-refine-probe-tof refine)))
+         (incf (search-refine-steps refine)))
+       (if (>= (search-refine-steps refine) *search-boundary-steps*)
+           (setf (search-refine-phase refine) :aim)
+           (unless scanned
+             (unless (refine-probe! search group refine :boundary
+                                    (* 0.5d0 (+ (search-refine-clear-departure refine)
+                                                (search-refine-far-departure refine)))
+                                    (* 0.5d0 (+ (search-refine-clear-tof refine)
+                                                (search-refine-far-tof refine))))
+               ;; infeasible counts as unclear
+               (setf (search-refine-far-departure refine) (search-refine-probe-departure refine)
+                     (search-refine-far-tof refine) (search-refine-probe-tof refine))
+               (incf (search-refine-steps refine)))))
+       nil))
+    (:aim
+     ;; rendezvous-aim at the exact arrival: the same aim point keeps it,
+     ;; another is evaluated and scanned again, none drops it
+     (let* ((t-a (+ (search-refine-clear-departure refine) (search-refine-clear-tof refine)))
+            (sim (rendezvous-search-sim search)))
+       (multiple-value-bind (number r v side)
+           (rendezvous-aim sim (rendezvous-search-target search) (rendezvous-search-fixture search)
+                           (rendezvous-search-range search) t-a)
+         (declare (ignore r v))
+         (cond ((null number) t)
+               ((and (= number (search-refine-aim refine)) (= side (search-refine-side refine)))
+                (search-accept! search group refine)
+                t)
+               (t (setf (search-refine-aim refine) number
+                        (search-refine-side refine) side
+                        (search-refine-phase refine) :rescan)
+                  (not (refine-probe! search group refine :rescan
+                                      (search-refine-clear-departure refine)
+                                      (search-refine-clear-tof refine))))))))
+    (:rescan
+     (multiple-value-bind (margin distance) (search-scan-result search (list :rescan))
+       (when (>= margin 0d0)
+         (setf (search-refine-clear-margin refine) margin
+               (search-refine-clear-distance refine) distance)
+         (search-accept! search group refine))
+       t))))
+
+;;; The work loop
+
+(defun search-bound (search)
+  "The 8th least total among the candidates so far, or infinity."
+  (let ((totals (sort (mapcar #'rendezvous-candidate-total (rendezvous-search-candidates search)) #'<)))
+    (or (nth (1- *search-candidates*) totals) most-positive-double-float)))
+
+(defun search-order (candidates)
+  "CANDIDATES in decision 119's order: again and again the earliest arrival
+among those within *search-tie-dv* of the least total left."
+  (let ((left (copy-list candidates)) (out '()))
+    (loop while left
+          do (let* ((least (reduce #'min left :key #'rendezvous-candidate-total))
+                    (pick (reduce (lambda (a b)
+                                    (if (< (rendezvous-candidate-arrival b) (rendezvous-candidate-arrival a))
+                                        b a))
+                                  (remove-if (lambda (c) (> (rendezvous-candidate-total c)
+                                                            (+ least *search-tie-dv*)))
+                                             left))))
+               (push pick out)
+               (setf left (remove pick left))))
+    (nreverse out)))
+
+(defun search-item-units (search)
+  "The most units SEARCH's next item takes."
+  (let ((scan (rendezvous-search-scan search)))
+    (if (and scan (not (scan-done-p scan)))
+        (scan-item-units scan)
+        (ecase (rendezvous-search-stage search)
+          (:aims *aim-bucket-work*)
+          (:phasing *phasing-point-work*)
+          (:grid (1+ (* *lambert-work* (length (rendezvous-search-transfers search)))))
+          ((:seeds :refine) (+ *aim-bucket-work* *aim-work*))
+          ((:group :finish :done) 1)))))
+
+(defun search-item! (search)
+  "SEARCH's next item; its units."
+  (let ((scan (rendezvous-search-scan search))
+        (group (first (rendezvous-search-groups search)))
+        (units *aim-work*))
+    (if (and scan (not (scan-done-p scan)))
+        (scan-item! scan)
+        (ecase (rendezvous-search-stage search)
+          (:aims
+           (let ((i (rendezvous-search-cursor search)))
+             (search-aim-bucket! search i)
+             (when (>= (incf (rendezvous-search-cursor search))
+                       (length (rendezvous-search-aim-numbers search)))
+               (setf (rendezvous-search-cursor search) 0
+                     (rendezvous-search-stage search) :phasing))
+             *aim-bucket-work*))
+          (:phasing
+           (search-phasing-point! search (rendezvous-search-cursor search))
+           (when (>= (incf (rendezvous-search-cursor search)) *search-departures*)
+             (setf (rendezvous-search-groups search) (search-groups search)
+                   (rendezvous-search-stage search) :group))
+           *phasing-point-work*)
+          (:group
+           (cond ((null group) (setf (rendezvous-search-stage search) :finish))
+                 ((>= (search-group-bound group) (search-bound search))
+                  ;; B's groups come by their bound: none after can do better
+                  (setf (rendezvous-search-groups search) '()
+                        (rendezvous-search-stage search) :finish))
+                 (t (setf (rendezvous-search-cursor search) 0
+                          (rendezvous-search-stage search) :grid)))
+           1)
+          (:grid
+           (let ((units (search-grid-departure! search group (rendezvous-search-cursor search))))
+             (when (>= (incf (rendezvous-search-cursor search)) (search-group-count group))
+               (setf (rendezvous-search-stage search)
+                     (if (and (> (search-group-pool-count group) 0)
+                              (let ((bound (search-bound search)))
+                                (or (= bound most-positive-double-float)
+                                    (<= (aref (search-group-pool-total group) 0)
+                                        (* (+ 1 *search-group-margin*) bound)))))
+                         :seeds
+                         (progn (pop (rendezvous-search-groups search)) :group))))
+             units))
+          (:seeds
+           (when (search-seeds-item! search group)
+             (if (search-group-seeds group)
+                 (setf (rendezvous-search-refine search)
+                       (search-refine-start group (first (search-group-seeds group)))
+                       (rendezvous-search-stage search) :refine)
+                 (progn (pop (rendezvous-search-groups search))
+                        (setf (rendezvous-search-stage search) :group))))
+           *aim-work*)
+          (:refine
+           (multiple-value-bind (done spent) (refine-item! search group (rendezvous-search-refine search))
+             (setf units spent)
+             (when done
+               (pop (search-group-seeds group))
+               (if (search-group-seeds group)
+                   (setf (rendezvous-search-refine search)
+                         (search-refine-start group (first (search-group-seeds group))))
+                   (progn (setf (rendezvous-search-refine search) nil)
+                          (pop (rendezvous-search-groups search))
+                          (setf (rendezvous-search-stage search) :group)))))
+           units)
+          (:finish
+           (let ((ordered (search-order (rendezvous-search-candidates search))))
+             (setf (rendezvous-search-result search)
+                   (coerce (subseq ordered 0 (min *search-candidates* (length ordered))) 'simple-vector)
+                   (rendezvous-search-stage search) :done))
+           1)
+          (:done 0)))))
+
+(defun rendezvous-search-work! (search budget)
+  "At most BUDGET units of SEARCH (an item whose most does not fit waits for
+the next call; a call that fits none takes one); true once :done
+(rendezvous-search-result: the best *search-candidates* clear candidates in
+order)."
+  (let ((left budget))
+    (loop until (or (eq (rendezvous-search-stage search) :done) (<= left 0))
+          do (let ((most (search-item-units search)))
+               (when (and (> most left) (< left budget))
+                 (return))
+               (decf left (search-item! search))))
+    (setf (rendezvous-search-work search) (- budget left))
+    (eq (rendezvous-search-stage search) :done)))
+
+(defun rendezvous-search-advance! (search budget)
+  "The job's :search stage: (values done units) of at most BUDGET units."
+  (if (plusp budget)
+      (values (rendezvous-search-work! search budget) (rendezvous-search-work search))
+      (values (eq (rendezvous-search-stage search) :done) 0)))
+
+(defun rendezvous-search-now (sim target &rest keys &key fixture (range *stop-range*) &allow-other-keys)
+  "The search for TARGET from SIM at once (FIXTURE a name, or the target's
+first free one; the other KEYS rendezvous-search-start!'s): (values
+candidates nil), a simple-vector in order, or (values nil reason)."
+  (multiple-value-bind (chosen reason) (rendezvous-stop sim target :fixture fixture :range range)
+    (if reason
+        (values nil reason)
+        (let ((search (new-rendezvous-search)))
+          (apply #'rendezvous-search-start! search sim target chosen range
+                 (loop for (key value) on keys by #'cddr
+                       unless (member key '(:fixture :range)) append (list key value)))
+          (rendezvous-search-work! search most-positive-fixnum)
+          (let ((result (rendezvous-search-result search)))
+            (if (plusp (length result))
+                (values result nil)
+                (values nil "NO CLEAR TRANSFER")))))))
 
 ;;; The preset menu (decision 118: Autopilot preset menu and input in
 ;;; milestone 3): the clock's model (clock-autopilot, not in the sim or

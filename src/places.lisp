@@ -203,16 +203,34 @@ on rails or at SIM's t; a promoted or latched object at another time on
 Kepler rails of its state at SIM's t, with J2's rates (conses). True, or
 nil (removed, past its rails' crash)."
   (declare (type vec3 r v) (type double-float time))
-  (let ((q (make-quat)) (w (make-vec3)))
-    (declare (dynamic-extent q w))
-    (if (or (member (object-status object) '(:rails :removed)) (= time (sim-t sim)))
-        (and (object-state-into! r v q w object time) t)
-        (let* ((state (object-state object))
-               (rails (make-rails (state->orbit (ship-state-r state) (ship-state-v state)
-                                                (body-mu (body (sim-body sim))) (sim-t sim))
-                                  (sim-t sim) :body (sim-body sim))))
-          (rails-state-into! r v (rails-segment-at rails time) time)
-          t))))
+  (let ((status (object-status object)))
+    (cond ((eq status :removed) nil)
+          ((eq status :rails)
+           ;; object-state-into!'s r, v without its attitude
+           (let ((segment (rails-segment-at (object-rails object) time)))
+             (unless (and (eq (rails-segment-end-kind segment) :crash)
+                          (> time (rails-segment-end segment)))
+               (rails-state-into! r v segment time)
+               t)))
+          ((= time (sim-t sim))
+           (let ((state (object-state object)))
+             (replace r (ship-state-r state))
+             (replace v (ship-state-v state))
+             t))
+          (t (rails-state-into! r v (rails-segment-at (object-planning-rails object sim) time) time)
+             t))))
+
+(defun object-planning-rails (object sim)
+  "The rails object-planning-state-into! puts OBJECT on away from SIM's t:
+its own, or for a promoted or latched object the Kepler rails (J2's rates)
+of its state at SIM's t (conses); nil when removed."
+  (case (object-status object)
+    (:removed nil)
+    (:rails (object-rails object))
+    (t (let ((state (object-state object)))
+         (make-rails (state->orbit (ship-state-r state) (ship-state-v state)
+                                   (body-mu (body (sim-body sim))) (sim-t sim))
+                     (sim-t sim) :body (sim-body sim))))))
 
 (defun stop-target-state-into! (r v sim target fixture time)
   "The state at TIME of what the stop point of TARGET with FIXTURE moves

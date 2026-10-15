@@ -323,6 +323,9 @@ nil."
 
 (declaim (type double-float *lambert-skip-angle*))
 
+;; The rendezvous search's grid inlines it: a full call boxes TOF.
+(declaim (sb-ext:maybe-inline lambert-into!))
+
 (defun lambert-into! (v1 v2 r1 r2 tof mu normal)
   "Write into V1 and V2 the velocities at R1 and R2 of the single-revolution
 conic from R1 to R2 in TOF seconds about a body of MU, prograde about NORMAL;

@@ -18,6 +18,8 @@
               :documentation "nil or (fn camera render-state), after the outside view's pose.")
    (outside-view :initform (new-outside-view) :reader game-outside-view
                  :documentation "The outside view's frame, angles and distance (camera.lisp); not in the sim.")
+   (map-view :initform (new-map-view) :reader game-map-view
+             :documentation "The map's focus, basis, angles and distance (camera.lisp); not in the sim.")
    (render-state :initform (make-render-state) :reader game-render-state)
    (exposure :initform nil :accessor game-exposure
              :documentation "The current exposure, nil before the first frame.")

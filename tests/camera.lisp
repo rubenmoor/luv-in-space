@@ -254,3 +254,199 @@ against |c|^2 - R^2 in rationals, for C at ALTITUDE over Earth."
     (is = 0 (least-bytes-consed
              (lambda () (dotimes (i 1000)
                           (lis::outside-camera-update! camera view state 0.016d0)))))))
+
+;;; The map view (decision 83: Map camera: framing on opening, focus, zoom,
+;;; drag and exposure).
+
+(defun start-orbit ()
+  (destructuring-bind (&key a e i raan u) lis::*start-orbit*
+    (values (lis::make-elliptic-orbit lis::+mu-earth+ a e (lis::deg->rad i)
+                                      (lis::deg->rad raan) 0d0 (lis::deg->rad u) (lis::start-t))
+            (lis::start-t)
+            (* 2 pi (sqrt (/ (expt a 3) lis::+mu-earth+))))))
+
+(defun test-orbit-400x2000 ()
+  "A 400 × 2,000 km orbit, i 51.6°, periapsis at t0."
+  (let* ((rp (+ lis::+radius-earth+ 400d3))
+         (ra (+ lis::+radius-earth+ 2000d3)))
+    (lis::make-elliptic-orbit lis::+mu-earth+ (/ (+ rp ra) 2) (/ (- ra rp) (+ ra rp))
+                              (deg 51.6d0) (deg 30d0) (deg 60d0) 0d0 (lis::start-t))))
+
+(defun orbit-render-state (orbit time)
+  (multiple-value-bind (r v) (lis::orbit-state orbit time)
+    (let ((state (ship-render-state r v)))
+      (setf (lis::render-state-t state) (float time 1d0))
+      state)))
+
+(defun opened-map (state)
+  (let ((view (lis::new-map-view)))
+    (lis::map-view-open! view state)
+    (values view (lis::map-camera-update! (lis::make-camera) view state nil))))
+
+(defun segment-misses-sphere-p (a b radius)
+  "Whether the segment from A to B stays outside the sphere of RADIUS at 0."
+  (let* ((d (lis::vec3-sub b a))
+         (s (max 0d0 (min 1d0 (/ (- (lis::vec3-dot a d)) (lis::vec3-dot d d))))))
+    (> (lis::vec3-norm (lis::vec3-add-scaled a d s)) radius)))
+
+(define-test map-opening
+  (let ((test (test-orbit-400x2000)))
+    (dolist (orbit (list (start-orbit) test))
+      (let ((state (orbit-render-state orbit (+ (lis::start-t) 600))))
+        (multiple-value-bind (view camera) (opened-map state)
+          (let* ((offset (lis::camera-offset camera))
+                 (n (lis::vec3-normalize (lis::vec3-cross (lis::render-state-r state)
+                                                          (lis::render-state-v state))))
+                 (q (lis::orbit-apoapsis-radius orbit)))
+            (is eq :earth (lis::camera-anchor camera))
+            (is = (* 50 (/ pi 180)) (lis::camera-field-of-view camera))
+            (true (< (vec-angle (camera-axis camera 0) (lis::vec3-scale offset -1d0)) 1d-12))
+            (true (plusp (lis::vec3-dot offset n)))
+            (true (< (abs (- (asin (/ (lis::vec3-dot offset n) (lis::vec3-norm offset))) (deg 30d0)))
+                     1d-12))
+            (true (< (abs (- (/ (lis::map-view-distance view) (* 2.5d0 q)) 1)) 1d-9))
+            ;; n's projection is up
+            (true (minusp (lis::vec3-dot (camera-axis camera 2) n))))))))
+  ;; The ship is never behind Earth's limb on the start orbit.
+  (multiple-value-bind (orbit t0 period) (start-orbit)
+    (dolist (u '(0 90 180 270))
+      (let ((state (orbit-render-state orbit (+ t0 (* u 1/360 period)))))
+        (true (segment-misses-sphere-p (lis::camera-offset (nth-value 1 (opened-map state)))
+                                       (lis::render-state-r state) lis::+radius-earth+)
+              "u ~A deg" u))))
+  ;; A hyperbola opens at 2.5 |r|.
+  (let* ((orbit (lis::make-hyperbolic-orbit lis::+mu-earth+ (+ lis::+radius-earth+ 400d3) 1.5d0
+                                            (deg 20d0) 0d0 0d0 0d0 (lis::start-t)))
+         (state (orbit-render-state orbit (+ (lis::start-t) 3600)))
+         (view (opened-map state)))
+    (true (< (abs (- (/ (lis::map-view-distance view)
+                        (* 2.5d0 (lis::vec3-norm (lis::render-state-r state))))
+                     1))
+             1d-9))))
+
+(define-test map-frame-stays
+  (multiple-value-bind (orbit t0 period) (start-orbit)
+    (let* ((view (opened-map (orbit-render-state orbit t0)))
+           (camera (lis::make-camera))
+           (first (lis::vec3-copy (lis::camera-offset
+                                   (lis::map-camera-update! camera view (orbit-render-state orbit t0) nil)))))
+      (dotimes (k 10)
+        (lis::map-camera-update! camera view (orbit-render-state orbit (+ t0 (* k 1/40 period))) 0.016d0)
+        (true (equalp first (lis::camera-offset camera)) "step ~A" k)))))
+
+(define-test map-tab
+  (let* ((state (orbit-render-state (test-orbit-400x2000) (lis::start-t)))
+         (view (opened-map state))
+         (az (lis::map-view-azimuth view))
+         (el (lis::map-view-elevation view))
+         (distance (lis::map-view-distance view)))
+    (lis::map-view-cycle-focus! view)
+    (is eq :ship (lis::map-view-focus view))
+    (is = az (lis::map-view-azimuth view))
+    (is = el (lis::map-view-elevation view))
+    (is = distance (lis::map-view-distance view))
+    (let* ((camera (lis::map-camera-update! (lis::make-camera) view state nil))
+           (eye (lis::camera-eye camera (lis::camera-anchor-position! (lis::make-vec3) camera state)))
+           (to-ship (lis::vec3-sub (lis::render-state-r state) eye)))
+      (is eq :ship (lis::camera-anchor camera))
+      (true (< (vec-angle (camera-axis camera 0) to-ship) 1d-12)))
+    (lis::map-view-cycle-focus! view)
+    (is eq :earth (lis::map-view-focus view))
+    (lis::map-view-cycle-focus! view)
+    (setf (lis::map-view-target view) 20d0 (lis::map-view-distance view) 20d0)
+    (lis::map-view-cycle-focus! view)
+    (is = (* 1.2d0 lis::+radius-earth+) (lis::map-view-target view))
+    (is = (* 1.2d0 lis::+radius-earth+) (lis::map-view-distance view))))
+
+(define-test map-zoom
+  (flet ((view-at (target &optional (focus :earth))
+           (let ((view (lis::new-map-view)))
+             (setf (lis::map-view-focus view) focus
+                   (lis::map-view-target view) target
+                   (lis::map-view-distance view) target)
+             view)))
+    (let ((view (view-at 1d7)))
+      (lis::map-view-zoom! view (expt 1.2d0 -1))
+      (true (< (abs (- (lis::map-view-target view) 8333333.333d0)) 1d0)))
+    (let ((view (view-at 1d7 :ship)))
+      (lis::map-view-zoom! view 1/10)
+      (true (< (abs (- (lis::map-view-target view) 1d6)) 1d-6)))
+    (let ((view (view-at 1d7)))
+      (lis::map-view-zoom! view 1/10)
+      (is = (* 1.2d0 lis::+radius-earth+) (lis::map-view-target view))
+      (true (< (abs (- (lis::map-view-target view) 7654d3)) 1d3)))
+    (let ((view (view-at 1d7)))
+      (dotimes (i 200) (lis::map-view-zoom! view 1.2d0))
+      (is = 1.5d13 (lis::map-view-target view)))
+    (let ((view (view-at 1d7 :ship)))
+      (dotimes (i 100) (lis::map-view-zoom! view (/ 1.2d0)))
+      (is = 50d0 (lis::map-view-target view)))
+    ;; From 1.2 R⊕ to 100 AU: 80 notches (log(1.5e13 / 7.654e6) / log 1.2 ≈ 79.5).
+    (let ((view (view-at (* 1.2d0 lis::+radius-earth+))))
+      (is = 80 (loop for notches from 1
+                     do (lis::map-view-zoom! view 1.2d0)
+                     until (= (lis::map-view-target view) 1.5d13)
+                     finally (return notches))))
+    ;; The distance eases in log: after tau, 1 - 1/e of the way; nil snaps.
+    (let ((view (view-at 1d7))
+          (state (start-render-state))
+          (camera (lis::make-camera)))
+      (lis::map-view-zoom! view 10)
+      (lis::map-camera-update! camera view state lis::*map-zoom-tau*)
+      (true (< (abs (- (/ (log (/ (lis::map-view-distance view) 1d7)) (log 10d0))
+                       (- 1 (exp -1d0))))
+               1d-12))
+      (lis::map-camera-update! camera view state nil)
+      (is = 1d8 (lis::map-view-distance view)))))
+
+(define-test map-drag-and-home
+  (let* ((state (orbit-render-state (test-orbit-400x2000) (lis::start-t)))
+         (view (opened-map state))
+         (distance (lis::map-view-distance view)))
+    (lis::map-view-drag! view 40d0 0d0)
+    (true (< (abs (- (lis::map-view-azimuth view) (deg -55d0))) 1d-12))
+    (lis::map-view-drag! view 0d0 -400d0)
+    (true (< (abs (- (lis::map-view-elevation view) (deg 85d0))) 1d-12))
+    (lis::map-view-zoom! view 10)
+    (lis::map-view-cycle-focus! view)
+    (lis::map-view-open! view state)
+    (is eq :earth (lis::map-view-focus view))
+    (true (< (abs (- (lis::map-view-azimuth view) (deg -45d0))) 1d-12))
+    (true (< (abs (- (lis::map-view-elevation view) (deg 30d0))) 1d-12))
+    (is = distance (lis::map-view-distance view))
+    (is = distance (lis::map-view-target view))))
+
+(define-test map-precision
+  (let* ((state (start-render-state))
+         (view (opened-map state))
+         (camera (lis::make-camera))
+         (single (make-array 3 :element-type 'single-float)))
+    (flet ((eye ()
+             (lis::camera-eye camera (lis::camera-anchor-position! (lis::make-vec3) camera state))))
+      ;; Earth's centre from 100 AU
+      (lis::map-view-zoom! view 1d10)
+      (lis::map-camera-update! camera view state nil)
+      (let* ((eye (eye))
+             (double (lis::vec3-sub (lis::vec3 0 0 0) eye)))
+        (lis::eye-relative-single (lis::vec3 0 0 0) eye single 0)
+        (true (< (/ (loop for i below 3 maximize (abs (- (aref single i) (aref double i))))
+                    (lis::vec3-norm double))
+                 1d-6)))
+      ;; The ship from 50 m
+      (lis::map-view-cycle-focus! view)
+      (lis::map-view-zoom! view 1d-20)
+      (lis::map-camera-update! camera view state nil)
+      (is = 50d0 (lis::map-view-distance view))
+      (let* ((eye (eye))
+             (r (lis::render-state-r state))
+             (double (lis::vec3-sub r eye)))
+        (lis::eye-relative-single r eye single 0)
+        (true (< (loop for i below 3 maximize (abs (- (aref single i) (aref double i)))) 1d-4))))))
+
+(define-test map-camera-update-conses-nothing
+  (let* ((state (start-render-state))
+         (view (opened-map state))
+         (camera (lis::make-camera)))
+    (is = 0 (least-bytes-consed
+             (lambda () (dotimes (i 1000)
+                          (lis::map-camera-update! camera view state 0.016d0)))))))

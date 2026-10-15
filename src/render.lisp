@@ -277,7 +277,8 @@ relative to the eye, decision 5: Precision of positions). Returns the block
 and the four draw forms."
   (destructuring-bind (width height) extent
     (let ((data (frame-renderer-uniforms renderer))
-          (eye (camera-eye camera (render-state-r state) (frame-renderer-eye renderer)))
+          (eye (let ((eye (frame-renderer-eye renderer)))
+                 (camera-eye camera (camera-anchor-position! eye camera state) eye)))
           (sun (render-state-sun state))
           (matrix (render-state-earth-matrix state)))
       (camera-clip-rows! data camera (/ width height))

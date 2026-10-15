@@ -49,6 +49,13 @@ reversed-Z with an infinite far plane."
   "The eye: ANCHOR-POSITION + the camera's offset, in double."
   (vec3-add! out anchor-position (camera-offset camera)))
 
+(defun camera-anchor-position! (out camera render-state)
+  "The camera's anchor in the render state: the ship's r or Earth's centre."
+  (declare (type vec3 out) (type camera camera))
+  (ecase (camera-anchor camera)
+    (:ship (replace out (render-state-r render-state)))
+    (:earth (vec3-set! out 0d0 0d0 0d0))))
+
 (defun eye-relative-single (p eye out index)
   "P - EYE in double, then single, into OUT at INDEX."
   (relative-single p eye out index))
@@ -220,3 +227,131 @@ corner of a part's box in *ship-parts*."
              (min (float *outside-max-distance* 1d0)
                   (* (outside-view-target view) (expt *outside-zoom-step* (- notches))))))
   view)
+
+
+;;; The map view (decision 83: Map camera: framing on opening, focus, zoom,
+;;; drag and exposure): the eye at the focus + distance (cos el cos az e1 +
+;;; cos el sin az e2 + sin el n) in a basis fixed when the map opens, looking
+;;; at the focus with n's projection as up. Game state, not the sim's.
+
+(defparameter *map-azimuth* (* -45 (/ pi 180)) "On opening (Home), radians; decision 83.")
+(defparameter *map-elevation* (* 30 (/ pi 180)) "On opening, radians above the orbit plane; decision 83.")
+(defparameter *map-opening-factor* 2.5d0 "Opening distance over max(apoapsis radius, |r|); decision 83.")
+(defparameter *map-fov* (* 50 (/ pi 180)) "Vertical, radians; decision 83.")
+(defparameter *map-min-distance-ship* 50d0 "m; decision 83.")
+(defparameter *map-min-factor-earth* 1.2d0 "Minimum distance over R⊕; decision 83.")
+(defparameter *map-max-distance* 1.5d13 "m, about 100 AU; decision 83.")
+(defparameter *map-zoom-tau* 0.15d0 "s of real time, the distance's easing in log; decision 83.")
+(defparameter *map-drag-rate* (* 0.25d0 (/ pi 180)) "Radians per pixel of right-drag; decision 83.")
+(defparameter *map-elevation-limit* (* 85 (/ pi 180)) "±, radians; decision 83.")
+(defparameter *map-degenerate-h* 1d-9 "|r × v| below this × |r||v|: n = ICRF z; decision 83.")
+(declaim (type double-float *map-azimuth* *map-elevation* *map-opening-factor* *map-fov*
+               *map-min-distance-ship* *map-min-factor-earth* *map-max-distance*
+               *map-zoom-tau* *map-drag-rate* *map-elevation-limit* *map-degenerate-h*))
+
+(defstruct (map-view (:constructor new-map-view ()))
+  (focus :earth :type (member :earth :ship))
+  (e1 (vec3 1 0 0) :type vec3)
+  (e2 (vec3 0 1 0) :type vec3)
+  (n (vec3 0 0 1) :type vec3)
+  (azimuth *map-azimuth* :type double-float)
+  (elevation *map-elevation* :type double-float)
+  (distance *map-max-distance* :type (double-float (0d0)))
+  (target *map-max-distance* :type (double-float (0d0))))
+
+(defun map-min-distance (focus)
+  "50 m around the ship, 1.2 R⊕ from Earth's centre."
+  (ecase focus
+    (:ship *map-min-distance-ship*)
+    (:earth (* *map-min-factor-earth* +radius-earth+))))
+
+(defun map-clamp-distance (view distance)
+  (max (map-min-distance (map-view-focus view)) (min *map-max-distance* distance)))
+
+(defun map-view-open! (view render-state)
+  "M or Home: the basis from the render state's r, v, focus Earth, the
+opening angles, distance and target 2.5 × max(apoapsis radius, |r|)."
+  (let* ((r (render-state-r render-state))
+         (v (render-state-v render-state))
+         (e1 (map-view-e1 view)) (e2 (map-view-e2 view)) (n (map-view-n view))
+         (rn (vec3-norm r)))
+    (vec3-cross! n r v)
+    (if (< (vec3-norm n) (* *map-degenerate-h* rn (vec3-norm v)))
+        (vec3-set! n 0d0 0d0 1d0)
+        (vec3-normalize! n n))
+    (vec3-scale! e1 r (/ rn))
+    ;; r ∥ n only in the degenerate case with r along ICRF z
+    (vec3-add-scaled! e1 e1 n (- (vec3-dot e1 n)))
+    (if (< (vec3-norm e1) 1d-9)
+        (vec3-set! e1 1d0 0d0 0d0)
+        (vec3-normalize! e1 e1))
+    (vec3-cross! e2 n e1)
+    (let* ((apoapsis (orbit-apoapsis-radius (state->orbit r v +mu-earth+ (render-state-t render-state))))
+           (distance (* *map-opening-factor* (if apoapsis (max apoapsis rn) rn))))
+      (setf (map-view-focus view) :earth
+            (map-view-azimuth view) *map-azimuth*
+            (map-view-elevation view) *map-elevation*
+            (map-view-target view) (map-clamp-distance view distance)
+            (map-view-distance view) (map-view-target view))))
+  view)
+
+(defun map-view-cycle-focus! (view)
+  "Tab: Earth ↔ the ship, keeping the basis, angles and distance, clamped to
+the new focus's range."
+  (setf (map-view-focus view) (if (eq (map-view-focus view) :earth) :ship :earth)
+        (map-view-target view) (map-clamp-distance view (map-view-target view))
+        (map-view-distance view) (map-clamp-distance view (map-view-distance view)))
+  view)
+
+(defun map-view-zoom! (view factor)
+  "The target distance × FACTOR, clamped: the wheel 1.2^(−notches), Page-up
+1/10, Page-down 10."
+  (setf (map-view-target view)
+        (map-clamp-distance view (* (map-view-target view) (float factor 1d0))))
+  view)
+
+(defun map-view-drag! (view dx dy)
+  "Right-drag by DX, DY pixels with decision 82's signs."
+  (let ((limit *map-elevation-limit*))
+    (setf (map-view-azimuth view)
+          (- (map-view-azimuth view) (* *map-drag-rate* dx))
+          (map-view-elevation view)
+          (max (- limit) (min limit (- (map-view-elevation view) (* *map-drag-rate* dy)))))
+    view))
+
+(declaim (inline map-ease-distance))
+(defun map-ease-distance (distance target elapsed)
+  "DISTANCE eased towards TARGET in log over ELAPSED real seconds; TARGET
+when ELAPSED is nil."
+  (declare (type (double-float (0d0)) distance target) (type (or null real) elapsed))
+  (if elapsed
+      (* target (exp (* (log (/ distance target))
+                        (exp (- (/ (float elapsed 1d0) *map-zoom-tau*))))))
+      target))
+
+(defun map-camera-update! (camera view render-state elapsed)
+  "Ease VIEW's distance over ELAPSED real seconds (snap when nil) and pose
+CAMERA anchored on the focus, looking at it with n's projection as up, 50°
+vertical. Conses nothing."
+  (declare (optimize speed) (type camera camera) (type map-view view)
+           (type (or null double-float) elapsed) (ignore render-state))
+  (setf (map-view-distance view)
+        (map-ease-distance (map-view-distance view) (map-view-target view) elapsed))
+  (let ((d (make-vec3)) (x (make-vec3)) (y (make-vec3)) (z (make-vec3))
+        (az (map-view-azimuth view)) (el (map-view-elevation view)))
+    (declare (dynamic-extent d x y z))
+    (let ((ce (cos el)))
+      (vec3-scale! d (map-view-e1 view) (* ce (cos az)))
+      (vec3-add-scaled! d d (map-view-e2 view) (* ce (sin az)))
+      (vec3-add-scaled! d d (map-view-n view) (sin el)))
+    (vec3-scale! (camera-offset camera) d (map-view-distance view))
+    ;; forward towards the focus; down is −n without its forward part
+    (vec3-scale! x d -1d0)
+    (vec3-scale! z (map-view-n view) -1d0)
+    (vec3-add-scaled! z z x (- (vec3-dot z x)))
+    (vec3-normalize! z z)
+    (vec3-cross! y z x)
+    (quat-from-basis! (camera-orientation camera) x y z)
+    (setf (camera-anchor camera) (map-view-focus view)
+          (camera-field-of-view camera) *map-fov*)
+    camera))

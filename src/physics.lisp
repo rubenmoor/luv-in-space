@@ -27,7 +27,7 @@
 
 ;;; Gravity
 
-(declaim (inline third-body-add! gravity-into!))
+(declaim (inline third-body-add! earth-gravity-into! gravity-into!))
 
 (defun third-body-add! (a r d mu)
   "a += μ ((d − r)/|d − r|³ − d/|d|³): a third body at d, direct minus
@@ -44,6 +44,42 @@ indirect term."
                  (+ (aref a 1) (- (* ks sy) (* kd dy)))
                  (+ (aref a 2) (- (* ks sz) (* kd dz)))))))
 
+(defun earth-gravity-into! (a r model moon sun)
+  "gravity-into! in Earth's frame with the Moon and the Sun already at
+MOON and SUN (m, Earth-centred; read only for :full), so a caller with
+several points at one time reads the ephemeris once."
+  (declare (type vec3 a r moon sun) (type keyword model))
+  (if (eq model :none)
+      (vec3-set! a 0d0 0d0 0d0)
+      (with-vec3 (((x y z) r))
+        (let* ((r2 (+ (* x x) (* y y) (* z z)))
+               (k (/ +mu-earth+ (* r2 (sqrt (the (double-float 0d0) r2))))))
+          (if (eq model :point)
+              (vec3-set! a (- (* k x)) (- (* k y)) (- (* k z)))
+              ;; a = −μ r/r³ − 1.5 J2 μ R²/r⁵ ((1 − 5 z²/r²) x, … y, (3 − 5 z²/r²) z)
+              (let* ((c (/ (* 1.5d0 +j2-earth+ +radius-earth+ +radius-earth+) r2))
+                     (z2 (* 5 (/ (* z z) r2)))
+                     (kxy (* k (+ 1 (* c (- 1 z2)))))
+                     (kz (* k (+ 1 (* c (- 3 z2))))))
+                (vec3-set! a (- (* kxy x)) (- (* kxy y)) (- (* kz z)))
+                (ecase model
+                  (:j2)
+                  (:full
+                   (third-body-add! a r moon +mu-moon+)
+                   (third-body-add! a r sun +mu-sun+)))
+                a))))))
+
+(declaim (inline third-bodies-into!))
+
+(defun third-bodies-into! (moon sun time)
+  "The Moon's and the Sun's positions at TIME (m, Earth-centred) into MOON
+and SUN."
+  (declare (type vec3 moon sun) (type double-float time))
+  (let ((dv (make-vec3)))
+    (declare (dynamic-extent dv))
+    (body-state-into moon dv :moon time :earth)
+    (body-state-into sun dv :sun time :earth)))
+
 (defun gravity-into! (a r time model &optional (central :earth))
   "Write the gravitational acceleration at r (m, CENTRAL's frame) at TIME
 into a. MODEL: :none, :point (μ⊕), :j2 (with J2, pole along ICRF z),
@@ -51,29 +87,11 @@ into a. MODEL: :none, :point (μ⊕), :j2 (with J2, pole along ICRF z),
   (declare (type vec3 a r) (type double-float time) (type keyword model central))
   (ecase central
     (:earth
-     (if (eq model :none)
-         (vec3-set! a 0d0 0d0 0d0)
-         (with-vec3 (((x y z) r))
-           (let* ((r2 (+ (* x x) (* y y) (* z z)))
-                  (k (/ +mu-earth+ (* r2 (sqrt (the (double-float 0d0) r2))))))
-             (if (eq model :point)
-                 (vec3-set! a (- (* k x)) (- (* k y)) (- (* k z)))
-                 ;; a = −μ r/r³ − 1.5 J2 μ R²/r⁵ ((1 − 5 z²/r²) x, … y, (3 − 5 z²/r²) z)
-                 (let* ((c (/ (* 1.5d0 +j2-earth+ +radius-earth+ +radius-earth+) r2))
-                        (z2 (* 5 (/ (* z z) r2)))
-                        (kxy (* k (+ 1 (* c (- 1 z2)))))
-                        (kz (* k (+ 1 (* c (- 3 z2))))))
-                   (vec3-set! a (- (* kxy x)) (- (* kxy y)) (- (* kz z)))
-                   (ecase model
-                     (:j2)
-                     (:full
-                      (let ((d (make-vec3)) (dv (make-vec3)))
-                        (declare (dynamic-extent d dv))
-                        (body-state-into d dv :moon time :earth)
-                        (third-body-add! a r d +mu-moon+)
-                        (body-state-into d dv :sun time :earth)
-                        (third-body-add! a r d +mu-sun+))))
-                   a))))))))
+     (let ((moon (make-vec3)) (sun (make-vec3)))
+       (declare (dynamic-extent moon sun))
+       (when (eq model :full)
+         (third-bodies-into! moon sun time))
+       (earth-gravity-into! a r model moon sun)))))
 
 ;;; The coarse step rule (docs/architecture.md "Integrator"); the fine step
 ;;; is +fine-step+.
@@ -173,8 +191,13 @@ at each stage, torque is ignored, q and ω are set from it at t + h."
          (f (make-vec3)) (tau (make-vec3))
          (r (make-vec3)) (v (make-vec3)) (w (make-vec3)) (a (make-vec3))
          (iw (make-vec3)) (tmp (make-vec3)) (q (make-quat)) (dq (make-quat))
-         (time-cell (make-array 1 :element-type 'double-float)))
-    (declare (dynamic-extent y ys k1 k2 k3 k4 f tau r v w a iw tmp q dq time-cell)
+         (time-cell (make-array 1 :element-type 'double-float))
+         ;; The Moon and the Sun at t, t + h/2 (stages 2 and 3) and t + h
+         (moon0 (make-vec3)) (sun0 (make-vec3))
+         (moon1 (make-vec3)) (sun1 (make-vec3))
+         (moon2 (make-vec3)) (sun2 (make-vec3)))
+    (declare (dynamic-extent y ys k1 k2 k3 k4 f tau r v w a iw tmp q dq time-cell
+                             moon0 sun0 moon1 sun1 moon2 sun2)
              (type double-float scale mdot))
     (vec3-scale! f force-body scale)
     (vec3-scale! tau torque-body scale)
@@ -183,11 +206,16 @@ at each stage, torque is ignored, q and ω are set from it at t + h."
     (replace y (ship-state-q state) :start1 6)
     (replace y (ship-state-w state) :start1 10)
     (setf (aref y 13) m-p0)
-    (flet ((derivative! (k y time)
-             (declare (type state-vector k y) (type double-float time))
+    (when (eq model :full)
+      (let ((h/2 (* 0.5d0 h)))
+        (third-bodies-into! moon0 sun0 time)
+        (third-bodies-into! moon1 sun1 (+ time h/2))
+        (third-bodies-into! moon2 sun2 (+ time h))))
+    (flet ((derivative! (k y time moon sun)
+             (declare (type state-vector k y) (type double-float time) (type vec3 moon sun))
              (vec3-set! r (aref y 0) (aref y 1) (aref y 2))
              (vec3-set! v (aref y 3) (aref y 4) (aref y 5))
-             (gravity-into! a r time model)
+             (earth-gravity-into! a r model moon sun)
              (if attitude-fn
                  (progn (setf (aref time-cell 0) time)
                         (funcall attitude-fn q tmp time-cell r v))
@@ -213,10 +241,10 @@ at each stage, torque is ignored, q and ω are set from it at t + h."
              k))
       (declare (inline derivative!))
       (let ((h/2 (* 0.5d0 h)))
-        (derivative! k1 y time)
-        (derivative! k2 (state-vector-axpy! ys y k1 h/2) (+ time h/2))
-        (derivative! k3 (state-vector-axpy! ys y k2 h/2) (+ time h/2))
-        (derivative! k4 (state-vector-axpy! ys y k3 h) (+ time h))
+        (derivative! k1 y time moon0 sun0)
+        (derivative! k2 (state-vector-axpy! ys y k1 h/2) (+ time h/2) moon1 sun1)
+        (derivative! k3 (state-vector-axpy! ys y k2 h/2) (+ time h/2) moon1 sun1)
+        (derivative! k4 (state-vector-axpy! ys y k3 h) (+ time h) moon2 sun2)
         (dotimes (i 14)
           (setf (aref y i)
                 (+ (aref y i)

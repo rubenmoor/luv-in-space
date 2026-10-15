@@ -994,6 +994,39 @@ Skua Yard 5 on its rails, at its velocity."
     (true (> calls 100))
     (true (equalp whole (lis::autopilot-job-plan job)))))
 
+(defun rendezvous-places (keys)
+  "\"Rendezvous: <place>\" for KEYS from the start state (:j2, 48 h) through
+the clock's job in 300-unit calls: planned, no refusal, within 4 % + 10
+m/s of the search's total (Highport's 12-minute :departure loses ~3 % to its
+finite burn, decision 165; J2's physics costs Tern Station 8 m/s over the
+search's Kepler, decision 161)."
+  (dolist (key keys)
+    (let ((sim (model-sim :j2))
+          (job nil))
+      (setf job (lis::new-autopilot-job sim))
+      (lis::autopilot-job-start! job sim :rendezvous (list key))
+      (loop for stage = (lis::autopilot-job-work! job 300)
+            do (true (<= (lis::autopilot-job-work job) 300))
+            until (member stage '(:done :refused)))
+      (let ((plan (lis::autopilot-job-plan job)))
+        (is eq :done (lis::autopilot-job-stage job) "~A: ~A" key (lis::autopilot-job-reason job))
+        (when plan
+          (true (equal '(:departure :arrival) (last (plan-labels plan) 2)) "~A ~A" key (plan-labels plan))
+          (check-arrival job lis::*rendezvous-stall-tolerance*)
+          (true (<= (plan-dv plan) (+ (* 1.04d0 (job-search-total job)) 10d0))
+                "~A ~,2F m/s, search ~,2F" key (plan-dv plan) (job-search-total job)))))))
+
+(define-test rendezvous-plan-highport
+  ;; From the start state (:j2, 48 h) through the job: 2,850.62 m/s against
+  ;; the search's 2,766.25 (its second candidate; the first fails the path
+  ;; check), 359 ms. Before decision 165 the :departure's 718 s burn missed
+  ;; the aim point by 24,000 km and its cut's tick 7-13 km: "NEEDS 35774
+  ;; KG". All five places for task 162's slow command, measured (ms): Tern
+  ;; Station 160 (19.35 m/s), Fulmar Depot 198 (62.63), Highport 359, K-17
+  ;; 242 (228.37), Skua Yard 217 (2,850.78):
+  ;; (rendezvous-places '(:tern-station :fulmar-depot :highport :k-17 :skua-yard)).
+  (rendezvous-places '(:highport)))
+
 (define-test rendezvous-menu-rows
   ;; The five RDV rows after plan 26's, in *places*' order; RDV TARGET only
   ;; with a target not a place; Right ×3 → 84 H, 240 H the top, 12 H the

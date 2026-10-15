@@ -1038,7 +1038,10 @@ the fixed ones (autopilot-job-fixed)."
           (cond ((job-retime-due-p job) (job-retime-start! job))
                 ((and rendezvous
                       (> (autopilot-job-iteration job) 0)
-                      (> largest (autopilot-job-last-largest job))
+                      (or (> largest (autopilot-job-last-largest job))
+                          ;; lost or aborted: its 1,000 is no gain
+                          (sim-loss (prediction-sim (autopilot-job-shot job)))
+                          (prediction-abort (autopilot-job-shot job)))
                       (< (autopilot-job-halvings job) *rendezvous-halvings*))
                  ;; worse: back half the step off and shoot again
                  (let ((half (* 0.5d0 (autopilot-job-fraction job)))
@@ -2867,7 +2870,70 @@ none, or costs over *transfer-guess-ratio* times the search's plus
                          (multiple-value-bind (ta na ra) (lvlh-axes r v)
                            (setf (aref params (* 3 i)) (vec3-dot dv ta)
                                  (aref params (+ (* 3 i) 1)) (vec3-dot dv na)
-                                 (aref params (+ (* 3 i) 2)) (vec3-dot dv ra))))))))))
+                                 (aref params (+ (* 3 i) 2)) (vec3-dot dv ra)))))
+                (job-departure-finite! job r-in v-a normal))))))
+    job))
+
+;;; The :departure's finite burn (decision 165): a burn of minutes at a
+;;; fixed attitude leaves the ship off the impulsive transfer, and a long,
+;;; eccentric one (Highport's) misses by 10,000s of km.
+
+(defparameter *departure-corrections* 4
+  "Flights of the :departure burn alone that correct the guess, at most.")
+(defparameter *departure-correction-tolerance* 0.01d0
+  "m/s: a correction under this ends them.")
+(declaim (type fixnum *departure-corrections*) (type double-float *departure-correction-tolerance*))
+
+(defun job-departure-finite! (job r-in v-a normal)
+  "JOB's :departure and :arrival guess corrected for the :departure's finite
+burn: the burn flown from the lead in the scratch to its cut, the transfer
+from there to R-IN at the :arrival's node by coast-lambert-into! (NORMAL,
+the ship's plane), its velocity less the cut's added to the :departure's Δv,
+the :arrival's Δv V-A less its end's; up to *departure-corrections* times,
+until the correction is under *departure-correction-tolerance*. JOB."
+  (let* ((d (autopilot-job-fixed job))
+         (times (autopilot-job-node-times job))
+         (t-a (aref times (1+ d)))
+         (states (autopilot-job-node-states job))
+         (params (autopilot-job-params job))
+         (v1 (make-vec3)) (v2 (make-vec3)) (dv (make-vec3)))
+    (dotimes (pass *departure-corrections*)
+      (job-candidate! job)
+      (let ((scratch (shot-sim-assign! (autopilot-job-scratch job) (autopilot-job-lead job)
+                                       (autopilot-job-candidate job))))
+        (setf (sim-plan-index scratch) d)
+        (loop while (and (null (sim-loss scratch)) (< (sim-t scratch) t-a)
+                         (sim-plan scratch) (= (sim-plan-index scratch) d)
+                         (member (sim-plan-phase scratch) '(:pending :holding :burning)))
+              do (sim-step-ticks! scratch (if (plan-rcs-burning-p scratch)
+                                              *prediction-rcs-level*
+                                              *prediction-level*)
+                                  t-a))
+        (let* ((ship (sim-ship scratch))
+               (t-c (sim-t scratch))
+               (r-c (ship-state-r ship))
+               (v-c (ship-state-v ship)))
+          (unless (and (null (sim-loss scratch)) (< t-c t-a)
+                       (coast-lambert-into! v1 v2 r-c t-c r-in (- t-a t-c) normal
+                                            (make-coast-group (coast-rails r-c v-c t-c))))
+            (return))
+          (vec3-sub! dv v1 v-c)
+          (let ((r (subseq states (* 6 d) (+ (* 6 d) 3)))
+                (v (subseq states (+ (* 6 d) 3) (+ (* 6 d) 6))))
+            (multiple-value-bind (ta na ra) (lvlh-axes r v)
+              (incf (aref params (* 3 d)) (vec3-dot dv ta))
+              (incf (aref params (+ (* 3 d) 1)) (vec3-dot dv na))
+              (incf (aref params (+ (* 3 d) 2)) (vec3-dot dv ra))))
+          (let ((i (1+ d))
+                (arrival (vec3-sub v-a v2)))
+            (replace states r-in :start1 (* 6 i))
+            (replace states v2 :start1 (+ (* 6 i) 3))
+            (multiple-value-bind (ta na ra) (lvlh-axes r-in v2)
+              (setf (aref params (* 3 i)) (vec3-dot arrival ta)
+                    (aref params (+ (* 3 i) 1)) (vec3-dot arrival na)
+                    (aref params (+ (* 3 i) 2)) (vec3-dot arrival ra))))
+          (when (< (vec3-norm dv) *departure-correction-tolerance*)
+            (return)))))
     job))
 
 ;;; Re-timing (decision 161, refining decision 158): the target, promoted
@@ -3295,7 +3361,11 @@ it was, not re-timed again."
                    (multiple-value-bind (ta na ra) (lvlh-axes r v)
                      (setf (aref params (* 3 i)) (vec3-dot dv ta)
                            (aref params (+ (* 3 i) 1)) (vec3-dot dv na)
-                           (aref params (+ (* 3 i) 2)) (vec3-dot dv ra))))))))
+                           (aref params (+ (* 3 i) 2)) (vec3-dot dv ra))))
+          (let ((*coast-j2* (model-coast-j2 (job-planning-sim job)))
+                (*coast-delta* nil))
+            (job-departure-finite! job r-a (vec3-add v2 dv2)
+                                   (vec3-normalize (vec3-cross r-d v-d))))))))
   (unless (autopilot-job-retime-chosen job)
     (setf (autopilot-job-retimes job) *retime-max*))
   (setf (autopilot-job-stage job) :iterate)

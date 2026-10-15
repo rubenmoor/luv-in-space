@@ -919,7 +919,7 @@ step's end that cut it, (:coast t i hold) that engaged the coast hold."
                  (when (and (eq phase :pending) (member phase1 '(:holding :burning)))
                    (push (list :hold t0 i (lis::controls-hold c)) events))
                  (when (and (member phase '(:pending :holding)) (eq phase1 :burning))
-                   (push (list :on t0 i (lis::controls-throttle c)) events))
+                   (push (list :on t0 i (lis::controls-throttle c) dv) events))
                  (when (and (> throttle 0d0) (= (lis::controls-throttle c) 0d0))
                    (push (list :cut (lis::sim-t sim) i dv cutoff
                                (lis::ship-state-dv (lis::sim-ship sim)))
@@ -934,7 +934,8 @@ step's end that cut it, (:coast t i hold) that engaged the coast hold."
   (multiple-value-bind (sim r2) (plan-sim)
     (let* ((burns (lis::burn-plan-burns (lis::sim-plan sim)))
            (events (fly-plan sim level-fn))
-           (cuts '()))
+           (cuts '())
+           (start-dv 0d0))
       (is equal '(:hold :on :cut :coast :hold :on :cut :coast) (mapcar #'first events))
       (dolist (e events)
         (destructuring-bind (kind time i &rest data) e
@@ -943,11 +944,16 @@ step's end that cut it, (:coast t i hold) that engaged the coast hold."
               (:hold (is = (lis::planned-burn-hold-at burn) time)
                (is eq :inertial (first data)))
               (:on (is = (lis::planned-burn-start burn) time)
-               (is = 1d0 (first data)))
+               ;; full, lowered so the burn lasts whole ticks (decision 165)
+               (true (< (- 1d0 1d-3) (first data) 1d0) "~F" (first data))
+               (setf start-dv (second data)))
               (:cut (destructuring-bind (dv-before cutoff dv-after) data
                       (true (on-grid-p time))
                       (true (< dv-before cutoff) "~F ~F" dv-before cutoff)
                       (true (<= cutoff dv-after (+ cutoff 0.1d0)) "~F ~F" cutoff dv-after)
+                      ;; the cut on its tick's end: the planned Δv, no tick's more
+                      (true (< (abs (- (- dv-after start-dv) (lis::planned-burn-dv burn))) 1d-4)
+                            "~F of ~F" (- dv-after start-dv) (lis::planned-burn-dv burn))
                       (push time cuts)))
               (:coast (is eq :prograde (first data)))))))
       (is eq :done (lis::sim-plan-phase sim))

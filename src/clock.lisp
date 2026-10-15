@@ -424,6 +424,26 @@ velocity is off its shot by more than max(*cut-error-min*,
        (> (plan-cut-error sim burn)
           (max *cut-error-min* (* *cut-error-fraction* (planned-burn-dv burn))))))
 
+(declaim (inline burn-tick-throttle))
+(defun burn-tick-throttle (throttle dv mass)
+  "(values throttle margin): THROTTLE lowered (at most one tick's share) so
+an engine burn of DV from MASS lasts whole ticks, its cut-off then DV less
+MARGIN, half its last tick's Δv: the cut lands on its tick's end, the Δv
+flown continuous in DV (decision 165). THROTTLE as it was where the lowered
+one is under *throttle-min*."
+  (declare (type double-float throttle dv mass))
+  (let* ((ve (engine-exhaust-velocity))
+         (propellant (* mass (- 1d0 (exp (- (/ dv ve))))))
+         (full (/ (* propellant ve) *engine-thrust*))
+         (ticks (max 1d0 (fceiling (/ full (* throttle +fine-step+)))))
+         (lowered (/ full (* ticks +fine-step+)))
+         (k (if (< lowered *throttle-min*) throttle lowered)))
+    (declare (type double-float ve propellant full ticks lowered k))
+    (values k (if (< lowered *throttle-min*)
+                  0d0
+                  (/ (* 0.5d0 k *engine-thrust* +fine-step+)
+                     (max 1d0 (- mass propellant)))))))
+
 (defun plan-step-controls! (sim)
   "At the start of SIM's step, before the cut-off check: from the current
 burn's hold-at its inertial hold (roll offset 0); from its start the
@@ -466,8 +486,12 @@ turn. SIM; conses nothing but at a measured cut."
                    (if rcs
                        (progn (controls-set-translation-key controls :x rcs)
                               (setf (sim-plan-rcs-target sim) (+ odometer dv)))
-                       (progn (controls-set-throttle controls (planned-burn-throttle burn))
-                              (setf (sim-cutoff sim) (+ odometer dv))))))
+                       (multiple-value-bind (throttle margin)
+                           (burn-tick-throttle (planned-burn-throttle burn) dv
+                                               (+ *ship-dry-mass* (ship-state-m-p ship)
+                                                  (with-stack-load (load sim) (stack-load-mass load))))
+                         (controls-set-throttle controls throttle)
+                         (setf (sim-cutoff sim) (+ odometer (- dv margin)))))))
                (setf (sim-plan-phase sim) :burning
                      (sim-plan-resume sim) 0d0))
               (:burning

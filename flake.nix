@@ -30,12 +30,13 @@
       systems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
       forAll = f: nixpkgs.lib.genAttrs systems (system: f system (luv.lib.environmentFor system));
 
-      # Our sources only, so docs and tasks.sql don't rebuild the game.
+      # Our sources and assets only, so docs and tasks.sql don't rebuild the game.
       gameSource = nixpkgs.lib.fileset.toSource {
         root = ./.;
         fileset = nixpkgs.lib.fileset.unions [
           ./luv-in-space.asd
           ./src
+          ./assets
           ./scripts/build.lisp
         ];
       };
@@ -46,6 +47,7 @@
         fileset = nixpkgs.lib.fileset.unions [
           ./luv-in-space.asd
           ./src
+          ./assets
           ./tests
           ./scripts/test
         ];
@@ -143,7 +145,11 @@
             find "$out/lib/fasl" -type f \( -name '*__grovel' \
               -o -name '*__grovel.c' -o -name '*__grovel.o' \) -delete
             cd "$out"
+            # The assets outlive the build tree (decision 13: Asset storage and attribution).
+            mv "$out/share/${name}/assets" "$TMPDIR/assets"
             rm -rf "$out/share/${name}"
+            mkdir -p "$out/share/${name}"
+            mv "$TMPDIR/assets" "$out/share/${name}/assets"
 
             cat > "$out/bin/${name}" <<'LUV_LAUNCHER'
             #!${pkgs.runtimeShell}
@@ -152,6 +158,7 @@
             unset LD_LIBRARY_PATH
             ${exportRuntimeEnvironment}
             export PATH=${lib.escapeShellArg runtimePath}:"''${PATH:-}"
+            export LUV_IN_SPACE_ASSETS=${lib.escapeShellArg "${output}/share/${name}/assets/"}
             asdf_output_translations="''${ASDF_OUTPUT_TRANSLATIONS:-}"
             ${environment.developmentEnvironmentHook}
             luv_activate_native_environment

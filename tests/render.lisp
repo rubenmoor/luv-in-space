@@ -128,6 +128,33 @@
   (let ((offset (* 4 (+ (* y width) x))))
     (/ (+ (aref pixels offset) (aref pixels (+ offset 1)) (aref pixels (+ offset 2))) 3)))
 
+(defun pixel-red-blue (pixels format width x y)
+  "Red and blue bytes at X, Y of packed PIXELS in FORMAT (RGBA or BGRA order)."
+  (let ((offset (* 4 (+ (* y width) x)))
+        (bgra (search "BGRA" (string format))))
+    (values (aref pixels (+ offset (if bgra 2 0)))
+            (aref pixels (+ offset (if bgra 0 2))))))
+
+(defun pixel-colour (pixels width x y)
+  (let ((offset (* 4 (+ (* y width) x))))
+    (list (aref pixels offset) (aref pixels (+ offset 1)) (aref pixels (+ offset 2)))))
+
+(defun pixel-mode (pixels width from to)
+  "The commonest colour in rows FROM below TO, as a list of three bytes."
+  (let ((counts (make-hash-table :test #'equal)))
+    (loop for y from from below to
+          do (dotimes (x width) (incf (gethash (pixel-colour pixels width x y) counts 0))))
+    (loop with best and most = 0
+          for colour being the hash-keys of counts using (hash-value count)
+          when (> count most) do (setf best colour most count)
+          finally (return best))))
+
+(defun rows-unlike (pixels width from to colour)
+  "The fraction of pixels in rows FROM below TO other than COLOUR."
+  (/ (loop for y from from below to
+           sum (loop for x below width count (not (equal colour (pixel-colour pixels width x y)))))
+     (float (* width (- to from)))))
+
 (defun rows-luminance (pixels width from to)
   "Mean luminance of rows FROM below TO."
   (/ (loop for y from from below to
@@ -158,14 +185,31 @@
                (true signature-p)
                (is = width png-width)
                (is = height png-height))
-             ;; Earth below the horizon, sunlit at the start; space above.
-             (let ((upper (rows-luminance pixels width 0 (floor height 3)))
-                   (lower (rows-luminance pixels width (- height (floor height 3)) height)))
-               (true (> lower (+ upper 20)) "lower third ~,1F, upper ~,1F" lower upper))
+             ;; Earth below the horizon, sunlit at the start; space above. The
+             ;; Blue Marble's Pacific is dark, so: Earth's pixels differ from
+             ;; the background (the upper third's commonest colour) and are
+             ;; brighter than it.
+             (let* ((rows (floor height 3))
+                    (background (pixel-mode pixels width 0 rows))
+                    (upper (rows-unlike pixels width 0 rows background))
+                    (lower (rows-unlike pixels width (- height rows) height background))
+                    (lit (rows-luminance pixels width (- height rows) height))
+                    (dark (/ (reduce #'+ background) 3)))
+               (true (> lower 0.95) "lower third ~,3F unlike the background" lower)
+               (true (< upper 0.5) "upper third ~,3F unlike the background" upper)
+               (true (> lit (+ dark 2)) "lower third ~,1F, background ~,1F" lit dark))
              (true (find-if #'plusp pixels) "fully black frame"))
            (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))
-           ;; Nadir: the sub-ship point fills the centre.
-           (let ((pixels (nth-value 3 (lis::capture-game-state game png :frames 1
-                                                                        :camera-fn #'nadir-camera))))
-             (true (> (pixel-luminance pixels width (floor width 2) (floor height 2)) 20)
-                   "the nadir centre is dark"))))))))
+           ;; Nadir: the sub-ship point fills the centre, open Pacific.
+           (multiple-value-bind (path w h pixels format)
+               (lis::capture-game-state game png :frames 1 :camera-fn #'nadir-camera)
+             (declare (ignore path w h))
+             (let ((sim (lis::new-game-sim)))
+               (multiple-value-bind (latitude longitude)
+                   (lis::latitude-longitude :earth (lis::ship-state-r (lis::sim-ship sim))
+                                            (lis::sim-t sim))
+                 (true (< (abs latitude) 0.01) "sub-ship latitude ~F" latitude)
+                 (true (< (/ (* 160 pi) 180) longitude pi) "sub-ship longitude ~F" longitude)))
+             (multiple-value-bind (red blue) (pixel-red-blue pixels format width
+                                                             (floor width 2) (floor height 2))
+               (true (> blue red) "the nadir centre: red ~D, blue ~D" red blue)))))))))

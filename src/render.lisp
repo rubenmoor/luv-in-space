@@ -123,6 +123,8 @@ is also its normal."
 (defparameter *background* '(0.0 0.0 0.004) "Linear RGB the frame is cleared to.")
 (defparameter *earth-stacks* 64)
 (defparameter *earth-slices* 128)
+(defparameter *earth-texture* "earth/blue-marble-5400.jpg"
+  "decision 40: Earth's look and drag.")
 
 (defconstant +frame-uniform-floats+ 40 "shaders.lisp's frame block: ten vec4s.")
 
@@ -131,6 +133,8 @@ is also its normal."
    (layout :initarg :layout :reader frame-renderer-layout)
    (earth :initarg :earth :reader frame-renderer-earth)
    (earth-count :initarg :earth-count :reader frame-renderer-earth-count)
+   (earth-view :initarg :earth-view :reader frame-renderer-earth-view)
+   (earth-sampler :initarg :earth-sampler :reader frame-renderer-earth-sampler)
    (stars :initarg :stars :reader frame-renderer-stars)
    (star-count :initarg :star-count :reader frame-renderer-star-count)
    (label :initarg :label :reader frame-renderer-label)
@@ -148,10 +152,16 @@ is also its normal."
   (let* ((renderer (make-instance 'frame-renderer :device device :context context
                                                   :format (luv:canvas-format context)))
          (layout (gpu-create renderer (luv:make-bind-group-layout-descriptor
-                                       :entries '((:binding 0 :type :uniform-buffer)))))
+                                       :entries '((:binding 0 :type :uniform-buffer)
+                                                  (:binding 1 :type :texture)
+                                                  (:binding 2 :type :sampler)))))
          (earth (uv-sphere :stacks *earth-stacks* :slices *earth-slices*))
          (stars (single-floats (star-vertices)))
          (label (single-floats (label-vertices *label*))))
+    (multiple-value-bind (texture view sampler)
+        (texture-from-pixels renderer (load-image-pixels (asset-path *earth-texture*)) "earth")
+      (declare (ignore texture))
+      (reinitialize-instance renderer :earth-view view :earth-sampler sampler))
     (reinitialize-instance
      renderer
      :layout layout
@@ -188,7 +198,11 @@ texture's are free again once it is acquired (luv's canvas-frame-resource-cache)
                (cons buffer
                      (luv:create device (luv:make-bind-group-descriptor
                                          :layout (frame-renderer-layout renderer)
-                                         :entries `((:binding 0 :resource ,buffer))))))))))
+                                         :entries `((:binding 0 :resource ,buffer)
+                                                    (:binding 1 :resource
+                                                     ,(frame-renderer-earth-view renderer))
+                                                    (:binding 2 :resource
+                                                     ,(frame-renderer-earth-sampler renderer)))))))))))
 
 (defun forget-target (renderer target)
   "Release what the renderer keeps for TARGET, before TARGET goes."

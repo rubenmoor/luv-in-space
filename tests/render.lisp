@@ -672,7 +672,9 @@ exact (the GPU's rounding aside)."
                        "~A at ~D, ~D: ~A" what px py pixel))))
         (check (floor x) (floor y) #x40D0FF "AP diamond")
         ;; A's top row .###.: its second dot spans x + 10 .. 12, y − 7 .. −5
-        (check (floor (+ x 10 1)) (floor (- y 6)) #xE8E4D8 "AP label"))))
+        (check (floor (+ x 10 1)) (floor (- y 6)) #xE8E4D8 "AP label")
+        ;; its first, unlit dot: the backing (decision 104)
+        (check (floor (+ x 8 1)) (floor (- y 6)) #x0A0C0C "AP label backing"))))
   (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))
   (lis::game-load-state! game (lis::new-game-sim)))
 

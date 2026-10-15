@@ -226,12 +226,35 @@ else nil when both overlap a label placed before. Conses nothing."
                        (setf (map-marker-label-side marker) :left (map-marker-label-x marker) left)))))))))
     markers))
 
+(defparameter *label-backing-colour* #x0A0C0C "Behind map labels, near-black, sRGB; decision 104.")
+(defparameter *label-backing-px* 2 "The backing's margin around a label's cells, px; decision 104.")
+(declaim (type (unsigned-byte 24) *label-backing-colour*) (type fixnum *label-backing-px*))
+
+(defun label-backing! (out string x y &optional (dot *label-dot-px*))
+  "An opaque *label-backing-colour* box behind label-at!'s STRING at X, Y:
+its cells grown by *label-backing-px* on every side. Conses nothing."
+  (declare (optimize speed) (type overlay-buffer out) (type string string)
+           (type single-float x y) (type fixnum dot))
+  (let* ((pad (coerce (the fixnum *label-backing-px*) 'single-float))
+         (x0 (- x pad)) (x1 (+ x (coerce (the fixnum (label-width string dot)) 'single-float) pad))
+         (h (+ (* 3.5f0 dot) pad)) (y0 (- y h)) (y1 (+ y h)))
+    (with-linear-colour (r g b) *label-backing-colour*
+      (overlay-quad! out x0 y0 x1 y0 x1 y1 x0 y1 r g b))
+    out))
+
 (defun map-marker-vertices! (out markers)
-  "MARKERS (ribbons.lisp's map-markers) into OUT: the shapes at their
-pixels, the ship's last, then the labels place-map-labels! keeps, in *marker-label-colour*, rows
-centred on the marker. Conses nothing; OUT."
+  "MARKERS (ribbons.lisp's map-markers) into OUT: the backings of the
+labels place-map-labels! keeps, then the shapes at their pixels, the ship's
+last, then the labels in *marker-label-colour*, rows centred on the marker
+(decision 104: Map labels on a near-black backing). Conses nothing; OUT."
   (declare (type overlay-buffer out) (type map-markers markers))
   (place-map-labels! markers)
+  (dotimes (i (map-markers-count markers))
+    (let ((marker (svref (map-markers-items markers) i)))
+      (when (map-marker-label-side marker)
+        (label-backing! out (map-marker-label marker)
+                        (coerce (map-marker-label-x marker) 'single-float)
+                        (coerce (map-marker-y marker) 'single-float)))))
   ;; the ship's ring, the first, on top
   (loop for i from (1- (map-markers-count markers)) downto 0
         for marker = (svref (map-markers-items markers) i)

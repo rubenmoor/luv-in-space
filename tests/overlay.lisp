@@ -75,6 +75,50 @@
     (lis::label-at! lower "moon" 0 0 #xE8E4D8)
     (is equalp (lis::overlay-floats upper) (lis::overlay-floats lower))))
 
+(defun overlay-colour-at (out x y)
+  "The linear colour of OUT's last triangle covering X, Y, the one drawn on
+top, or nil."
+  (let ((floats (lis::overlay-buffer-floats out)) (colour nil))
+    (loop for (a b c) on (overlay-points out) by #'cdddr
+          for v from 0 by 3
+          when (flet ((side (p q)
+                        (- (* (- (first q) (first p)) (- y (second p)))
+                           (* (- (second q) (second p)) (- x (first p))))))
+                 (let ((s1 (side a b)) (s2 (side b c)) (s3 (side c a)))
+                   (or (and (>= s1 0) (>= s2 0) (>= s3 0))
+                       (and (<= s1 0) (<= s2 0) (<= s3 0)))))
+            do (let ((o (+ 4 (* v lis::+overlay-vertex-floats+))))
+                 (setf colour (list (aref floats o) (aref floats (+ o 1)) (aref floats (+ o 2))))))
+    colour))
+
+(defun linear-rgb (rgb)
+  (loop for shift in '(16 8 0) collect (coerce (lis::srgb-channel-linear rgb shift) 'single-float)))
+
+(define-test label-backing
+  ;; decision 104: Map labels on a near-black backing
+  (let ((out (lis::make-overlay-buffer))
+        (markers (lis::make-map-markers))
+        (backing (linear-rgb #x0A0C0C)) (paper (linear-rgb #xE8E4D8)))
+    (let ((marker (svref (lis::map-markers-items markers) 0)))
+      (setf (lis::map-markers-count markers) 1
+            (lis::map-marker-key marker) :periapsis (lis::map-marker-kind marker) :diamond
+            (lis::map-marker-x marker) 100d0 (lis::map-marker-y marker) 50d0
+            (lis::map-marker-colour marker) #x40D0FF (lis::map-marker-label marker) "AP 2000 KM"))
+    (lis::map-marker-vertices! out markers)
+    ;; the label from x 108, rows 43 .. 57; A's top row .###.
+    (is equal backing (overlay-colour-at out 109.0 44.0))
+    (is equal paper (overlay-colour-at out 111.0 44.0))
+    (is equal backing (overlay-colour-at out 107.0 50.0) "the margin left")
+    (is equal backing (overlay-colour-at out 109.0 41.5) "the margin above")
+    (is equal backing (overlay-colour-at out (+ 108.0 (lis::label-width "AP 2000 KM") 1.5) 56.0)
+        "the margin right")
+    (false (overlay-colour-at out 109.0 40.5) "beyond the margin")
+    (is equal (linear-rgb #x40D0FF) (overlay-colour-at out 100.0 50.0) "the diamond")
+    (is = 0 (least-bytes-consed
+             (lambda () (dotimes (i 1000)
+                          (lis::overlay-clear! out)
+                          (lis::map-marker-vertices! out markers)))))))
+
 (define-test label-vertices-whole
   (let ((lit (loop for char across lis::*label*
                    sum (loop for row in (lis::glyph char) sum (count #\# row)))))

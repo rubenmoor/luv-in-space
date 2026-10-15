@@ -4846,9 +4846,9 @@ INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, crea
 - A choice the docs leave open: decide it and record it (`pm decision record`), cite it in the plan.
 - Runs after every other part; its last piece is the milestone''s Done when from a clean checkout (`nix build`, `scripts/test`, every Earth-orbit preset flown once in the running game with screenshots), and `AGENTS.md` and `docs/` against what was built; follow-ups for what does not.
 Done when: the plan exists with priority 250 and the body above.', '2026-10-15T06:03:54Z', '2026-10-15T07:37:14Z', 156, 0);
-INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (170, 23, 'create tasks for plan 23: Objects on rails and the Earth-orbit places', 'split', 'open', 1000, NULL, 'Split `plan 23: Objects on rails and the Earth-orbit places` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (170, 23, 'create tasks for plan 23: Objects on rails and the Earth-orbit places', 'split', 'done', 1000, '2026-10-15, tasks.sql: tasks 183–186 for plan 23''s four pieces; no new decisions (decision 110, decision 111 cover them)', 'Split `plan 23: Objects on rails and the Earth-orbit places` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
 done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
-tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-15T06:08:37Z', NULL, 157, 0);
+tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-15T06:08:37Z', '2026-10-15T07:38:12Z', 157, 0);
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (171, 24, 'create tasks for plan 24: Grapple, contact, berthing, towing, deliveries and refuelling', 'split', 'open', 1000, NULL, 'Split `plan 24: Grapple, contact, berthing, towing, deliveries and refuelling` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
 done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
 tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-15T06:14:24Z', NULL, 158, 0);
@@ -4885,6 +4885,81 @@ tasks for what the plan asks beyond them. A task that writes a plan gets `--kind
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (182, 35, 'create tasks for plan 35: Flight screenshots, the live runs and the Done when', 'split', 'open', 1000, NULL, 'Split `plan 35: Flight screenshots, the live runs and the Done when` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
 done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
 tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-15T07:37:10Z', NULL, 169, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (183, 23, 'Rails and attitude modes of the objects', 'work', 'open', NULL, NULL, 'Piece 1 of `plan 23: Objects on rails and the Earth-orbit places` (read the plan''s "The object" section; it is the specification here). Files: `src/physics.lisp`, `tests/physics.lisp`, `docs/architecture.md` "Rails".
+
+## What
+- `object-def` (immutable: key, display name, kind `:towable`/`:berth`/`:fixed`, mass, tensor and inverse, shapes, fixtures with free/occupied flag, attitude mode, bound, definition rails) and `object` (mutable: def, status `:rails`/`:promoted`/`:removed`, segment list, attitude mode, promoted `ship-state`, next check time, removal record); `object-assign!` conses nothing, `copy-object`, `equalp` bit for bit (`decision 110: Objects in the simulation: places.lisp''s load position, the object struct and promotion checks`).
+- Rails segment: start, end, central body (`:earth`), `orbit` at the epoch (`decision 68: Orbit elements: one struct for every conic`), J2 secular rates (`orbit-j2-rates`, Earth ellipses only), end kind `:crash`/`:horizon`.
+- `make-rails orbit start`: one segment to the first inbound crossing of R + 100 km in closed form (θ_c = −arccos((p/r_c − 1)/e), eccentric anomaly, n + Ṁ, to 1e-6 s), else to the horizon 2050-01-01; periapsis ≥ r_c: no crossing. A hyperbola gets one two-body segment to the horizon (`decision 46: Rails across spheres, hyperbolas and re-entry`).
+- `rails-state-into! r v segment time` (Ω, ω by their rates, M by n + Ṁ, Kepler from `orbits.lisp`; conses nothing).
+- `object-attitude-into! q ω def r v time` for `:lvlh`, `:sun-pointing`, `:inertial`, `:spin` as the plan defines them.
+- `object-state-into! r v q w object time` for rails (nil when removed or past a crash end); `object-def-of`, `object-key`, `object-removed-p`, `object-promoted-p`.
+
+## Tests ("Rails, orbits and frames"; new tests ≤ ~0.5 s total)
+- Kepler rails vs the two-body integrator, coarse step, 10 orbits of the drift tests'' 51.6° orbit, within the coarse position bound.
+- Rails with J2 vs the ship integrated `:j2` from the same 400 km 51.6° state: node within 0.05° after one day (short-period terms averaged over the last orbit); Ω̇ within 1e-9 relative of −(3/2) n J2 (R/p)² cos i; a polar rails orbit keeps Ω = 270° exactly.
+- 800 × 90 km from apogee: crash end at 2,603.07 s within 1e-6 s two-body, at the rates'' time with J2; perigee 1 m above r_c: no end.
+- Each mode''s ω matches a central difference of q within 1e-9 rad/s; `rails-state-into!` conses nothing.
+
+## Done when
+- Tests pass, `nix build` and `scripts/test` pass; `docs/architecture.md` "Rails" names the functions as built; "Testing" lists the tests.', '2026-10-15T07:38:08Z', NULL, 170, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (184, 23, 'The places: the twelve object definitions and the five presets', 'work', 'open', NULL, NULL, 'Piece 2 of `plan 23: Objects on rails and the Earth-orbit places` (read its "The places" section). Needs the object type of piece 1 (rails and attitude modes). Files: `src/places.lisp` (new), `luv-in-space.asd` (`places` after `ship` in both systems; `tests/places.lisp` after `tests/ship.lisp`), `tests/places.lisp` (new), docs.
+
+## What
+- `places.lisp` loads after `ship.lisp`, before `controls.lisp` (`decision 110: Objects in the simulation: places.lisp''s load position, the object struct and promotion checks`); the design''s table values as data, not recomputed at load.
+- `*objects*` in this order: Tern Station, Fulmar Depot, Derelict K-17, Highport, Skua Yard 1–6, POD 14, the rock mover; masses, tensors (with off-diagonals), shapes (with berthed scenery ships), fixtures, bounds from `docs/design.md` "Rigid bodies: attitude, mass, shapes and fixtures" and the rocks'' table (`decision 47: Rigid bodies of the places`, `decision 53: Deliveries, the stranded offer, checkpoint floors and Skua Yard''s layout`, `decision 63: POD 14 and Skua Yard''s layout from milestone 3`).
+- Elements and attitudes exactly as the plan lists them (i 90°, Ω 270°, `decision 38: Start orbit: polar`; yard M₀ values from "Layout"); K-17''s and the rocks'' axes per `decision 111: Fixture axes of Derelict K-17 and Skua Yard''s rocks`.
+- `*places*`: Tern Station, Fulmar Depot, Derelict K-17, Highport (their objects) and Skua Yard (its drop point: rails on Highport''s elements at M₀ 179.87880°, no shapes); `(place key)`, `(place-target-state-into! r v place sim)`.
+- Not here: THRIFT, TANKER 3, BAGGER 3, Peary Depot.
+
+## Tests
+- Every mass, tensor entry, shape, fixture and bound equals the design''s table.
+- Rocks'' and the cargo pod''s tensors match (2/5) m r² and the box formula within 1e-9 relative; rock radii (3m/4πρ)^(1/3) within 0.005 m.
+- Tern Station''s tensor recomputed from its parts list with `shape-tensor` and `add-mass!` within 2 % per diagonal entry (a miss: a follow-up task against the design, not a silent change).
+- Each bound ≥ farthest shape corner and every pin + 0.8 m, within 0.1 m of the table; each fixture plate 0.3 m proud of the shapes along its axis.
+- Every towable spins about +x at ≤ 0.4°/s; every object at i 90°, Ω 270°.
+- Yard offsets at the first apogee 666.7 m apart within 1 m; Skua Yard 1 29.5 km behind Highport within 0.5 km.
+- POD 14''s +x anti-parallel to its velocity at apogee within 0.01°; K-17''s +x along its orbit''s anti-normal at t₀ and after a day within 1e-9 rad.
+
+## Done when
+- Tests pass, `nix build` and `scripts/test` pass; `docs/architecture.md` "Files in load order" moves `places.lisp` after `ship.lisp` with the reason and lists what it holds; `AGENTS.md` "Layout" lists `places.lisp` and the object type in `physics.lisp`; `docs/design.md` "Rigid bodies" states K-17''s and the rocks'' axes (`decision 111`).', '2026-10-15T07:38:08Z', NULL, 170, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (185, 23, 'The sim holds the objects: promotion, demotion and stepping', 'work', 'open', NULL, NULL, 'Piece 3 of `plan 23: Objects on rails and the Earth-orbit places` (read its "The sim and the step" section). Needs pieces 1 and 2. Files: `src/clock.lisp`, `src/physics.lisp` (shared third-body reads), `tests/clock.lisp`, `tests/physics.lisp`, `docs/architecture.md`.
+
+## What
+- `sim-objects` (simple-vector in `*objects*` order), built by `new-game-sim` on definition rails with first check times; `copy-sim`, `sim-assign!` (conses nothing); `(sim-object sim key)`.
+- Step order in `sim-step-ticks!` (`decision 72: Simulation state and the one step function in clock.lisp`, `decision 110: Objects in the simulation: places.lisp''s load position, the object struct and promotion checks`): ship `flight-step!`; promoted objects by `rk4-step!` with the same h and gravity model (towable: no force/torque/ṁ, attitude integrated torque-free; berth and fixed: the mode''s kinematic attitude); `t += h`; ship crash test; (objects'' crash tests and rails removals come in piece 4); promotion and demotion.
+- `rk4-step!` takes an optional buffer of the Moon''s and Sun''s positions at t, t + h/2, t + h filled by the ship''s step and reused by the objects; the ship''s trajectory unchanged bit for bit.
+- Promotion (`decision 19: Time-warp rules`): at its next check time, d ≤ 100 km promotes (state and attitude from rails at t); else next check t + max(0, d − 100 km)/25 km/s rounded down to the grid, or every step while |v_ship| > 12 km/s. Demotion beyond 200 km: rails from `state->orbit` plus J2 rates; berth/fixed keep their mode; towable: `:spin` (q at t, ω) when ω is within 1° of a principal axis, else `:inertial`.
+
+## Tests ("Rails, orbits and frames", "Determinism")
+- Promote at t, demote next step: moves < 1 mm.
+- Tern Station promoted beside a parked ship (1 km ahead, `:full`, fine step) within 1 m of a reference integration of the station alone for 1 h game time at ×4 steps (~0.4 s; coarse step if it does not fit, saying so in the test).
+- Ship trajectory with objects (none promoted) equals today''s bit for bit.
+- `clock-frame!` at two frame rates and a checkpoint restore: same objects'' states bit for bit.
+- `sim-assign!` and 10,000 steps with Skua Yard''s nine objects promoted cons nothing.
+- Start state: first checks schedule no promotion for ~1,000 s (Tern 2,370 km ahead).
+- Measure the cost of a coarse step at Skua Yard with nine promoted (target ≤ 5 µs) and record it in `docs/architecture.md` "Integrator" (`task 159`''s prediction budget uses it).
+
+## Done when
+- Tests pass, `nix build` and `scripts/test` pass; `docs/architecture.md` "Checkpoints" lists the sim''s new fields, "The clock" the step order, "Files in load order" the extensions of `clock.lisp`/`physics.lisp`, "Testing" the tests.', '2026-10-15T07:38:08Z', NULL, 170, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (186, 23, 'Removal and re-entry of objects', 'work', 'open', NULL, NULL, 'Piece 4 of `plan 23: Objects on rails and the Earth-orbit places` (read its "The sim and the step" and removal bullets). Needs pieces 1–3. Files: `src/hazards.lisp`, `src/clock.lisp`, `tests/hazards.lisp`, `docs/architecture.md` "Removal of objects".
+
+## What
+- Factor the ship''s swept crash test on the step''s Hermite (`hermite-set!`, `hermite-sag`, `hermite-crossing`) into one function called for the ship and each promoted object; a crossing removes the object at that time.
+- In the step after the ship''s crash test: promoted objects'' crash tests, then rails removals (a segment ending `:crash` at t_c ≤ t removes the object at t_c), then promotion/demotion. A ship crash leaves the objects at the step''s end.
+- `(object-remove! sim object time cause &optional point)`: causes `:burned-up` (point: latitude/longitude from `latitude-longitude` at t_c), `:delivered` (for `task 158`; the point the receiving object and fixture), `:impact` (`milestone 4`). A removed object is never stepped, promoted, crash-tested or returned by `object-state-into!`; the record stays and checkpoints carry it (`decision 46: Rails across spheres, hyperbolas and re-entry`, `decision 34: How death works`).
+- No SHIP messages here (`task 158`''s message queue).
+
+## Tests ("Re-entry")
+- K-17 on 800 × 90 km from apogee, rails two-body: removed 2,603.07 s later within 1e-6 s, cause `:burned-up`.
+- Promoted, integrated two-body at the fine and coarse step: within 1e-2 s of the closed form, point within 0.01°.
+- After removal: `object-state-into!` nil, never promoted, no crash test.
+- Checkpoint restored before t_c brings it back; removed at the same t_c bit for bit.
+- Perigee 1 m above r_c: never removed. `object-remove!` with `:delivered` leaves the same record shape.
+
+## Done when
+- Tests pass, `nix build` and `scripts/test` pass (`scripts/test` near its ~15 s); `docs/architecture.md` "Removal of objects" names the functions and tests, "Files in load order" the extension of `hazards.lisp`, "Testing" the tests.
+- The plan''s Done when holds: every object has a state at any t up to 2050 except after removal; flying near promotes, leaving demotes, deterministically.', '2026-10-15T07:38:08Z', NULL, 170, 0);
 
 INSERT INTO decision (id, subject, status, options, body, answer, reason, created_at, closed_at, created_by_task, signoff, kind, decided_by_task, consequences) VALUES (1, 'How the game consumes luv', 'answered', '[]', 'Findings of `task 17: Build and run luv''s programs and test suite; record the runs` (docs/luv-capabilities.md, Packaging and Runs).
 - luv''s flake exports apps, devShells, packages and lib; lib has only environmentFor, which returns everything the packaging needs (pkgs, lisp, applicationEnvironment/Packages, developmentEnvironmentHook, slynkSource, swashPackage, …). No overlays.
@@ -5222,6 +5297,7 @@ INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, b
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (166, 167, '2026-10-15T07:23:32Z', '2026-10-15T07:27:29Z', 'done', NULL, 0, 'c7dc824e0b9a6ffa190408ccd5a47a4e88e409a3', 'claude-opus-5-5[1m]', 'e6c4f4b1-0ed1-4f25-9ff8-adb7c793b46f', 18, 34, 19067, 1395821, 123874, 1.6516322000000003, 2373073);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (167, 168, '2026-10-15T07:27:29Z', '2026-10-15T07:30:23Z', 'done', NULL, 0, '373dd4cbfc22e9a9fd3c1f8074c4306396a8556c', 'claude-opus-5-5[1m]', '56a5c580-5484-424e-b519-a5fd3177dde3', 17, 34, 13451, 915657, 71801, 1.0266954, 2373073);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (168, 169, '2026-10-15T07:30:23Z', '2026-10-15T07:37:26Z', 'done', NULL, 0, '5603b1a1ca1f3575fa838dd6e01bc771fb859ac6', 'claude-opus-5-5[1m]', '71bcd4ce-94cc-4ce6-a921-79b0f250029e', 26, 52, 37151, 2427227, 133456, 2.2963214000000005, 2373073);
+INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (169, 170, '2026-10-15T07:37:26Z', '2026-10-15T07:38:18Z', 'done', NULL, 0, '367bd2dee5c50663b9c121831def2a53df9137b5', 'claude-opus-5-5[1m]', 'ac8ce3bb-fec5-4743-bc85-a0c0b3cbe639', 5, 10, 5800, 176251, 36668, 0.4446342, 2373073);
 
 INSERT INTO task_decision (task_id, decision_id) VALUES (44, 28);
 INSERT INTO task_decision (task_id, decision_id) VALUES (44, 45);

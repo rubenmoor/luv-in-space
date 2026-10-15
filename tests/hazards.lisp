@@ -4,8 +4,6 @@
 ;;; "Testing" → "Crash detection"; decision 74: Crash test on the step's
 ;;; Hermite and the death state).
 
-(defparameter *earth-crash-radius* (lis::body-crash-radius (lis::body :earth)))
-
 (defun crash-sim (r v &key (model :point) (time (lis::start-t)))
   "The start's sim moved to R, V at TIME: direct mode, no rotation."
   (let* ((sim (lis::new-game-sim))

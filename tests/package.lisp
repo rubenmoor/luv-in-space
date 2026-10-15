@@ -4,6 +4,8 @@
 
 (in-package #:luv-in-space.tests)
 
+(defparameter *earth-crash-radius* (lis::body-crash-radius (lis::body :earth)))
+
 (defun least-bytes-consed (thunk &optional (runs 3))
   "The least of RUNS measurements of the bytes THUNK conses. SBCL counts
 allocation per 32 KB region, so a run that conses a few bytes now and then

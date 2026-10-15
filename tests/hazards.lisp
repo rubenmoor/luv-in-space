@@ -192,12 +192,13 @@ periapsis radius Q: b v = q √(2ε + 2μ/q)."
 
 (define-test crash-test-cons-nothing-near-the-moon
   ;; Falling from 5,000 km above the Moon, Earth-ward of it (so within the
-  ;; Moon's least distance): its branch runs every step.
+  ;; Moon's least distance): its branch runs every step. 2,048 fine steps, so
+  ;; 16 B a step fills a 32 KB region (`least-bytes-consed`).
   (flet ((run ()
            (multiple-value-bind (mr mv) (lis::body-state :moon (lis::start-t))
              (let ((sim (crash-sim (lis::vec3-add mr (lis::vec3-scale (lis::vec3-normalize mr) -5d6))
                                    mv :model :full)))
-               (let ((consed (least-bytes-consed (lambda () (step-sim sim 33 1000)))))
+               (let ((consed (least-bytes-consed (lambda () (step-sim sim 2048 1)))))
                  (values consed sim))))))
     (run)
     (multiple-value-bind (consed sim) (run)

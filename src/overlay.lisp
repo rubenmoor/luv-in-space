@@ -52,12 +52,13 @@ LEFT, TOP from the clip-space anchor."
 
 (defconstant +overlay-vertex-floats+ 7 "Anchor xy, pixel offset xy, colour rgb.")
 
+(defun overlay-vertex-buffers ()
+  `((:array-stride ,(* 4 +overlay-vertex-floats+)
+     :attributes ((:shader-location 0 :offset 0 :format :float32x2)
+                  (:shader-location 1 :offset 8 :format :float32x2)
+                  (:shader-location 2 :offset 16 :format :float32x3)))))
+
 (defun overlay-pipeline (renderer layout)
-  "The :overlay live pipeline: screen-space quads, no depth test or write."
-  (live-pipeline renderer :overlay layout
-                 `((:array-stride ,(* 4 +overlay-vertex-floats+)
-                    :attributes ((:shader-location 0 :offset 0 :format :float32x2)
-                                 (:shader-location 1 :offset 8 :format :float32x2)
-                                 (:shader-location 2 :offset 16 :format :float32x3))))
-                 :depth-stencil '(:format :depth32-float :depth-write-enabled nil
-                                  :depth-compare :always)))
+  "The :overlay live pipeline: screen-space quads on the target after the
+tone map, no depth (decision 76)."
+  (live-pipeline renderer :overlay layout (overlay-vertex-buffers)))

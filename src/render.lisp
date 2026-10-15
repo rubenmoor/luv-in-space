@@ -110,23 +110,24 @@ is also its normal."
 
 ;; PLACEHOLDER(76): screen-space stars until part 5's catalogue.
 (defun star-vertices (&key (count 300) (seed 23))
-  "Overlay vertices of COUNT faint stars at fixed random screen positions."
+  "Overlay vertices of COUNT faint stars at fixed random screen positions;
+radiances seen at *exposure-deep*, gone at *exposure-sunlit* (decision 76)."
   (let ((state (sb-ext:seed-random-state seed)))
     (loop repeat count
-          for brightness = (+ 0.15 (random 0.6 state))
+          for brightness = (+ 0.001 (random 0.004 state))
           append (quad (- (random 2.0 state) 1.0) (- (random 2.0 state) 1.0)
                        -1 -1 (if (< (random 1.0 state) 0.1) 3 2)
                        (list brightness brightness (* 1.1 brightness))))))
 
 ;;; The renderer
 
-(defparameter *background* '(0.0 0.0 0.004) "Linear RGB the frame is cleared to.")
+(defparameter *background* '(0.0 0.0 0.0002) "Radiance the HDR target is cleared to.")
 (defparameter *earth-stacks* 64)
 (defparameter *earth-slices* 128)
 (defparameter *earth-texture* "earth/blue-marble-5400.jpg"
   "decision 40: Earth's look and drag.")
 
-(defconstant +frame-uniform-floats+ 40 "shaders.lisp's frame block: ten vec4s.")
+(defconstant +frame-uniform-floats+ 44 "shaders.lisp's frame block: eleven vec4s.")
 
 (defclass frame-renderer (renderer)
   ((context :initarg :context :reader frame-renderer-context)
@@ -139,8 +140,12 @@ is also its normal."
    (star-count :initarg :star-count :reader frame-renderer-star-count)
    (label :initarg :label :reader frame-renderer-label)
    (label-count :initarg :label-count :reader frame-renderer-label-count)
+   (post :initarg :post :reader frame-renderer-post)
+   (post-sampler :initarg :post-sampler :reader frame-renderer-post-sampler)
+   (test-quads :initform nil :accessor frame-renderer-test-quads
+               :documentation "Tests only: nil or (buffer . count), drawn as stars.")
    (frames :initform (luv:make-canvas-frame-resource-cache) :reader frame-renderer-frames
-           :documentation "Per target: the frame's uniform buffer and bind group.")
+           :documentation "Per target: its frame-slot.")
    (uniforms :initform (make-array +frame-uniform-floats+ :element-type 'single-float
                                                           :initial-element 0f0)
              :reader frame-renderer-uniforms)
@@ -154,7 +159,8 @@ is also its normal."
          (layout (gpu-create renderer (luv:make-bind-group-layout-descriptor
                                        :entries '((:binding 0 :type :uniform-buffer)
                                                   (:binding 1 :type :texture)
-                                                  (:binding 2 :type :sampler)))))
+                                                  (:binding 2 :type :sampler)
+                                                  (:binding 3 :type :texture)))))
          (earth (uv-sphere :stacks *earth-stacks* :slices *earth-slices*))
          (stars (single-floats (star-vertices)))
          (label (single-floats (label-vertices *label*))))
@@ -169,40 +175,82 @@ is also its normal."
      :stars (vertex-buffer renderer stars "stars")
      :star-count (/ (length stars) +overlay-vertex-floats+)
      :label (vertex-buffer renderer label "label")
-     :label-count (/ (length label) +overlay-vertex-floats+))
+     :label-count (/ (length label) +overlay-vertex-floats+)
+     :post (vertex-buffer renderer (post-vertices) "post")
+     :post-sampler (gpu-create renderer (luv:make-sampler-descriptor
+                                         :label "post"
+                                         :address-mode-u :clamp-to-edge
+                                         :address-mode-v :clamp-to-edge
+                                         :mag-filter :linear :min-filter :linear)))
     (live-pipeline renderer :earth layout
                    '((:array-stride 12
                       :attributes ((:shader-location 0 :offset 0 :format :float32x3))))
+                   :format +hdr-format+
                    ;; decision 4: Depth strategy
                    :depth-stencil '(:format :depth32-float :depth-write-enabled t
                                     :depth-compare :greater))
+    (live-pipeline renderer :stars layout (overlay-vertex-buffers) :format +hdr-format+
+                   :depth-stencil '(:format :depth32-float :depth-write-enabled nil
+                                    :depth-compare :always))
+    (post-pipelines renderer layout)
     (overlay-pipeline renderer layout)
     renderer))
 
-(defun release-frame-resources (resources)
-  (luv:destroy (cdr resources))
-  (luv:destroy (car resources)))
+(defstruct frame-slot
+  "A target's frame block, its scene bind group, and the bind groups
+sampling the post levels in POST-VIEWS."
+  buffer bind-group (post-views '()) (post-bind-groups '()))
+
+(defun release-frame-resources (slot)
+  (mapc #'luv:destroy (frame-slot-post-bind-groups slot))
+  (luv:destroy (frame-slot-bind-group slot))
+  (luv:destroy (frame-slot-buffer slot)))
+
+(defun frame-bind-group (renderer buffer view sampler &optional (base view))
+  (luv:create (renderer-device renderer)
+              (luv:make-bind-group-descriptor
+               :layout (frame-renderer-layout renderer)
+               :entries `((:binding 0 :resource ,buffer)
+                          (:binding 1 :resource ,view)
+                          (:binding 2 :resource ,sampler)
+                          (:binding 3 :resource ,base)))))
 
 (defun frame-resources (renderer target)
-  "TARGET's uniform buffer and bind group, made on first use; a swapchain
-texture's are free again once it is acquired (luv's canvas-frame-resource-cache)."
+  "TARGET's frame-slot, made on first use; a swapchain texture's is free
+again once it is acquired (luv's canvas-frame-resource-cache)."
   (values (luv:canvas-frame-resource
            (frame-renderer-frames renderer) (frame-renderer-context renderer) target
            (lambda (key texture)
              (declare (ignore key texture))
-             (let* ((device (renderer-device renderer))
-                    (buffer (luv:create device (luv:make-buffer-descriptor
-                                                :label "frame"
-                                                :size (* 4 +frame-uniform-floats+)
-                                                :usage '(:uniform)))))
-               (cons buffer
-                     (luv:create device (luv:make-bind-group-descriptor
-                                         :layout (frame-renderer-layout renderer)
-                                         :entries `((:binding 0 :resource ,buffer)
-                                                    (:binding 1 :resource
-                                                     ,(frame-renderer-earth-view renderer))
-                                                    (:binding 2 :resource
-                                                     ,(frame-renderer-earth-sampler renderer)))))))))))
+             (let ((buffer (luv:create (renderer-device renderer)
+                                       (luv:make-buffer-descriptor
+                                        :label "frame" :size (* 4 +frame-uniform-floats+)
+                                        :usage '(:uniform)))))
+               (make-frame-slot
+                :buffer buffer
+                :bind-group (frame-bind-group renderer buffer
+                                              (frame-renderer-earth-view renderer)
+                                              (frame-renderer-earth-sampler renderer))))))))
+
+(defun post-bind-groups (renderer slot views)
+  "SLOT's bind groups sampling VIEWS, remade when the post targets were."
+  (unless (and (frame-slot-post-views slot) (every #'eq views (frame-slot-post-views slot)))
+    (mapc #'luv:destroy (frame-slot-post-bind-groups slot))
+    (setf (frame-slot-post-views slot) views
+          (frame-slot-post-bind-groups slot)
+          (loop for (source base) in (post-sources views)
+                collect (frame-bind-group renderer (frame-slot-buffer slot) source
+                                          (frame-renderer-post-sampler renderer) base))))
+  (frame-slot-post-bind-groups slot))
+
+(defun set-test-quads (renderer vertices)
+  "Tests only: overlay VERTICES (a list of floats) drawn through the stars'
+pipeline into the HDR target; nil removes them."
+  (setf (frame-renderer-test-quads renderer)
+        (and vertices
+             (let ((data (single-floats vertices)))
+               (cons (vertex-buffer renderer data "test quads")
+                     (/ (length data) +overlay-vertex-floats+))))))
 
 (defun forget-target (renderer target)
   "Release what the renderer keeps for TARGET, before TARGET goes."
@@ -216,10 +264,13 @@ texture's are free again once it is acquired (luv's canvas-frame-resource-cache)
                                            #'release-frame-resources)
   (destroy-renderer renderer))
 
-(defun frame-uniforms! (renderer extent state camera)
+(defun srgb-target-p (renderer)
+  (search "SRGB" (symbol-name (renderer-format renderer))))
+
+(defun frame-uniforms! (renderer extent state camera exposure)
   "The frame block: clip rows, Earth relative to the eye (decision 5:
 Precision of positions), the Sun's direction, clip units per pixel, Earth's
-body-fixed matrix."
+body-fixed matrix, the post vec4."
   (destructuring-bind (width height) extent
     (let ((data (frame-renderer-uniforms renderer))
           (eye (camera-eye camera (render-state-r state) (frame-renderer-eye renderer)))
@@ -239,30 +290,51 @@ body-fixed matrix."
         (dotimes (k 3)
           (setf (aref data (+ 28 (* 4 row) k)) (coerce (aref matrix (+ (* 3 row) k)) 'single-float)))
         (setf (aref data (+ 31 (* 4 row))) 0f0))
+      (setf (aref data 40) (coerce exposure 'single-float)
+            (aref data 41) (coerce *bloom-strength* 'single-float)
+            (aref data 42) (if (srgb-target-p renderer) 0f0 1f0)
+            (aref data 43) 0f0)
       data)))
 
-(defun encode-frame (renderer encoder target extent state camera)
-  "The frame's passes into TARGET of EXTENT (width height) from the render
-STATE seen by CAMERA: one pass for now, the placeholder stars, the
-placeholder Earth (PLACEHOLDER(76)), then the overlay."
-  (destructuring-bind (buffer . bind-group) (frame-resources renderer target)
-    (luv:write-buffer buffer (frame-uniforms! renderer extent state camera))
-    (let ((pass (luv:begin-render-pass
-                 encoder
-                 (luv:make-render-pass-descriptor
-                  :color-attachments
-                  `((:view ,(color-view renderer target) :load-op :clear :store-op :store
-                     :clear-value ,(coerce (append *background* '(1.0)) 'vector)))
-                  :depth-stencil-attachment
-                  `(:view ,(depth-view renderer extent)
-                    :depth-load-op :clear :depth-store-op :store
-                    :depth-clear-value 0.0)))))
-      (flet ((draw (role vertices count)
-               (luv:set-pipeline pass (renderer-pipeline renderer role))
-               (luv:set-bind-group pass 0 bind-group)
-               (luv:set-vertex-buffer pass 0 vertices)
-               (luv:draw pass count)))
-        (draw :overlay (frame-renderer-stars renderer) (frame-renderer-star-count renderer))
-        (draw :earth (frame-renderer-earth renderer) (frame-renderer-earth-count renderer))
-        (draw :overlay (frame-renderer-label renderer) (frame-renderer-label-count renderer)))
-      (luv:end-pass pass))))
+(defun encode-frame (renderer encoder target extent state camera exposure)
+  "The frame into TARGET of EXTENT (width height) from the render STATE seen
+by CAMERA, in three stages (decision 76: Frame passes, radiance scale and
+exposure): the scene pass into the HDR target (the placeholder stars, the
+placeholder Earth, PLACEHOLDER(76)); the bloom chain; one pass on TARGET,
+the tone map at EXPOSURE and then the overlay."
+  (let* ((slot (frame-resources renderer target))
+         (views (post-views renderer extent))
+         (bind-groups (post-bind-groups renderer slot views))
+         (bind-group (frame-slot-bind-group slot)))
+    (luv:write-buffer (frame-slot-buffer slot)
+                      (frame-uniforms! renderer extent state camera exposure))
+    (flet ((draw (pass role vertices count)
+             (luv:set-pipeline pass (renderer-pipeline renderer role))
+             (luv:set-bind-group pass 0 bind-group)
+             (luv:set-vertex-buffer pass 0 vertices)
+             (luv:draw pass count)))
+      (let ((pass (luv:begin-render-pass
+                   encoder
+                   (luv:make-render-pass-descriptor
+                    :color-attachments
+                    `((:view ,(first views) :load-op :clear :store-op :store
+                       :clear-value ,(coerce (append *background* '(1.0)) 'vector)))
+                    :depth-stencil-attachment
+                    `(:view ,(depth-view renderer extent)
+                      :depth-load-op :clear :depth-store-op :store
+                      :depth-clear-value 0.0)))))
+        (draw pass :stars (frame-renderer-stars renderer) (frame-renderer-star-count renderer))
+        (draw pass :earth (frame-renderer-earth renderer) (frame-renderer-earth-count renderer))
+        (let ((quads (frame-renderer-test-quads renderer)))
+          (when quads (draw pass :stars (car quads) (cdr quads))))
+        (luv:end-pass pass))
+      (encode-bloom renderer encoder views bind-groups (frame-renderer-post renderer))
+      (let ((pass (luv:begin-render-pass
+                   encoder
+                   (luv:make-render-pass-descriptor
+                    :color-attachments
+                    `((:view ,(color-view renderer target) :load-op :clear :store-op :store
+                       :clear-value #(0.0 0.0 0.0 1.0)))))))
+        (draw-tone-map renderer pass (car (last bind-groups)) (frame-renderer-post renderer))
+        (draw pass :overlay (frame-renderer-label renderer) (frame-renderer-label-count renderer))
+        (luv:end-pass pass)))))

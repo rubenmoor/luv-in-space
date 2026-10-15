@@ -17,6 +17,8 @@
    (camera-fn :initform nil :accessor game-camera-fn
               :documentation "nil or (fn camera render-state), after the default pose.")
    (render-state :initform (make-render-state) :reader game-render-state)
+   (exposure :initform nil :accessor game-exposure
+             :documentation "The current exposure, nil before the first frame.")
    (frame-time :initform nil :accessor game-frame-time
                :documentation "luv's time of the last frame, nil before the first.")
    (frame-count :initform 0 :accessor game-frame-count)
@@ -59,10 +61,21 @@ on it, then the game's camera-fn."
     (when (game-camera-fn game)
       (funcall (game-camera-fn game) camera state))))
 
-(defun encode-game-frame (game encoder target extent)
+(defun update-exposure! (game extent elapsed)
+  "Ease the exposure toward the view's target over ELAPSED real seconds;
+snap on the first frame and when ELAPSED is nil (decision 76)."
+  (let ((target (exposure-target (game-camera game) (game-render-state game) :outside
+                                 :aspect (/ (first extent) (second extent))))
+        (current (game-exposure game)))
+    (setf (game-exposure game)
+          (if (and current elapsed) (exposure-ease current target elapsed) target))))
+
+(defun encode-game-frame (game encoder target extent elapsed)
+  "ELAPSED: real seconds since the last frame, nil to snap the exposure."
   (update-view! game)
   (encode-frame (game-renderer game) encoder target extent
-                (game-render-state game) (game-camera game)))
+                (game-render-state game) (game-camera game)
+                (update-exposure! game extent elapsed)))
 
 (defun draw (game)
   (let ((context (game-context game)))
@@ -72,16 +85,17 @@ on it, then the game's camera-fn."
     (luv:present-canvas-frame
      context
      (lambda (texture encoder time)
-       (clock-frame! (game-clock game) (game-sim game) (frame-elapsed! game time))
-       (encode-game-frame game encoder texture (luv:canvas-extent context))))))
+       (let ((elapsed (frame-elapsed! game time)))
+         (clock-frame! (game-clock game) (game-sim game) elapsed)
+         (encode-game-frame game encoder texture (luv:canvas-extent context) elapsed))))))
 
 (defmethod luv:capture-canvas ((game game)) (game-canvas game))
 
-;; The current state, not stepped.
+;; The current state, not stepped; the exposure snaps.
 (defmethod luv:encode-capture-frame ((game game) capture encoder target extent)
   (declare (ignore capture))
   (luv:refresh-application-live-artifacts game)
-  (encode-game-frame game encoder target extent))
+  (encode-game-frame game encoder target extent nil))
 
 (defmethod luv:cleanup-capture ((game game) capture)
   (let ((target (luv:capture-target capture)))

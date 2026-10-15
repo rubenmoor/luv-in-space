@@ -170,6 +170,40 @@
     (lis::quat-from-basis! (lis::camera-orientation camera) x y z)
     (fill (lis::camera-offset camera) 0d0)))
 
+(defun away-camera (camera state)
+  "From the ship, away from Earth and the Sun: a dark view."
+  (let* ((r (lis::render-state-r state))
+         (n (lis::vec3-normalize (lis::vec3-cross r (lis::render-state-sun state)))))
+    (look-along! camera (lis::vec3-add (lis::vec3-scale n 2d0) (lis::vec3-normalize r)))))
+
+(defun centre-quad (radiance &key (dx 0) (dy 0) (size 2))
+  "Overlay vertices of a SIZE-pixel square of RADIANCE at the centre plus DX, DY pixels."
+  (lis::quad 0.0 0.0 (- dx (/ size 2)) (- dy (/ size 2)) size (list radiance radiance radiance)))
+
+(defun capture-with-quads (game png quads &key (strength lis::*bloom-strength*))
+  "The away view with QUADS drawn as stars, at bloom STRENGTH; the pixels."
+  (let ((saved lis::*bloom-strength*))
+    (lis::call-on-canvas-thread game (lambda ()
+                                       (setf lis::*bloom-strength* strength)
+                                       (lis::set-test-quads (lis::game-renderer game) quads)))
+    (unwind-protect
+         (nth-value 3 (lis::capture-game-state game png :frames 1 :camera-fn #'away-camera))
+      (lis::call-on-canvas-thread game (lambda ()
+                                         (setf lis::*bloom-strength* saved)
+                                         (lis::set-test-quads (lis::game-renderer game) nil))))))
+
+(defun srgb-byte (x)
+  (round (* 255 (if (<= x 0.0031308) (* 12.92 x) (- (* 1.055 (expt x (/ 2.4))) 0.055)))))
+
+(defun label-colour-bytes (format)
+  "The overlay label's colour as the target stores it, in red, green, blue."
+  (mapcar (lambda (x) (if (search "SRGB" (string format)) (srgb-byte x) (round (* 255 x))))
+          '(1.0 0.75 0.2)))
+
+(defun pixel-rgb (pixels format width x y)
+  (multiple-value-bind (red blue) (pixel-red-blue pixels format width x y)
+    (list red (aref pixels (+ 1 (* 4 (+ (* y width) x)))) blue)))
+
 (define-test render-frames
   (let ((width 320) (height 200))
     (luv:call-with-sdl-main-thread
@@ -198,7 +232,20 @@
                (true (> lower 0.95) "lower third ~,3F unlike the background" lower)
                (true (< upper 0.5) "upper third ~,3F unlike the background" upper)
                (true (> lit (+ dark 2)) "lower third ~,1F, background ~,1F" lit dark))
+             (let ((mean (rows-luminance pixels width 0 height)))
+               (true (< mean 200) "mean luminance ~,1F: white-out" mean))
              (true (find-if #'plusp pixels) "fully black frame"))
+           ;; The label is drawn after the tone map: exactly its colour (the
+           ;; GPU's rounding aside), not bloomed. P's top row: dots 0-3 of 5,
+           ;; 3 px each at the 16 px margin.
+           (multiple-value-bind (path w h pixels format) (lis::capture-game-state game png :frames 1)
+             (declare (ignore path w h))
+             (let ((colour (label-colour-bytes format)))
+               (dolist (x '(17 20 23 26))
+                 (let ((pixel (pixel-rgb pixels format width x 17)))
+                   (true (every (lambda (a b) (<= (abs (- a b)) 1)) colour pixel)
+                         "label pixel ~D: ~A, not ~A" x pixel colour)))
+               (false (equal colour (pixel-rgb pixels format width 29 17)))))
            (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))
            ;; Nadir: the sub-ship point fills the centre, open Pacific.
            (multiple-value-bind (path w h pixels format)
@@ -212,4 +259,39 @@
                  (true (< (/ (* 160 pi) 180) longitude pi) "sub-ship longitude ~F" longitude)))
              (multiple-value-bind (red blue) (pixel-red-blue pixels format width
                                                              (floor width 2) (floor height 2))
-               (true (> blue red) "the nadir centre: red ~D, blue ~D" red blue)))))))))
+               (true (> blue red) "the nadir centre: red ~D, blue ~D" red blue)))
+           ;; Bloom: a 2x2 px quad of 4e4 in a dark view lifts the pixels 20 px
+           ;; away, and not at strength 0.
+           (let* ((state (lis::game-render-state game))
+                  (camera (lis::make-camera)))
+             (away-camera camera state)
+             (is = lis::*exposure-deep* (lis::exposure-target camera state :outside)))
+           (let* ((cx (floor width 2)) (cy (floor height 2))
+                  (around (list (list (+ cx 20) cy) (list (- cx 20) cy)
+                                (list cx (+ cy 20)) (list cx (- cy 20))))
+                  (baseline (capture-with-quads game png nil))
+                  (bloomed (capture-with-quads game png (centre-quad 4e4)))
+                  (unbloomed (capture-with-quads game png (centre-quad 4e4) :strength 0.0)))
+             (flet ((at (pixels xy) (pixel-luminance pixels width (first xy) (second xy))))
+               (dolist (xy around)
+                 (true (> (- (at bloomed xy) (at baseline xy)) 10)
+                       "bloom at ~A: ~,1F over ~,1F" xy (at bloomed xy) (at baseline xy))
+                 (true (<= (abs (- (at unbloomed xy) (at baseline xy))) 1)
+                       "strength 0 at ~A: ~,1F against ~,1F" xy (at unbloomed xy) (at baseline xy)))
+               (true (> (at unbloomed (list cx cy)) 250))))
+           ;; Out of range: an overflow to +inf in half floats is white,
+           ;; negative and NaN radiance are clamped to 0, not white.
+           (let* ((cx (floor width 2)) (cy (floor height 2))
+                  (baseline (capture-with-quads game png nil :strength 0.0))
+                  (infinite (capture-with-quads game png (centre-quad 1e6 :size 4) :strength 0.0))
+                  (nan (sb-kernel:make-single-float #x7fc00000))
+                  (invalid (capture-with-quads game png (append (centre-quad -1e3 :dx -10 :size 4)
+                                                                (centre-quad nan :dx 10 :size 4))
+                                               :strength 0.0)))
+             (true (> (pixel-luminance infinite width cx cy) 250))
+             (dolist (x (list (- cx 10) (+ cx 10)))
+               (true (<= (abs (- (pixel-luminance invalid width x cy)
+                                 (pixel-luminance baseline width x cy)))
+                         1)
+                     "invalid radiance at ~D: ~,1F" x (pixel-luminance invalid width x cy))))
+           (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))))))))

@@ -1064,4 +1064,5 @@ after it."
            (luv:resize-canvas (lis::game-canvas game) 1280 800)
            (lis::wait-for-frames game 6)
            (readout-checks game png 1280 800)
-           (lost-checks game png 1280 800)))))))
+           (lost-checks game png 1280 800)
+           (fly-screenshot-checks game)))))))

@@ -100,3 +100,58 @@ real seconds after the death (decision 86). Call on luv's SDL main thread."
       (format *error-output* "~&screenshot failed: ~A~%" condition)
       (finish-output *error-output*)
       (uiop:quit 1))))
+
+;;; scripts/fly (decision 87: Flight scripts in milestone 2: additions, apsis
+;;; conditions, live fly and scripts/fly): one PNG per :screenshot checkpoint.
+
+(defun fly-screenshot-pathname (out-dir n label)
+  (merge-pathnames (format nil "~2,'0D-~A.png" n
+                           (substitute-if #\- (lambda (c) (not (or (alphanumericp c) (char= c #\-))))
+                                          (string-downcase label)))
+                   (uiop:ensure-directory-pathname out-dir)))
+
+(defun fly-screenshots (record out-dir &key game (frames *screenshot-frames*)
+                                            (width 1280) (height 800))
+  "Write <OUT-DIR>/<nn>-<label>.png for each :screenshot entry of RECORD
+(run-flight's), nn from 01: its sim in its view, the default outside pose,
+the readout, a lost sim at the glow's peak; on GAME, else on one hidden
+canvas of WIDTH x HEIGHT. Creates OUT-DIR; returns the pathnames and
+their pixels (as SCREENSHOT's). Call on
+luv's SDL main thread."
+  (let ((shots (remove :screenshot record :key #'flight-entry-kind :test-not #'eq)))
+    (ensure-directories-exist (uiop:ensure-directory-pathname out-dir))
+    (flet ((capture-all (game)
+             (loop for entry in shots
+                   for n from 1
+                   for path = (fly-screenshot-pathname out-dir n (flight-entry-label entry))
+                   do (call-on-canvas-thread
+                       game (lambda () (outside-view-reset! (game-outside-view game))))
+                   collect path into paths
+                   collect (nth-value 3 (capture-game-state
+                                         game path :sim (flight-entry-sim entry)
+                                                   :view (or (flight-entry-view entry) :outside)
+                                                   :frames frames :readout t :death-elapsed 0d0))
+                     into pixels
+                   finally (return (values paths pixels)))))
+      (if game
+          (capture-all game)
+          (with-capture-game (game :width width :height height)
+            (capture-all game))))))
+
+(defun fly-main (name out-dir)
+  "Entry point of scripts/fly: run-flight of flights/NAME.sexp, its record
+lines on stdout, the PNGs in OUT-DIR; exit 0, or 1 on a failure, a failed
+expectation, a missing script or an error."
+  (handler-case
+      (let ((record (run-flight name)))
+        (format t "~{~A~%~}" (flight-record-lines record))
+        (finish-output)
+        (dolist (path (luv:call-with-sdl-main-thread
+                       (lambda () (fly-screenshots record out-dir))))
+          (format t "~A~%" (uiop:native-namestring path)))
+        (finish-output)
+        (uiop:quit (if (flight-record-passed-p record) 0 1)))
+    (error (condition)
+      (format *error-output* "~&fly failed: ~A~%" condition)
+      (finish-output *error-output*)
+      (uiop:quit 1))))

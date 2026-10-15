@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# scripts/fly <name> <out-dir>
+# Flies flights/<name>.sexp headless (run-flight), prints the record (one
+# line per checkpoint, expectation, burn and failure, then the end), and
+# writes <out-dir>/<nn>-<label>.png (1280x800) per :screenshot on a hidden
+# canvas, headless on lavapipe too. Exit 0, 1 on a failure or a missing
+# script, 2 on bad arguments. Enters the dev shell itself.
+# Time: ~6 s for raise-orbit (dev shell entry, cached FASLs, the flight, 4 PNGs).
+set -euo pipefail
+
+usage() { echo "usage: scripts/fly <name> <out-dir>" >&2; exit 2; }
+
+[ $# -eq 2 ] || usage
+case "$1" in -*|"") usage ;; esac
+case "$2" in -*|"") usage ;; esac
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+name="$1"
+out="$(realpath -m -- "$2")"
+
+# Always this flake's shell; see scripts/test.
+if [ "${LIS_DEV_SHELL:-}" != 1 ]; then
+  LIS_DEV_SHELL=1 exec nix develop --accept-flake-config "$root" -c "$root/scripts/fly" "$name" "$out"
+fi
+
+cd "$root"
+export LIS_FLY_NAME="$name" LIS_FLY_OUT="$out"
+exec sbcl --noinform --non-interactive \
+  --eval '(require :asdf)' \
+  --eval '(setf *compile-verbose* nil *compile-print* nil)' \
+  --eval '(handler-bind ((warning (function muffle-warning))) (asdf:load-system "luv-in-space"))' \
+  --eval '(luv-in-space:fly-main (uiop:getenv "LIS_FLY_NAME") (uiop:getenv "LIS_FLY_OUT"))'

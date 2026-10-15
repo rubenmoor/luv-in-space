@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# scripts/convert-stars [out]: downloads the HYG star database (CSV),
+# checks its SHA-256, keeps the stars of magnitude <= 6.5 but the Sun and
+# writes them to out (default assets/stars/hyg-6.5.sexp) through
+# scripts/convert-stars.lisp. Needs network. Enters the dev shell itself.
+# decision 13: Asset storage and attribution; assets/stars/SOURCE.md.
+set -euo pipefail
+
+usage() { echo "usage: scripts/convert-stars [out.sexp]" >&2; exit 2; }
+[ $# -le 1 ] || usage
+case "${1:-}" in -*) usage ;; esac
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+out="$(realpath -m -- "${1:-$root/assets/stars/hyg-6.5.sexp}")"
+
+# Always this flake's shell; see scripts/test.
+if [ "${LIS_DEV_SHELL:-}" != 1 ]; then
+  LIS_DEV_SHELL=1 exec nix develop --accept-flake-config "$root" -c "$root/scripts/convert-stars" "$out"
+fi
+
+# HYG v4.4 at a fixed commit of codeberg.org/astronexus/hyg (a Git LFS file).
+commit=53e3df311869e813ace5f1ad2ec4ce909f13256c
+url="https://codeberg.org/astronexus/hyg/media/commit/$commit/data/hyg/CURRENT/hyg_v44.csv.gz"
+sha256=00b349893b9a53106dd488d8371e8d2fa586043e500bb3cdb8bff3931682197d
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
+curl -sSfL -o "$tmp/hyg_v44.csv.gz" "$url"
+echo "$sha256  $tmp/hyg_v44.csv.gz" | sha256sum -c --quiet -
+gzip -d "$tmp/hyg_v44.csv.gz"
+
+mkdir -p "$(dirname "$out")"
+sbcl --script "$root/scripts/convert-stars.lisp" "$tmp/hyg_v44.csv" "$out.partial"
+mv "$out.partial" "$out"
+echo "wrote $out"

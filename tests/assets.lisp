@@ -44,3 +44,62 @@
                            sum (nth channel (multiple-value-list (rgb pixels 2694 column))))
                      5400.0)))
         (true (> mean 150) "row 2694 channel ~D mean ~,1F" channel mean)))))
+
+;;; The star table (decision 13; plan 17 piece 1).
+
+(defun star-index (table hip)
+  (position hip (lis::star-table-hip table)))
+
+(defun star-direction (table i)
+  (let ((d (lis::star-table-directions table)))
+    (list (aref d (* 3 i)) (aref d (+ (* 3 i) 1)) (aref d (+ (* 3 i) 2)))))
+
+(defun degrees-between (u v)
+  (let ((dot (reduce #'+ (mapcar (lambda (a b) (* (float a 1d0) b)) u v))))
+    (* (/ 180 pi) (acos (max -1d0 (min 1d0 dot))))))
+
+(defun radec-direction (ra dec)
+  (let ((a (* ra (/ pi 180))) (d (* dec (/ pi 180))))
+    (list (* (cos d) (cos a)) (* (cos d) (sin a)) (sin d))))
+
+(define-test star-table-loads
+  (let* ((path (lis::asset-path "stars/hyg-6.5.sexp"))
+         (start (get-internal-real-time))
+         (table (lis::load-star-table path))
+         (seconds (/ (- (get-internal-real-time) start) internal-time-units-per-second 1.0))
+         (n (lis::star-table-count table))
+         (magnitudes (lis::star-table-magnitudes table)))
+    (true (< seconds 0.5) "loading took ~,3F s" seconds)
+    (true (< (with-open-file (s path) (file-length s)) 1000000))
+    (true (<= 8000 n 10000) "~D stars" n)
+    (is = n (length magnitudes))
+    (true (every (lambda (m) (<= m 6.5)) magnitudes))
+    ;; Sirius (HIP 32349) the only star brighter than -1.5 + 0.02; no Sun.
+    (let ((sirius (star-index table 32349)))
+      (true sirius)
+      (is = 1 (count-if (lambda (m) (< m -1.0)) magnitudes))
+      (true (< (abs (- (aref magnitudes sirius) -1.44)) 0.02))
+      (true (< (degrees-between (star-direction table sirius)
+                                (radec-direction 101.287d0 -16.716d0))
+               0.01)))
+    (true (every (lambda (m) (> m -1.5)) magnitudes) "no Sun at -26.7")
+    ;; Polaris (HIP 11767) near the ICRF pole.
+    (let ((polaris (star-index table 11767)))
+      (true (< (degrees-between (star-direction table polaris) '(0d0 0d0 1d0)) 0.75)))
+    (let ((bad (loop for i below n
+                     for length = (sqrt (reduce #'+ (mapcar (lambda (c) (* (float c 1d0) c))
+                                                            (star-direction table i))))
+                     count (>= (abs (- length 1)) 1d-6))))
+      (is = 0 bad "~D directions not unit" bad))
+    ;; Stars without a colour index are flagged, not given a fake one.
+    (true (< 0 (count 0 (lis::star-table-coloured table)) 100))))
+
+(define-test star-table-rejects-malformed
+  (uiop:with-temporary-file (:pathname path :stream s :direction :output)
+    (format s "(1 2.0 3.0 4.0 nil)~%(1 2.0 3.0)~%")
+    (finish-output s)
+    (fail (lis::load-star-table path) 'error))
+  (uiop:with-temporary-file (:pathname path :stream s :direction :output)
+    (format s "(1 #.(error \"read-eval\") 3.0 4.0 nil)~%")
+    (finish-output s)
+    (fail (lis::load-star-table path) 'error)))

@@ -48,3 +48,61 @@ texture-from-pixels takes it."
                                 (cffi:mem-ref surface :int 12)
                                 (cffi:mem-ref surface :int 16))
         (sdl3:destroy-surface surface)))))
+
+;;; The star table (assets/stars/SOURCE.md; decision 78: Sky in numbers:
+;;; stars, Sun, Moon and Earth's look).
+
+(defstruct (star-table (:constructor %make-star-table))
+  "The naked-eye stars: per star i, its ICRF unit direction at 3i..3i+2 of
+DIRECTIONS, its visual MAGNITUDES, its B-V COLOUR-INDICES (0 where
+COLOURED is 0: no colour index, drawn white) and its HIP number (0: none)."
+  (count 0 :type fixnum)
+  (directions #() :type (simple-array single-float (*)))
+  (magnitudes #() :type (simple-array single-float (*)))
+  (colour-indices #() :type (simple-array single-float (*)))
+  (coloured #* :type simple-bit-vector)
+  (hip #() :type (simple-array (unsigned-byte 32) (*))))
+
+(defun read-star-rows (path)
+  "The forms of the star table at PATH, read without evaluation in the
+standard readtable, numbers as doubles; an error unless each is
+(hip ra-deg dec-deg mag ci)."
+  (with-open-file (stream path :external-format :utf-8)
+    (with-standard-io-syntax
+      (let ((*read-eval* nil) (*read-default-float-format* 'double-float))
+        (loop for row = (read stream nil stream)
+              until (eq row stream)
+              do (unless (and (listp row) (= (length row) 5)
+                              (typep (first row) '(or null (integer 1 #.(1- (expt 2 32)))))
+                              (every #'realp (subseq row 1 4))
+                              (typep (fifth row) '(or null real)))
+                   (error "Star table ~A: malformed row ~S" path row))
+              collect row)))))
+
+(defun load-star-table (&optional (path (asset-path "stars/hyg-6.5.sexp")))
+  "The star table at PATH as a star-table of specialised arrays."
+  (let* ((rows (read-star-rows path))
+         (n (length rows))
+         (table (%make-star-table
+                 :count n
+                 :directions (make-array (* 3 n) :element-type 'single-float)
+                 :magnitudes (make-array n :element-type 'single-float)
+                 :colour-indices (make-array n :element-type 'single-float
+                                               :initial-element 0.0)
+                 :coloured (make-array n :element-type 'bit :initial-element 0)
+                 :hip (make-array n :element-type '(unsigned-byte 32)
+                                    :initial-element 0))))
+    (loop for (hip ra dec mag ci) in rows
+          for i from 0
+          do (let ((alpha (* (float ra 1d0) (/ pi 180)))
+                   (delta (* (float dec 1d0) (/ pi 180)))
+                   (directions (star-table-directions table)))
+               (setf (aref directions (* 3 i)) (float (* (cos delta) (cos alpha)) 1.0)
+                     (aref directions (+ (* 3 i) 1)) (float (* (cos delta) (sin alpha)) 1.0)
+                     (aref directions (+ (* 3 i) 2)) (float (sin delta) 1.0)
+                     (aref (star-table-magnitudes table) i) (float mag 1.0))
+               (when hip (setf (aref (star-table-hip table) i) hip))
+               (when ci
+                 (setf (aref (star-table-colour-indices table) i) (float ci 1.0)
+                       (sbit (star-table-coloured table) i) 1))))
+    table))

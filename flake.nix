@@ -233,6 +233,8 @@
           packages = environment.developmentPackages ++ [
             pm.packages.${system}.default
             environment.pkgs.git
+            # scripts/convert-stars downloads the HYG table.
+            environment.pkgs.curl
           ];
           shellHook = copyLuv environment luvCache + ''
             export CL_SOURCE_REGISTRY="$PWD/:${luvRegistryIn environment luvCache}:${environment.developmentEnvironment.CL_SOURCE_REGISTRY}"

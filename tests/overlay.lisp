@@ -496,3 +496,28 @@ top, or nil."
     (lis::controls-toggle-fine (lis::sim-controls sim))
     (is equal "HOLD REL RETROGRADE SETTLED FINE" (lis::mode-text (lis::sim-controls sim)))
     (false (lis::glyph-missing "MODE HOLD REL RETROGRADE SLEWING FINE"))))
+
+(define-test overlay-autopilot-mode
+  ;; decision 85 extended by decision 117: MODE leads with AUTOPILOT while a
+  ;; plan is engaged; the autopilot's texts have their glyphs.
+  (let* ((sim (lis::new-game-sim))
+         (clock (lis::new-clock sim))
+         (t0 (lis::sim-t sim)))
+    (lis::autopilot-engage!
+     clock sim (lis::make-burn-plan
+                (vector (lis::make-planned-burn :apsis (+ t0 600) (+ t0 700)
+                                                (lis::quat 1 0 0 0) 1d0 nil 10d0))))
+    (let ((lines (readout sim clock)))
+      (true (readout-has lines "MODE AUTOPILOT HOLD PROGRADE SLEWING") "~S" (readout-texts lines))
+      (check-glyphs lines))
+    (lis::autopilot-disengage! clock sim)
+    (true (readout-has (readout sim clock) "MODE RATE DAMP"))
+    (dolist (text (list "AUTOPILOT ABORT: UNSAFE ORBIT" "AUTOPILOT ABORT: PROPELLANT LOW"
+                        "AUTOPILOT ABORT: ATTITUDE ERROR" "AUTOPILOT ABORT: CONTACT"
+                        "AUTOPILOT ABORT: LATCHED" "AUTOPILOT ABORT: BERTHED"
+                        "AUTOPILOT: PLAN COMPLETE" "AUTOPILOT OFF: PILOT INPUT"
+                        "WARP ×4: RCS BURN" "WARP REFUSED: RCS BURN, LIMIT ×4"
+                        (lis::dropout-message 1000 125d0 :burn)
+                        "WARP REFUSED: BURN IN 20 S"))
+      (false (lis::glyph-missing text) "~S" text))
+    (is string= "WARP ×1,000: BURN IN 2 MIN 5 S" (lis::dropout-message 1000 125d0 :burn))))

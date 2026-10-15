@@ -57,6 +57,7 @@ decision 149).")
   (contact-starts (make-array 0 :element-type 'double-float) ; a step's start: ship, candidates
    :type (simple-array double-float (*)))
   (impact nil)                                  ; the copy's loss record
+  (abort nil)                                   ; the copy's plan's abort notice, a string
   (signature (new-controls) :type controls)     ; the controls it was made with
   (signature-cutoff nil :type (or null double-float))
   (signature-model :full :type keyword)
@@ -546,6 +547,7 @@ those PRED was made with (decision 75, decision 116)."
         (prediction-event-count pred) 0
         (prediction-cut-count pred) 0
         (prediction-impact pred) nil
+        (prediction-abort pred) nil
         (prediction-state pred) :running)
   (incf (prediction-restarts pred))
   (push-node! pred (prediction-sim pred))
@@ -598,13 +600,6 @@ moves its head to SIM's t."
             do (incf work))
     work))
 
-(declaim (inline plan-rcs-burning-p))
-(defun plan-rcs-burning-p (sim)
-  "SIM's plan runs an RCS burn now."
-  (let ((plan (sim-plan sim)))
-    (and plan (eq (sim-plan-phase sim) :burning)
-         (planned-burn-rcs (svref (burn-plan-burns plan) (sim-plan-index sim))))))
-
 (defun prediction-extend! (pred budget)
   "sim-step!s of the copy toward the horizon, each stored with its target's
 state and its events, while their work stays within BUDGET; PRED. The
@@ -655,7 +650,12 @@ copy's plan flies at *prediction-rcs-level* while an RCS burn runs, else at
                                                  *prediction-level*)
                                          nil)
                         0)))
-        ;; The copy's notices and requests are nobody's (decision 112).
+        ;; The copy's notices and requests are nobody's (decision 112),
+        ;; but a plan's abort is the shot's.
+        (when (sim-notices sim)
+          (let ((notice (find :autopilot (sim-notices sim) :key #'first)))
+            (when (and notice (eql 0 (search "AUTOPILOT ABORT" (the string (second notice)))))
+              (setf (prediction-abort pred) (second notice)))))
         (setf (sim-notices sim) nil
               (sim-checkpoint-request sim) nil)
         (incf steps)
@@ -800,13 +800,20 @@ or nil (decision 116)."
 (defparameter *dropout-events*'(:impact :contact)
   "The events that drop warp: decision 75's, decision 43's contact.")
 
-(defun prediction-dropout-event (pred)
-  "(values time kind) of the earliest drop-out event, or nil."
+(defun prediction-dropout-event (pred &optional sim)
+  "(values time kind) of the earliest drop-out event, or nil; with SIM (the
+flown sim) also its plan's next hold-at while :pending, kind :burn
+(decision 117), from sim-plan directly."
   (let ((best nil) (best-kind nil))
     (dolist (kind *dropout-events*)
       (let ((time (prediction-event pred kind)))
         (when (and time (or (null best) (< time best)))
           (setf best time best-kind kind))))
+    (let ((plan (and sim (sim-plan sim))))
+      (when (and plan (eq (sim-plan-phase sim) :pending))
+        (let ((time (planned-burn-hold-at (svref (burn-plan-burns plan) (sim-plan-index sim)))))
+          (when (or (null best) (< time best))
+            (setf best time best-kind :burn)))))
     (and best (values best best-kind))))
 
 (defun prediction-dropout-p (sim &optional pred)

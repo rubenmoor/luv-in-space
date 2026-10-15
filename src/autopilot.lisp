@@ -137,15 +137,14 @@ propellant)."
 ;;; periods, for the apsis and node times.
 
 (defun shot-sim-assign! (out snapshot plan)
-  "OUT: SNAPSHOT as the autopilot engages PLAN (decision 117): throttle off,
-no cut-off, PLAN from its first burn and its coast hold at once; without a
-plan the controls as they were, the throttle off. OUT."
+  "OUT: SNAPSHOT as the autopilot engages PLAN (sim-engage-plan!, decision
+117); without a plan the controls as they were, the throttle off. OUT."
   (sim-assign! out snapshot)
-  (controls-throttle-cut (sim-controls out))
-  (setf (sim-cutoff out) nil)
-  (sim-set-plan! out plan)
-  (when plan
-    (controls-engage-hold! (sim-controls out) (burn-plan-coast-hold plan)))
+  (if plan
+      (sim-engage-plan! out plan)
+      (progn (controls-throttle-cut (sim-controls out))
+             (setf (sim-cutoff out) nil)
+             (sim-set-plan! out nil)))
   out)
 
 (defun coast-shot-start! (pred scratch sim)
@@ -817,8 +816,9 @@ base shot; past *plan-iterations* steps \"NOT CONVERGED\"."
         (multiple-value-bind (m largest) (job-shot-residuals! job (autopilot-job-residuals job))
           (setf (autopilot-job-residual-count job) m)
           (cond ((or (<= largest 1d0)
-                     ;; A crash: :check refuses it.
-                     (sim-loss (prediction-sim (autopilot-job-shot job))))
+                     ;; A crash or an abort: :check refuses it.
+                     (sim-loss (prediction-sim (autopilot-job-shot job)))
+                     (prediction-abort (autopilot-job-shot job)))
                  (setf (autopilot-job-stage job) :check))
                 ((or (>= (autopilot-job-iteration job) *plan-iterations*)
                      (null (shot-last-cut job)))
@@ -844,15 +844,19 @@ base shot; past *plan-iterations* steps \"NOT CONVERGED\"."
 
 (defun shot-refusal (job)
   "The refusal of JOB's final shot and candidate, or nil: a node below
-Earth's crash radius + *plan-floor-margin* (or a crash), within the Moon's
-radius + *plan-moon-margin*, the propellant and reserve over what is on board."
+Earth's crash radius + *plan-floor-margin* (or a crash, or the shot's
+\"UNSAFE ORBIT\" abort), within the Moon's radius + *plan-moon-margin*, the
+propellant and reserve over what is on board; another abort of the shot
+its reason."
   (let* ((shot (autopilot-job-shot job))
          (nodes (prediction-nodes shot))
          (floor (+ (body-crash-radius (body :earth)) *plan-floor-margin*))
          (near (+ +radius-moon+ *plan-moon-margin*))
          (far (- +moon-distance-min+ near))
+         (abort (prediction-abort shot))
          (r (make-vec3)) (moon (make-vec3)) (moon-v (make-vec3)))
     (cond ((or (sim-loss (prediction-sim shot))
+               (and abort (search "UNSAFE ORBIT" abort))
                (loop for i from (prediction-head shot) below (prediction-count shot)
                      for k = (* +node-size+ i)
                      do (replace r nodes :start2 (+ k 1) :end2 (+ k 4))
@@ -867,8 +871,9 @@ radius + *plan-moon-margin*, the propellant and reserve over what is on board."
            "TOO NEAR THE MOON")
           (t (let ((needed (+ (autopilot-job-propellant job)
                               (burn-plan-reserve-mass (autopilot-job-candidate job)))))
-               (when (> needed (ship-state-m-p (sim-ship (autopilot-job-snapshot job))))
-                 (format nil "NEEDS ~D KG" (ceiling needed))))))))
+               (cond ((> needed (ship-state-m-p (sim-ship (autopilot-job-snapshot job))))
+                      (format nil "NEEDS ~D KG" (ceiling needed)))
+                     (abort (subseq abort (length "AUTOPILOT ABORT: ")))))))))
 
 (defun shot-cut-plan (plan shot)
   "PLAN with each burn's cut state the SHOT's (the copy's t, r, v at its

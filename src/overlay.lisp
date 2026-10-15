@@ -342,8 +342,10 @@ last, then the labels in *marker-label-colour*, rows centred on the marker
     (:inertial . "INERTIAL") (:target . "TARGET") (:anti-target . "ANTI-TARGET")
     (:relative-prograde . "REL PROGRADE") (:relative-retrograde . "REL RETROGRADE")))
 
-(defun mode-text (controls)
-  (format nil "~A~:[~; FINE~]"
+(defun mode-text (controls &optional autopilot)
+  "The MODE row's value; AUTOPILOT (a plan engaged) leads with \"AUTOPILOT\"."
+  (format nil "~:[~;AUTOPILOT ~]~A~:[~; FINE~]"
+          autopilot
           (ecase (controls-attitude-mode controls)
             (:direct "DIRECT")
             (:rate-damping "RATE DAMP")
@@ -397,7 +399,7 @@ summed seconds; then CLOCK's live messages."
              (row "THR" (format nil "~D% ~:[OFF~;ON~]" (round (* 100 throttle))
                                 (and (> throttle 0d0) (> m-p 0d0))))
              (row "PROP" (format nil "~D KG ~D%" (round m-p) (round (* 100 m-p) *propellant-full*)))
-             (row "MODE" (mode-text controls))
+             (row "MODE" (mode-text controls (render-state-autopilot render-state)))
              (row "WARP" (format nil "×~D" level)
                   (and (not paused) (null (render-state-loss render-state))
                        rate (< rate (* *readout-act-fraction* level))

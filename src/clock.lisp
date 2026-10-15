@@ -53,7 +53,12 @@
   (plan nil :type (or null burn-plan))
   (plan-index 0 :type fixnum)                   ; the current burn
   (plan-phase :done :type (member :pending :holding :burning :done))
-  (plan-rcs-target 0d0 :type double-float))     ; the RCS burn's odometer target
+  (plan-rcs-target 0d0 :type double-float)      ; the RCS burn's odometer target
+  ;; The autopilot's (decision 117): attitude cuts so far, replans so far,
+  ;; and the Δv a burn cut for its attitude resumes with (0: none).
+  (plan-retries 0 :type fixnum)
+  (plan-replans 0 :type fixnum)
+  (plan-resume 0d0 :type double-float))
 
 (defun copy-sim (sim)
   "A deep copy: equalp to SIM, sharing no array (the objects' definitions
@@ -91,7 +96,10 @@ nothing; OUT."
         (sim-plan out) (sim-plan sim)
         (sim-plan-index out) (sim-plan-index sim)
         (sim-plan-phase out) (sim-plan-phase sim)
-        (sim-plan-rcs-target out) (sim-plan-rcs-target sim))
+        (sim-plan-rcs-target out) (sim-plan-rcs-target sim)
+        (sim-plan-retries out) (sim-plan-retries sim)
+        (sim-plan-replans out) (sim-plan-replans sim)
+        (sim-plan-resume out) (sim-plan-resume sim))
   out)
 
 (defparameter *delivery-wait* 600d0 "s from a delivery's release to the removal; decision 53.")
@@ -349,24 +357,29 @@ target hold released to rate damping."
 ;;; sim): flown open-loop at each step's start; planning is the autopilot's.
 
 (defun sim-set-plan! (sim plan)
-  "PLAN (a burn-plan, or nil) engaged from its first burn; SIM."
+  "PLAN (a burn-plan, or nil) engaged from its first burn, the cursor's
+retries, replans and resume 0; SIM."
   (setf (sim-plan sim) plan
         (sim-plan-index sim) 0
         (sim-plan-phase sim) (if (and plan (> (length (burn-plan-burns plan)) 0)) :pending :done)
-        (sim-plan-rcs-target sim) 0d0)
+        (sim-plan-rcs-target sim) 0d0
+        (sim-plan-retries sim) 0
+        (sim-plan-replans sim) 0
+        (sim-plan-resume sim) 0d0)
   sim)
 
 (declaim (inline plan-next-time))
 (defun plan-next-time (sim)
   "The time of SIM's plan's next scheduled control: the current burn's
-hold-at while :pending, its start while :holding; else nil."
+hold-at while :pending, its start while :holding (none while a resume waits
+for the hold to settle); else nil."
   (let ((plan (sim-plan sim)))
     (when plan
       (let ((burn (svref (burn-plan-burns plan) (sim-plan-index sim))))
         (declare (type planned-burn burn))
         (case (sim-plan-phase sim)
           (:pending (planned-burn-hold-at burn))
-          (:holding (planned-burn-start burn)))))))
+          (:holding (and (= (sim-plan-resume sim) 0d0) (planned-burn-start burn))))))))
 
 (defun plan-step-controls! (sim)
   "At the start of SIM's step, before the cut-off check: from the current
@@ -374,7 +387,9 @@ burn's hold-at its inertial hold (roll offset 0); from its start the
 throttle with sim-cutoff at odometer + Δv, or the RCS burn's ±x translation
 key with its own odometer target; once cut (or the RCS target reached, the
 key released) the plan's coast hold and the next burn :pending, :done after
-the last. Several at one t in turn. SIM; conses nothing."
+the last. A burn cut for its attitude (plan-step-checks!) resumes with the
+Δv it had left once its hold has settled. Several at one t in turn. SIM;
+conses nothing."
   (declare (optimize speed) (type sim sim))
   (let ((plan (sim-plan sim)))
     (when plan
@@ -394,14 +409,19 @@ the last. Several at one t in turn. SIM; conses nothing."
                (controls-engage-hold! controls :inertial (planned-burn-attitude burn))
                (setf (sim-plan-phase sim) :holding))
               (:holding
-               (when (< time (planned-burn-start burn)) (return))
-               (let ((rcs (planned-burn-rcs burn)))
-                 (if rcs
-                     (progn (controls-set-translation-key controls :x rcs)
-                            (setf (sim-plan-rcs-target sim) (+ odometer (planned-burn-dv burn))))
-                     (progn (controls-set-throttle controls (planned-burn-throttle burn))
-                            (setf (sim-cutoff sim) (+ odometer (planned-burn-dv burn))))))
-               (setf (sim-plan-phase sim) :burning))
+               (let ((resume (sim-plan-resume sim)))
+                 (if (> resume 0d0)
+                     (unless (controls-settled controls) (return))
+                     (when (< time (planned-burn-start burn)) (return)))
+                 (let ((rcs (planned-burn-rcs burn))
+                       (dv (if (> resume 0d0) resume (planned-burn-dv burn))))
+                   (if rcs
+                       (progn (controls-set-translation-key controls :x rcs)
+                              (setf (sim-plan-rcs-target sim) (+ odometer dv)))
+                       (progn (controls-set-throttle controls (planned-burn-throttle burn))
+                              (setf (sim-cutoff sim) (+ odometer dv))))))
+               (setf (sim-plan-phase sim) :burning
+                     (sim-plan-resume sim) 0d0))
               (:burning
                (if (planned-burn-rcs burn)
                    (progn (when (< odometer (sim-plan-rcs-target sim)) (return))
@@ -417,6 +437,176 @@ the last. Several at one t in turn. SIM; conses nothing."
                          (sim-plan-phase sim) :pending)
                    (setf (sim-plan-phase sim) :done)))))))))
   sim)
+
+(declaim (inline plan-rcs-burning-p))
+(defun plan-rcs-burning-p (sim)
+  "SIM's plan runs an RCS burn now."
+  (let ((plan (sim-plan sim)))
+    (and plan (eq (sim-plan-phase sim) :burning)
+         (planned-burn-rcs (svref (burn-plan-burns plan) (sim-plan-index sim))))))
+
+(defun plan-burn-due (sim)
+  "The burn of SIM's plan that burns in its next step (plan-step-controls!
+starts it then or it runs), or nil."
+  (let ((plan (sim-plan sim)))
+    (when plan
+      (let ((burn (svref (burn-plan-burns plan) (sim-plan-index sim)))
+            (resume (> (sim-plan-resume sim) 0d0)))
+        (case (sim-plan-phase sim)
+          (:burning burn)
+          (:pending (and (>= (sim-t sim) (planned-burn-start burn)) burn))
+          (:holding (and (if resume
+                             (controls-settled (sim-controls sim))
+                             (>= (sim-t sim) (planned-burn-start burn)))
+                         burn)))))))
+
+;;; The autopilot's execution rules (decision 117: Autopilot in milestone
+;;; 3: planning jobs, goal measures, burns, execution rules in the step,
+;;; trims): in the step, so they land on the grid; planning is autopilot.lisp's.
+
+(defparameter *unsafe-orbit-margin* 25d3
+  "m above the crash radius: a burn that would end below it aborts; decision 117.")
+(defparameter *burn-attitude-limit* (deg->rad 5d0)
+  "rad between the thrust axis and the burn's direction; decision 117.")
+(declaim (type double-float *unsafe-orbit-margin* *burn-attitude-limit*))
+
+(defun sim-plan-stop! (sim)
+  "SIM's plan ended by an abort or a disengage: throttle off, no cut-off,
+translation keys released, rate damping, sim-plan nil; SIM."
+  (let ((controls (sim-controls sim)))
+    (controls-throttle-cut controls)
+    (fill (controls-translation-keys controls) 0)
+    (setf (controls-attitude-mode controls) :rate-damping
+          (controls-settled controls) nil
+          (sim-cutoff sim) nil))
+  (sim-set-plan! sim nil))
+
+(defun sim-engage-plan! (sim plan)
+  "PLAN engaged in SIM as the autopilot does (decision 117), and as its
+shots start: throttle off, no cut-off, keys released, PLAN from its first
+burn, its coast hold at once; SIM."
+  (let ((controls (sim-controls sim)))
+    (controls-throttle-cut controls)
+    (fill (controls-rotation-keys controls) 0)
+    (fill (controls-translation-keys controls) 0)
+    (setf (sim-cutoff sim) nil)
+    (sim-set-plan! sim plan)
+    (controls-engage-hold! controls (burn-plan-coast-hold plan)))
+  sim)
+
+(defun plan-abort! (sim reason)
+  "An abort: sim-plan-stop! and the notice \"AUTOPILOT ABORT: REASON\"."
+  (sim-plan-stop! sim)
+  (sim-notice! sim :autopilot (format nil "AUTOPILOT ABORT: ~A" reason))
+  sim)
+
+(declaim (inline periapsis-after))
+(defun periapsis-after (r v axis dv mu)
+  "The osculating periapsis radius of R and V + DV AXIS about MU, any
+conic. Conses nothing."
+  (declare (type vec3 r v axis) (type double-float dv mu))
+  (let* ((vx (+ (aref v 0) (* dv (aref axis 0))))
+         (vy (+ (aref v 1) (* dv (aref axis 1))))
+         (vz (+ (aref v 2) (* dv (aref axis 2))))
+         (rx (aref r 0)) (ry (aref r 1)) (rz (aref r 2))
+         (hx (- (* ry vz) (* rz vy)))
+         (hy (- (* rz vx) (* rx vz)))
+         (hz (- (* rx vy) (* ry vx)))
+         (h2 (+ (* hx hx) (* hy hy) (* hz hz)))
+         (energy (- (* 0.5d0 (+ (* vx vx) (* vy vy) (* vz vz)))
+                    (/ mu (sqrt (+ (* rx rx) (* ry ry) (* rz rz))))))
+         (e (sqrt (the (double-float 0d0)
+                       (max 0d0 (+ 1 (/ (* 2 energy h2) (* mu mu))))))))
+    (/ (/ h2 mu) (+ 1 e))))
+
+(defun plan-propellant-left (sim burn dv)
+  "kg SIM's plan needs from now: DV left of the current BURN, then the
+later burns', each by the rocket equation at the mass after the earlier."
+  (declare (optimize speed) (type sim sim) (type planned-burn burn) (type double-float dv))
+  (let* ((burns (burn-plan-burns (sim-plan sim)))
+         (mass (+ *ship-dry-mass* (ship-state-m-p (sim-ship sim))
+                  (with-stack-load (load sim) (stack-load-mass load))))
+         (start mass))
+    (declare (type double-float mass start))
+    (flet ((burn! (dv isp)
+             (declare (type double-float dv isp))
+             (setf mass (* mass (exp (- (/ dv (* isp +g0+))))))))
+      (burn! dv (planned-burn-isp burn))
+      (loop for i of-type fixnum from (1+ (sim-plan-index sim)) below (length burns)
+            do (let ((later (svref burns i)))
+                 (declare (type planned-burn later))
+                 (burn! (planned-burn-dv later) (planned-burn-isp later)))))
+    (- start mass)))
+
+(defun plan-step-checks! (sim coarse)
+  "decision 117's rules at SIM's step start, after plan-step-controls!
+(COARSE: a step above ×4). After the last cut the plan completes: the
+notice \"AUTOPILOT: PLAN COMPLETE\", a checkpoint request, sim-plan nil, the
+coast hold kept. During a burn, with Δv left the cut-off's (the RCS
+target's) less the odometer, in order: an abort \"UNSAFE ORBIT\" when the
+periapsis after cutting now is at or above the crash radius +
+*unsafe-orbit-margin* but the one after the Δv left applied along the
+thrust axis is not; \"PROPELLANT LOW\" when m_p is below the plan's
+propellant left and half its reserve; on a fine step the thrust axis more
+than *burn-attitude-limit* off the burn's cuts it to :holding at its
+attitude, resuming with the Δv left once settled, the second time an abort
+\"ATTITUDE ERROR\". SIM; conses nothing but an abort's or completion's
+notice."
+  (declare (optimize speed) (type sim sim) (type boolean coarse))
+  (let ((plan (sim-plan sim)))
+    (when plan
+      (case (sim-plan-phase sim)
+        (:done
+         (sim-set-plan! sim nil)
+         (sim-notice! sim :autopilot "AUTOPILOT: PLAN COMPLETE")
+         (setf (sim-checkpoint-request sim) t))
+        (:burning
+         (let* ((burn (svref (burn-plan-burns plan) (sim-plan-index sim)))
+                (rcs (planned-burn-rcs burn))
+                (ship (sim-ship sim))
+                (controls (sim-controls sim))
+                (target (if rcs (sim-plan-rcs-target sim) (sim-cutoff sim)))
+                (axis (make-vec3)) (aim (make-vec3)) (x (make-vec3)))
+           (declare (type planned-burn burn) (dynamic-extent axis aim x))
+           (when target
+             (let* ((left (max 0d0 (- (the double-float target) (ship-state-dv ship))))
+                    (body (body (sim-body sim)))
+                    (floor (+ (body-crash-radius body) *unsafe-orbit-margin*))
+                    (r (ship-state-r ship)) (v (ship-state-v ship)))
+               (declare (type double-float left floor))
+               (vec3-set! x 1d0 0d0 0d0)
+               (quat-rotate! axis (ship-state-q ship) x)
+               (when (eql rcs -1) (vec3-scale! axis axis -1d0))
+               (cond ((and (>= (periapsis-after r v axis 0d0 (body-mu body)) floor)
+                           (< (periapsis-after r v axis left (body-mu body)) floor))
+                      (plan-abort! sim "UNSAFE ORBIT"))
+                     ((< (ship-state-m-p ship)
+                         (+ (plan-propellant-left sim burn left)
+                            (* 0.5d0 (burn-plan-reserve-mass plan))))
+                      (plan-abort! sim "PROPELLANT LOW"))
+                     ((and (not coarse)
+                           (progn (quat-rotate! aim (planned-burn-attitude burn) x)
+                                  (quat-rotate! x (ship-state-q ship) x)
+                                  (< (vec3-dot x aim) (cos *burn-attitude-limit*))))
+                      (if (> (sim-plan-retries sim) 0)
+                          (plan-abort! sim "ATTITUDE ERROR")
+                          (progn
+                            (if rcs
+                                (controls-set-translation-key controls :x 0)
+                                (controls-throttle-cut controls))
+                            (controls-engage-hold! controls :inertial (planned-burn-attitude burn))
+                            (setf (sim-cutoff sim) nil
+                                  (sim-plan-phase sim) :holding
+                                  (sim-plan-resume sim) left)
+                            (incf (sim-plan-retries sim)))))))))))))
+  sim)
+
+(defun contact-abort! (sim)
+  "After a contact answered in SIM's step with a plan engaged: abort
+\"BERTHED\", \"LATCHED\" (a capture) or \"CONTACT\"."
+  (plan-abort! sim (cond ((sim-berthed sim) "BERTHED")
+                         ((eq (grapple-state (sim-grapple sim)) :closing) "LATCHED")
+                         (t "CONTACT"))))
 
 ;;; The step (decision 72)
 
@@ -512,7 +702,8 @@ contact answered at the step's start) or nil."
   (unless *contact-redo*
     (contact-save! sim level until))
   (when (sim-plan sim)
-    (plan-step-controls! sim))
+    (plan-step-controls! sim)
+    (plan-step-checks! sim (> level *fine-levels-max*)))
   (let* ((ship (sim-ship sim))
          (controls (sim-controls sim))
          (time (sim-t sim))
@@ -593,21 +784,24 @@ contact answered at the step's start) or nil."
         (let* ((ticks (truncate (* h (/ +fine-step+))))
                (lost (crash-test! sim r0 v0 q0 ticks)))
           (object-crash-tests! sim before ticks)
-          (prog1 (or (and (not lost) (not *contact-redo*) (contact-test! sim level ticks))
-                     (progn (unless lost
-                              (when (sim-excluded sim)
-                                (exclusion-update! sim))
-                              (when (sim-delivery sim)
-                                (delivery-update! sim))
-                              (sim-update-objects! sim))
-                            ticks))
+          (let ((contact (and (not lost) (not *contact-redo*) (contact-test! sim level ticks))))
+            (unless (or lost contact)
+              (when (sim-excluded sim)
+                (exclusion-update! sim))
+              (when (sim-delivery sim)
+                (delivery-update! sim))
+              (sim-update-objects! sim))
             (when (sim-target sim)
-              (target-check! sim))))))))
+              (target-check! sim))
+            (when (and contact (sim-plan sim) (not (sim-loss sim)))
+              (contact-abort! sim))
+            (or contact ticks)))))))
 
 (declaim (inline sim-step!))
 (defun sim-step! (sim level &key until)
   "One step of SIM at warp LEVEL (×1, ×4, ×10 …) with every rule (decision
-72): the plan's controls first (plan-step-controls!), the fine step to
+72): the plan's controls first (plan-step-controls!) and the autopilot's
+rules (plan-step-checks!), the fine step to
 ×4, above it the coarse step with kinematic attitude (an inertial hold
 engaged first if no hold is, unless berthed), shortened to land on UNTIL
 (a grid time; one not ahead is ignored), on the plan's next hold-at or
@@ -624,7 +818,8 @@ rails removals (object-crash-tests!), contact with promoted objects
 fast one kills), then, unless lost, the excluded object's check
 (exclusion-update!), a pending delivery's (delivery-update!: the step
 lands on its due time), promotion and demotion, and last the target's
-check (target-check!). Returns h (0 for a contact answered at the step's start), or nil for a
+check (target-check!) and a contact's abort of the plan (contact-abort!).
+Returns h (0 for a contact answered at the step's start), or nil for a
 lost sim. Hot callers declare it inline: a full
 call boxes h."
   (let ((ticks (sim-step-ticks! sim level until)))
@@ -683,7 +878,10 @@ the clock's, run to its horizon; without it a fresh one, prediction.lisp)."
   (game-t 0d0 :type double-float)               ; the sim's t last seen: the log's stamps
   (log nil :type list)                          ; the SHIP log, (t text), newest first
   (log-read nil)                                ; the log's newest entry when Y was pressed
-  (checkpoint nil))                             ; the latest checkpoint, a sim, or nil
+  (checkpoint nil)                              ; the latest checkpoint, a sim, or nil
+  ;; The autopilot (decision 117): the plan last engaged, kept for the map
+  ;; after it ends; task 204 makes it the preset menu's model.
+  (autopilot nil))
 
 (defun new-clock (sim)
   "A clock at ×1, unpaused, its previous state SIM's, no checkpoint; its
@@ -765,15 +963,19 @@ prediction two periods ahead while coasting (decision 116)."
 (defun clock-dropout (clock sim)
   "(values Δ kind data) to the prediction's earliest drop-out event, or nil;
 DATA as prediction-event's second value."
-  (multiple-value-bind (time kind) (prediction-dropout-event (clock-prediction clock))
+  (multiple-value-bind (time kind) (prediction-dropout-event (clock-prediction clock) sim)
     (when time
       (values (max 0d0 (- time (sim-t sim))) kind
               (nth-value 1 (prediction-event (clock-prediction clock) kind))))))
 
 (defun warp-refusal (clock sim level)
-  "The message refusing a warp up to LEVEL, or nil (decision 19, decision 73)."
+  "The message refusing a warp up to LEVEL, or nil (decision 19, decision
+73; an RCS burn's ×4, decision 117)."
   (multiple-value-bind (delta kind) (clock-dropout clock sim)
-    (cond ((and (sim-engine-on-p sim) (> level (thrust-warp-limit sim)))
+    (cond ((and (> level *fine-levels-max*)
+                (let ((burn (plan-burn-due sim))) (and burn (planned-burn-rcs burn))))
+           (format nil "WARP REFUSED: RCS BURN, LIMIT ×~D" *fine-levels-max*))
+          ((and (sim-engine-on-p sim) (> level (thrust-warp-limit sim)))
            (format nil "WARP REFUSED: ENGINE ON, LIMIT ×~:D" (thrust-warp-limit sim)))
           ((and (> level *fine-levels-max*) (not (held-p sim))
                 (>= (vec3-norm (ship-state-w (sim-ship sim))) *warp-rotation-limit*))
@@ -783,9 +985,10 @@ DATA as prediction-event's second value."
 
 (defun dropout-message (level delta kind &optional loss)
   "The text for a drop-out to LEVEL, Δ ahead of the event of KIND: decision
-73's for an :impact (LOSS its record), decision 113's for a :contact."
-  (cond ((eq kind :contact)
-         (format nil "WARP ×~:D: CONTACT IN ~A" level (format-duration delta)))
+73's for an :impact (LOSS its record), decision 113's for a :contact,
+decision 117's for a :burn."
+  (cond ((member kind '(:contact :burn))
+         (format nil "WARP ×~:D: ~A IN ~A" level kind (format-duration delta)))
         ((and loss (eq (loss-body loss) :moon))
          (format nil "WARP ×~:D: MOON IMPACT AHEAD" level))
         (t
@@ -797,7 +1000,9 @@ DATA as prediction-event's second value."
 (defun clock-check-level! (clock sim)
   "Before every step (decision 73): the thrust limit, ×4 for a hold released
 above ×4, the highest level with the drop-out event ≥ 3 s of real time
-ahead; each lowering writes its message."
+ahead; each lowering writes its message. A plan's burn due in the step
+(plan-burn-due) counts from that step: ×4 on the RCS, *cutoff-warp-limit*
+on the engine (decision 117)."
   (flet ((lower! (level text)
            (when (< level (clock-level clock))
              (clock-set-level-index! clock (position level *warp-levels*))
@@ -805,6 +1010,14 @@ ahead; each lowering writes its message."
     (when (and (sim-engine-on-p sim) (> (clock-level clock) (thrust-warp-limit sim)))
       (lower! (thrust-warp-limit sim)
               (format nil "WARP ×~:D: ENGINE ON" (thrust-warp-limit sim))))
+    (when (> (clock-level clock) *fine-levels-max*)
+      (let ((burn (plan-burn-due sim)))
+        (when burn
+          (if (planned-burn-rcs burn)
+              (lower! *fine-levels-max* (format nil "WARP ×~D: RCS BURN" *fine-levels-max*))
+              (when (> (clock-level clock) *cutoff-warp-limit*)
+                (lower! *cutoff-warp-limit*
+                        (format nil "WARP ×~:D: ENGINE ON" *cutoff-warp-limit*)))))))
     (when (and (clock-held clock) (not (held-p sim)) (> (clock-level clock) *fine-levels-max*))
       (lower! *fine-levels-max* (format nil "WARP ×~D: HOLD RELEASED" *fine-levels-max*)))
     (multiple-value-bind (delta kind data) (clock-dropout clock sim)
@@ -864,6 +1077,23 @@ with no hold, the next step engages an inertial hold (sim-step!)."
   (rate-meter-reset! clock)
   (setf (clock-paused clock) (not (clock-paused clock)))
   clock)
+
+;;; Engaging and disengaging the autopilot (decision 117), between steps.
+
+(defun autopilot-engage! (clock sim plan)
+  "PLAN flown by SIM from now (sim-engage-plan!), kept by CLOCK for the map; SIM."
+  (setf (clock-autopilot clock) plan)
+  (sim-engage-plan! sim plan))
+
+(defun autopilot-disengage! (clock sim &optional pilot)
+  "Backspace, or PILOT input: SIM's plan stopped (sim-plan-stop!: throttle
+off, rate damping) with the message \"AUTOPILOT OFF\" (\"AUTOPILOT OFF:
+PILOT INPUT\"), CLOCK keeping the plan for the map. True when one was
+engaged."
+  (when (sim-plan sim)
+    (sim-plan-stop! sim)
+    (clock-message! clock :autopilot (if pilot "AUTOPILOT OFF: PILOT INPUT" "AUTOPILOT OFF"))
+    t))
 
 ;;; The step and the frame
 
@@ -977,12 +1207,13 @@ or lost. The steps taken."
 
 (defun clock-restart! (clock sim checkpoint)
   "SIM restored to CHECKPOINT; CLOCK at ×1, unpaused, its accumulator,
-messages and prediction cleared; its latest checkpoint and the SHIP log
-kept. SIM."
+messages, prediction and the autopilot's plan cleared; its latest
+checkpoint and the SHIP log kept. SIM."
   (restore-checkpoint! sim checkpoint)
   (setf (clock-game-t clock) (sim-t sim))
   (rate-meter-reset! clock)
-  (setf (clock-level-index clock) 0
+  (setf (clock-autopilot clock) nil
+        (clock-level-index clock) 0
         (clock-paused clock) nil
         (clock-accumulator clock) 0d0
         (clock-message-list clock) nil

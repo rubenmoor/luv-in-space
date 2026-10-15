@@ -985,3 +985,228 @@ step's end that cut it, (:coast t i hold) that engaged the coast hold."
     (step-sim sim 100 1000)
     (true (< (least-bytes-consed (lambda () (step-sim sim 10000 1000)) 1) 1024))
     (is eq :done (lis::sim-plan-phase sim))))
+
+;;; The autopilot's execution rules in the step and the clock (decision 117:
+;;; Autopilot in milestone 3: planning jobs, goal measures, burns, execution
+;;; rules in the step, trims).
+
+(defun notice-texts (sim) (mapcar #'second (lis::sim-notices sim)))
+
+(defun check-aborted (sim reason)
+  "SIM's last step aborted its plan for REASON: the notice, throttle off,
+keys released, rate damping, no plan, t on the grid."
+  (let ((controls (lis::sim-controls sim)))
+    (true (member (format nil "AUTOPILOT ABORT: ~A" reason) (notice-texts sim) :test #'string=)
+          "~S" (notice-texts sim))
+    (is = 0d0 (lis::controls-throttle controls))
+    (false (lis::sim-cutoff sim))
+    (is equalp #(0 0 0) (lis::controls-translation-keys controls))
+    (is eq :rate-damping (lis::controls-attitude-mode controls))
+    (false (lis::sim-plan sim))
+    (true (on-grid-p (lis::sim-t sim)))))
+
+(defun step-until (sim level stop &optional (limit 100000))
+  "Steps of SIM at LEVEL until (STOP SIM), at most LIMIT; SIM."
+  (loop repeat limit
+        until (funcall stop sim)
+        do (step-sim sim 1 level))
+  (true (funcall stop sim))
+  sim)
+
+(defun burning-plan-sim ()
+  "plan-sim (hohmann-plan, :point) at ×1,000 to the first hold, at ×1 into its burn."
+  (let ((sim (plan-sim)))
+    (fly-plan sim (lambda (s) (if (eq (lis::sim-plan-phase s) :pending) 1000 1))
+              (lambda (s) (eq (lis::sim-plan-phase s) :burning)))
+    (step-sim sim 64 1)
+    (is eq :burning (lis::sim-plan-phase sim))
+    sim))
+
+(define-test autopilot-propellant-low
+  ;; Drained mid-burn below the burns left: the abort at that step.
+  (let* ((sim (burning-plan-sim))
+         (t0 (lis::sim-t sim)))
+    (setf (lis::ship-state-m-p (lis::sim-ship sim)) 50d0)
+    (step-sim sim 1 1)
+    (is = (+ t0 1/64) (lis::sim-t sim))
+    (check-aborted sim "PROPELLANT LOW")))
+
+(define-test autopilot-attitude-error
+  ;; ×1: a yaw rate of 0.1 rad/s mid-burn cuts it; the inertial hold settles
+  ;; and it resumes with the Δv it had left; a second time aborts. A copy
+  ;; and a restored checkpoint taken after the cut fly on bit for bit.
+  (let* ((sim (burning-plan-sim))
+         (ship (lis::sim-ship sim))
+         (controls (lis::sim-controls sim))
+         (cutoff (lis::sim-cutoff sim)))
+    (setf (aref (lis::ship-state-w ship) 2) 0.1d0)
+    (step-until sim 1 (lambda (s) (eq (lis::sim-plan-phase s) :holding)) 256)
+    (is = 0d0 (lis::controls-throttle controls))
+    (is eq :inertial (lis::controls-hold controls))
+    (is = 1 (lis::sim-plan-retries sim))
+    (let ((left (lis::sim-plan-resume sim)))
+      (true (< 0d0 left))
+      (true (< (abs (- left (- cutoff (lis::ship-state-dv ship)))) 0.1d0) "~F m/s left" left)
+      (let* ((copy (lis::copy-sim sim))
+             (restored (lis::restore-checkpoint! (lis::new-game-sim) (lis::take-checkpoint sim))))
+        (true (equalp copy sim))
+        (dolist (s (list sim copy restored))
+          (step-until s 1 (lambda (s) (eq (lis::sim-plan-phase s) :burning)) 20000))
+        (true (lis::controls-settled controls))
+        (true (equalp copy sim))
+        (true (equalp restored sim)))
+      ;; Resumed: the cut-off re-armed at the odometer + the Δv left.
+      (is = 0d0 (lis::sim-plan-resume sim))
+      (true (< (abs (- (lis::sim-cutoff sim) (+ (lis::ship-state-dv ship) left))) 0.1d0)))
+    (setf (aref (lis::ship-state-w ship) 2) 0.1d0)
+    (step-until sim 1 (lambda (s) (null (lis::sim-plan s))) 256)
+    (check-aborted sim "ATTITUDE ERROR")))
+
+(define-test autopilot-unsafe-orbit
+  ;; A retrograde burn whose full Δv takes the periapsis to 110 km aborts
+  ;; at its first step, the periapsis then above the crash radius + 25 km.
+  (let* ((sim (model-sim :point))
+         (ship (lis::sim-ship sim))
+         (t0 (lis::sim-t sim))
+         (r1 (lis::vec3-norm (lis::ship-state-r ship)))
+         (dv (- (circular-speed 400d3)
+                (nth-value 1 (transfer-speeds (+ lis::+radius-earth+ 110d3) r1))))
+         (q (lis::hold-attitude :retrograde (lis::ship-state-r ship) (lis::ship-state-v ship) 0d0))
+         (floor (+ *earth-crash-radius* 25d3)))
+    (replace (lis::ship-state-q ship) q)
+    (fill (lis::ship-state-w ship) 0d0)
+    (lis::sim-engage-plan! sim (lis::make-burn-plan
+                                (vector (lis::make-planned-burn :apsis t0 (+ t0 1/2) q 1d0 nil dv))))
+    (flet ((periapsis ()
+             (lis::orbit-periapsis-radius
+              (lis::state->orbit (lis::ship-state-r ship) (lis::ship-state-v ship)
+                                 lis::+mu-earth+ (lis::sim-t sim)))))
+      (step-until sim 1 (lambda (s) (eq (lis::sim-plan-phase s) :holding)) 4)
+      (step-sim sim 31 1)
+      ;; The impulsive check fails at the burn's start: no thrust delivered.
+      (let ((t1 (lis::sim-t sim)))
+        (is = (+ t0 1/2) t1)
+        (step-sim sim 1 1)
+        (check-aborted sim "UNSAFE ORBIT")
+        (true (< (lis::ship-state-dv ship) 1d-3))
+        (true (>= (periapsis) floor) "~,1F km" (/ (- (periapsis) lis::+radius-earth+) 1000))))))
+
+(define-test autopilot-contact
+  ;; A bounce in the step aborts the plan engaged.
+  (let* ((sim (aft-scene 0.5d0))
+         (t0 (lis::sim-t sim)))
+    (lis::sim-set-plan! sim (lis::make-burn-plan
+                             (vector (lis::make-planned-burn :apsis (+ t0 600) (+ t0 700)
+                                                             (lis::quat 1 0 0 0) 1d0 nil 10d0))))
+    (step-until sim 1 (lambda (s) (null (lis::sim-plan s))) 128)
+    (check-aborted sim "CONTACT")))
+
+(define-test autopilot-coasting-cons-nothing
+  ;; 10,000 coarse steps engaged before the hold-at cons nothing.
+  (let* ((sim (model-sim :point))
+         (t0 (lis::sim-t sim)))
+    (lis::sim-engage-plan! sim (lis::make-burn-plan
+                                (vector (lis::make-planned-burn :apsis (+ t0 1d7) (+ t0 1.1d7)
+                                                                (lis::quat 1 0 0 0) 1d0 nil 10d0))))
+    (step-sim sim 100 1000)
+    (true (< (least-bytes-consed (lambda () (step-sim sim 10000 1000)) 1) 1024))
+    (is eq :pending (lis::sim-plan-phase sim))))
+
+(defun eager-clock (sim record)
+  "A clock at ×1,000,000 for SIM whose hook warps up as far as allowed
+before each step and pushes (t level phase due-burn index) onto the car of
+the cons RECORD, the live messages it has seen onto its cdr."
+  (let ((clock (clock-at sim 1000000)))
+    (setf (lis::clock-hook clock)
+          (lambda (clock s)
+            (setf (cdr record) (union (cdr record) (lis::clock-messages clock) :test #'string=))
+            (loop while (lis::clock-warp-up clock s))
+            (lis::clock-check-level! clock s)
+            (push (list (lis::sim-t s) (lis::clock-level clock) (lis::sim-plan-phase s)
+                        (lis::plan-burn-due s) (and (lis::sim-plan s) (lis::sim-plan-index s)))
+                  (car record))
+            nil))
+    clock))
+
+(defun log-texts (clock) (mapcar #'second (lis::clock-log clock)))
+
+(define-test autopilot-flown-through-clock
+  ;; The Hohmann 400 → 800 km planned and engaged, flown through
+  ;; clock-frame! by a pilot warping up as far as allowed: before each
+  ;; hold-at Δ ≥ 3 s × level (less 0.05 s), ×1 at it, ≤ ×100 while the
+  ;; engine burns; completion's checkpoint and notice once.
+  (let* ((lis::*frame-step-time-limit* nil)
+         (sim (model-sim :point))
+         (plan (plan-now sim :change-orbit '(800d3)))
+         (record (list nil))
+         (clock (eager-clock sim record)))
+    (lis::autopilot-engage! clock sim plan)
+    (is eq plan (lis::clock-autopilot clock))
+    (loop repeat 20000
+          while (lis::sim-plan sim)
+          do (lis::clock-frame! clock sim 1/60))
+    (false (lis::sim-plan sim))
+    (dolist (step (car record))
+      (destructuring-bind (time level phase due index) step
+        (when index
+          (let ((hold-at (lis::planned-burn-hold-at (svref (lis::burn-plan-burns plan) index))))
+            (when (and (eq phase :pending) (> level 1))
+              (true (>= (- hold-at time) (- (* 3 level) 0.05d0)) "×~D ~,2F s before" level
+                    (- hold-at time))
+              (when (= time hold-at) (is = 1 level)))))
+        (when due (true (<= level 100) "×~D burning" level))))
+    (loop for burn across (lis::burn-plan-burns plan)
+          do (true (find (lis::planned-burn-hold-at burn) (car record) :key #'first)))
+    ;; Coasting the 2,900 s transfer the pilot reaches ×100 at most.
+    (dolist (level '(10 4 1))
+      (true (find-if (lambda (m) (search (format nil "WARP ×~:D: BURN IN " level) m)) (cdr record))
+            "×~D in ~S" level (remove-if-not (lambda (m) (search "BURN IN" m)) (cdr record))))
+    (is = 1 (count "AUTOPILOT: PLAN COMPLETE" (log-texts clock) :test #'string=))
+    (let ((checkpoint (lis::clock-checkpoint clock)))
+      (true checkpoint)
+      (when checkpoint
+        (is = 0d0 (lis::controls-throttle (lis::sim-controls checkpoint)))
+        (false (lis::sim-plan checkpoint))
+        (is eq :prograde (lis::controls-hold (lis::sim-controls checkpoint)))
+        (true (lis::checkpoint-safe-p checkpoint))))
+    (is eq plan (lis::clock-autopilot clock))))
+
+(define-test autopilot-rcs-burn-warp
+  ;; A 0.3 m/s RCS burn: warp ≤ ×4 while it runs, with its message; warp up
+  ;; refused then.
+  (let* ((lis::*frame-step-time-limit* nil)
+         (sim (model-sim :point))
+         (ship (lis::sim-ship sim))
+         (t0 (lis::sim-t sim))
+         (start (+ t0 100))
+         (orbit (lis::state->orbit (lis::ship-state-r ship) (lis::ship-state-v ship)
+                                   lis::+mu-earth+ t0))
+         (q (multiple-value-bind (r v) (lis::orbit-state orbit start)
+              (lis::hold-attitude :prograde r v 0d0)))
+         (record (list nil))
+         (clock (eager-clock sim record)))
+    (lis::autopilot-engage! clock sim (lis::make-burn-plan
+                                       (vector (lis::make-planned-burn :trim (+ t0 30) start q
+                                                                       0d0 1 0.3d0))))
+    (loop repeat 20000
+          while (lis::sim-plan sim)
+          do (lis::clock-frame! clock sim 1/60))
+    (false (lis::sim-plan sim))
+    (let ((burning (remove :burning (car record) :key #'third :test-not #'eq)))
+      (true (> (length burning) 100))
+      (dolist (step burning)
+        (true (<= (second step) 4) "×~D" (second step))))
+    (true (find "WARP ×4: RCS BURN" (cdr record) :test #'string=) "~S" (cdr record))
+    (true (find "WARP REFUSED: RCS BURN, LIMIT ×4" (cdr record) :test #'string=))
+    (true (find "AUTOPILOT: PLAN COMPLETE" (log-texts clock) :test #'string=))))
+
+(define-test autopilot-disengage
+  (let* ((sim (plan-sim))
+         (clock (lis::new-clock sim)))
+    (lis::autopilot-engage! clock sim (lis::sim-plan sim))
+    (true (lis::autopilot-disengage! clock sim t))
+    (false (lis::sim-plan sim))
+    (is eq :rate-damping (lis::controls-attitude-mode (lis::sim-controls sim)))
+    (true (messages-p clock "AUTOPILOT OFF: PILOT INPUT"))
+    (false (lis::autopilot-disengage! clock sim))
+    (true (lis::clock-autopilot clock))))

@@ -602,3 +602,203 @@ alpha 0 off the cairn and the letters."
                      do (fill-box (+ left (* c0 cell)) (+ top (* r0 cell))
                                   (+ left (* c1 cell)) (+ top (* r1 cell)) 0))))
     pixels))
+
+;;; The Mule on the GPU (decision 80; docs/architecture.md "Rendering
+;;; precision" item 3): the baked hull and the engine in static vertex
+;;; buffers, each instance group's unit primitive and instances in static
+;;; buffers, the decal texture; per target a ship block and the material
+;;; table, written each frame.
+
+(defvar *mule* nil "The Mule's model, made once.")
+
+(defun mule ()
+  (or *mule* (setf *mule* (mule-model))))
+
+(defparameter *earth-albedo* 0.3d0 "Earthshine (decision 80); live.")
+(defparameter *earthshine-tint* '(0.85d0 0.92d0 1.0d0) "Live.")
+(defparameter *ship-ambient* 0.0005d0 "Live.")
+
+(defconstant +ship-uniform-floats+ 52 "shaders.lisp's ship block: 13 vec4s.")
+
+(defstruct (ship-gpu (:constructor %make-ship-gpu))
+  "The static resources of the Mule's draws and the bind group layout."
+  model layout hull hull-count engine engine-count
+  groups                                ; (primitive count instances count) per group
+  decal-view decal-sampler
+  (scratch (make-mass-properties) :type mass-properties)
+  (uniforms (make-array +ship-uniform-floats+ :element-type 'single-float :initial-element 0f0))
+  (materials (make-array (* 8 (array-dimension *ship-materials* 0))
+                         :element-type 'single-float :initial-element 0f0)))
+
+(defun ship-vertex-buffers (&optional instanced)
+  `((:array-stride ,(* 4 +vertex-floats+)
+     :attributes ((:shader-location 0 :offset 0 :format :float32x3)
+                  (:shader-location 1 :offset 12 :format :float32x3)
+                  (:shader-location 2 :offset 24 :format :float32x3)))
+    ,@(when instanced
+        `((:array-stride ,(* 4 +instance-floats+) :step-mode :instance
+           :attributes ((:shader-location 3 :offset 0 :format :float32x3)
+                        (:shader-location 4 :offset 12 :format :float32x3)
+                        (:shader-location 5 :offset 24 :format :float32x3)
+                        (:shader-location 6 :offset 36 :format :float32x3)
+                        (:shader-location 7 :offset 48 :format :float32x4)))))))
+
+(defun make-ship-gpu (renderer format)
+  "The Mule's buffers, decal and layout, owned by RENDERER, and its
+:ship-mesh and :ship-instanced live pipelines into FORMAT: opaque, depth
+written, compare :greater."
+  (let* ((model (mule))
+         (layout (gpu-create renderer (luv:make-bind-group-layout-descriptor
+                                       :entries '((:binding 0 :type :uniform-buffer)
+                                                  (:binding 1 :type :texture)
+                                                  (:binding 2 :type :sampler)
+                                                  (:binding 3 :type :uniform-buffer)
+                                                  (:binding 4 :type :storage-buffer)))))
+         (depth '(:format :depth32-float :depth-write-enabled t :depth-compare :greater)))
+    (flet ((count-of (floats size) (floor (length floats) size)))
+      (multiple-value-bind (texture view sampler)
+          (texture-from-pixels renderer (stencil-decal-pixels) "decal")
+        (declare (ignore texture))
+        (live-pipeline renderer :ship-mesh layout (ship-vertex-buffers) :format format
+                                                                         :depth-stencil depth)
+        (live-pipeline renderer :ship-instanced layout (ship-vertex-buffers t) :format format
+                                                                                :depth-stencil depth)
+        (%make-ship-gpu
+         :model model :layout layout
+         :hull (vertex-buffer renderer (model-vertices model) "hull")
+         :hull-count (count-of (model-vertices model) +vertex-floats+)
+         :engine (vertex-buffer renderer (model-engine model) "engine")
+         :engine-count (count-of (model-engine model) +vertex-floats+)
+         :groups (loop for g in (model-groups model)
+                       for kind = (string-downcase (instance-group-kind g))
+                       collect (list (vertex-buffer renderer (instance-group-primitive g) kind)
+                                     (count-of (instance-group-primitive g) +vertex-floats+)
+                                     (vertex-buffer renderer (instance-group-instances g)
+                                                    (format nil "~A instances" kind))
+                                     (count-of (instance-group-instances g) +instance-floats+)))
+         :decal-view view :decal-sampler sampler)))))
+
+(defstruct ship-slot
+  "A target's ship block, material table and bind group."
+  buffer materials bind-group)
+
+(defun make-ship-target-slot (renderer ship frame-buffer)
+  "The per-target resources of SHIP's draws; FRAME-BUFFER the target's frame block."
+  (let* ((device (renderer-device renderer))
+         (buffer (luv:create device (luv:make-buffer-descriptor
+                                     :label "ship" :size (* 4 +ship-uniform-floats+)
+                                     :usage '(:uniform :copy-dst))))
+         (materials (luv:create device (luv:make-buffer-descriptor
+                                        :label "ship materials"
+                                        :size (* 4 (length (ship-gpu-materials ship)))
+                                        :usage '(:storage :copy-dst)))))
+    (make-ship-slot
+     :buffer buffer :materials materials
+     :bind-group (luv:create device (luv:make-bind-group-descriptor
+                                     :layout (ship-gpu-layout ship)
+                                     :entries `((:binding 0 :resource ,frame-buffer)
+                                                (:binding 1 :resource ,(ship-gpu-decal-view ship))
+                                                (:binding 2 :resource ,(ship-gpu-decal-sampler ship))
+                                                (:binding 3 :resource ,buffer)
+                                                (:binding 4 :resource ,materials)))))))
+
+(defun release-ship-slot (slot)
+  (luv:destroy (ship-slot-bind-group slot))
+  (luv:destroy (ship-slot-materials slot))
+  (luv:destroy (ship-slot-buffer slot)))
+
+(defun ship-materials! (out)
+  "*ship-materials* as two vec4s per row: r g b weight; exponent emission 0 0."
+  (dotimes (row (array-dimension *ship-materials* 0) out)
+    (let ((o (* 8 row)))
+      (dotimes (k 4)
+        (setf (aref out (+ o k)) (aref *ship-materials* row k)))
+      (setf (aref out (+ o 4)) (aref *ship-materials* row 4)
+            (aref out (+ o 5)) (aref *ship-materials* row 5)
+            (aref out (+ o 6)) 0f0 (aref out (+ o 7)) 0f0))))
+
+(defun ship-reference-position (state com &optional (out (make-vec3)))
+  "R's position, r − q c, double (decision 80)."
+  (let ((qc (quat-rotate (render-state-q state) com)))
+    (vec3-sub! out (render-state-r state) qc)))
+
+(defun earth-lit-cap (r s-hat)
+  "The lit share of the Earth seen from R (decision 99: Earthshine from the
+lit part of the visible cap): max(0, cos θ) of the Sun's zenith angle θ,
+averaged over θ0 ± λ, θ0 its angle at the sub-ship point (S-HAT the unit
+direction to the Sun), λ = acos(R⊕ / |r|) the cap's half-angle. 0 when the
+whole cap is past the terminator."
+  (let* ((d (vec3-norm r))
+         (cap (if (> d +radius-earth+) (acos (/ +radius-earth+ d)) 0d0))
+         (theta (acos (max -1d0 (min 1d0 (/ (vec3-dot r s-hat) d)))))
+         (low (- theta cap)))
+    (cond ((>= low (/ pi 2)) 0d0)
+          ((< cap 1d-9) (max 0d0 (cos theta)))
+          (t (/ (- (sin (min (+ theta cap) (/ pi 2))) (sin low)) (* 2 cap))))))
+
+(defun ship-uniforms! (out state eye com)
+  "The ship block (shaders.lisp) into OUT for the render STATE seen from EYE,
+the CoM COM in body axes: the rows of q, R relative to the eye (decision 5:
+Precision of positions), the gimbal and the trim rotation at m_p, then in
+body axes the Sun's direction with (1 AU / d)^2 x sun-fraction, the
+direction to Earth with the earthshine, the tint and ambient, the eye with
+the lights-on flag, the emissive colour."
+  (let* ((q (render-state-q state))
+         (rows (mat3-from-quat q))
+         (inverse (quat-conjugate q))
+         (r (render-state-r state))
+         (reference (ship-reference-position state com))
+         (sun (vec3-sub (render-state-sun state) r))
+         (d-sun (vec3-norm sun))
+         (irradiance (expt (/ +au+ d-sun) 2))
+         (r-hat (vec3-normalize r))
+         (s-hat (vec3-scale sun (/ d-sun)))
+         (earthshine (* *earth-albedo* (expt (/ +radius-earth+ (vec3-norm r)) 2)
+                        (earth-lit-cap r s-hat) irradiance))
+         (trim (engine-rotation (render-state-m-p state))))
+    (flet ((put (index x y z w)
+             (setf (aref out index) (coerce x 'single-float)
+                   (aref out (+ index 1)) (coerce y 'single-float)
+                   (aref out (+ index 2)) (coerce z 'single-float)
+                   (aref out (+ index 3)) (coerce w 'single-float)))
+           (body (v) (quat-rotate inverse v)))
+      (dotimes (i 3)
+        (put (* 4 i) (aref rows (* 3 i)) (aref rows (+ (* 3 i) 1)) (aref rows (+ (* 3 i) 2)) 0))
+      (relative-single reference eye out 12)
+      (setf (aref out 15) 0f0)
+      (put 16 (aref *engine-gimbal* 0) (aref *engine-gimbal* 1) (aref *engine-gimbal* 2) 0)
+      (dotimes (i 3)
+        (put (+ 20 (* 4 i)) (aref trim (* 3 i)) (aref trim (+ (* 3 i) 1)) (aref trim (+ (* 3 i) 2)) 0))
+      (let ((s (body s-hat)) (e (body (vec3-scale r-hat -1d0)))
+            (eye-body (body (vec3-sub eye reference)))
+            (emissive (render-state-ship-emissive state)))
+        (put 32 (aref s 0) (aref s 1) (aref s 2) (* irradiance (render-state-sun-fraction state)))
+        (put 36 (aref e 0) (aref e 1) (aref e 2) earthshine)
+        (destructuring-bind (tr tg tb) *earthshine-tint*
+          (put 40 tr tg tb *ship-ambient*))
+        (put 44 (aref eye-body 0) (aref eye-body 1) (aref eye-body 2)
+             (if (render-state-ship-lights-on state) 1 0))
+        (put 48 (aref emissive 0) (aref emissive 1) (aref emissive 2) 0)))
+    out))
+
+(defun encode-ship (pass renderer ship slot state eye)
+  "The Mule into the open scene PASS (after the impostors, before the
+ribbons): the hull, the instance groups, then the engine as instance 1 of
+:ship-mesh, so its vertex stage turns it by its trim."
+  (let ((com (mass-properties-com (ship-mass-properties (render-state-m-p state) nil
+                                                        (ship-gpu-scratch ship))))
+        (bind-group (ship-slot-bind-group slot)))
+    (luv:write-buffer (ship-slot-buffer slot) (ship-uniforms! (ship-gpu-uniforms ship) state eye com))
+    (luv:write-buffer (ship-slot-materials slot) (ship-materials! (ship-gpu-materials ship)))
+    (luv:set-pipeline pass (renderer-pipeline renderer :ship-mesh))
+    (luv:set-bind-group pass 0 bind-group)
+    (luv:set-vertex-buffer pass 0 (ship-gpu-hull ship))
+    (luv:draw pass (ship-gpu-hull-count ship))
+    (luv:set-vertex-buffer pass 0 (ship-gpu-engine ship))
+    (luv:draw pass (ship-gpu-engine-count ship) 1 0 1)
+    (luv:set-pipeline pass (renderer-pipeline renderer :ship-instanced))
+    (luv:set-bind-group pass 0 bind-group)
+    (loop for (primitive vertices instances count) in (ship-gpu-groups ship)
+          do (luv:set-vertex-buffer pass 0 primitive)
+             (luv:set-vertex-buffer pass 1 instances)
+             (luv:draw pass vertices count))))

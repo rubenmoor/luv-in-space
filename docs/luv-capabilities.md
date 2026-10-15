@@ -261,6 +261,7 @@ What a solar-system flight game needs that luv lacks, each gap with a workaround
 
 - luv has: instanced `draw`/`draw-indexed` and per-instance vertex buffers (`:step-mode :instance`); storage buffers read by `:instance-index` (`../luv/hal/shaderc/examples/textured-instances.lisp`) (ran: run 32; read).
 - Gap: none in the HAL; no ready instanced mesh renderer.
+- Built here (`task 117`, `src/meshes.lisp`): the Mule's 102 tubes, 11 boxes and 24 nozzle cones as three instanced draws of unit primitives (per-instance origin, basis, scale and material, 16 floats, `:step-mode :instance`), next to the baked hull and the engine, on lavapipe in the tests and screenshots (ran); the material table as a `:storage-buffer` read by a runtime index in the fragment shader (`buffer-element`), and `:instance-index` with `draw`'s first instance telling the engine's draw from the hull's (ran).
 - Workaround here: asteroids as one or a few rock meshes (generated in Lisp, displaced icospheres) drawn with per-instance position, scale and rotation, camera-relative in single float; distant asteroids as sprites or not at all (the real belt is empty to the eye) (assumed). Markers and stars as instanced quads (ran). Cost: ~100 lines per instanced kind.
 
 ### Audio

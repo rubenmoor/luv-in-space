@@ -135,6 +135,13 @@
            sum (loop for x below width sum (pixel-luminance pixels width x y)))
      (* width (- to from))))
 
+(defun clear-of-ship! (camera &optional (distance 50d0))
+  "CAMERA moved DISTANCE m forward from the ship, so the Mule is behind it."
+  (lis::vec3-scale! (lis::camera-offset camera)
+                    (lis::quat-rotate (lis::camera-orientation camera) (lis::vec3 1 0 0))
+                    distance)
+  camera)
+
 (defun nadir-camera (camera state)
   "Straight down from the ship, prograde up."
   (let* ((x (lis::vec3-normalize (lis::vec3-scale (lis::render-state-r state) -1d0)))
@@ -142,13 +149,13 @@
          (z (lis::vec3-scale z -1d0))
          (y (lis::vec3-cross z x)))
     (lis::quat-from-basis! (lis::camera-orientation camera) x y z)
-    (fill (lis::camera-offset camera) 0d0)))
+    (clear-of-ship! camera)))
 
 (defun away-camera (camera state)
   "From the ship, away from Earth and the Sun: a dark view."
   (let* ((r (lis::render-state-r state))
          (n (lis::vec3-normalize (lis::vec3-cross r (lis::render-state-sun state)))))
-    (look-along! camera (lis::vec3-add (lis::vec3-scale n 2d0) (lis::vec3-normalize r)))))
+    (clear-of-ship! (look-along! camera (lis::vec3-add (lis::vec3-scale n 2d0) (lis::vec3-normalize r))))))
 
 (defun centre-quad (radiance &key (dx 0) (dy 0) (size 2))
   "Overlay vertices of a SIZE-pixel square of RADIANCE at the centre plus DX, DY pixels."
@@ -188,6 +195,7 @@
                                          (:sun (lis::render-state-sun state))
                                          (:moon (lis::render-state-moon state)))
                                        (lis::render-state-r state)))
+    (clear-of-ship! camera)
     (setf (lis::camera-field-of-view camera) (deg field-of-view))))
 
 (defun disc-pixels (key sim field-of-view height)
@@ -302,7 +310,7 @@ acos(R / r), so the limb crosses the centre row; radial out up."
                                             (lis::vec3-scale up (cos dip)))
                              -1d0)))
     (lis::quat-from-basis! (lis::camera-orientation camera) x (lis::vec3-cross z x) z)
-    (fill (lis::camera-offset camera) 0d0)))
+    (clear-of-ship! camera)))
 
 (defun far-earth-camera (distance field-of-view)
   "A camera-fn: DISTANCE m from Earth's centre towards the Sun, looking at
@@ -382,7 +390,7 @@ FIELD-OF-VIEW in degrees."
                                                    (lis::vec3-scale x (aref x 2)))))
            (z (lis::vec3-scale up -1d0)))
       (lis::quat-from-basis! (lis::camera-orientation camera) x (lis::vec3-cross z x) z)
-      (fill (lis::camera-offset camera) 0d0)
+      (clear-of-ship! camera)
       (setf (lis::camera-field-of-view camera) (deg field-of-view)))))
 
 (defun sky-pixel (camera-fn ra dec width height)
@@ -408,6 +416,205 @@ FIELD-OF-VIEW in degrees."
 (defun count-above (pixels width height threshold &key (from-row 40))
   (loop for y from from-row below height
         sum (loop for x below width count (> (pixel-luminance pixels width x y) threshold))))
+
+;;; The Mule (decision 80: The Mule's meshes in numbers: geometry, draws,
+;;; materials and lights; src/meshes.lisp).
+
+(defun ship-com (state)
+  (lis::mass-properties-com (lis::ship-mass-properties (lis::render-state-m-p state))))
+
+(defun ship-view (direction distance target)
+  "A camera-fn: DISTANCE m from the body point TARGET along the body
+DIRECTION, looking back at it, the cab (body -z) up."
+  (lambda (camera state)
+    (let* ((q (lis::render-state-q state))
+           (d (lis::vec3-normalize (lis::quat-rotate q (lis::v3 direction))))
+           (x (lis::vec3-scale d -1d0))
+           (hint (lis::quat-rotate q (lis::vec3 0 0 -1)))
+           (up (if (< (lis::vec3-norm (lis::vec3-cross hint x)) 0.1d0)
+                   (lis::quat-rotate q (lis::vec3 1 0 0))
+                   hint))
+           (y (lis::vec3-normalize (lis::vec3-cross x up)))
+           (z (lis::vec3-cross x y)))
+      (lis::quat-from-basis! (lis::camera-orientation camera) x y z)
+      (replace (lis::camera-offset camera)
+               (lis::vec3-add (lis::quat-rotate q (lis::vec3-sub (lis::v3 target) (ship-com state)))
+                              (lis::vec3-scale d (float distance 1d0))))
+      (setf (lis::camera-field-of-view camera) (float lis::*outside-field-of-view* 1d0)))))
+
+(defun posed-camera (camera-fn state)
+  (let ((camera (lis::make-camera)))
+    (funcall camera-fn camera state)
+    camera))
+
+(defun ship-point (state camera p)
+  "The body point P relative to the eye, ICRF: q (p − c) − offset."
+  (lis::vec3-sub (lis::quat-rotate (lis::render-state-q state) (lis::vec3-sub (lis::v3 p) (ship-com state)))
+                 (lis::camera-offset camera)))
+
+(defun project (camera point width height)
+  "Pixel x, y of POINT (relative to the eye) through camera-clip-rows!, and its w."
+  (let ((rows (make-array 16 :element-type 'single-float)))
+    (lis::camera-clip-rows! rows camera (/ width height))
+    (flet ((row (i) (loop for k below 3 sum (* (aref rows (+ i k)) (aref point k)))))
+      (let ((w (row 12)))
+        (values (* 0.5 width (+ 1 (/ (row 0) w))) (* 0.5 height (+ 1 (/ (row 4) w))) w)))))
+
+(defun pixel-ray (camera px py width height)
+  "The unit view ray through pixel PX, PY (ICRF)."
+  (let* ((q (lis::camera-orientation camera))
+         (f (tan (* 0.5d0 (lis::camera-field-of-view camera))))
+         (x (* f (/ width height) (- (/ (* 2 (+ px 0.5d0)) width) 1)))
+         (y (* f (- (/ (* 2 (+ py 0.5d0)) height) 1))))
+    (lis::vec3-normalize (lis::quat-rotate q (lis::vec3 1 x y)))))
+
+(defun disc-in-frame-p (camera centre radius width height)
+  "Whether the sphere of RADIUS at CENTRE (relative to the eye) reaches into
+the frame: its angular radius past the view axis against the half-diagonal."
+  (let* ((d (lis::vec3-norm centre))
+         (rho (if (<= d radius) pi (asin (/ radius d))))
+         (forward (lis::quat-rotate (lis::camera-orientation camera) (lis::vec3 1 0 0)))
+         (f (tan (* 0.5d0 (lis::camera-field-of-view camera))))
+         (half-diagonal (atan (* f (sqrt (+ 1 (expt (/ width height) 2)))))))
+    (< (- (angle-between forward centre) rho) half-diagonal)))
+
+(defparameter *cab-view* '(0.3d0 0.4d0 -0.85d0)
+  "Body direction of the lit-ship checks' camera: above the cab, to the side.")
+
+(defun turn-ship! (sim body world)
+  "Turn SIM's ship so its BODY direction points along WORLD."
+  (let* ((q (lis::ship-state-q (lis::sim-ship sim)))
+         (current (lis::quat-rotate q (lis::vec3-normalize (lis::v3 body))))
+         (target (lis::vec3-normalize world))
+         (turn (lis::quat-from-axis-angle (lis::vec3-cross current target)
+                                          (angle-between current target))))
+    (replace q (lis::quat-normalize (lis::quat-mul turn q)))
+    sim))
+
+(defun lit-ship-sim ()
+  "u = 60 deg of the start orbit, the Sun 83 deg from the zenith, the ship
+turned so *cab-view* points 40 deg from the Sun towards the nadir, turned
+-30 deg about the Sun to keep the Moon out: a camera there has the Sun
+behind it and looks up, away from Earth. (Under the
+prograde hold the Sun lights the cab's wall only near the zenith, where a
+camera with the Sun behind sees Earth.)"
+  (let* ((sim (start-sim-at 60))
+         (state (sim-render-state sim))
+         (r (lis::render-state-r state))
+         (s (lis::vec3-normalize (lis::vec3-sub (lis::render-state-sun state) r)))
+         (nadir (lis::vec3-normalize (lis::vec3-scale r -1d0)))
+         (p (lis::quat-rotate (lis::quat-from-axis-angle s (deg -30))
+                              (lis::vec3-normalize (lis::vec3-add-scaled nadir s (- (lis::vec3-dot nadir s)))))))
+    (turn-ship! sim *cab-view* (lis::vec3-add (lis::vec3-scale s (cos (deg 40)))
+                                              (lis::vec3-scale p (sin (deg 40)))))))
+
+(defun decal-view (side)
+  "A camera-fn 8 m out from the decal on SIDE (+1 or −1 for ±y), level
+with it and facing it; and the decal's corners in body axes."
+  (let* ((a (if (plusp side) (- lis::*decal-angle*) (+ pi lis::*decal-angle*)))
+         (r (+ lis::*cab-radius* lis::*cab-skin*))
+         (half (/ lis::*decal-height* r 2))
+         (z0 (second lis::*cab-axis*))
+         (centre (list 13.5d0 (* r (cos a)) (+ z0 (* r (sin a)))))
+         (normal (list 0 (cos a) (sin a))))
+    (values (ship-view normal 8 centre)
+            (loop for x in lis::*decal-span*
+                  append (loop for b in (list (- a half) (+ a half))
+                               collect (list x (* r (cos b)) (+ z0 (* r (sin b)))))))))
+
+(defun decal-sim (side)
+  "The start state turned so the decal on SIDE faces 70 deg from the Sun,
+leaning away from Earth: its paint lit, its letters below the tone curve's
+toe."
+  (let* ((sim (lis::new-game-sim))
+         (ship (lis::sim-ship sim))
+         (r (lis::ship-state-r ship))
+         (state (sim-render-state sim))
+         (s (lis::vec3-normalize (lis::vec3-sub (lis::render-state-sun state) r)))
+         (up (lis::vec3-normalize r))
+         (p (lis::vec3-normalize (lis::vec3-add-scaled up s (- (lis::vec3-dot up s)))))
+         (target (lis::vec3-add (lis::vec3-scale s (cos (deg 70))) (lis::vec3-scale p (sin (deg 70)))))
+         (normal (list 0 (* side (cos lis::*decal-angle*)) (- (sin lis::*decal-angle*)))))
+    (turn-ship! sim normal target)))
+
+(defun box-pixels (pixels width height x0 y0 x1 y1)
+  "The luminances in the pixel box X0..X1, Y0..Y1 (inclusive, clipped)."
+  (loop for y from (max 0 (floor y0)) to (min (1- height) (floor y1))
+        append (loop for x from (max 0 (floor x0)) to (min (1- width) (floor x1))
+                     collect (pixel-luminance pixels width x y))))
+
+;; The registration's numbers: 53 and 183 of 255 on +y, 40 and 201 on −y
+;; (lavapipe); the shadow's mean 0.4.
+(defun ship-checks (game png width height)
+  (flet ((capture (sim camera-fn)
+           (nth-value 3 (lis::capture-game-state game png :sim sim :frames 1 :camera-fn camera-fn))))
+    ;; Lit against black (lit-ship-sim), the stars off.
+    (let* ((cab '(12.75d0 0 -3.5d0))
+           (camera-fn (ship-view *cab-view* 40 cab))
+           (day (lit-ship-sim))
+           (state (sim-render-state day))
+           (camera (posed-camera camera-fn state))
+           (eye (lis::vec3-add (lis::render-state-r state) (lis::camera-offset camera)))
+           (pixels (with-canvas-values (game (lis::*star-radiance-limit* 0.0))
+                     (capture day camera-fn)))
+           (com (ship-point state camera (ship-com state)))
+           (radius (lis::ship-bounding-radius (lis::mule) (lis::render-state-m-p state)))
+           (rho (asin (/ radius (lis::vec3-norm com))))
+           (margin (* 8 (/ (* 2 (tan (* 0.5d0 (lis::camera-field-of-view camera)))) height)))
+           (outside 0) (brightest-outside 0))
+      (true (< (angle-between (lis::camera-offset camera)
+                              (lis::vec3-sub (lis::render-state-sun state) (lis::render-state-r state)))
+               (deg 60)))
+      (false (disc-in-frame-p camera (lis::vec3-scale eye -1d0) (lis::halo-radius) width height))
+      (false (disc-in-frame-p camera (lis::vec3-sub (lis::render-state-moon state) eye)
+                              lis::+radius-moon+ width height))
+      (multiple-value-bind (x y) (project camera (ship-point state camera cab) width height)
+        (destructuring-bind (red green blue) (pixel-colour pixels width (floor x) (floor y))
+          (true (and (> red 150) (> green 150) (> blue 150) (< (abs (- red blue)) 30))
+                "cab centre at ~,1F, ~,1F: ~D ~D ~D" x y red green blue)))
+      ;; More than 8 px outside the bounding sphere, below the label: black.
+      (loop for y from 40 below height
+            do (dotimes (x width)
+                 (when (> (angle-between (pixel-ray camera x y width height) com) (+ rho margin))
+                   (incf outside)
+                   (setf brightest-outside (max brightest-outside (pixel-luminance pixels width x y))))))
+      (true (plusp outside))
+      (true (< brightest-outside 20) "~,1F outside the bounding sphere" brightest-outside)
+      ;; Pixels above 40: the first measured frame, 1,505 (lavapipe), x 0.5 and x 2.
+      (let ((n (count-above pixels width height 40)))
+        (true (<= 752 n 3010) "lit ship: ~D pixels above 40" n))
+      ;; In Earth's shadow at u = 180 deg, the camera at the same body
+      ;; direction: the box around the bounding sphere stays dark.
+      (let* ((night (start-sim-at 180))
+             (state (sim-render-state night))
+             (camera (posed-camera camera-fn state))
+             (com (ship-point state camera (ship-com state)))
+             (d (lis::vec3-norm com))
+             (pixels (capture night camera-fn)))
+        (multiple-value-bind (x y w) (project camera com width height)
+          (let* ((r (/ (* 0.5 height (/ radius (sqrt (- (* d d) (* radius radius)))))
+                       (tan (* 0.5d0 (lis::camera-field-of-view camera)))))
+                 (values (box-pixels pixels width height (- x r) (max 40 (- y r)) (+ x r) (+ y r)))
+                 (mean (/ (reduce #'+ values) (length values))))
+            (true (plusp w))
+            (true (< mean 40) "the ship in Earth's shadow: mean ~,1F" mean)))))
+    ;; The registration on both sides: black letters on white paint.
+    (dolist (side '(1 -1))
+      (multiple-value-bind (camera-fn corners) (decal-view side)
+        (let* ((sim (decal-sim side))
+               (state (sim-render-state sim))
+               (camera (posed-camera camera-fn state))
+               (pixels (capture sim camera-fn))
+               (xs '()) (ys '()))
+          (dolist (corner corners)
+            (multiple-value-bind (x y) (project camera (ship-point state camera corner) width height)
+              (push x xs) (push y ys)))
+          (let ((values (box-pixels pixels width height (+ (reduce #'min xs) 1) (+ (reduce #'min ys) 1)
+                                    (- (reduce #'max xs) 1) (- (reduce #'max ys) 1))))
+            (true (< (reduce #'min values) 60) "decal ~@D: darkest ~,1F" side (reduce #'min values))
+            (true (> (reduce #'max values) 150) "decal ~@D: brightest ~,1F" side (reduce #'max values))))))
+    (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))
+    (lis::game-load-state! game (lis::new-game-sim))))
 
 (define-test render-frames
   (let ((width 320) (height 200))
@@ -557,6 +764,7 @@ FIELD-OF-VIEW in degrees."
              (lis::game-load-state! game (lis::new-game-sim)))
            (sun-and-moon-checks game png width height)
            (earth-checks game png width height)
+           (ship-checks game png width height)
            (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))
            ;; Resizes replace the swapchain's textures; what the renderer kept
            ;; for the old ones goes, so its per-target state stays bounded.

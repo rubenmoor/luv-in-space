@@ -11,7 +11,8 @@
   "What a frame draws, at the render time T: the ship (R, V, Q, W as in
 ship-state), M-P, CONTROLS and LOSS from the sim, the Sun and the Moon
 relative to Earth, Earth's body-fixed matrix and the ship's SUN-FRACTION
-(sun-visible-fraction) at T."
+(sun-visible-fraction) at T; the hull's SHIP-EMISSIVE colour and
+SHIP-LIGHTS-ON (decision 80), which render-state-update! leaves alone."
   (t 0d0 :type double-float)
   (r (make-vec3) :type vec3)
   (v (make-vec3) :type vec3)
@@ -24,6 +25,8 @@ relative to Earth, Earth's body-fixed matrix and the ship's SUN-FRACTION
   (moon (make-vec3) :type vec3)
   (earth-matrix (make-mat3) :type mat3)
   (sun-fraction 1d0 :type double-float)
+  (ship-emissive (make-vec3) :type vec3)
+  (ship-lights-on t)
   (scratch (make-vec3) :type vec3))     ; the bodies' velocities, unused
 
 (defun render-state-assign-ship! (out ship)
@@ -115,6 +118,8 @@ not below t or the sim is lost. Conses nothing; OUT."
    (star-corners :initarg :star-corners :reader frame-renderer-star-corners)
    (star-count :initarg :star-count :reader frame-renderer-star-count)
    (impostor-corners :initarg :impostor-corners :reader frame-renderer-impostor-corners)
+   (ship :initarg :ship :reader frame-renderer-ship
+         :documentation "The Mule's static resources (src/meshes.lisp).")
    (label :initarg :label :reader frame-renderer-label)
    (label-count :initarg :label-count :reader frame-renderer-label-count)
    (post :initarg :post :reader frame-renderer-post)
@@ -169,6 +174,7 @@ not below t or the sim is lost. Conses nothing; OUT."
                                          :mag-filter :linear :min-filter :linear)))
     (stars-pipeline renderer layout +hdr-format+)
     (impostor-pipelines renderer layout +hdr-format+)
+    (reinitialize-instance renderer :ship (make-ship-gpu renderer +hdr-format+))
     (live-pipeline renderer :quads layout (overlay-vertex-buffers) :format +hdr-format+
                    :depth-stencil '(:format :depth32-float :depth-write-enabled nil
                                     :depth-compare :always))
@@ -177,11 +183,12 @@ not below t or the sim is lost. Conses nothing; OUT."
     renderer))
 
 (defstruct frame-slot
-  "A target's frame block, its scene bind group, and the bind groups
-sampling the post levels in POST-VIEWS."
-  buffer bind-group (post-views '()) (post-bind-groups '()))
+  "A target's frame block, its scene bind group, its ship-slot, and the
+bind groups sampling the post levels in POST-VIEWS."
+  buffer bind-group ship (post-views '()) (post-bind-groups '()))
 
 (defun release-frame-resources (slot)
+  (release-ship-slot (frame-slot-ship slot))
   (mapc #'luv:destroy (frame-slot-post-bind-groups slot))
   (luv:destroy (frame-slot-bind-group slot))
   (luv:destroy (frame-slot-buffer slot)))
@@ -211,7 +218,8 @@ again once it is acquired (luv's canvas-frame-resource-cache)."
                 :bind-group (frame-bind-group renderer buffer
                                               (frame-renderer-earth-view renderer)
                                               (frame-renderer-earth-sampler renderer)
-                                              (frame-renderer-earth-coarse-view renderer))))))))
+                                              (frame-renderer-earth-coarse-view renderer))
+                :ship (make-ship-target-slot renderer (frame-renderer-ship renderer) buffer)))))))
 
 (defun post-bind-groups (renderer slot views)
   "SLOT's bind groups sampling VIEWS, remade when the post targets were."
@@ -296,7 +304,7 @@ and the four draw forms."
   "The frame into TARGET of EXTENT (width height) from the render STATE seen
 by CAMERA, in three stages (decision 76: Frame passes, radiance scale and
 exposure): the scene pass into the HDR target (the stars, the Sun, the
-Moon, Earth, Earth's halo); the bloom chain; one pass on TARGET, the tone
+Moon, Earth, Earth's halo, the Mule); the bloom chain; one pass on TARGET, the tone
 map at EXPOSURE and then the overlay."
   (let* ((slot (frame-resources renderer target))
          (views (post-views renderer extent))
@@ -329,6 +337,8 @@ map at EXPOSURE and then the overlay."
             (loop for role in '(:sun :moon :earth :earth-halo)
                   for form in forms
                   do (draw-impostor pass renderer role form bind-group corners)))
+          (encode-ship pass renderer (frame-renderer-ship renderer) (frame-slot-ship slot)
+                       state (frame-renderer-eye renderer))
           (let ((quads (frame-renderer-test-quads renderer)))
             (when quads (draw pass :quads (car quads) (cdr quads))))
           (luv:end-pass pass))

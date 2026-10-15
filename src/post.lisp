@@ -13,8 +13,6 @@
 (defparameter *exposure-time-constant* 1.0d0 "Real seconds; log2 easing.")
 (defparameter *exposure-sun-margin* (* 5 (/ pi 180)) "Beyond the half-diagonal, radians.")
 (defparameter *exposure-coverage* 0.05d0 "Least coverage, and coverage x lit fraction.")
-(defparameter *ship-bounding-radius* 10.0d0
-  "m; decision 79's ship term until the meshes part computes the stack's.")
 (defparameter *exposure-ship-coverage* 0.005d0
   "Least coverage x sun-fraction of the ship in the outside view (decision 79).")
 
@@ -42,7 +40,8 @@ half-diagonal plus *exposure-sun-margin* of the view axis, or when Earth or
 the Moon covers at least *exposure-coverage* of the frame (its disc's
 overlap with the frame's equivalent cone, flat) and coverage x lit fraction
 (1 + cos phase) / 2 is at least as much, or, in the :outside view, when the
-ship (a sphere of *ship-bounding-radius* at the camera's anchor) covers the
+ship (a sphere of the stack's ship-bounding-radius at m_p, decision 80,
+around the camera's anchor) covers the
 frame so that coverage x its sun-fraction is at least
 *exposure-ship-coverage* (decision 79: Sunlight at a point and the sunlit
 ship in the exposure rule; no ship term with the eye inside that sphere);
@@ -77,9 +76,10 @@ else *exposure-deep*."
                                  (>= (* coverage lit) *exposure-coverage*)))))
                       bodies)
                 (and (eq view :outside)
-                     (let ((d (vec3-norm (camera-offset camera))))
-                       (and (> d *ship-bounding-radius*)
-                            (let* ((rho (asin (/ *ship-bounding-radius* d)))
+                     (let ((d (vec3-norm (camera-offset camera)))
+                           (radius (ship-bounding-radius (mule) (render-state-m-p state))))
+                       (and (> d radius)
+                            (let* ((rho (asin (/ radius d)))
                                    (ship (vec3-scale (camera-offset camera) -1d0))
                                    (coverage (min 1d0 (/ (lens-area rho cone (vec3-angle forward ship))
                                                          (* pi cone cone)))))

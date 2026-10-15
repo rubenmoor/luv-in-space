@@ -264,6 +264,167 @@
     (set-output color (vec4 (* colour strength) 0.0))
     (set-output depth (impostor-depth (if (> inside 0.5) end near) ray clip-z clip-w))))
 
+;;; The Mule (src/meshes.lisp; decision 80: The Mule's meshes in numbers:
+;;; geometry, draws, materials and lights). Vertices in ship body axes from
+;;; R; the SHIP block: the rows of q (body -> ICRF), R relative to the eye,
+;;; the gimbal point and the rows of the engine's trim rotation, then the
+;;; light in body axes: the Sun's direction (w: (1 AU / d)^2 x sun-fraction),
+;;; the direction to Earth (w: earthshine), the earthshine tint (w: ambient),
+;;; the eye (w: lights on), the emissive colour. MATERIALS: two vec4s per
+;;; row of *ship-materials* (r g b specular weight; exponent emission).
+(defmacro define-ship-shader (name (&rest options) &body body)
+  `(define-frame-shader ,name
+       (,@options
+        :resources ((decal :texture-2d :binding 1)
+                    (decal-sampler :sampler :binding 2)
+                    (ship :uniform-block :binding 3
+                     :members ((ship-x :vec4) (ship-y :vec4) (ship-z :vec4) (ship-origin :vec4)
+                               (gimbal :vec4) (trim-x :vec4) (trim-y :vec4) (trim-z :vec4)
+                               (ship-sun :vec4) (ship-earth :vec4) (ship-tint :vec4)
+                               (ship-eye :vec4) (ship-emissive :vec4)))
+                    (materials :storage-buffer :binding 4 :element :vec4)))
+     ,@body))
+
+(define-shader-function turn (p rx ry rz)
+  (vec3 (dot (swizzle rx :xyz) p) (dot (swizzle ry :xyz) p) (dot (swizzle rz :xyz) p)))
+
+;; A body point through q, plus R relative to the eye, through the clip rows.
+(define-shader-function ship-clip (p sx sy sz origin rx ry rz rw)
+  (let* ((point (vec4 (+ (turn p sx sy sz) (swizzle origin :xyz)) 1.0)))
+    (vec4 (dot rx point) (dot ry point) (dot rz point) (dot rw point))))
+
+;; The baked hull, and the engine (drawn as instance 1) turned by its trim
+;; through the gimbal. SURFACE: material, the two parameters.
+(define-ship-shader ship-mesh-vertex
+    (:stage :vertex
+     :inputs ((position :vec3 :location 0)
+              (normal :vec3 :location 1)
+              (params :vec3 :location 2)
+              (instance :uint :built-in :instance-index))
+     :outputs ((clip-position :vec4 :built-in :position)
+               (body :vec3 :location 0)
+               (body-normal :vec3 :location 1)
+               (surface :vec3 :location 2)))
+  (let* ((g (swizzle gimbal :xyz))
+         (engine (if (> instance (uint 0.0)) 1.0 0.0))
+         (p (mix position (+ g (turn (- position g) trim-x trim-y trim-z)) engine))
+         (n (mix normal (turn normal trim-x trim-y trim-z) engine)))
+    (set-output clip-position (ship-clip p ship-x ship-y ship-z ship-origin clip-x clip-y clip-z clip-w))
+    (set-output body p)
+    (set-output body-normal n)
+    (set-output surface params)))
+
+;; A unit primitive placed by its instance: origin + basis (scale x local);
+;; normals through basis (n / scale); the axial parameters scaled to metres,
+;; the material the instance's.
+(define-ship-shader ship-instanced-vertex
+    (:stage :vertex
+     :inputs ((position :vec3 :location 0)
+              (normal :vec3 :location 1)
+              (params :vec3 :location 2)
+              (origin :vec3 :location 3)
+              (axis-x :vec3 :location 4)
+              (axis-y :vec3 :location 5)
+              (axis-z :vec3 :location 6)
+              (scale :vec4 :location 7))
+     :outputs ((clip-position :vec4 :built-in :position)
+               (body :vec3 :location 0)
+               (body-normal :vec3 :location 1)
+               (surface :vec3 :location 2)))
+  (let* ((s (swizzle scale :xyz))
+         (local (* position s))
+         (p (+ origin (* axis-x (swizzle local :x)) (* axis-y (swizzle local :y))
+               (* axis-z (swizzle local :z))))
+         (m (/ normal s))
+         (n (normalize (+ (* axis-x (swizzle m :x)) (* axis-y (swizzle m :y))
+                          (* axis-z (swizzle m :z))))))
+    (set-output clip-position (ship-clip p ship-x ship-y ship-z ship-origin clip-x clip-y clip-z clip-w))
+    (set-output body p)
+    (set-output body-normal n)
+    (set-output surface (vec3 (swizzle scale :w) (* (swizzle params :y) (swizzle s :x))
+                              (* (swizzle params :z) (swizzle s :x))))))
+
+;; Hoskins's hash without sine, [0, 1).
+(define-shader-function hash13 (p)
+  (let* ((q (fract (* p 0.1031)))
+         (r (+ q (vec3 (dot q (+ (swizzle q :yzx) (vec3 33.33 33.33 33.33)))
+                       (dot q (+ (swizzle q :yzx) (vec3 33.33 33.33 33.33)))
+                       (dot q (+ (swizzle q :yzx) (vec3 33.33 33.33 33.33)))))))
+    (fract (* (+ (swizzle r :x) (swizzle r :y)) (swizzle r :z)))))
+
+;; Value noise on the unit lattice, smooth, [0, 1).
+(define-shader-function value-noise (p)
+  (let* ((i (floor p))
+         (f (fract p))
+         (u (* f f (- (vec3 3.0 3.0 3.0) (* f 2.0))))
+         (a (mix (hash13 i) (hash13 (+ i (vec3 1.0 0.0 0.0))) (swizzle u :x)))
+         (b (mix (hash13 (+ i (vec3 0.0 1.0 0.0))) (hash13 (+ i (vec3 1.0 1.0 0.0))) (swizzle u :x)))
+         (c (mix (hash13 (+ i (vec3 0.0 0.0 1.0))) (hash13 (+ i (vec3 1.0 0.0 1.0))) (swizzle u :x)))
+         (d (mix (hash13 (+ i (vec3 0.0 1.0 1.0))) (hash13 (+ i (vec3 1.0 1.0 1.0))) (swizzle u :x))))
+    (mix (mix a b (swizzle u :y)) (mix c d (swizzle u :y)) (swizzle u :z))))
+
+;; The foil's crinkle: N tilted against the gradient of value noise of
+;; the body position, cell 0.08 m, on a lattice turned off the body axes so
+;; it shows no squares; amplitude 0.25 (decision 80).
+(define-shader-function foil-normal (n p)
+  (let* ((q (/ (vec3 (dot p (vec3 0.667 0.667 -0.333)) (dot p (vec3 -0.333 0.667 0.667))
+                     (dot p (vec3 0.667 -0.333 0.667)))
+               0.08))
+         (h (value-noise q))
+         (e 0.3)
+         (g (/ (vec3 (- (value-noise (+ q (vec3 e 0.0 0.0))) h)
+                     (- (value-noise (+ q (vec3 0.0 e 0.0))) h)
+                     (- (value-noise (+ q (vec3 0.0 0.0 e))) h))
+               e))
+         (body-g (+ (* (vec3 0.667 -0.333 0.667) (swizzle g :x))
+                    (* (vec3 0.667 0.667 -0.333) (swizzle g :y))
+                    (* (vec3 -0.333 0.667 0.667) (swizzle g :z))))
+         (tangent (- body-g (* n (dot body-g n)))))
+    (normalize (- n (* tangent 0.25)))))
+
+;; One fragment for both pipelines. Material rows (src/meshes.lisp
+;; *ship-material-names*): 0 steel, 1 LH2 foil, 2 LOX foil, 6 red paint, 10
+;; nozzle, 11 throat, 13 hatch, 14 decal. Steel darker x0.6 within 0.06 m of
+;; a tube's end; the bell's first 0.15 m the throat's (the only nozzle part
+;; over 1 m long); the hatch's 0.05 m border red; the decal over the paint.
+;; Light: the Sun, earthshine tinted, ambient; Blinn-Phong in the Sun.
+(define-ship-shader ship-fragment
+    (:stage :fragment
+     :inputs ((body :vec3 :location 0)
+              (body-normal :vec3 :location 1)
+              (surface :vec3 :location 2))
+     :outputs ((color :vec4 :location 0)))
+  (let* ((id (uint (+ (swizzle surface :x) 0.5)))
+         (axial (swizzle surface :y))
+         (span (swizzle surface :z))
+         (throat (and (= id (uint 10.0)) (> span 1.0) (< axial 0.15)))
+         (border (and (= id (uint 13.0))
+                      (or (> (abs axial) 0.35) (> (abs span) 0.55))))
+         (row (if throat (uint 11.0) (if border (uint 6.0) id)))
+         (m0 (buffer-element materials (* row (uint 2.0))))
+         (m1 (buffer-element materials (+ (* row (uint 2.0)) (uint 1.0))))
+         (weld (if (and (= id (uint 0.0)) (> span 0.0)
+                        (or (< axial 0.06) (< (- span axial) 0.06)))
+                   0.6 1.0))
+         (texel (sample decal decal-sampler (vec2 axial span)))
+         (paint (swizzle m0 :xyz))
+         (albedo (* (if (= id (uint 14.0)) (mix paint (swizzle texel :rgb) (swizzle texel :w)) paint)
+                    weld))
+         (flat (normalize body-normal))
+         (n (if (or (= id (uint 1.0)) (= id (uint 2.0))) (foil-normal flat body) flat))
+         (s (swizzle ship-sun :xyz))
+         (v (normalize (- (swizzle ship-eye :xyz) body)))
+         (h (normalize (+ s v)))
+         (sun (* (max (dot n s) 0.0) (swizzle ship-sun :w)))
+         (earth (* (max (dot n (swizzle ship-earth :xyz)) 0.0) (swizzle ship-earth :w)))
+         (light (+ (* (vec3 1.0 1.0 1.0) sun) (* (swizzle ship-tint :xyz) earth)
+                   (* (vec3 1.0 1.0 1.0) (swizzle ship-tint :w))))
+         (specular (* (swizzle m0 :w) (expt (max (dot n h) 0.0) (swizzle m1 :x)) sun))
+         (glow (* (swizzle m1 :y) (swizzle ship-eye :w))))
+    (set-output color (vec4 (+ (* albedo light) (* (vec3 1.0 1.0 1.0) (+ specular glow))
+                               (swizzle ship-emissive :xyz))
+                            1.0))))
+
 ;; ANCHOR is a point in clip space, OFFSET a displacement in pixels.
 (define-frame-shader overlay-vertex
     (:stage :vertex
@@ -413,6 +574,14 @@ angle in degrees), weighted by a Gaussian of SIGMA texels, normalised."
   (moon-vertex))
 (defmethod shader-specification-for ((role (eql :moon)) (stage (eql :fragment)))
   (moon-fragment))
+(defmethod shader-specification-for ((role (eql :ship-mesh)) (stage (eql :vertex)))
+  (ship-mesh-vertex))
+(defmethod shader-specification-for ((role (eql :ship-mesh)) (stage (eql :fragment)))
+  (ship-fragment))
+(defmethod shader-specification-for ((role (eql :ship-instanced)) (stage (eql :vertex)))
+  (ship-instanced-vertex))
+(defmethod shader-specification-for ((role (eql :ship-instanced)) (stage (eql :fragment)))
+  (ship-fragment))
 (defmethod shader-specification-for ((role (eql :quads)) (stage (eql :vertex)))
   (overlay-vertex))
 (defmethod shader-specification-for ((role (eql :quads)) (stage (eql :fragment)))

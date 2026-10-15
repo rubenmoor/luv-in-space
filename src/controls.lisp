@@ -10,6 +10,8 @@
 
 (deftype key-axes () '(simple-array fixnum (3)))
 (deftype duty-cycles () '(simple-array double-float (24)))
+(deftype hold-kind ()
+  '(member :prograde :retrograde :normal :anti-normal :radial-out :radial-in :inertial))
 
 (declaim (inline make-key-axes make-duty-cycles))
 (defun make-key-axes () (make-array 3 :element-type 'fixnum :initial-element 0))
@@ -21,8 +23,7 @@
   (translation-keys (make-key-axes) :type key-axes)     ; −1, 0, +1 along body x, y, z
   (fine nil :type boolean)
   (attitude-mode :hold :type (member :direct :rate-damping :hold))
-  (hold :prograde :type (member :prograde :retrograde :normal :anti-normal
-                                :radial-out :radial-in :inertial))
+  (hold :prograde :type hold-kind)
   (inertial-target (quat 1 0 0 0) :type quat)           ; body -> inertial, for :inertial
   (roll-offset 0d0 :type double-float)                  ; rad about the hold axis
   (settled nil :type boolean)
@@ -55,10 +56,14 @@
 (defun controls-throttle-cut (controls) (controls-set-throttle controls 0d0))
 
 (defun controls-set-rotation-key (controls axis sign)
-  "AXIS :roll, :pitch or :yaw; SIGN −1, 0 or +1 (held keys)."
+  "AXIS :roll, :pitch or :yaw; SIGN −1, 0 or +1 (held keys). A pitch or yaw
+key releases a hold to rate damping."
   (declare (type (integer -1 1) sign))
   (setf (aref (controls-rotation-keys controls) (ecase axis (:roll 0) (:pitch 1) (:yaw 2)))
         sign)
+  (when (and (/= sign 0) (not (eq axis :roll)) (eq (controls-attitude-mode controls) :hold))
+    (setf (controls-attitude-mode controls) :rate-damping
+          (controls-settled controls) nil))
   controls)
 
 (defun controls-set-translation-key (controls axis sign)
@@ -70,6 +75,37 @@
 
 (defun controls-toggle-fine (controls)
   (setf (controls-fine controls) (not (controls-fine controls)))
+  controls)
+
+(defun controls-set-hold (controls kind)
+  "Hold KIND (:prograde … :radial-in) with the default roll; the active
+hold's key again releases it to rate damping."
+  (check-type kind (member :prograde :retrograde :normal :anti-normal :radial-out :radial-in))
+  (if (and (eq (controls-attitude-mode controls) :hold) (eq (controls-hold controls) kind))
+      (setf (controls-attitude-mode controls) :rate-damping)
+      (setf (controls-attitude-mode controls) :hold
+            (controls-hold controls) kind
+            (controls-roll-offset controls) 0d0))
+  (setf (controls-settled controls) nil)
+  controls)
+
+(defun controls-inertial-hold (controls q)
+  "R: hold the attitude Q (the ship's, body -> inertial); again releases it."
+  (declare (type quat q))
+  (if (and (eq (controls-attitude-mode controls) :hold) (eq (controls-hold controls) :inertial))
+      (setf (controls-attitude-mode controls) :rate-damping)
+      (setf (controls-attitude-mode controls) :hold
+            (controls-hold controls) :inertial
+            (controls-roll-offset controls) 0d0
+            (controls-inertial-target controls) (replace (controls-inertial-target controls) q)))
+  (setf (controls-settled controls) nil)
+  controls)
+
+(defun controls-toggle-rate-damping (controls)
+  "T: a hold or direct goes to rate damping, rate damping to direct."
+  (setf (controls-attitude-mode controls)
+        (if (eq (controls-attitude-mode controls) :rate-damping) :direct :rate-damping)
+        (controls-settled controls) nil)
   controls)
 
 ;;; The RCS mixer (decision 70): duty cycles u in [0, 1] minimising
@@ -254,29 +290,189 @@ force F-C as fits; zero command gives zeros. Conses nothing."
           (gradient!))))
     u))
 
-;;; The flight computer (decision 70): commanded body torque and force.
+;;; Holds (docs/design.md "Control modes"; docs/architecture.md "Frames"):
+;;; the target attitude and its frame's rate.
+
+(declaim (inline hold-attitude-into!))
+
+(defun hold-attitude-into! (q w-t kind r v roll-offset inertial-target)
+  "Write the hold's target attitude (body -> inertial) into Q and its frame's
+rate (rad/s, inertial axes) into W-T. Orbital holds: the nose along the
+hold direction of the orbital frame (prograde v, normal r × v, radial out
+completing the triple), the cab (−z) radial out, towards normal for the
+radial holds; :inertial holds INERTIAL-TARGET. Then ROLL-OFFSET (rad) about
+the nose."
+  (declare (type quat q inertial-target) (type vec3 w-t r v) (type hold-kind kind)
+           (type double-float roll-offset))
+  (if (eq kind :inertial)
+      (progn (replace q inertial-target)
+             (vec3-set! w-t 0d0 0d0 0d0))
+      (let ((p (make-vec3)) (n (make-vec3)) (o (make-vec3))
+            (x (make-vec3)) (y (make-vec3)) (z (make-vec3)))
+        (declare (dynamic-extent p n o x y z))
+        (vec3-normalize! p v)
+        (vec3-normalize! n (vec3-cross! n r v))
+        (vec3-cross! o p n)
+        (flet ((axes (nose nose-sign cab cab-sign)
+                 (declare (type vec3 nose cab) (type double-float nose-sign cab-sign))
+                 (vec3-scale! x nose nose-sign)
+                 (vec3-scale! z cab (- cab-sign))))
+          (declare (inline axes))
+          (ecase kind
+            (:prograde (axes p 1d0 o 1d0))
+            (:retrograde (axes p -1d0 o 1d0))
+            (:normal (axes n 1d0 o 1d0))
+            (:anti-normal (axes n -1d0 o 1d0))
+            (:radial-out (axes o 1d0 n 1d0))
+            (:radial-in (axes o -1d0 n 1d0))))
+        (vec3-cross! y z x)
+        (quat-from-basis! q x y z)
+        ;; The frame turns as point-mass gravity bends v: ω_t = v̂ × a / |v|.
+        (let* ((rn (vec3-norm r))
+               (k (/ (- +mu-earth+) (* rn rn rn))))
+          (vec3-scale! w-t (vec3-cross! w-t p r) (/ k (vec3-norm v))))))
+  (unless (= roll-offset 0d0)
+    (let ((roll (make-quat)))
+      (declare (dynamic-extent roll))
+      (quat-set! roll (cos (* 0.5d0 roll-offset)) (sin (* 0.5d0 roll-offset)) 0d0 0d0)
+      (quat-mul! q q roll)))
+  q)
+
+(defun hold-attitude (kind r v roll-offset &optional (inertial-target (quat 1 0 0 0)))
+  "The hold's target attitude and its frame's rate (inertial axes), fresh:
+(values q w-t); see hold-attitude-into!."
+  (let ((q (make-quat)) (w-t (make-vec3)))
+    (hold-attitude-into! q w-t kind r v (float roll-offset 1d0) inertial-target)
+    (values q w-t)))
+
+(defun controls-attitude-fn (controls)
+  "The active hold's attitude function for rk4-step!'s kinematic mode (above
+×4), or nil without a hold. It keeps the hold, roll offset and inertial
+target of this moment."
+  (when (eq (controls-attitude-mode controls) :hold)
+    (let ((kind (controls-hold controls))
+          (roll-offset (controls-roll-offset controls))
+          (target (quat-copy (controls-inertial-target controls))))
+      (declare (type hold-kind kind) (type double-float roll-offset) (type quat target))
+      (lambda (q w-t time-cell r v)
+        (declare (optimize speed) (ignore time-cell) (type quat q) (type vec3 w-t r v))
+        (hold-attitude-into! q w-t kind r v roll-offset target)))))
+
+;;; The flight computer (decision 70): commanded body torque and force, once
+;;; per step from the state at its start.
 
 (defparameter *fine-control* 0.1d0
   "Torque, force and rate factor in fine control, docs/design.md \"Controls\".")
-(declaim (type double-float *fine-control*))
+(defparameter *damping-rate* (* 5 (/ pi 180))
+  "rad/s, a held key's rate and the slew cap, docs/design.md \"Control modes\".")
+(defparameter *damping-time* 0.5d0 "s, the rate loop's, docs/design.md \"Control modes\".")
+(defparameter *hold-torque-fraction* 0.8d0
+  "Of the couple, for slews and holds, docs/design.md \"Control modes\".")
+(defparameter *hold-tail-gain* 0.5d0 "1/s, the slew's linear tail, decision 70.")
+(defparameter *settle-angle-in* (* 0.1d0 (/ pi 180))
+  "rad, settled below it, docs/design.md \"Control modes\".")
+(defparameter *settle-rate-in* (* 0.02d0 (/ pi 180)) "rad/s, as *settle-angle-in*.")
+(defparameter *settle-angle-out* (* 0.2d0 (/ pi 180)) "rad, unsettled above it, decision 70.")
+(defparameter *settle-rate-out* (* 0.05d0 (/ pi 180)) "rad/s, as *settle-angle-out*.")
+(declaim (type double-float *fine-control* *damping-rate* *damping-time*
+               *hold-torque-fraction* *hold-tail-gain* *settle-angle-in* *settle-rate-in*
+               *settle-angle-out* *settle-rate-out*))
 
-(declaim (inline flight-commands!))
+(declaim (inline rate-law! hold-rate-command! flight-commands!))
 
-(defun flight-commands! (tau-c f-c controls com)
-  "The commanded torque (N m) and force (N), body axes, about the CoM COM.
-Direct: a held rotation key commands its axis's couple; translation is
-always direct, the axis's torque-free force; ×*fine-control* in fine."
-  (declare (type vec3 tau-c f-c com) (type controls controls))
+(defun rate-law! (tau-c w-c w inertia limit)
+  "τ = I (ω_c − ω) / *damping-time* + ω × I ω, each body axis clamped to
+LIMIT × its couple."
+  (declare (type vec3 tau-c w-c w) (type mat3 inertia) (type double-float limit))
+  (let ((e (make-vec3)) (iw (make-vec3)))
+    (declare (dynamic-extent e iw))
+    (vec3-scale! e (vec3-sub! e w-c w) (/ *damping-time*))
+    (mat3*vec3! tau-c inertia e)
+    (vec3-cross! e w (mat3*vec3! iw inertia w))
+    (vec3-add! tau-c tau-c e)
+    (dotimes (axis 3 tau-c)
+      (let ((c (* limit (rcs-couple axis))))
+        (setf (aref tau-c axis) (max (- c) (min c (aref tau-c axis))))))))
+
+(defun hold-rate-command! (w-c controls state inertia fine roll-rate)
+  "The hold's commanded rate (body axes) into W-C: the frame's rate, the
+roll keys' and a slew towards the target, √(2 × 0.8 α |φ|) braking,
+*hold-tail-gain* |φ| near it, at most *damping-rate*; updates settled."
+  (declare (type vec3 w-c) (type controls controls) (type ship-state state)
+           (type mat3 inertia) (type double-float fine roll-rate))
+  (let ((q (ship-state-q state)) (w (ship-state-w state))
+        (q-t (make-quat)) (q-e (make-quat)) (w-t (make-vec3)) (axis (make-vec3))
+        (i-axis (make-vec3)))
+    (declare (dynamic-extent q-t q-e w-t axis i-axis))
+    (hold-attitude-into! q-t w-t (controls-hold controls)
+                         (ship-state-r state) (ship-state-v state)
+                         (controls-roll-offset controls) (controls-inertial-target controls))
+    ;; The frame's rate in body axes: q* ω_t q.
+    (quat-conjugate! q-e q)
+    (quat-rotate! w-c q-e w-t)
+    ;; The error rotation q* q_t, shortest arc; φ in body axes.
+    (quat-mul! q-e q-e q-t)
+    (when (minusp (aref q-e 0))
+      (dotimes (i 4) (setf (aref q-e i) (- (aref q-e i)))))
+    (vec3-set! axis (aref q-e 1) (aref q-e 2) (aref q-e 3))
+    (let* ((s (vec3-norm axis))
+           (angle (* 2 (atan s (aref q-e 0))))
+           (rate-error (let ((d (make-vec3)))
+                         (declare (dynamic-extent d))
+                         (vec3-norm (vec3-sub! d w w-c)))))
+      (setf (controls-settled controls)
+            (if (controls-settled controls)
+                (not (or (> angle *settle-angle-out*) (> rate-error *settle-rate-out*)))
+                (and (< angle *settle-angle-in*) (< rate-error *settle-rate-in*))))
+      (incf (aref w-c 0) roll-rate)
+      (when (> s 0d0)
+        (vec3-scale! axis axis (/ s))
+        (mat3*vec3! i-axis inertia axis)
+        (let ((alpha most-positive-double-float))
+          (declare (type double-float alpha))
+          (dotimes (i 3)
+            (let ((need (abs (aref i-axis i))))
+              (when (> need 0d0)
+                (setf alpha (min alpha (/ (* *hold-torque-fraction* fine (rcs-couple i))
+                                          need))))))
+          (vec3-add-scaled! w-c w-c axis
+                            (min (* fine *damping-rate*)
+                                 (sqrt (the (double-float 0d0)
+                                            (* 2 *hold-torque-fraction* alpha angle)))
+                                 (* *hold-tail-gain* angle)))))
+      w-c)))
+
+(defun flight-commands! (tau-c f-c controls state com inertia h)
+  "The commanded torque (N m) and force (N), body axes, about the CoM COM,
+for the step of h from STATE. Direct: a held rotation key commands its
+axis's couple. Rate damping: held keys command *damping-rate*, none zero.
+Hold: the slew and hold of hold-rate-command!, roll keys turning the roll
+offset. Translation is always direct, the axis's torque-free force.
+×*fine-control* in fine."
+  (declare (type vec3 tau-c f-c com) (type controls controls) (type ship-state state)
+           (type mat3 inertia) (type double-float h))
   (let ((fine (if (controls-fine controls) *fine-control* 1d0))
         (rotation (controls-rotation-keys controls))
-        (translation (controls-translation-keys controls)))
+        (translation (controls-translation-keys controls))
+        (w-c (make-vec3)))
+    (declare (dynamic-extent w-c))
+    (ecase (controls-attitude-mode controls)
+      (:direct
+       (setf (controls-settled controls) nil)
+       (dotimes (axis 3)
+         (setf (aref tau-c axis) (* fine (float (aref rotation axis) 1d0) (rcs-couple axis)))))
+      (:rate-damping
+       (setf (controls-settled controls) nil)
+       (dotimes (axis 3)
+         (setf (aref w-c axis) (* fine *damping-rate* (float (aref rotation axis) 1d0))))
+       (rate-law! tau-c w-c (ship-state-w state) inertia fine))
+      (:hold
+       (let ((roll-rate (* fine *damping-rate* (float (aref rotation 0) 1d0))))
+         (incf (controls-roll-offset controls) (* roll-rate h))
+         (hold-rate-command! w-c controls state inertia fine roll-rate)
+         (rate-law! tau-c w-c (ship-state-w state) inertia (* *hold-torque-fraction* fine)))))
     (dotimes (axis 3)
-      (setf (aref tau-c axis)
-            (ecase (controls-attitude-mode controls)
-              (:direct (* fine (float (aref rotation axis) 1d0) (rcs-couple axis)))
-              ;; PLACEHOLDER(102): rate damping and holds command no torque yet.
-              ((:rate-damping :hold) 0d0))
-            (aref f-c axis)
+      (setf (aref f-c axis)
             (* fine (float (aref translation axis) 1d0)
                (rcs-translation-capability axis com))))
     tau-c))
@@ -288,7 +484,8 @@ always direct, the axis's torque-free force; ×*fine-control* in fine."
 
 (defun flight-step! (state controls h time model &optional attitude-fn)
   "Advance STATE by h from TIME under CONTROLS: mass properties from m_p,
-flight computer, mixer (duties into CONTROLS), engine plus RCS force,
+flight computer (its state into CONTROLS), mixer (duties into CONTROLS),
+engine plus RCS force,
 torque and ṁ, then rk4-step!. With ATTITUDE-FN (kinematic, above ×4) the
 engine only. Conses nothing."
   (declare (optimize speed) (type ship-state state) (type controls controls)
@@ -308,12 +505,15 @@ engine only. Conses nothing."
     (declare (dynamic-extent com inertia inverse properties b tau-c f-c force torque)
              (type double-float mdot))
     (ship-mass-properties m-p nil properties)
-    (if (or attitude-fn (<= m-p 0d0))
-        (fill u 0d0)
-        (progn
-          (rcs-matrix! b com)
-          (flight-commands! tau-c f-c controls com)
-          (rcs-mix! u b tau-c f-c)))
+    (cond (attitude-fn
+           ;; Kinematic: the attitude is the hold's.
+           (fill u 0d0)
+           (setf (controls-settled controls) (eq (controls-attitude-mode controls) :hold)))
+          ((<= m-p 0d0) (fill u 0d0))
+          (t
+           (rcs-matrix! b com)
+           (flight-commands! tau-c f-c controls state com inertia h)
+           (rcs-mix! u b tau-c f-c)))
     (vec3-set! force (ship-engine-force throttle) 0d0 0d0)
     (let ((rcs-mdot (/ *rcs-thrust* (* *rcs-isp* +g0+))))
       (dotimes (i +rcs-count+)

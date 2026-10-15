@@ -1,8 +1,9 @@
 (in-package #:luv-in-space.tests)
 
 ;;; controls.lisp: the control state, the RCS mixer, direct mode,
-;;; translation and flight-step! (docs/design.md "Control modes"; decision
-;;; 70: Flight computer: per-step control laws, holds and the RCS mixer).
+;;; translation, flight-step!, rate damping and the holds (docs/design.md
+;;; "Control modes"; decision 70: Flight computer: per-step control laws,
+;;; holds and the RCS mixer).
 
 (define-test controls-state-and-commands
   (let ((c (lis::new-controls)))
@@ -261,3 +262,311 @@ frame rate, full tanks."
         (true (< consed 1024) "~D bytes" consed))
       (is equalp a b)
       (is equalp ca cb))))
+
+;;; Rate damping, holds and the key rules (docs/design.md "Control modes";
+;;; decision 70). "Dry" is 5 kg left: a 90° slew dry burns ~1.9 kg.
+
+(defun rate-damping-run (m-p fine)
+  "Pitch held from rest for 10 s, then released for 10 s, in field-free
+space: (values time to 95 % of the rate, peak ω_y in °/s, time to |ω| <
+0.02°/s after release)."
+  (let ((state (rest-state m-p))
+        (c (lis::controls-toggle-rate-damping (lis::new-controls)))
+        (rate (if fine 0.5d0 5d0))
+        t95 (peak 0d0) t-stop)
+    (when fine (lis::controls-toggle-fine c))
+    (lis::controls-set-rotation-key c :pitch 1)
+    (dotimes (i 640)
+      (lis::flight-step! state c lis::+fine-step+ 0d0 :none)
+      (let ((w (degrees (aref (lis::ship-state-w state) 1))))
+        (setf peak (max peak w))
+        (when (and (null t95) (>= w (* 0.95d0 rate))) (setf t95 (/ (1+ i) 64d0)))))
+    (lis::controls-set-rotation-key c :pitch 0)
+    (dotimes (i 640)
+      (lis::flight-step! state c lis::+fine-step+ 0d0 :none)
+      (when (and (null t-stop) (< (degrees (lis::vec3-norm (lis::ship-state-w state))) 0.02d0))
+        (setf t-stop (/ (1+ i) 64d0))))
+    (values t95 peak t-stop)))
+
+(define-test rate-damping
+  ;; Measured: 95 % at 3.23 s wet, 1.89 s dry; stopped 4.48 s after release.
+  (multiple-value-bind (t95 peak t-stop) (rate-damping-run 28000d0 nil)
+    (true (and t95 (<= t95 3.5d0)) "~A" t95)
+    (true (<= peak (* 1.01d0 5)))
+    (true (and t-stop (<= t-stop 6d0)) "~A" t-stop))
+  (multiple-value-bind (t95 peak) (rate-damping-run 5d0 nil)
+    (true (and t95 (<= t95 2d0)) "~A" t95)
+    (true (<= peak (* 1.01d0 5))))
+  (multiple-value-bind (t95 peak) (rate-damping-run 28000d0 t)
+    (declare (ignore t95))
+    (true (<= (* 0.99d0 0.5d0) peak (* 1.01d0 0.5d0)) "~A" peak)))
+
+(defun orbital-frame (r v)
+  "Prograde, normal and radial out (docs/architecture.md \"Frames\")."
+  (let* ((p (lis::vec3-normalize v))
+         (n (lis::vec3-normalize (lis::vec3-cross r v))))
+    (values p n (lis::vec3-cross p n))))
+
+(defun hold-axes (kind r v)
+  "The nose's and the cab's (−z) directions of KIND's default attitude."
+  (multiple-value-bind (p n o) (orbital-frame r v)
+    (ecase kind
+      (:prograde (values p o))
+      (:retrograde (values (lis::vec3-scale p -1d0) o))
+      (:normal (values n o))
+      (:anti-normal (values (lis::vec3-scale n -1d0) o))
+      (:radial-out (values o n))
+      (:radial-in (values (lis::vec3-scale o -1d0) n)))))
+
+(defparameter *orbital-holds* '(:prograde :retrograde :normal :anti-normal :radial-out :radial-in))
+
+(defun angle-between-deg (a b)
+  (degrees (atan (lis::vec3-norm (lis::vec3-cross a b)) (lis::vec3-dot a b))))
+
+(define-test hold-attitude
+  ;; The default rolls, and the frame's rate n along r × v in the circular
+  ;; start orbit; the roll offset turns about the nose.
+  (let* ((s (start-state)) (r (lis::ship-state-r s)) (v (lis::ship-state-v s))
+         (n (/ (lis::vec3-norm v) (lis::vec3-norm r))))
+    (dolist (kind *orbital-holds*)
+      (multiple-value-bind (q w-t) (lis::hold-attitude kind r v 0d0)
+        (multiple-value-bind (nose cab) (hold-axes kind r v)
+          (true (< (angle-between-deg (lis::quat-rotate q (lis::vec3 1 0 0)) nose) 1d-12))
+          (true (< (angle-between-deg (lis::quat-rotate q (lis::vec3 0 0 -1)) cab) 1d-12) "~A" kind))
+        (multiple-value-bind (p normal) (orbital-frame r v)
+          (declare (ignore p))
+          (true (< (lis::vec3-norm (lis::vec3-sub w-t (lis::vec3-scale normal n))) (* 1d-12 n))))))
+    (is equalp (lis::ship-state-q s) (lis::hold-attitude :prograde r v 0d0))
+    (let ((q (lis::hold-attitude :prograde r v (lis::deg->rad 30d0)))
+          (q0 (lis::hold-attitude :prograde r v 0d0)))
+      (true (< (angle-between-deg (lis::quat-rotate q (lis::vec3 1 0 0))
+                                  (lis::quat-rotate q0 (lis::vec3 1 0 0)))
+               1d-12))
+      (true (< (abs (- (angle-between-deg (lis::quat-rotate q (lis::vec3 0 1 0))
+                                          (lis::quat-rotate q0 (lis::vec3 0 1 0)))
+                       30))
+               1d-9)))
+    (let ((target (lis::quat-from-axis-angle (lis::vec3 1 2 3) 1d0)))
+      (multiple-value-bind (q w-t) (lis::hold-attitude :inertial r v 0d0 target)
+        (is equalp target q)
+        (is equalp (lis::vec3 0 0 0) w-t)))))
+
+(defun off-state (kind m-p)
+  "The start orbit, at rest, the attitude KIND's target yawed 90°."
+  (let* ((s (start-state))
+         (q (lis::hold-attitude kind (lis::ship-state-r s) (lis::ship-state-v s) 0d0)))
+    (replace (lis::ship-state-q s)
+             (lis::quat-mul q (lis::quat-from-axis-angle (lis::vec3 0 0 1) (/ pi 2))))
+    (lis::vec3-set! (lis::ship-state-w s) 0d0 0d0 0d0)
+    (setf (lis::ship-state-m-p s) m-p)
+    s))
+
+(defun hold-error (state controls)
+  "The angle (°) and the rate error (°/s) from the hold's target."
+  (multiple-value-bind (q-t w-t)
+      (lis::hold-attitude (lis::controls-hold controls) (lis::ship-state-r state)
+                          (lis::ship-state-v state) (lis::controls-roll-offset controls)
+                          (lis::controls-inertial-target controls))
+    (let* ((q* (lis::quat-conjugate (lis::ship-state-q state)))
+           (e (lis::quat-mul q* q-t)))
+      (values (degrees (* 2 (atan (lis::vec3-norm (lis::vec3 (aref e 1) (aref e 2) (aref e 3)))
+                                  (abs (aref e 0)))))
+              (degrees (lis::vec3-norm (lis::vec3-sub (lis::ship-state-w state)
+                                                        (lis::quat-rotate q* w-t))))))))
+
+(defun hold-run (state controls seconds)
+  "SECONDS of fine steps from the start date under :full gravity: (values
+the time settled is first reported, the largest angle and rate error from
+then on, the final time)."
+  (let ((time (lis::start-t)) settled (angle 0d0) (rate 0d0))
+    (dotimes (i (* 64 seconds))
+      (lis::flight-step! state controls lis::+fine-step+ time :full)
+      (setf time (+ time lis::+fine-step+))
+      (when (and (null settled) (lis::controls-settled controls))
+        (setf settled (/ (1+ i) 64d0)))
+      (when settled
+        (multiple-value-bind (a w) (hold-error state controls)
+          (setf angle (max angle a) rate (max rate w)))))
+    (values settled angle rate time)))
+
+(defun hold-controls (kind)
+  (let ((c (lis::new-controls)))
+    (unless (eq kind (lis::controls-hold c))
+      (lis::controls-set-hold c kind))
+    c))
+
+(define-test prograde-hold-settles
+  ;; Measured: settled 24.9 s wet, 24.6 s dry (5 kg).
+  (let ((state (off-state :prograde 28000d0))
+        (c (hold-controls :prograde)))
+    (multiple-value-bind (settled angle rate) (hold-run state c 160)
+      (true (and settled (<= settled 40)) "~A" settled)
+      (true (< angle 0.1d0) "~A" angle)
+      (true (< rate 0.02d0) "~A" rate)
+      (true (lis::controls-settled c))))
+  (let ((settled (hold-run (off-state :prograde 5d0) (hold-controls :prograde) 40)))
+    (true (and settled (<= settled 35)) "~A" settled)))
+
+(define-test holds-settle
+  ;; Measured: 25.0 s for each; R after the tumble 6.6 s.
+  (dolist (kind (rest *orbital-holds*))
+    (let ((state (off-state kind 28000d0))
+          (c (hold-controls kind)))
+      (multiple-value-bind (settled angle) (hold-run state c 40)
+        (true (and settled (<= settled 40)) "~A ~A" kind settled)
+        (true (< angle 0.1d0))
+        ;; The default roll on the ship itself.
+        (multiple-value-bind (nose cab) (hold-axes kind (lis::ship-state-r state)
+                                                   (lis::ship-state-v state))
+          (let ((q (lis::ship-state-q state)))
+            (true (< (angle-between-deg (lis::quat-rotate q (lis::vec3 1 0 0)) nose) 0.1d0))
+            (true (< (angle-between-deg (lis::quat-rotate q (lis::vec3 0 0 -1)) cab) 0.1d0)
+                  "~A" kind))))))
+  ;; R after a tumble at 2°/s about an off-principal axis.
+  (let ((state (start-state))
+        (c (lis::new-controls)))
+    (replace (lis::ship-state-w state)
+             (lis::vec3-scale (lis::vec3-normalize (lis::vec3 1.2d0 -1.2d0 1d0))
+                              (lis::deg->rad 2d0)))
+    (let ((q0 (lis::quat-copy (lis::ship-state-q state))))
+      (lis::controls-inertial-hold c q0)
+      (multiple-value-bind (settled angle) (hold-run state c 40)
+        (true (and settled (<= settled 40)) "R ~A" settled)
+        (true (< angle 0.1d0))
+        (is equalp q0 (lis::controls-inertial-target c))))))
+
+(define-test roll-key-during-hold
+  ;; Roll held 2 s turns the roll offset 10°; the hold follows and keeps it.
+  (let ((state (start-state)) (c (lis::new-controls)) (time (lis::start-t)))
+    (flet ((run (seconds)
+             (dotimes (i (* 64 seconds))
+               (lis::flight-step! state c lis::+fine-step+ time :full)
+               (setf time (+ time lis::+fine-step+)))))
+      (run 1)
+      (lis::controls-set-rotation-key c :roll 1)
+      (run 2)
+      (lis::controls-set-rotation-key c :roll 0)
+      (true (< (abs (- (degrees (lis::controls-roll-offset c)) 10)) 1d-9))
+      (run 20)
+      (is eq :hold (lis::controls-attitude-mode c))
+      (true (lis::controls-settled c))
+      (let* ((q0 (lis::hold-attitude :prograde (lis::ship-state-r state) (lis::ship-state-v state) 0d0))
+             (y0 (lis::quat-rotate q0 (lis::vec3 0 1 0)))
+             (y (lis::quat-rotate (lis::ship-state-q state) (lis::vec3 0 1 0)))
+             (roll (degrees (atan (lis::vec3-dot (lis::vec3-cross y0 y)
+                                                 (lis::quat-rotate q0 (lis::vec3 1 0 0)))
+                                  (lis::vec3-dot y0 y)))))
+        (true (< (abs (- roll 10)) 0.5d0) "~A" roll)))))
+
+(define-test key-rules
+  (let ((c (lis::new-controls)) (q (lis::quat-from-axis-angle (lis::vec3 0 1 0) 0.3d0)))
+    (flet ((mode () (lis::controls-attitude-mode c)))
+      ;; 1 twice: rate damping.
+      (lis::controls-set-hold c :prograde)
+      (is eq :rate-damping (mode))
+      (false (lis::controls-attitude-fn c))
+      (lis::controls-set-hold c :prograde)
+      (is eq :hold (mode))
+      (true (functionp (lis::controls-attitude-fn c)))
+      ;; Another hold switches; the roll offset returns to the default.
+      (setf (lis::controls-roll-offset c) 0.2d0)
+      (lis::controls-set-hold c :normal)
+      (is eq :normal (lis::controls-hold c))
+      (is = 0d0 (lis::controls-roll-offset c))
+      ;; A roll key keeps the hold; W (pitch) releases it to rate damping.
+      (lis::controls-set-rotation-key c :roll 1)
+      (is eq :hold (mode))
+      (lis::controls-set-rotation-key c :roll 0)
+      (lis::controls-set-rotation-key c :pitch -1)
+      (is eq :rate-damping (mode))
+      (lis::controls-set-rotation-key c :pitch 0)
+      ;; A yaw key too.
+      (lis::controls-set-hold c :radial-in)
+      (lis::controls-set-rotation-key c :yaw 1)
+      (is eq :rate-damping (mode))
+      (lis::controls-set-rotation-key c :yaw 0)
+      ;; T: rate damping ↔ direct; a hold to rate damping.
+      (lis::controls-toggle-rate-damping c)
+      (is eq :direct (mode))
+      (lis::controls-toggle-rate-damping c)
+      (is eq :rate-damping (mode))
+      (lis::controls-set-hold c :retrograde)
+      (lis::controls-toggle-rate-damping c)
+      (is eq :rate-damping (mode))
+      ;; R: the current attitude; R again releases.
+      (lis::controls-inertial-hold c q)
+      (is eq :hold (mode))
+      (is eq :inertial (lis::controls-hold c))
+      (is equalp q (lis::controls-inertial-target c))
+      (false (eq q (lis::controls-inertial-target c)))
+      (lis::controls-inertial-hold c q)
+      (is eq :rate-damping (mode))
+      ;; From direct, a hold engages.
+      (lis::controls-toggle-rate-damping c)
+      (lis::controls-set-hold c :anti-normal)
+      (is eq :hold (mode)))))
+
+(define-test kinematic-burn
+  ;; 60 s full throttle prograde: the coarse step (1 s under thrust) with
+  ;; the hold's kinematic attitude against the fine step flown by the hold.
+  ;; Measured: Δv 6e-9 relative, apoapsis 3 mm.
+  (flet ((apoapsis (s)
+           (lis::orbit-apoapsis-radius
+            (lis::state->orbit (lis::ship-state-r s) (lis::ship-state-v s) lis::+mu-earth+ 0d0))))
+    (let* ((fine (start-state)) (fine-c (lis::controls-throttle-full (lis::new-controls)))
+           (coarse (start-state)) (coarse-c (lis::controls-throttle-full (lis::new-controls)))
+           (attitude-fn (lis::controls-attitude-fn coarse-c))
+           (end (+ (lis::start-t) 60)))
+      (flight-steps fine fine-c (* 64 60))
+      (loop with time = (lis::start-t)
+            while (< time end)
+            do (let ((h (lis::coarse-step (lis::ship-state-r coarse) time t)))
+                 (is = 1d0 h)
+                 (lis::flight-step! coarse coarse-c h time :full attitude-fn)
+                 (incf time h)))
+      (true (lis::controls-settled coarse-c))
+      (true (< (relative-error (lis::ship-state-dv coarse) (lis::ship-state-dv fine)) 1d-6))
+      (true (< (abs (- (apoapsis coarse) (apoapsis fine))) 1d0))
+      (true (> (- (apoapsis fine) (lis::vec3-norm (lis::ship-state-r fine))) 1d5)))))
+
+(defparameter *key-script*
+  ;; (step command args…), steps of 1/64 s over 120 s.
+  '((0 :key :pitch 1) (200 :key :pitch 0) (300 :hold :normal) (1500 :key :roll -1)
+    (1600 :key :roll 0) (1700 :translate :y 1) (1800 :translate :y 0) (2000 :fine)
+    (2100 :key :yaw 1) (2300 :key :yaw 0) (2400 :fine) (2500 :inertial)
+    (3500 :toggle) (3600 :key :roll 1) (3700 :key :roll 0) (3800 :toggle)
+    (4000 :hold :radial-out) (5000 :throttle 0.3d0) (5600 :throttle 0d0)
+    (6000 :hold :radial-out)))
+
+(defun scripted-run ()
+  (let ((state (start-state)) (c (lis::new-controls)) (time (lis::start-t))
+        (script *key-script*))
+    (dotimes (i (* 64 120))
+      (loop while (and script (= i (first (first script))))
+            do (destructuring-bind (command &rest args) (rest (pop script))
+                 (ecase command
+                   (:key (apply #'lis::controls-set-rotation-key c args))
+                   (:translate (apply #'lis::controls-set-translation-key c args))
+                   (:hold (lis::controls-set-hold c (first args)))
+                   (:inertial (lis::controls-inertial-hold c (lis::ship-state-q state)))
+                   (:toggle (lis::controls-toggle-rate-damping c))
+                   (:fine (lis::controls-toggle-fine c))
+                   (:throttle (lis::controls-set-throttle c (first args))))))
+      (lis::flight-step! state c lis::+fine-step+ time :full)
+      (setf time (+ time lis::+fine-step+)))
+    (values state c)))
+
+(define-test scripted-keys-deterministic
+  (multiple-value-bind (a ca) (scripted-run)
+    (multiple-value-bind (b cb) (scripted-run)
+      (is equalp a b)
+      (is equalp ca cb)
+      (false (eq (lis::controls-attitude-mode ca) :hold)))))
+
+(define-test hold-step-cons-nothing
+  (let ((state (off-state :prograde 28000d0)) (c (hold-controls :prograde)))
+    (flight-steps state c 640)
+    (let ((consed (let ((before (sb-ext:get-bytes-consed)))
+                    (flight-steps state c 6400)
+                    (- (sb-ext:get-bytes-consed) before))))
+      (true (< consed 1024) "~D bytes" consed))))

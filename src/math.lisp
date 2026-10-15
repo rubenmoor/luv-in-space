@@ -260,36 +260,49 @@
           (* 2 (+ (* x y) (* w z))) (- 1 (* 2 (+ (* x x) (* z z)))) (* 2 (- (* y z) (* w x)))
           (* 2 (- (* x z) (* w y))) (* 2 (+ (* y z) (* w x))) (- 1 (* 2 (+ (* x x) (* y y)))))))
 
-(defun quat-from-mat3 (m)
-  "The unit quaternion (w >= 0) of a rotation matrix (Shepperd's method)."
-  (declare (type mat3 m))
+(declaim (inline quat-from-mat3! quat-from-basis!))
+
+(defun quat-from-mat3! (out m)
+  "Write the unit quaternion (w >= 0) of a rotation matrix into OUT
+(Shepperd's method)."
+  (declare (type quat out) (type mat3 m))
   (let ((m00 (aref m 0)) (m01 (aref m 1)) (m02 (aref m 2))
         (m10 (aref m 3)) (m11 (aref m 4)) (m12 (aref m 5))
         (m20 (aref m 6)) (m21 (aref m 7)) (m22 (aref m 8)))
-    (let* ((trace (+ m00 m11 m22))
-           (q (cond ((>= trace (max m00 m11 m22))
-                     (let ((s (* 2 (sqrt (+ 1 trace)))))
-                       (quat (/ s 4) (/ (- m21 m12) s) (/ (- m02 m20) s) (/ (- m10 m01) s))))
-                    ((>= m00 (max m11 m22))
-                     (let ((s (* 2 (sqrt (+ 1 m00 (- m11) (- m22))))))
-                       (quat (/ (- m21 m12) s) (/ s 4) (/ (+ m01 m10) s) (/ (+ m02 m20) s))))
-                    ((>= m11 m22)
-                     (let ((s (* 2 (sqrt (+ 1 m11 (- m00) (- m22))))))
-                       (quat (/ (- m02 m20) s) (/ (+ m01 m10) s) (/ s 4) (/ (+ m12 m21) s))))
-                    (t
-                     (let ((s (* 2 (sqrt (+ 1 m22 (- m00) (- m11))))))
-                       (quat (/ (- m10 m01) s) (/ (+ m02 m20) s) (/ (+ m12 m21) s) (/ s 4)))))))
-      (when (minusp (aref q 0))
-        (dotimes (i 4) (setf (aref q i) (- (aref q i)))))
-      (quat-normalize! q q))))
+    (flet ((root (x) (* 2 (sqrt (the (double-float 0d0) (max 0d0 x))))))
+      (declare (inline root))
+      (let ((trace (+ m00 m11 m22)))
+        (cond ((>= trace (max m00 m11 m22))
+               (let ((s (root (+ 1 trace))))
+                 (quat-set! out (/ s 4) (/ (- m21 m12) s) (/ (- m02 m20) s) (/ (- m10 m01) s))))
+              ((>= m00 (max m11 m22))
+               (let ((s (root (+ 1 m00 (- m11) (- m22)))))
+                 (quat-set! out (/ (- m21 m12) s) (/ s 4) (/ (+ m01 m10) s) (/ (+ m02 m20) s))))
+              ((>= m11 m22)
+               (let ((s (root (+ 1 m11 (- m00) (- m22)))))
+                 (quat-set! out (/ (- m02 m20) s) (/ (+ m01 m10) s) (/ s 4) (/ (+ m12 m21) s))))
+              (t
+               (let ((s (root (+ 1 m22 (- m00) (- m11)))))
+                 (quat-set! out (/ (- m10 m01) s) (/ (+ m02 m20) s) (/ (+ m12 m21) s) (/ s 4)))))))
+    (when (minusp (aref out 0))
+      (dotimes (i 4) (setf (aref out i) (- (aref out i)))))
+    (quat-normalize! out out)))
 
-(defun quat-from-basis (x y z)
-  "The attitude whose body axes x, y, z (unit, orthogonal, right-handed) are
-the given inertial vectors."
-  (declare (type vec3 x y z))
-  (quat-from-mat3 (mat3 (aref x 0) (aref y 0) (aref z 0)
-                        (aref x 1) (aref y 1) (aref z 1)
-                        (aref x 2) (aref y 2) (aref z 2))))
+(defun quat-from-mat3 (m) (quat-from-mat3! (make-quat) m))
+
+(defun quat-from-basis! (out x y z)
+  "Write into OUT the attitude whose body axes x, y, z (unit, orthogonal,
+right-handed) are the given inertial vectors."
+  (declare (type quat out) (type vec3 x y z))
+  (let ((m (make-mat3)))
+    (declare (dynamic-extent m))
+    (dotimes (i 3)
+      (setf (aref m (* 3 i)) (aref x i)
+            (aref m (+ (* 3 i) 1)) (aref y i)
+            (aref m (+ (* 3 i) 2)) (aref z i)))
+    (quat-from-mat3! out m)))
+
+(defun quat-from-basis (x y z) (quat-from-basis! (make-quat) x y z))
 
 ;;; The single-float boundary (decision 5: Precision of positions)
 

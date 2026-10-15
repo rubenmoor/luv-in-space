@@ -241,7 +241,7 @@ The ship is integrated with classical RK4 on a fixed, deterministic step in its 
   - All steps are powers of two ≥ 1/64 s, and scheduled events (burn start and end, autopilot commands) are on the 1/64 s grid, so `t` stays a multiple of 1/64 s and exact (`decision 14: Units and time epoch`); a step is shortened to land on the next event.
 - Re-centring after a step, never inside one (`decision 15: Coordinate frames`).
 - Cost of `rk4-step!` inlined, with thrust and torque (x86_64 i5-12500H, SBCL, measured 2026-10-14): `:point` 190 ns with attitude integrated, 130 ns kinematic; `:full` 530 ns integrated, 460 ns kinematic, of which ~350 ns are the eight ephemeris-cache reads (Moon and Sun at four stages). The 4,096-step cap is ~2 ms at `:full`. `coarse-step` adds ~20 ns in LEO (it reads the Moon or the Sun only where their least distance could set the step) and ~115 ns where it reads both.
-- The RCS mixer (`rcs-mix!`, `controls.lisp`, same machine): 0.4 µs for no command, 2–3 µs for a single couple, 8–10 µs for a translation with or without torques (5 to 23 least-squares solves of the 96 allowed); a fine step of `flight-step!` with keys held ~12 µs at `:full`, so ×4 (256 steps per real second) costs ~3 ms per second. Kinematic steps (above ×4) skip the mixer. Torque weight w = 1e5 per metre, not decision 70's 1e6: at 1e6 rounding in the torque rows swamps the force fit beside a torque; at 1e5 the torque is met within 1e-7 N m.
+- The RCS mixer (`rcs-mix!`, `controls.lisp`, same machine): 0.4 µs for no command, 2–3 µs for a single couple, 8–10 µs for a translation with or without torques (5 to 23 least-squares solves of the 96 allowed); a fine step of `flight-step!` with keys held ~12 µs at `:full`, under a settled hold ~5 µs (the mixer barely runs), so ×4 (256 steps per real second) costs ~3 ms per second. Kinematic steps (above ×4) skip the mixer. Torque weight w = 1e5 per metre, not decision 70's 1e6: at 1e6 rounding in the torque rows swamps the force fit beside a torque; at 1e5 the torque is met within 1e-7 N m.
 
 ### Measured drift
 A throwaway SBCL script (not committed) integrated two-body Earth orbits (μ = 3.98600435507×10^14 m³/s², periapsis 6,778 km, i = 51.6°) and compared with the exact solution after a whole number of periods; relative energy error ΔE/E, relative angular-momentum error ΔL/L and position error at the end.
@@ -452,6 +452,18 @@ The ship is never on rails (`decision 17: Gravity model`, `decision 19: Time-war
 - Rotation: a torque-free asymmetric body (I = diag(1, 2, 3)×10^4 kg m², |ω| = 0.1 rad/s) for 1,000 s at the fine step keeps rotational energy and |I ω| (in inertial axes) within 1e-9 relative and |q| within 1e-12 of 1.
   - The same with a non-diagonal tensor, I = R diag(1, 2, 3)×10^4 kg m² Rᵀ with R a 10° rotation about body y (I_xz ≠ 0, as the Mule's), same ω and bounds.
 - Thrust (`tests/ship.lisp`): a constant-thrust burn in field-free space matches the rocket equation, Δv = I_sp g₀ ln(m₀/m₁), within 1e-9 relative; a burn that empties the tanks ends with m_p = 0 exactly and the ship's mass at its dry mass; a burn under the 1 s thrust cap above ×4 matches the same burn at the fine step within 1e-6 relative in Δv.
+
+### Controls
+The flight computer's closed loops are tested through `flight-step!` (`tests/controls.lisp`), against the figures of `docs/design.md` "Control modes" and the rules of `decision 70: Flight computer: per-step control laws, holds and the RCS mixer`. "Dry" is 5 kg of propellant left, since empty tanks fire nothing.
+
+- Rate damping, pitch held from rest in field-free space: 95 % of 5°/s within 3.5 s wet (measured 3.23 s) and 2.0 s dry (1.89 s); released, |ω| < 0.02°/s within 6 s wet (4.5 s); fine control reaches 0.5°/s within 1 % and never exceeds it by more than 1 %.
+- Holds, from the start orbit (`:full`) at rest with the target yawed 90°: prograde settled within 40 s wet and 35 s dry (measured 24.9 s, 24.6 s), then < 0.1° and < 0.02°/s for 120 s as the orbital frame turns; retrograde, normal, anti-normal, radial out and in within 40 s (25.0 s each), nose and default roll within 0.1°; R after a 2°/s tumble within 40 s (6.6 s).
+- `hold-attitude`: nose and cab directions within 1e-12° of the orbital frame's, the frame's rate n (r × v)^ within 1e-12 relative on a circular orbit.
+- A roll key held 2 s during a prograde hold turns the roll offset 10°; the ship follows within 0.5° and the hold stays settled.
+- Key rules: the active hold's key again and T release to rate damping, T toggles rate damping and direct otherwise, pitch and yaw keys release a hold, roll keys keep it.
+- Kinematic burn: 60 s full throttle prograde at the coarse step (1 s under thrust) with `controls-attitude-fn` matches the fine-step burn flown by the hold within 1e-6 in Δv (measured 6e-9) and 1 m in apoapsis radius (3 mm).
+- Determinism and allocation: 120 s of a scripted key list run twice gives `equalp` states and controls; 6,400 hold steps at `:full` cons < 1 KB.
+- `tests/physics.lisp`, `tests/ship.lisp` and `tests/controls.lisp` together run in 2.7 s, the controls' share 0.4 s.
 
 ### Rails, orbits and frames
 - Kepler round trip (`tests/orbits.lisp`): state → elements → state reproduces position and velocity within 1e-9 relative, for circular equatorial, circular polar, retrograde (i = 150°), e = 0.5 and e = 0.9, each at eight anomalies; elements → state → elements likewise, through the non-singular forms where the classical angles are undefined. The hyperbolic cases follow.

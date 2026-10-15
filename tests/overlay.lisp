@@ -4,7 +4,7 @@
 ;;; dot-matrix overlay quads; decision 84: Map ribbons and markers: osculating
 ;;; orbit, adaptive segments, overlay markers and visibility).
 
-(defparameter *overlay-characters* "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -.:")
+(defparameter *overlay-characters* "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -.:()%/!+,°×…")
 
 (defun overlay-points (out)
   "OUT's vertices as a list of (x y) pixel positions."
@@ -31,6 +31,69 @@
            (if (char= char #\Space)
                (false (some (lambda (row) (find #\# row)) rows))
                (true (some (lambda (row) (find #\# row)) rows) "~S has no lit cell" char))))
+
+;;; decision 85: Minimal readout: layout, formats, colours and alarms; the
+;;; texts of decision 73: Warp levels above x4: entry, holds and lowering.
+
+(defun clock-message-texts ()
+  "The refusal and lowering messages of tests/clock.lisp's cases, through the clock."
+  (let ((texts '())
+        (lis::*frame-step-time-limit* nil))
+    (flet ((collect (clock) (dolist (m (lis::clock-messages clock)) (pushnew m texts :test #'string=))))
+      (let* ((sim (lis::new-game-sim))
+             (clock (clock-at sim 10)))
+        (lis::controls-throttle-full (lis::sim-controls sim))
+        (lis::clock-warp-up clock sim)
+        (collect clock)
+        (setf (lis::sim-cutoff sim) 100d0)
+        (lis::clock-warp-up clock sim)
+        (lis::clock-warp-up clock sim)
+        (collect clock))
+      (let* ((sim (lis::new-game-sim))
+             (clock (clock-at sim 4)))
+        (lis::controls-toggle-rate-damping (lis::sim-controls sim))
+        (replace (lis::ship-state-w (lis::sim-ship sim)) '(0d0 0d0 0.02d0))
+        (lis::clock-warp-up clock sim)
+        (collect clock))
+      (let* ((sim (lis::new-game-sim))
+             (clock (clock-at sim 100)))
+        (lis::clock-frame! clock sim 1/60)
+        (lis::controls-throttle-full (lis::sim-controls sim))
+        (lis::clock-frame! clock sim 1/60)
+        (collect clock))
+      (let* ((sim (lis::new-game-sim))
+             (clock (clock-at sim 1000)))
+        (lis::clock-frame! clock sim 1/60)
+        (lis::controls-set-hold (lis::sim-controls sim) :prograde)
+        (lis::clock-frame! clock sim 1/60)
+        (collect clock))
+      (let* ((orbit (dive-orbit (- *earth-crash-radius* 50d3)))
+             (impact (lis::orbit-radius-crossings orbit *earth-crash-radius* (lis::start-t))))
+        (loop for (lead level) in '((20d0 4) (100d0 100))
+              for sim = (orbit-sim orbit (lis::grid-ceiling (- impact lead)))
+              for clock = (clock-at sim level)
+              do (lis::prediction-run! (lis::clock-prediction clock) sim)
+                 (if (= level 4)
+                     (lis::clock-warp-up clock sim)
+                     (lis::clock-frame! clock sim 1/60))
+                 (collect clock))))
+    (list* (lis::dropout-message 1000000 3600d0 nil)
+           (lis::dropout-message 1000 60d0 (lis::make-loss :crash :moon 0d0 0d0 0d0 0d0))
+           texts)))
+
+(define-test glyph-missing
+  (is eql #\a (lis::glyph-missing "a"))
+  (is eql #\a (lis::glyph-missing "ALT a"))
+  (false (lis::glyph-missing "RCS OFF ABOVE ×4"))
+  (dolist (seconds '(0d0 59d0 3600d0 #.(* 400 86400d0)))
+    (false (lis::glyph-missing (lis::format-duration seconds)) "~S" (lis::format-duration seconds)))
+  (let ((texts (clock-message-texts)))
+    (dolist (prefix '("WARP REFUSED: ENGINE ON" "WARP REFUSED: ROTATING" "WARP REFUSED: IMPACT IN"
+                      "WARP ×10: ENGINE ON" "WARP ×4: HOLD RELEASED" "WARP ×10: PERIAPSIS BELOW"
+                      "WARP ×1,000,000: PERIAPSIS" "WARP ×1,000: MOON IMPACT AHEAD"))
+      (true (find prefix texts :test (lambda (p m) (eql 0 (search p m)))) "~S in ~S" prefix texts))
+    (dolist (text texts)
+      (false (lis::glyph-missing text) "~S" text))))
 
 (define-test marker-shapes
   (let ((out (lis::make-overlay-buffer)))

@@ -264,15 +264,6 @@ to its horizon; without it a fresh one, prediction.lisp)."
                    (clock-message-list clock)))
   (mapcar #'second (clock-message-list clock)))
 
-(defun format-duration (seconds)
-  "SECONDS, rounded, as the messages write it: 2 D 3 H, 1 H 5 MIN, 4 MIN 20 S, 20 S."
-  (multiple-value-bind (days hours minutes second) (duration-fields (fround seconds))
-    (let ((second (round second)))
-      (cond ((> days 0) (format nil "~D D ~D H" days hours))
-            ((> hours 0) (format nil "~D H ~D MIN" hours minutes))
-            ((> minutes 0) (format nil "~D MIN ~D S" minutes second))
-            (t (format nil "~D S" second))))))
-
 ;;; Warp rules (decision 19: Time-warp rules, decision 31, decision 73)
 
 (defparameter *thrust-warp-limit* 10 "Manual throttle's highest level; decision 31.")

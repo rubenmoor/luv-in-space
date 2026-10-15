@@ -117,6 +117,15 @@ double, truncating it to whole seconds is the caller's."
       (multiple-value-bind (days hour) (floor hours 24)
         (values days hour minute (float second 1d0))))))
 
+(defun format-duration (seconds)
+  "SECONDS, rounded, as the messages write it: 2 D 3 H, 1 H 5 MIN, 4 MIN 20 S, 20 S."
+  (multiple-value-bind (days hours minutes second) (duration-fields (fround seconds))
+    (let ((second (round second)))
+      (cond ((> days 0) (format nil "~D D ~D H" days hours))
+            ((> hours 0) (format nil "~D H ~D MIN" hours minutes))
+            ((> minutes 0) (format nil "~D MIN ~D S" minutes second))
+            (t (format nil "~D S" second))))))
+
 (defun format-utc (time)
   "t as a UTC date, YYYY-MM-DD hh:mm:ss, seconds truncated."
   (multiple-value-bind (year month day hour minute second) (t->utc time)

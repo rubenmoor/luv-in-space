@@ -48,9 +48,18 @@
     (#\6 ".###." "#...." "#...." "####." "#...#" "#...#" ".###.")
     (#\7 "#####" "....#" "...#." "..#.." ".#..." ".#..." ".#...")
     (#\8 ".###." "#...#" "#...#" ".###." "#...#" "#...#" ".###.")
-    (#\9 ".###." "#...#" "#...#" ".####" "....#" "....#" ".###."))
-  "5x7 dot-matrix glyphs: A-Z, 0-9, space, - . : ( ); a character missing
-here draws blank (decision 85: the tests require every one used).")
+    (#\9 ".###." "#...#" "#...#" ".####" "....#" "....#" ".###.")
+    (#\% "##..." "##..#" "...#." "..#.." ".#..." "#..##" "...##")
+    (#\/ "....." "....#" "...#." "..#.." ".#..." "#...." ".....")
+    (#\! "..#.." "..#.." "..#.." "..#.." "..#.." "....." "..#..")
+    (#\+ "....." "..#.." "..#.." "#####" "..#.." "..#.." ".....")
+    (#\, "....." "....." "....." "....." ".##.." "..#.." ".#...")
+    (#\° ".##.." "#..#." "#..#." ".##.." "....." "....." ".....")
+    (#\× "....." "#...#" ".#.#." "..#.." ".#.#." "#...#" ".....")
+    (#\… "....." "....." "....." "....." "....." "....." "#.#.#"))
+  "5x7 dot-matrix glyphs: A-Z, 0-9, space, - . : ( ) and decision 85's
+% / ! + , ° × …; a character missing here draws blank (decision 85: the
+tests require every one used, glyph-missing).")
 
 (defparameter *label-colour* #xFFBF33 "The placeholder label, amber, sRGB.")
 (defparameter *label-dot-px* 2 "Dot pitch of labels, cap 14 px; decision 85.")
@@ -64,6 +73,10 @@ here draws blank (decision 85: the tests require every one used).")
 (defun glyph (char)
   "CHAR's seven rows, upcased, or nil."
   (rest (assoc (char-upcase char) *glyphs*)))
+
+(defun glyph-missing (string)
+  "The first character of STRING without a glyph, as written, or nil."
+  (find-if-not (lambda (char) (assoc char *glyphs*)) string))
 
 (defconstant +overlay-vertex-floats+ 7 "Anchor xy, pixel offset xy, colour rgb.")
 

@@ -436,10 +436,7 @@ at LEVEL. (values mismatches checks steps-per-frame clock)."
     (dotimes (i 29) (lis::clock-frame! clock sim 0.1d0))
     (is = 1 (length (lis::clock-messages clock)))
     (dotimes (i 2) (lis::clock-frame! clock sim 0.1d0))
-    (is = 0 (length (lis::clock-messages clock)))
-    (is string= "1 D 2 H" (lis::format-duration (+ 86400 7200 59d0)))
-    (is string= "1 H 5 MIN" (lis::format-duration 3900.2d0))
-    (is string= "4 MIN 20 S" (lis::format-duration 259.6d0))))
+    (is = 0 (length (lis::clock-messages clock)))))
 
 (define-test clock-restart
   (let* ((sim (lis::new-game-sim))

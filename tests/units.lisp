@@ -40,3 +40,10 @@
   (is = 6.8d0 (lis::m->km 6800d0))
   (is = 7.669d0 (lis::m/s->km/s 7669d0))
   (is equal '(1 2 3 4.5d0) (multiple-value-list (lis::duration-fields 93784.5d0))))
+
+(define-test format-duration
+  (is string= "1 D 2 H" (lis::format-duration (+ 86400 7200 59d0)))
+  (is string= "1 H 5 MIN" (lis::format-duration 3900.2d0))
+  (is string= "4 MIN 20 S" (lis::format-duration 259.6d0))
+  (is string= "20 S" (lis::format-duration 20d0))
+  (is string= "0 S" (lis::format-duration 0d0)))

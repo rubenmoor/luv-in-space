@@ -706,8 +706,9 @@ target's exact state."
         (is eq :hold (lis::controls-attitude-mode (lis::sim-controls sim)))))))
 
 (define-test target-hold-promoted
-  ;; Tern Station promoted 1 km ahead, :j2: hold 7 for a quarter orbit,
-  ;; checked each second. Measured: within 0.00016°.
+  ;; Tern Station promoted 1 km ahead, :j2: hold 7 for an eighth of an
+  ;; orbit (a quarter planned; halved for scripts/test's budget, task 261),
+  ;; checked each second. Measured: within 0.00016° over a quarter.
   (let* ((sim (lis::new-game-sim))
          (tern (lis::sim-object sim :tern-station))
          (r-t (lis::make-vec3)) (v-t (lis::make-vec3)))
@@ -728,8 +729,8 @@ target's exact state."
         (replace (lis::ship-state-w (lis::sim-ship sim)) (lis::quat-rotate (lis::quat-conjugate q) w-t)))
       (false (lis::sim-target-hold! sim :target))
       (let ((angle 0d0)
-            (quarter (* 0.25d0 (lis::osculating-period sim))))
-        (loop with end = (+ (lis::sim-t sim) quarter)
+            (eighth (* 0.125d0 (lis::osculating-period sim))))
+        (loop with end = (+ (lis::sim-t sim) eighth)
               while (< (lis::sim-t sim) end)
               do (target-sim-steps sim 64 1)
                  (setf angle (max angle (target-hold-errors sim :target))))

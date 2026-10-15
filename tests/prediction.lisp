@@ -557,21 +557,25 @@ Fulmar Depot's 500 km."
 
 (defun scanned-approaches (pred orbit)
   "The interior local minima (time distance) of the range between PRED's
-stored ship path and ORBIT's Kepler state, sampled every 1/16 s."
+stored ship path and ORBIT's Kepler state, sampled every 1/4 s, each
+refined to the vertex of the parabola through its three samples. (Sampled
+every 1/16 s without the parabola until task 261: 4x the samples.)"
   (let* ((n (lis::prediction-node-count pred))
          (t0 (lis::prediction-node pred 0))
          (t1 (lis::prediction-node pred (1- n)))
+         (h 0.25d0)
          (p (lis::make-vec3))
          (minima '()))
     (flet ((range (time)
              (lis::prediction-position! p pred time)
              (lis::vec3-norm (lis::vec3-sub! p p (lis::orbit-state orbit time)))))
-      (loop with a = (range t0) and b = (range (+ t0 1/16))
-            for k from 2 to (floor (* 16 (- t1 t0)))
-            for time = (+ t0 (/ k 16d0))
+      (loop with a = (range t0) and b = (range (+ t0 h))
+            for k from 2 to (floor (- t1 t0) h)
+            for time = (+ t0 (* k h))
             for c = (range time)
             do (when (and (< b a) (<= b c))
-                 (push (list (- time 1/16) b) minima))
+                 (let ((vertex (+ (- time h) (/ (* h 0.5d0 (- a c)) (+ a (* -2 b) c)))))
+                   (push (list vertex (range vertex)) minima)))
                (setf a b b c)))
     (nreverse minima)))
 

@@ -294,10 +294,12 @@ at LEVEL. (values mismatches checks steps-per-frame clock)."
 
 (define-test clock-levels-equal-direct-steps
   ;; Shortened as plan 15 allows, to keep the part's tests under 1.5 s: ×1
-  ;; and ×4 over 120 s (not 600 s), the coarse levels over 5 orbits (not 10).
+  ;; and ×4 over 120 s (not 600 s), the coarse levels over 3 orbits (not 10;
+  ;; 5 until task 261 cut it for scripts/test's budget; ×1,000,000 still
+  ;; fills two frames at the cap).
   (dolist (level lis::*warp-levels*)
     (let* ((sim (drift-sim))
-           (end (+ (lis::sim-t sim) (if (<= level 4) 120d0 (* 5 (drift-period))))))
+           (end (+ (lis::sim-t sim) (if (<= level 4) 120d0 (* 3 (drift-period))))))
       (multiple-value-bind (mismatches checks per-frame) (clock-run sim level end '(1/60))
         (is = 0 mismatches "×~D" level)
         (true (> checks 100) "×~D: ~D checks" level checks)
@@ -338,11 +340,13 @@ at LEVEL. (values mismatches checks steps-per-frame clock)."
       (is = 1 (lis::clock-level clock)))))
 
 (define-test clock-warp-round-trip
-  ;; ×1 → ×1,000 → ×1 over one orbit, against ×1 throughout.
+  ;; ×1 → ×1,000 → ×1 over half an orbit, against ×1 throughout (one orbit
+  ;; until task 261 halved it for scripts/test's budget: the ×1 reference
+  ;; dominates).
   (let* ((reference (drift-sim))
          (sim (drift-sim))
          (clock (lis::new-clock sim))
-         (end (lis::grid-ceiling (+ (lis::start-t) (drift-period))))
+         (end (lis::grid-ceiling (+ (lis::start-t) (* 0.5d0 (drift-period)))))
          (lis::*frame-step-time-limit* nil))
     (dotimes (i 60) (lis::clock-frame! clock sim 1/60))
     (lis::clock-set-level-index! clock (level-index 1000))

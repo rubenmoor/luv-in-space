@@ -219,11 +219,12 @@ periods."
        (true (< dl ,dl) "ΔL/L ~,2E" dl)
        (true (< dr ,dr) "position ~,3F m" dr))))
 
-;; The table of docs/architecture.md "Drift bounds". The fine rows run 5
+;; The table of docs/architecture.md "Drift bounds". The fine rows run 3
 ;; circular orbits and 1 at e = 0.5 instead of 10 and 2, bounds unchanged:
 ;; the whole table took 2.3 s, over the ~2 s of plan 14 (measured 2026-10-14:
-;; ΔE/E 1.5e-13, ΔL/L 1.1e-13 and 3e-5 m over 10 circular orbits).
-(define-drift-test drift-fine-circular 0d0 5 nil 1d-11 1d-11 0.05d0)
+;; ΔE/E 1.5e-13, ΔL/L 1.1e-13 and 3e-5 m over 10 circular orbits); 5
+;; circular orbits until task 261 cut them for scripts/test's budget.
+(define-drift-test drift-fine-circular 0d0 3 nil 1d-11 1d-11 0.05d0)
 (define-drift-test drift-fine-e0.5 0.5d0 1 nil 1d-11 1d-11 0.05d0)
 ;; The coarse circular and e = 0.5 rows run 500 orbits, not 1,000, bounds
 ;; unchanged: 0.55 s each (task 258: Bring scripts/test back under its ~15 s

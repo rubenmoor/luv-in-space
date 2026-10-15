@@ -65,6 +65,87 @@
     (true (equalp sim copy))
     (false (eq (lis::sim-ship sim) (lis::sim-ship copy)))))
 
+(defun grappled-sim ()
+  "The start state with every field of decision 112 set."
+  (let* ((sim (lis::new-game-sim))
+         (grapple (lis::sim-grapple sim)))
+    (setf (lis::grapple-state grapple) :closing
+          (lis::grapple-object grapple) 1
+          (lis::grapple-fixture grapple) 0
+          (lis::grapple-closing-end grapple) (+ (lis::sim-t sim) 2)
+          (lis::sim-berthed sim) t
+          (lis::sim-transfer sim) t
+          (lis::sim-excluded sim) 2
+          (lis::sim-delivery sim) (list 4 3 0 (lis::sim-t sim))
+          (lis::sim-notices sim) (list (list :removal "K-17 BURNED UP"))
+          (lis::sim-checkpoint-request sim) t)
+    (replace (lis::grapple-com grapple) '(17.2d0 0.1d0 -0.2d0))
+    (replace (lis::grapple-q grapple) '(0.6d0 0.8d0 0d0 0d0))
+    sim))
+
+(define-test clock-copy-grapple-fields
+  (let* ((sim (grappled-sim))
+         (copy (lis::copy-sim sim))
+         (fresh (lis::new-game-sim)))
+    (true (equalp sim copy))
+    (false (eq (lis::sim-grapple sim) (lis::sim-grapple copy)))
+    (false (equalp sim fresh))
+    (setf (aref (lis::grapple-com (lis::sim-grapple copy)) 0) 17.3d0)
+    (false (equalp sim copy))
+    (is = 0 (least-bytes-consed (lambda () (lis::sim-assign! copy sim))))
+    (true (equalp sim copy))
+    (is = 0 (least-bytes-consed (lambda () (lis::sim-assign! copy fresh))))
+    (true (equalp copy fresh))))
+
+(define-test clock-notices-and-log
+  ;; K-17 burns up on rails 2,603 s out: the prediction's copy sees it
+  ;; first and says nothing; the flown step's notice is a message and a
+  ;; log entry at its t, once.
+  (let* ((sim (k-17-sim 90d3))
+         (clock (clock-at sim 1000))
+         (end (k-17-crash-end sim)))
+    (lis::prediction-run! (lis::clock-prediction clock) sim)
+    (true (lis::object-removed-p
+           (lis::sim-object (lis::prediction-sim (lis::clock-prediction clock)) :k-17)))
+    (false (lis::sim-notices (lis::prediction-sim (lis::clock-prediction clock))))
+    (false (lis::clock-log clock))
+    (loop until (lis::object-removed-p (lis::sim-object sim :k-17))
+          do (lis::clock-step! clock sim))
+    (true (>= (lis::sim-t sim) end))
+    (false (lis::sim-notices sim))
+    (is equal '("K-17 BURNED UP") (lis::clock-messages clock))
+    (is equal (list (list (lis::sim-t sim) "K-17 BURNED UP")) (lis::clock-log clock))
+    (dotimes (i 100) (lis::clock-step! clock sim))
+    (is = 1 (length (lis::clock-log clock)))
+    ;; The read mark; the log keeps the last 200.
+    (is = 1 (length (lis::clock-log-unread clock)))
+    (lis::clock-acknowledge! clock)
+    (false (lis::clock-log-unread clock))
+    (dotimes (i 250) (lis::clock-message! clock :refused (format nil "M~D" i)))
+    (is = 200 (length (lis::clock-log clock)))
+    (is = 200 (length (lis::clock-log-unread clock)))
+    (is equal "M249" (second (first (lis::clock-log clock))))))
+
+(define-test clock-checkpoint-request
+  (let* ((sim (lis::new-game-sim))
+         (clock (lis::new-clock sim)))
+    (setf (lis::sim-checkpoint-request sim) t)
+    (lis::clock-step! clock sim)
+    (false (lis::sim-checkpoint-request sim))
+    (true (equalp sim (lis::clock-checkpoint clock)))
+    (false (eq sim (lis::clock-checkpoint clock)))
+    ;; Not with the throttle on: the old one stays.
+    (let ((old (lis::clock-checkpoint clock)))
+      (lis::controls-throttle-full (lis::sim-controls sim))
+      (setf (lis::sim-checkpoint-request sim) t)
+      (lis::clock-step! clock sim)
+      (false (lis::sim-checkpoint-request sim))
+      (is eq old (lis::clock-checkpoint clock))
+      ;; clock-restart! keeps it.
+      (lis::clock-restart! clock sim old)
+      (is eq old (lis::clock-checkpoint clock))
+      (true (equalp sim old)))))
+
 (define-test clock-grid-and-until
   ;; Blocks of 50 steps per level; targets an odd number of ticks ahead.
   (let ((sim (lis::new-game-sim))

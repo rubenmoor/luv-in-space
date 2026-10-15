@@ -224,19 +224,48 @@ impact time; the loss record."
     sim))
 
 ;;; Removal of objects (docs/architecture.md "Removal of objects"; decision
-;;; 46: Rails across spheres, hyperbolas and re-entry). No SHIP message here
-;;; (task 158: Grapple, contact, berthing, towing and deliveries' queue).
+;;; 46: Rails across spheres, hyperbolas and re-entry).
 
 (defun object-remove! (sim object time cause &optional point (body (sim-body sim)))
   "OBJECT removed from SIM at TIME: status :removed and its record (TIME,
 BODY, CAUSE :burned-up, :delivered or :impact, POINT: (latitude longitude)
 of a crash in radians, a delivery's receiving object and fixture). From
 then it is never stepped, promoted, crash-tested or given a state; a
-checkpoint from before brings it back. OBJECT."
-  (declare (ignorable sim))
+checkpoint from before brings it back. :burned-up writes the notice
+\"<NAME> BURNED UP\" (decision 112). OBJECT."
   (setf (object-status object) :removed
         (object-removal object) (make-removal (float time 1d0) body cause point))
+  (when (eq cause :burned-up)
+    (sim-notice! sim :removal
+                 (format nil "~A BURNED UP" (object-def-name (object-def-of object)))))
   object)
+
+;;; The grapple's and the transfer's keys (decision 113: Grapple and contact
+;;; details the design leaves open): G and B, each nil or a refusal's text.
+
+(defun grapple-key! (sim)
+  "G: stowed ↔ armed; refused while the claws close. PLACEHOLDER(191):
+latched, the release."
+  (let ((grapple (sim-grapple sim)))
+    (ecase (grapple-state grapple)
+      (:stowed (setf (grapple-state grapple) :armed) nil)
+      (:armed (setf (grapple-state grapple) :stowed) nil)
+      (:closing "RELEASE LOCKED: CLAWS CLOSING")
+      (:latched nil))))
+
+(defun berth-object (sim)
+  "The object SIM is berthed at, or nil."
+  (and (sim-berthed sim)
+       (svref (sim-objects sim) (grapple-object (sim-grapple sim)))))
+
+(defun transfer-key! (sim)
+  "B: the transfer on or off, berthed at a depot only. PLACEHOLDER(191):
+the flow and TANKS FULL."
+  (let ((station (berth-object sim)))
+    (cond ((null station) "NOT BERTHED")
+          ((not (object-def-depot (object-def-of station))) "NO PROPELLANT HERE")
+          (t (setf (sim-transfer sim) (not (sim-transfer sim)))
+             nil))))
 
 (defun crash-point (body p time)
   "(latitude longitude) of BODY-centred P at TIME."

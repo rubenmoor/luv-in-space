@@ -253,7 +253,9 @@ the same apogee, K-17 promoted."
       (is = end (lis::removal-time removal))
       (true (< (abs (- end reference)) 1d-6) "~,9F s off" (- end reference))
       (true (< (abs (- end t0 2603.07d0)) 0.005d0) "~,3F s" (- end t0))
-      (is equal point (lis::removal-point removal)))))
+      (is equal point (lis::removal-point removal)))
+    ;; Its notice, once (decision 112).
+    (is equal '((:removal "K-17 BURNED UP")) (lis::sim-notices sim))))
 
 (define-test reentry-promoted
   ;; Two-body from apogee at the coarse step (×1,000) and the fine step.
@@ -267,6 +269,7 @@ the same apogee, K-17 promoted."
         (false (lis::sim-lost-p sim))
         (let ((removal (k-17-removal sim)))
           (true removal "×~D" level)
+          (is equal '((:removal "K-17 BURNED UP")) (lis::sim-notices sim) "×~D" level)
           (when removal
             (is eq :burned-up (lis::removal-cause removal))
             (true (< (abs (- (lis::removal-time removal) end)) 1d-2)
@@ -340,6 +343,7 @@ the same apogee, K-17 promoted."
       (is = time (lis::removal-time removal))
       (is eq :earth (lis::removal-body removal))
       (is eq :delivered (lis::removal-cause removal))
-      (is equal '(:highport "PLANT") (lis::removal-point removal)))
+      (is equal '(:highport "PLANT") (lis::removal-point removal))
+      (false (lis::sim-notices sim)))
     (step-sim sim 10 1)
     (is eq :removed (lis::object-status pod))))

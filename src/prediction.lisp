@@ -287,6 +287,9 @@ its events; PRED."
         (return))
       (let ((cutoff (sim-cutoff sim)))
         (sim-step-ticks! sim *prediction-level* nil)
+        ;; The copy's notices and requests are nobody's (decision 112).
+        (setf (sim-notices sim) nil
+              (sim-checkpoint-request sim) nil)
         (incf steps)
         (unless (push-node! pred sim)
           (setf (prediction-state pred) :complete)

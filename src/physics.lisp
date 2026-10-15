@@ -367,7 +367,7 @@ advanced by their rates, M from MEAN-ANOMALY at START by MEAN-RATE (n + Ṁ)."
 
 (defstruct (object-def (:constructor make-object-def
                            (key name kind mass tensor shapes fixtures attitude bound rails
-                            &aux (tensor-inverse (mat3-inverse-symmetric tensor)))))
+                            &key depot &aux (tensor-inverse (mat3-inverse-symmetric tensor)))))
   (key nil :type keyword :read-only t)
   (name "" :type string :read-only t)               ; display name
   (kind :towable :type (member :towable :berth :fixed) :read-only t)
@@ -378,7 +378,8 @@ advanced by their rates, M from MEAN-ANOMALY at START by MEAN-RATE (n + Ṁ)."
   (fixtures nil :type list :read-only t)
   (attitude nil :type attitude :read-only t)
   (bound 0d0 :type double-float :read-only t)       ; m
-  (rails nil :type list :read-only t))              ; the definition's segments
+  (rails nil :type list :read-only t)               ; the definition's segments
+  (depot nil :type boolean :read-only t))           ; berthed here, B refuels (decision 113)
 
 (defstruct (removal (:constructor make-removal (time body cause point)))
   (time 0d0 :type double-float :read-only t)

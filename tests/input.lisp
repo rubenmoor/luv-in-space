@@ -538,3 +538,116 @@ digits inside the 1–6 range, the rest by name."
         (is equalp #(0 0 0) (translation-keys game))
         (push (lis::copy-sim sim) sims)))
     (true (equalp (first sims) (second sims)))))
+
+;;; G, B, Y and the latest checkpoint (decision 112: Grapple, stack and berth
+;;; in the sim: state, notices to the clock, the latest checkpoint; decision
+;;; 113: Grapple and contact details the design leaves open).
+
+(defun grapple-state (game) (lis::grapple-state (lis::sim-grapple (lis::game-sim game))))
+
+(defun berth-at! (game key)
+  "GAME's sim berthed at KEY's fixture 0, as decision 112's state reads."
+  (let* ((sim (lis::game-sim game))
+         (grapple (lis::sim-grapple sim)))
+    (setf (lis::grapple-state grapple) :latched
+          (lis::grapple-object grapple) (position key (lis::sim-objects sim) :key #'lis::object-key)
+          (lis::grapple-fixture grapple) 0
+          (lis::sim-berthed sim) t)
+    game))
+
+(define-test input-grapple-key
+  (let ((game (input-game)))
+    (is eq :stowed (grapple-state game))
+    (input-tap game :g)
+    (is eq :armed (grapple-state game))
+    (input-tap game :g)
+    (is eq :stowed (grapple-state game))
+    ;; Every warp level.
+    (lis::clock-set-level-index! (input-clock game) (position 1000 lis::*warp-levels*))
+    (input-tap game :g)
+    (is eq :armed (grapple-state game))
+    (setf (lis::grapple-state (lis::sim-grapple (lis::game-sim game))) :closing)
+    (input-tap game :g)
+    (is eq :closing (grapple-state game))
+    (is equal '("RELEASE LOCKED: CLAWS CLOSING") (lis::clock-messages (input-clock game))))
+  ;; Paused, lost, a flight running: nothing.
+  (dolist (setup (list (lambda (game) (setf (lis::clock-paused (lis::game-clock game)) t))
+                       (lambda (game)
+                         (setf (lis::sim-loss (lis::game-sim game))
+                               (lis::make-loss :crash :earth 0d0 100d0 0d0 0d0)))
+                       (lambda (game) (lis::fly "burn" :game game))))
+    (let ((game (input-game)))
+      (funcall setup game)
+      (input-tap game :g)
+      (is eq :stowed (grapple-state game))
+      (input-tap game :b)
+      (false (lis::clock-messages (input-clock game))))))
+
+(define-test input-transfer-key
+  (let ((game (input-game)))
+    (input-tap game :b)
+    (is equal '("NOT BERTHED") (lis::clock-messages (input-clock game)))
+    (berth-at! game :tern-station)
+    (input-tap game :b)
+    (is equal '("NO PROPELLANT HERE") (lis::clock-messages (input-clock game)))
+    (false (lis::sim-transfer (lis::game-sim game))))
+  (dolist (key '(:fulmar-depot :highport))
+    (let ((game (berth-at! (input-game) key)))
+      (true (lis::object-def-depot (lis::object-definition key)))
+      (input-tap game :b)
+      (true (lis::sim-transfer (lis::game-sim game)) "~A" key)
+      (false (lis::clock-messages (input-clock game)))
+      (input-tap game :b)
+      (false (lis::sim-transfer (lis::game-sim game))))))
+
+(define-test input-acknowledge-key
+  (let* ((game (input-game))
+         (clock (input-clock game)))
+    (lis::clock-message! clock :refused "ONE")
+    (is = 1 (length (lis::clock-log-unread clock)))
+    ;; Paused and while a flight runs Y acts.
+    (setf (lis::clock-paused clock) t)
+    (input-tap game :y)
+    (false (lis::clock-log-unread clock))
+    (setf (lis::clock-paused clock) nil)
+    (lis::fly "burn" :game game)
+    (lis::clock-message! clock :refused "TWO")
+    (input-tap game :y)
+    (false (lis::clock-log-unread clock))
+    (lis::flight-stop :game game)
+    ;; Lost: not.
+    (lis::clock-message! clock :refused "THREE")
+    (setf (lis::sim-loss (lis::game-sim game)) (lis::make-loss :crash :earth 0d0 100d0 0d0 0d0))
+    (input-tap game :y)
+    (is = 1 (length (lis::clock-log-unread clock)))))
+
+(define-test input-return-to-checkpoint
+  (let* ((game (input-game))
+         (sim (lis::game-sim game))
+         (clock (input-clock game))
+         (lis::*frame-step-time-limit* nil))
+    (game-frames game 30)
+    (setf (lis::sim-checkpoint-request sim) t)
+    (game-frames game 1)
+    (let ((checkpoint (lis::copy-sim (lis::clock-checkpoint clock))))
+      (true checkpoint)
+      (false (equalp checkpoint (lis::new-game-sim)))
+      (game-frames game 30)
+      (setf (lis::sim-loss sim) (lis::make-loss :crash :earth (lis::sim-t sim) 100d0 0d0 0d0))
+      (input-tap game :return)
+      (false (lis::sim-lost-p sim))
+      (true (equalp sim checkpoint))
+      (is = 1 (lis::clock-level clock))
+      ;; Again after a second death: the checkpoint stays.
+      (game-frames game 30)
+      (setf (lis::sim-loss sim) (lis::make-loss :crash :earth (lis::sim-t sim) 100d0 0d0 0d0))
+      (input-tap game :return)
+      (true (equalp sim checkpoint))
+      ;; N: the start, the checkpoint cleared.
+      (setf (lis::sim-loss sim) (lis::make-loss :crash :earth (lis::sim-t sim) 100d0 0d0 0d0))
+      (input-tap game :n)
+      (true (equalp sim (lis::new-game-sim)))
+      (false (lis::clock-checkpoint clock))
+      (setf (lis::sim-loss sim) (lis::make-loss :crash :earth (lis::sim-t sim) 100d0 0d0 0d0))
+      (input-tap game :return)
+      (true (equalp sim (lis::new-game-sim))))))

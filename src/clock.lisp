@@ -8,7 +8,27 @@
 
 ;;; The simulation state
 
-(defstruct (sim (:constructor %make-sim (ship controls objects))
+;;; The grapple (decision 112: Grapple, stack and berth in the sim: state,
+;;; notices to the clock, the latest checkpoint).
+(defstruct (grapple (:constructor make-grapple ()) (:copier nil))
+  (state :stowed :type (member :stowed :armed :closing :latched))
+  (object nil :type (or null fixnum))           ; the attached object's index
+  (fixture nil :type (or null fixnum))          ; its fixture's index
+  (com (make-vec3) :type vec3 :read-only t)     ; m, its CoM in body axes from R
+  (q (quat 1 0 0 0) :type quat :read-only t)    ; its body axes -> the ship's
+  (closing-end 0d0 :type double-float))         ; s, :closing until then
+
+(defun grapple-assign! (out grapple)
+  (declare (type grapple out grapple))
+  (setf (grapple-state out) (grapple-state grapple)
+        (grapple-object out) (grapple-object grapple)
+        (grapple-fixture out) (grapple-fixture grapple)
+        (grapple-closing-end out) (grapple-closing-end grapple))
+  (replace (grapple-com out) (grapple-com grapple))
+  (replace (grapple-q out) (grapple-q grapple))
+  out)
+
+(defstruct (sim (:constructor %make-sim (ship controls objects grapple))
                 (:copier nil))
   (t 0d0 :type double-float)                    ; s, on the 1/64 s grid
   (body :earth :type keyword)                   ; the central body
@@ -18,13 +38,21 @@
   (cutoff nil :type (or null double-float))     ; odometer value that cuts the throttle
   (loss nil)                                    ; the loss record, immutable
   (steps 0 :type fixnum)
-  (objects #() :type simple-vector))            ; objects, in *objects*' order
+  (objects #() :type simple-vector)             ; objects, in *objects*' order
+  (grapple nil :type grapple)
+  (berthed nil :type boolean)                   ; at the grapple's :berth fixture
+  (transfer nil :type boolean)                  ; B: propellant flowing in
+  (excluded nil :type (or null fixnum))         ; a released object's index, no contact
+  (delivery nil :type list)                     ; nil or (load receiver fixture release-t), immutable
+  (notices nil :type list)                      ; ((key text) …) of this step, oldest first
+  (checkpoint-request nil :type boolean))       ; the clock takes a checkpoint when safe
 
 (defun copy-sim (sim)
   "A deep copy: equalp to SIM, sharing no array (the objects' definitions
 and immutable parts shared)."
   (sim-assign! (%make-sim (copy-ship-state (sim-ship sim)) (copy-controls (sim-controls sim))
-                          (map 'simple-vector #'copy-object (sim-objects sim)))
+                          (map 'simple-vector #'copy-object (sim-objects sim))
+                          (make-grapple))
                sim))
 
 (defun sim-assign! (out sim)
@@ -38,13 +66,24 @@ nothing; OUT."
     (loop for o across out-objects
           for object across objects
           do (object-assign! o object)))
+  (grapple-assign! (sim-grapple out) (sim-grapple sim))
   (setf (sim-t out) (sim-t sim)
         (sim-body out) (sim-body sim)
         (sim-model out) (sim-model sim)
         (sim-cutoff out) (sim-cutoff sim)
         (sim-loss out) (sim-loss sim)
-        (sim-steps out) (sim-steps sim))
+        (sim-steps out) (sim-steps sim)
+        (sim-berthed out) (sim-berthed sim)
+        (sim-transfer out) (sim-transfer sim)
+        (sim-excluded out) (sim-excluded sim)
+        (sim-delivery out) (sim-delivery sim)
+        (sim-notices out) (sim-notices sim)
+        (sim-checkpoint-request out) (sim-checkpoint-request sim))
   out)
+
+(defun sim-notice! (sim key text)
+  "A notice for the clock (decision 112): KEY its message's kind."
+  (setf (sim-notices sim) (append (sim-notices sim) (list (list key text)))))
 
 ;;; The start (decision 38: Start orbit: polar, docs/design.md "The start")
 
@@ -66,7 +105,8 @@ attitude and frame rate, settled, full tanks, throttle off."
             (let ((sim (%make-sim (make-ship-state r v q (quat-rotate (quat-conjugate q) w-t)
                                                    *propellant-full*)
                                   controls
-                                  (map 'simple-vector #'new-object *objects*))))
+                                  (map 'simple-vector #'new-object *objects*)
+                                  (make-grapple))))
               (setf (sim-t sim) time)
               (sim-recheck-objects! sim))))))))
 
@@ -283,8 +323,8 @@ call boxes h."
   (let ((ticks (sim-step-ticks! sim level until)))
     (and ticks (* ticks +fine-step+))))
 
-;;; Checkpoints (docs/architecture.md "Checkpoints"); milestone 2 keeps one,
-;;; the start state.
+;;; Checkpoints (docs/architecture.md "Checkpoints"): the game's start and the
+;;; clock's latest (clock-checkpoint, decision 112).
 
 (defun take-checkpoint (sim) (copy-sim sim))
 
@@ -332,16 +372,21 @@ to its horizon; without it a fresh one, prediction.lisp)."
   (previous-t 0d0 :type double-float)
   (frame-steps 0 :type fixnum)                  ; steps in the last frame
   (hook nil :type (or null function))           ; (fn clock sim) → a grid until or nil
-  (prediction nil))
+  (prediction nil)
+  (game-t 0d0 :type double-float)               ; the sim's t last seen: the log's stamps
+  (log nil :type list)                          ; the SHIP log, (t text), newest first
+  (log-read nil)                                ; the log's newest entry when Y was pressed
+  (checkpoint nil))                             ; the latest checkpoint, a sim, or nil
 
 (defun new-clock (sim)
-  "A clock at ×1, unpaused, its previous state SIM's."
+  "A clock at ×1, unpaused, its previous state SIM's, no checkpoint."
   (let ((clock (%make-clock (copy-ship-state (sim-ship sim)) (new-prediction)
                             (make-array *rate-meter-frames* :element-type 'double-float
                                                             :initial-element 0d0)
                             (make-array *rate-meter-frames* :element-type 'double-float
                                                             :initial-element 0d0))))
-    (setf (clock-previous-t clock) (sim-t sim))
+    (setf (clock-previous-t clock) (sim-t sim)
+          (clock-game-t clock) (sim-t sim))
     clock))
 
 (defun clock-level (clock)
@@ -358,10 +403,27 @@ to its horizon; without it a fresh one, prediction.lisp)."
 (defparameter *message-time* 3d0 "s of real time a message shows; decision 31.")
 (declaim (type double-float *message-time*))
 
+(defparameter *log-length* 200 "Entries the SHIP log keeps; decision 112.")
+(declaim (type fixnum *log-length*))
+
 (defun clock-message! (clock key text)
+  "TEXT shown as the message of KEY, and in the SHIP log at the game t."
   (setf (clock-message-list clock)
         (append (remove key (clock-message-list clock) :key #'first)
-                (list (list key text (clock-real-time clock))))))
+                (list (list key text (clock-real-time clock)))))
+  (let ((log (cons (list (clock-game-t clock) text) (clock-log clock))))
+    (when (> (length log) *log-length*)
+      (setf log (subseq log 0 *log-length*)))
+    (setf (clock-log clock) log)))
+
+(defun clock-log-unread (clock)
+  "The SHIP log's entries newer than the read mark, newest first."
+  (let ((mark (member (clock-log-read clock) (clock-log clock) :test #'eq)))
+    (ldiff (clock-log clock) mark)))
+
+(defun clock-acknowledge! (clock)
+  "Y: the SHIP log read."
+  (setf (clock-log-read clock) (first (clock-log clock))))
 
 (defun clock-messages (clock)
   "The live messages' texts, oldest first."
@@ -492,6 +554,18 @@ with no hold, the next step engages an inertial hold (sim-step!)."
 
 ;;; The step and the frame
 
+(defun clock-take-notices! (clock sim)
+  "After a step (decision 112): SIM's notices to clock-message! and the SHIP
+log, a checkpoint request to clock-checkpoint when checkpoint-safe-p on the
+clock's prediction; both cleared from SIM."
+  (loop for (key text) in (sim-notices sim)
+        do (clock-message! clock key text))
+  (setf (sim-notices sim) nil)
+  (when (sim-checkpoint-request sim)
+    (setf (sim-checkpoint-request sim) nil)
+    (when (checkpoint-safe-p sim (clock-prediction clock))
+      (setf (clock-checkpoint clock) (take-checkpoint sim)))))
+
 (declaim (inline clock-step!))
 (defun clock-step! (clock sim &optional budget)
   "One step of SIM under CLOCK (decision 72, decision 73): the lowering
@@ -505,6 +579,7 @@ taken (lost, or over BUDGET)."
            (inline step-h sim-step-ticks!))
   (when (sim-loss sim)
     (return-from clock-step! nil))
+  (setf (clock-game-t clock) (sim-t sim))
   (clock-check-level! clock sim)
   (let* ((hook (clock-hook clock))
          (until (and hook (funcall hook clock sim)))
@@ -514,7 +589,10 @@ taken (lost, or over BUDGET)."
       (ship-state-assign! (clock-previous clock) (sim-ship sim))
       (setf (clock-previous-t clock) (sim-t sim))
       (let ((ticks (sim-step-ticks! sim level until)))
-        (setf (clock-held clock) (and (> level *fine-levels-max*) (held-p sim)))
+        (setf (clock-held clock) (and (> level *fine-levels-max*) (held-p sim))
+              (clock-game-t clock) (sim-t sim))
+        (when (or (sim-notices sim) (sim-checkpoint-request sim))
+          (clock-take-notices! clock sim))
         ticks))))
 
 (defun clock-steps! (clock sim)
@@ -579,14 +657,17 @@ or lost. The steps taken."
                        (* (min elapsed *frame-elapsed-cap*) (clock-level clock)))
                  (clock-steps! clock sim))))
     (rate-meter-record! clock elapsed (- (sim-t sim) start))
+    (setf (clock-game-t clock) (sim-t sim))
     (clock-frame-steps clock)))
 
 ;;; Restart (decision 34: How death works): the LOST panel's Return and N.
 
 (defun clock-restart! (clock sim checkpoint)
   "SIM restored to CHECKPOINT; CLOCK at ×1, unpaused, its accumulator,
-messages and prediction cleared. SIM."
+messages and prediction cleared; its latest checkpoint and the SHIP log
+kept. SIM."
   (restore-checkpoint! sim checkpoint)
+  (setf (clock-game-t clock) (sim-t sim))
   (rate-meter-reset! clock)
   (setf (clock-level-index clock) 0
         (clock-paused clock) nil

@@ -435,7 +435,11 @@ top, or nil."
       (is eq :inverted (lis::run-style title))
       (false (lis::run-flash title)))
     (is equal '(#xE8E4D8 #x8A8A80) (mapcar #'lis::run-colour (sixth lines)))
-    (check-glyphs lines))
+    (check-glyphs lines)
+    ;; With the clock's latest checkpoint (decision 112).
+    (let ((lines (lis::lost-panel-lines loss t)))
+      (is string= "RETURN  RESTART FROM CHECKPOINT" (sixth (readout-texts lines)))
+      (check-glyphs lines)))
   ;; Hemisphere letters and 2 decimals from a crafted record.
   (let ((texts (readout-texts
                 (lis::lost-panel-lines

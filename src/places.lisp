@@ -56,9 +56,10 @@ the motion (decision 111)."
 (defun place-fixture (name pin axis kind &rest flags)
   (apply #'make-fixture name (apply #'vec3 pin) (apply #'vec3 axis) kind flags))
 
-(defun place-object-def (key name kind mass tensor shapes fixtures attitude bound orbit)
+(defun place-object-def (key name kind mass tensor shapes fixtures attitude bound orbit
+                         &key depot)
   (make-object-def key name kind (float mass 1d0) (apply #'mat3 tensor) shapes fixtures attitude
-                   (float bound 1d0) (make-rails orbit (start-t))))
+                   (float bound 1d0) (make-rails orbit (start-t)) :depot depot))
 
 (defun yard-rock (key name mass radius tensor spin bound mean-anomaly)
   "A Skua Yard rock (docs/design.md \"Rocks\"): a sphere, its fixture 0.3d0 m
@@ -90,7 +91,8 @@ mm; TENSOR (2/5) m r² of it; BOUND the pin + 0.8d0 m."
                          (place-box -13.98d0 0 -16.30d0  3.6d0 3.6d0 24.0d0))
                    (list (place-fixture "A" '(-13.98d0 0 4.30d0) '(0 0 1) :berth)
                          (place-fixture "B" '(-13.98d0 0 -4.30d0) '(0 0 -1) :berth :free nil))
-                   (make-attitude :sun-pointing) 33.7d0 (circular-orbit 500d3 180d0))
+                   (make-attitude :sun-pointing) 33.7d0 (circular-orbit 500d3 180d0)
+                   :depot t)
      (place-object-def :k-17 "K-17" :towable 2500
                    '(4.89d3 0 0  0 5.65d4 0  0 0 5.65d4)
                    (list (place-box -1.05d0 0 0  14.2d0 3.05d0 3.05d0))
@@ -108,7 +110,8 @@ mm; TENSOR (2/5) m r² of it; BOUND the pin + 0.8d0 m."
                    (list (place-fixture "plant" '(-3.28d0 0 3.41d0) '(-1 0 0) :berth :receiving t)
                          (place-fixture "arm 1" '(0.02d0 20.0d0 -11.39d0) '(0 0 -1) :berth :free nil)
                          (place-fixture "arm 2" '(0.02d0 -20.0d0 -11.39d0) '(0 0 -1) :berth :free nil))
-                   (make-attitude :sun-pointing) 72.6d0 (highport-orbit 180d0))
+                   (make-attitude :sun-pointing) 72.6d0 (highport-orbit 180d0)
+                   :depot t)
      ;; Skua Yard's rocks; their places in the string: docs/design.md "Layout".
      (yard-rock :skua-yard-1 "SKUA YARD 1" 20000 1.337d0 14300.552d0 0.10d0 2.437d0 179.87000d0)
      (yard-rock :skua-yard-2 "SKUA YARD 2" 35000 1.611d0 36334.494d0 0.20d0 2.711d0 179.86707d0)

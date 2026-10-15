@@ -896,6 +896,7 @@ to the image's output; flight-status reads them."
                     (let ((flight (new-flight steps (new-game-sim))))
                       (setf (flight-restart flight)
                             (lambda () (game-restart! game (flight-start flight))))
+                      (setf (clock-checkpoint (game-clock game)) nil)
                       (game-restart! game (flight-start flight))
                       (setf (game-flight game) flight)
                       (flight-install! (game-clock game) flight

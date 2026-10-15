@@ -135,7 +135,7 @@ the record clears."
                    (game-view-changed-p game) t))))))
 
 (defun game-restart! (game &optional (checkpoint (game-start-checkpoint game)))
-  "Return and N on the LOST panel: the start CHECKPOINT restored by
+  "The LOST panel's restart: CHECKPOINT (the start's) restored by
 clock-restart! (×1, unpaused), the outside view at its default pose, the
 map closed, the input cleared, the death record cleared, the exposure
 snapped. GAME."
@@ -149,6 +149,15 @@ snapped. GAME."
         (game-loss game) nil
         (game-death-time game) nil)
   game)
+
+(defun game-return! (game)
+  "Return: the clock's latest checkpoint, else the start (decision 112)."
+  (game-restart! game (or (clock-checkpoint (game-clock game)) (game-start-checkpoint game))))
+
+(defun game-new-game! (game)
+  "N: the start, the latest checkpoint cleared."
+  (setf (clock-checkpoint (game-clock game)) nil)
+  (game-restart! game))
 
 (defun death-glow! (game exposure)
   "The ship's emissive slot (decision 80): *death-glow-colour* x
@@ -175,7 +184,9 @@ the outside view's distance."
                   (and (game-readout-p game)
                        (readout-lines (game-render-state game) (game-clock game)
                                       (game-real-time game)))
-                  (and (game-loss game) (lost-panel-lines (game-loss game))))))
+                  (and (game-loss game)
+                       (lost-panel-lines (game-loss game)
+                                         (and (clock-checkpoint (game-clock game)) t))))))
 
 (defun game-frame! (game elapsed)
   "One frame's simulation, ELAPSED real seconds: the real time, the input,

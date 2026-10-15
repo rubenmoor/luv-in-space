@@ -209,8 +209,9 @@ Keyboard and mouse through luv's canvas events (`docs/luv-capabilities.md` "Wind
 - What is ignored (`decision 81`, `decision 88: Warp keys while paused`):
   - Paused: the flight keys (rotation, translation, F, Z, X, T, R, 1–6, Shift-left, Control-left; the ramp stops); P, the warp keys `.` `,` `/` (they set the level P's resume restores), C, Home, M, Tab, the Page keys, the mouse and quit act.
   - Above ×4: rotation and translation keys; each press shows "RCS OFF ABOVE ×4"; holds, T, R, F and the throttle act.
-  - Lost: every flight key; the LOST panel's keys act ("Dying and what follows"): in `milestone 2` Return and N both restart from the start state (`game-restart!`); N is translate −x only while flying (`*key-map*`'s `:restart`, `*lost-commands*`, `decision 86: Death view, LOST panel and restart in milestone 2`).
-- The window title until `milestone 6`'s F1 help: "Luv in Space · WASD QE turn · HN IK JL move · Shift/Ctrl throttle · Z/X full/cut · T damp · R 1–6 hold · F fine · . , / warp · P pause · C/Home camera · M map · Esc quit" (QWERTY positions; luv has no key-name → character function, `docs/luv-wishlist.md`).
+  - Lost: every flight key and Y; the LOST panel's keys act ("Dying and what follows"): Return restarts from the latest checkpoint, else the start (`game-return!`), N from the start, clearing the latest (`game-new-game!`); N is translate −x only while flying (`*key-map*`'s `:restart` and `:new-game`, `*lost-commands*`, `decision 86: Death view, LOST panel and restart in milestone 2`, `decision 112: Grapple, stack and berth in the sim: state, notices to the clock, the latest checkpoint`).
+  - G and B, as built (`task 188: The sim's grapple fields, notices, the SHIP log, the latest checkpoint and G, B, Y`, `decision 113: Grapple and contact details the design leaves open`): ignored paused, lost or while a flight runs, acting at every warp level; G stowed ↔ armed, "RELEASE LOCKED: CLAWS CLOSING" while the claws close (the release: `task 191`); B "NOT BERTHED", "NO PROPELLANT HERE" away from a depot (Fulmar Depot, Highport), else the transfer on or off; refusals show as messages. Y acts at any time but lost, paused and during a flight too: it marks the SHIP log read.
+- The window title until `milestone 6`'s F1 help: "Luv in Space · WASD QE turn · HN IK JL move · Shift/Ctrl throttle · Z/X full/cut · T damp · R 1–6 hold · F fine · . , / warp · P pause · C/Home camera · M map · G grapple · B refuel · Y ack · Esc quit" (QWERTY positions; luv has no key-name → character function, `docs/luv-wishlist.md`).
 
 | Function | Keys | From milestone |
 |---|---|---|
@@ -576,8 +577,8 @@ Death ends the flight, never the game: the player goes on from the last checkpoi
     - "EARTH  <UTC of the impact>" (or MOON).
     - "SPEED <relative to the body, as the readout's SPD>".
     - "LAT <|lat|, 2 decimals>° <N|S>  LON <|lon|, 2 decimals>° <E|W>".
-    - A blank line, then "RETURN  RESTART FROM START" and "N       NEW GAME", keys paper white, texts grey.
-  - Return and N in `milestone 2`: the same restart, `game-restart!` (the start state, ×1, the outside view reset, the map closed, the input cleared, so the N press does not translate).
+    - A blank line, then "RETURN  RESTART FROM START" ("RETURN  RESTART FROM CHECKPOINT" when the clock holds one, `task 188`) and "N       NEW GAME", keys paper white, texts grey.
+  - Return and N: `game-restart!` (×1, the outside view reset, the map closed, the input cleared, so the N press does not translate); Return to the clock's latest checkpoint (`clock-checkpoint`, taken on a sim's request when safe) or else the start, N to the start, clearing the latest (`task 188`).
   - Nothing else: no debris simulation, no explosion particles (pillar "small and finished").
 - What follows: a restart from the last checkpoint ("Saving"); there is no permanent death. Before `milestone 5` the checkpoints live in memory: `milestone 2` has only the start state (Return and N are the same); `milestone 3` adds one when an autopilot plan completes and when the ship berths.
 - Quests (`milestone 5`): death never fails or skips a quest; the checkpoint is at or after the start of the current quest step, so the step is flown again. A quest may set its own checkpoint (e.g. before a dangerous burn).

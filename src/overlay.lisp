@@ -469,10 +469,11 @@ box's colour; a flashing run in its :off phase not at all. OUT."
 
 (defparameter *lost-panel-top* 0.6d0 "The panel's top, a fraction of the height; decision 86.")
 
-(defun lost-panel-lines (loss)
+(defun lost-panel-lines (loss &optional checkpoint)
   "The LOST panel of LOSS (decision 86): the title red inverted and steady,
 the body and the impact's UTC, its speed relative to the body as the
-readout's SPD, latitude and longitude, a blank line, Return and N."
+readout's SPD, latitude and longitude, a blank line, Return (to the latest
+checkpoint when CHECKPOINT, decision 112) and N."
   (flet ((label (text) (readout-run text *readout-label-colour*))
          (value (text) (readout-run text *readout-value-colour*))
          (degrees (angle) (format-fixed (abs (rad->deg angle)) 2)))
@@ -488,7 +489,8 @@ readout's SPD, latitude and longitude, a blank line, Return and N."
                 (value (format nil "~A° ~:[E~;W~]" (degrees (loss-longitude loss))
                                (minusp (loss-longitude loss)))))
           '()
-          (list (value "RETURN") (label "  RESTART FROM START"))
+          (list (value "RETURN")
+                (label (if checkpoint "  RESTART FROM CHECKPOINT" "  RESTART FROM START")))
           (list (value "N") (label "       NEW GAME")))))
 
 (defun lost-panel-origin (lines extent)

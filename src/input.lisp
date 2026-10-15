@@ -54,17 +54,21 @@
     (:|.| . :warp-up) (:|,| . :warp-down) (:/ . :warp-reset) (:p . :pause)
     (:c . :camera-frame) (:home . :camera-reset)
     (:m . :map) (:tab . :map-focus) (:page-up . :map-zoom-in) (:page-down . :map-zoom-out)
-    (:return . :restart) (:n . :restart))
+    (:g . :grapple) (:b . :transfer) (:y . :acknowledge)
+    (:return . :restart) (:n . :new-game))
   "(key . command): luv's physical key names; run-command's commands.")
 
-(defparameter *lost-commands* '(:restart)
+(defparameter *lost-commands* '(:restart :new-game)
   "Act only while lost; otherwise their keys are as if unbound, N translating (decision 86).")
+
+(defparameter *flying-commands* '(:acknowledge)
+  "Act at any time but lost (decision 113).")
 
 (defparameter *flight-commands*
   '(:fine :throttle-full :throttle-cut :rate-damping :inertial-hold
     :hold-prograde :hold-retrograde :hold-normal :hold-anti-normal
-    :hold-radial-out :hold-radial-in)
-  "Ignored while paused or lost (decision 81); the rest always act (decision 88: Warp keys while paused).")
+    :hold-radial-out :hold-radial-in :grapple :transfer)
+  "Ignored while paused or lost (decision 81, decision 113); the rest always act (decision 88: Warp keys while paused).")
 
 (defparameter *throttle-ramp-rate* 0.5d0 "Lever per real second, Shift-left / Control-left; decision 81.")
 (defparameter *throttle-ramp-elapsed-cap* 0.1d0 "s: a frame's elapsed time the ramp uses at most; decision 81.")
@@ -72,7 +76,7 @@
 (defparameter *throttle-down-key* :control-left)
 (defparameter *rcs-off-message* "RCS OFF ABOVE ×4" "decision 31: Warp choices within the time-warp rules.")
 
-(defparameter *script-commands* '(:warp-up :warp-down :warp-reset :restart)
+(defparameter *script-commands* '(:warp-up :warp-down :warp-reset :restart :new-game)
   "Ignored, with the flight commands, while a flight script runs: the script owns them (decision 87).")
 
 (defun flight-keys-ignored-p (game)
@@ -105,10 +109,18 @@
                          (open-map-view! game)
                          (outside-view-reset! (game-outside-view game))))
       (:map (toggle-map! game))
-      (:restart (game-restart! game))
+      (:grapple (key-refusal! clock :grapple (grapple-key! sim)))
+      (:transfer (key-refusal! clock :transfer (transfer-key! sim)))
+      (:acknowledge (clock-acknowledge! clock))
+      (:restart (game-return! game))
+      (:new-game (game-new-game! game))
       (:map-focus (when (map-p game) (map-view-cycle-focus! (game-map-view game))))
       (:map-zoom-in (when (map-p game) (map-view-zoom! (game-map-view game) (/ *map-page-factor*))))
       (:map-zoom-out (when (map-p game) (map-view-zoom! (game-map-view game) *map-page-factor*))))))
+
+(defun key-refusal! (clock key refusal)
+  (when refusal
+    (clock-message! clock key refusal)))
 
 (defun map-p (game) (eq (game-view game) :map))
 
@@ -133,6 +145,8 @@ RCS-off message for a flight key above ×4."
   (let ((command (cdr (assoc key *key-map*))))
     (when (and (member command *lost-commands*) (not (sim-lost-p (game-sim game))))
       (setf command nil))
+    (when (and (member command *flying-commands*) (sim-lost-p (game-sim game)))
+      (return-from key-pressed!))
     (when (and (member command *script-commands*) (flight-running-p game))
       (return-from key-pressed!))
     (cond ((and command (member command *flight-commands*))
@@ -146,7 +160,7 @@ RCS-off message for a flight key above ×4."
 
 (defun window-title ()
   "The window's title: the main keys by QWERTY position (decision 81)."
-  "Luv in Space · WASD QE turn · HN IK JL move · Shift/Ctrl throttle · Z/X full/cut · T damp · R 1–6 hold · F fine · . , / warp · P pause · C/Home camera · M map · Esc quit")
+  "Luv in Space · WASD QE turn · HN IK JL move · Shift/Ctrl throttle · Z/X full/cut · T damp · R 1–6 hold · F fine · . , / warp · P pause · C/Home camera · M map · G grapple · B refuel · Y ack · Esc quit")
 
 ;; Runs on the canvas thread: only flag the quit; STOP runs on the caller's.
 (defun handle-event (game event)

@@ -1023,3 +1023,53 @@ Skua Yard 5 on its rails, at its velocity."
                                                                              0d0 '()))))
       (lis::autopilot-engage! clock sim plan)
       (is eq :k-17 (lis::sim-target sim)))))
+
+;;; Rendezvous end to end (plan 27's Done when): planned by
+;;; autopilot-plan-now, engaged, flown through clock-step! at ×1,000 on the
+;;; coasts, ×1 from a burn's hold-at to its cut, the clock's own levels
+;;; (×4 from :terminal) to :station.
+
+(defun rendezvous-level (sim)
+  "×1 holding and burning, the clock's level in :terminal and :station, else ×1,000."
+  (case (lis::sim-plan-phase sim)
+    ((:holding :burning) 1)
+    ((:terminal :station) nil)
+    (t 1000)))
+
+(defun rendezvous-run (sim goal &key (limit 172800d0) watch)
+  "GOAL's rendezvous planned from SIM, engaged and flown to :station, at most
+LIMIT s; WATCH called with the sim before each step. (values clock plan
+seconds dv): seconds from SIM's t, dv spent."
+  (let* ((lis::*frame-step-time-limit* nil)
+         (plan (rendezvous-now sim goal))
+         (clock (lis::new-clock sim))
+         (t0 (lis::sim-t sim))
+         (dv0 (lis::ship-state-dv (lis::sim-ship sim))))
+    (setf (lis::clock-hook clock)
+          (lambda (clock s)
+            (let ((level (rendezvous-level s)))
+              (when level
+                (lis::clock-set-level-index! clock (level-index level))
+                (lis::clock-check-level! clock s)))
+            (when watch (funcall watch s))
+            nil))
+    (when plan
+      (lis::autopilot-engage! clock sim plan)
+      (loop while (and (lis::sim-plan sim) (not (eq (lis::sim-plan-phase sim) :station))
+                       (< (- (lis::sim-t sim) t0) limit))
+            do (lis::clock-step! clock sim)))
+    (values clock plan (- (lis::sim-t sim) t0) (- (lis::ship-state-dv (lis::sim-ship sim)) dv0))))
+
+(define-test rendezvous-end-to-end-tern
+  ;; "Rendezvous: Tern Station" from the start state (:j2, 18 h: the plan of
+  ;; 48 h at less time): on station at 13.7 h, 32.94 m/s. The bound 34.3
+  ;; (11 + 3 % + 20 + 3) assumed the search's 11 m/s; the planned 19.35
+  ;; (decision 161) leaves 13.6 for the terminal phase, inside it. 0.66 s;
+  ;; this run twice equalp and Skua Yard 5's are task 272's (slow command).
+  (multiple-value-bind (clock plan seconds dv)
+      (rendezvous-run (model-sim :j2) '(:tern-station :limit 64800d0))
+    (when plan
+      (true (<= dv 34.3d0) "~,2F m/s" dv)
+      (true (<= seconds 86400d0) "~,1F h" (/ seconds 3600))
+      (is = 1 (count "ON STATION: TERN STATION" (log-texts clock) :test #'string=))
+      (true (lis::clock-checkpoint clock)))))

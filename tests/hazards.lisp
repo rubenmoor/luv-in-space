@@ -456,6 +456,9 @@ angular momentum about their common CoM, inertial."
       (true before)
       (false (lis::sim-lost-p sim))
       (is = index (lis::contact-object lis::*contact*))
+      ;; Off its rails: demoted on its own state's (task 267).
+      (false (lis::object-disturbed (svref (lis::sim-objects before) index)))
+      (true (lis::object-disturbed (svref (lis::sim-objects sim) index)))
       (is = (lis::sim-t before) (lis::sim-t sim))
       (true (on-grid-p (lis::sim-t sim)))
       (true (< (vector-error (lis::contact-normal lis::*contact*)
@@ -523,7 +526,8 @@ angular momentum about their common CoM, inertial."
         (step-sim alone most-positive-fixnum 1 end)
         (is = end (lis::sim-t sim))
         (true (equalp (lis::object-state (svref (lis::sim-objects alone) index))
-                      (lis::object-state (svref (lis::sim-objects sim) index))))))))
+                      (lis::object-state (svref (lis::sim-objects sim) index))))
+        (false (lis::object-disturbed (svref (lis::sim-objects sim) index)))))))
 
 (define-test contact-death-speed
   ;; 0.99 m/s bounces, 1.01 m/s kills at t_c, 0.2 m / 1.01 m/s after the start.
@@ -744,6 +748,7 @@ object's: momenta's rounding at metres and cm/s, not 7,000 km and 7.6 km/s."
           (multiple-value-bind (p0 l0) (stack-momenta shifted index)
             (let ((e0 (two-body-energy shifted index)))
               (lis::grapple-capture! shifted index 0)
+              (true (lis::object-disturbed (svref (lis::sim-objects shifted) index)))
               (multiple-value-bind (p1 l1 e1) (stack-energy-momenta shifted)
                 (true (< (vector-error p1 p0) 1d-12) "p ~,3E" (vector-error p1 p0))
                 (true (< (vector-error l1 l0) 1d-12) "L ~,3E" (vector-error l1 l0))

@@ -556,6 +556,46 @@ by bisection down to adjacent doubles (~2.4e-7 s in 2040)."
     (setf (lis::object-status object) :removed)
     (false (lis::object-state-into! r v q w object t0))))
 
+(define-test object-demote-keeps-rails
+  ;; Promoted at 400 km polar and flown 1,800 s under :j2 (~20 km off its
+  ;; rails: they take the elements as mean ones, the integration as
+  ;; osculating), then demoted: undisturbed, back on the rails it had,
+  ;; exactly, a day later too; disturbed, on state-rails of its state.
+  (let* ((t0 (lis::start-t))
+         (t1 (+ t0 1800d0))
+         (rails (lis::make-rails (drift-orbit 0d0) t0))
+         (r (lis::make-vec3)) (v (lis::make-vec3)) (q (lis::make-quat)) (w (lis::make-vec3))
+         (r0 (lis::make-vec3)) (v0 (lis::make-vec3)))
+    (flet ((flown (disturbed)
+             (let ((object (lis::new-object (test-object-def (lis::make-attitude :lvlh) rails))))
+               (true (lis::object-promote! object t0))
+               (setf (lis::object-disturbed object) disturbed)
+               (loop for time from t0 below t1 by 4d0
+                     do (lis::object-step! object 4d0 time :j2 nil))
+               object)))
+      (let* ((object (flown nil))
+             (attitude (lis::object-attitude object))
+             (drift (progn (lis::rails-state-into! r0 v0 (first rails) t1)
+                           (lis::vec3-norm (lis::vec3-sub r0 (lis::ship-state-r (lis::object-state object)))))))
+        (true (> drift 1d3) "~,1F km" (/ drift 1000))
+        (lis::object-demote! object t1)
+        (is eq :rails (lis::object-status object))
+        (is eq rails (lis::object-rails object))
+        (is eq attitude (lis::object-attitude object))
+        (dolist (time (list t1 (+ t1 86400d0)))
+          (lis::object-state-into! r v q w object time)
+          (lis::rails-state-into! r0 v0 (first rails) time)
+          (is equalp r0 r)))
+      (let* ((object (flown t))
+             (state (lis::copy-ship-state (lis::object-state object))))
+        (lis::object-demote! object t1)
+        (false (lis::object-disturbed object))
+        (is equalp (lis::state-rails (lis::ship-state-r state) (lis::ship-state-v state) t1)
+            (lis::object-rails object))
+        (lis::object-state-into! r v q w object t1)
+        (true (< (lis::vec3-norm (lis::vec3-sub r (lis::ship-state-r state))) 1d-3))
+        (true (< (lis::vec3-norm (lis::vec3-sub v (lis::ship-state-v state))) 1d-6))))))
+
 (defun attitude-at (mode orbit time)
   "(values q ω-inertial ω-body) of MODE on ORBIT at TIME."
   (multiple-value-bind (r v) (lis::orbit-state orbit time)

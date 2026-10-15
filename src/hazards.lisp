@@ -876,6 +876,7 @@ neither body moves; else j."
                                 (- (/ j (mass-properties-mass properties))))
               (vec3-add-scaled! (ship-state-w ship) (ship-state-w ship) x-s (- j)))
             (when object-free
+              (setf (object-disturbed object) t)
               (vec3-add-scaled! (ship-state-v state) (ship-state-v state) n (/ j (object-def-mass def)))
               (vec3-add-scaled! (ship-state-w state) (ship-state-w state) x-o j))
             j))))))
@@ -1011,7 +1012,8 @@ delivery of it cleared. SIM."
         (replace (ship-state-v ship) v)
         (mat3*vec3! (ship-state-w ship) (mass-properties-inertia-inverse after)
                     (quat-rotate q-s* l))))
-    (setf (object-status object) :latched)
+    (setf (object-status object) :latched
+          (object-disturbed object) t)
     (latched-load-update! sim)
     (sim-notice! sim :grapple (format nil "LATCHED ~A" (object-def-name def)))
     sim))

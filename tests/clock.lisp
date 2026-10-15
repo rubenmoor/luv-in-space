@@ -598,33 +598,43 @@ velocity, moving with it plus DV m/s along it."
              (false (promoted-keys sim)))))
 
 (define-test clock-promote-demote
-  ;; Promoted at t, demoted after one step: the rails state is the
-  ;; integrated one within 1 mm.
-  (let* ((sim (ship-near :tern-station 1000d0))
-         (tern (lis::sim-object sim :tern-station))
-         (reference (step-sim (lis::copy-sim sim) 1 1)))
-    (is equal '(:tern-station) (promoted-keys sim))
-    (is equalp (lis::object-def-rails (lis::object-def-of tern)) (lis::object-rails tern))
-    ;; The ship 300 km up: beyond 200 km after the step.
-    (let ((r (lis::ship-state-r (lis::sim-ship sim))))
-      (lis::vec3-add-scaled! r r (lis::vec3-normalize r) 300d3))
-    (step-sim sim 1 1)
-    (is eq :rails (lis::object-status tern))
-    (is eq (lis::object-def-attitude (lis::object-def-of tern)) (lis::object-attitude tern))
-    (let ((integrated (lis::object-state (lis::sim-object reference :tern-station))))
-      (multiple-value-bind (r v) (object-rv tern (lis::sim-t sim))
-        (let ((dr (lis::vec3-norm (lis::vec3-sub r (lis::ship-state-r integrated))))
-              (dv (lis::vec3-norm (lis::vec3-sub v (lis::ship-state-v integrated)))))
-          (true (< dr 1d-3) "~,3E m" dr)
-          (true (< dv 1d-6) "~,3E m/s" dv))))
-    (true (> (lis::object-next-check tern) (lis::sim-t sim)))))
+  ;; Promoted at t, demoted after one step: undisturbed, back on the rails
+  ;; it had; disturbed (a contact), on rails reproducing the integrated
+  ;; state within 1 mm.
+  (dolist (disturbed '(nil t))
+    (let* ((sim (ship-near :tern-station 1000d0))
+           (tern (lis::sim-object sim :tern-station))
+           (rails (lis::object-def-rails (lis::object-def-of tern))))
+      (is equal '(:tern-station) (promoted-keys sim))
+      (is equalp rails (lis::object-rails tern))
+      (setf (lis::object-disturbed tern) disturbed)
+      (let ((reference (step-sim (lis::copy-sim sim) 1 1)))
+        ;; The ship 300 km up: beyond 200 km after the step.
+        (let ((r (lis::ship-state-r (lis::sim-ship sim))))
+          (lis::vec3-add-scaled! r r (lis::vec3-normalize r) 300d3))
+        (step-sim sim 1 1)
+        (is eq :rails (lis::object-status tern))
+        (false (lis::object-disturbed tern))
+        (is eq (lis::object-def-attitude (lis::object-def-of tern)) (lis::object-attitude tern))
+        (if disturbed
+            (let ((integrated (lis::object-state (lis::sim-object reference :tern-station))))
+              (false (eq rails (lis::object-rails tern)))
+              (multiple-value-bind (r v) (object-rv tern (lis::sim-t sim))
+                (let ((dr (lis::vec3-norm (lis::vec3-sub r (lis::ship-state-r integrated))))
+                      (dv (lis::vec3-norm (lis::vec3-sub v (lis::ship-state-v integrated)))))
+                  (true (< dr 1d-3) "~,3E m" dr)
+                  (true (< dv 1d-6) "~,3E m/s" dv))))
+            (is eq rails (lis::object-rails tern)))
+        (true (> (lis::object-next-check tern) (lis::sim-t sim)))))))
 
 (define-test clock-demoted-towable-attitude
-  ;; K-17 spinning about +x keeps a :spin; tumbling, an :inertial at its q.
+  ;; Disturbed, K-17 spinning about +x keeps a :spin; tumbling, an
+  ;; :inertial at its q.
   (flet ((demoted (w)
            (let* ((sim (ship-near :k-17 1000d0))
                   (k-17 (lis::sim-object sim :k-17))
                   (state (lis::object-state k-17)))
+             (setf (lis::object-disturbed k-17) t)
              (when w (replace (lis::ship-state-w state) w))
              (let ((r (lis::ship-state-r (lis::sim-ship sim))))
                (lis::vec3-add-scaled! r r (lis::vec3-normalize r) 300d3))
@@ -684,8 +694,8 @@ from START to END under :full, the Moon and the Sun read by the step."
 (define-test clock-objects-frame-rates-and-checkpoint
   ;; 30 m/s prograde from 1 km behind Tern Station and 200 m off its plane
   ;; (passing it, not hitting it): promoted, then beyond 200 km within the
-  ;; orbit and demoted; every frame rate and a restore give the same
-  ;; objects bit for bit.
+  ;; orbit and demoted onto its own rails; every frame rate and a restore
+  ;; give the same objects bit for bit.
   (flet ((departing ()
            (let* ((sim (ship-near :tern-station -1000d0 :dv 30d0))
                   (r (lis::vec3-copy (lis::ship-state-r (lis::sim-ship sim))))
@@ -700,7 +710,7 @@ from START to END under :full, the Moon and the Sun read by the step."
             (is = 0 (clock-run sim level end frames) "×~D ~A" level frames)
             (when (= level 1000)
               (is eq :rails (lis::object-status (lis::sim-object sim :tern-station)))
-              (false (eq (lis::object-def-rails (lis::object-def-of
+              (true (eq (lis::object-def-rails (lis::object-def-of
                                                  (lis::sim-object sim :tern-station)))
                          (lis::object-rails (lis::sim-object sim :tern-station)))))))))
     (let* ((sim (step-sim (departing) 100 1000))
@@ -711,6 +721,38 @@ from START to END under :full, the Moon and the Sun read by the step."
       (true (equalp sim checkpoint))
       (step-sim sim 3000 1000)
       (true (equalp sim flown)))))
+
+(defun tern-pass-sim ()
+  "The start state coasted to 20 h at ×1,000,000 (the steps the state
+allows), past the pass ~20 km under Tern Station at 12.6 h. (values sim
+promoted), PROMOTED the times Tern Station was promoted."
+  (let* ((sim (lis::new-game-sim))
+         (end (+ (lis::sim-t sim) 72000d0))
+         (tern (lis::sim-object sim :tern-station))
+         (promoted '()))
+    (loop until (>= (lis::sim-t sim) end)
+          do (lis::sim-step! sim 1000000 :until end)
+             (when (lis::object-promoted-p tern)
+               (push (lis::sim-t sim) promoted)))
+    (values sim (nreverse promoted))))
+
+(define-test clock-tern-pass-keeps-rails
+  ;; The pass promotes Tern Station (12.58–13.92 h); it is demoted onto the
+  ;; rails it had (task 210 measured 555 km off them at 20 h when re-railed
+  ;; on its osculating elements). ~25 ms.
+  (multiple-value-bind (sim promoted) (tern-pass-sim)
+    (let ((tern (lis::sim-object sim :tern-station))
+          (hours (mapcar (lambda (time) (/ (- time (lis::start-t)) 3600)) promoted)))
+      (true (and promoted (< 12.5 (first hours) 12.7) (< 13.8 (car (last hours)) 14.0))
+            "~,2F–~,2F h" (first hours) (car (last hours)))
+      (is eq :rails (lis::object-status tern))
+      (is eq (lis::object-def-rails (lis::object-def-of tern)) (lis::object-rails tern))
+      (multiple-value-bind (r v) (object-rv tern (lis::sim-t sim))
+        (declare (ignore v))
+        (let ((r0 (lis::make-vec3)) (v0 (lis::make-vec3)))
+          (lis::rails-state-into! r0 v0 (first (lis::object-def-rails (lis::object-def-of tern)))
+                                  (lis::sim-t sim))
+          (is equalp r0 r))))))
 
 (defun skua-yard-sim ()
   "The ship at Skua Yard's drop point at the start, its nine objects promoted."

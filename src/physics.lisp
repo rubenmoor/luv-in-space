@@ -405,7 +405,7 @@ advanced by their rates, M from MEAN-ANOMALY at START by MEAN-RATE (n + Ṁ)."
   (point nil :read-only t))     ; (latitude longitude) of a crash; a delivery's place and fixture
 
 (defstruct (object (:constructor %make-object
-                       (def-of status rails attitude state next-check removal))
+                       (def-of status rails attitude state next-check removal disturbed))
                    (:copier nil))
   (def-of nil :type object-def :read-only t)
   (status :rails :type (member :rails :promoted :latched :removed)) ; :latched: in the stack
@@ -413,19 +413,20 @@ advanced by their rates, M from MEAN-ANOMALY at START by MEAN-RATE (n + Ṁ)."
   (attitude nil :type attitude)                     ; replaced whole
   (state nil :type ship-state :read-only t)         ; promoted: r, v, q, ω (body); m_p 0
   (next-check 0d0 :type double-float)               ; the next promotion check's t
-  (removal nil :type (or null removal)))
+  (removal nil :type (or null removal))
+  (disturbed nil :type boolean))                    ; a contact or latch moved it off its rails
 
 (defun new-object (def)
   "An object on its definition's rails, unpromoted."
   (%make-object def :rails (object-def-rails def) (object-def-attitude def)
                 (make-ship-state (make-vec3) (make-vec3) (quat 1 0 0 0) (make-vec3) 0d0)
-                0d0 nil))
+                0d0 nil nil))
 
 (defun copy-object (object)
   "A copy, equalp to OBJECT, sharing the definition and the immutable parts."
   (%make-object (object-def-of object) (object-status object) (object-rails object)
                 (object-attitude object) (copy-ship-state (object-state object))
-                (object-next-check object) (object-removal object)))
+                (object-next-check object) (object-removal object) (object-disturbed object)))
 
 (defun object-assign! (out object)
   "Copy OBJECT into OUT, an object of the same definition, consing nothing;
@@ -436,7 +437,8 @@ OUT."
         (object-rails out) (object-rails object)
         (object-attitude out) (object-attitude object)
         (object-next-check out) (object-next-check object)
-        (object-removal out) (object-removal object))
+        (object-removal out) (object-removal object)
+        (object-disturbed out) (object-disturbed object))
   (ship-state-assign! (object-state out) (object-state object))
   out)
 
@@ -707,17 +709,19 @@ a degenerate tensor's whole eigenspace counts), else :inertial at q."
               (make-attitude :inertial :q q))))))
 
 (defun object-demote! (object time &optional (body :earth))
-  "OBJECT, promoted, back on rails from TIME: make-rails of its osculating
-elements around BODY (J2's rates for an Earth ellipse), its attitude mode
-by demotion-attitude."
+  "OBJECT, promoted, back on rails from TIME: undisturbed, the rails and
+attitude mode it had (a jump of what it drifted while promoted);
+disturbed (a contact, a latch), state-rails of its state around BODY and
+demotion-attitude's mode, no longer disturbed."
   (declare (type object object) (type double-float time))
-  (let ((state (object-state object)))
-    (setf (object-attitude object) (demotion-attitude object time)
-          (object-rails object) (make-rails (state->orbit (ship-state-r state) (ship-state-v state)
-                                                          (body-mu (body body)) time)
-                                            time :body body)
-          (object-status object) :rails)
-    object))
+  (when (object-disturbed object)
+    (let ((state (object-state object)))
+      (setf (object-attitude object) (demotion-attitude object time)
+            (object-rails object) (state-rails (ship-state-r state) (ship-state-v state) time
+                                               :body body)
+            (object-disturbed object) nil)))
+  (setf (object-status object) :rails)
+  object)
 
 (defvar *object-attitude*)
 

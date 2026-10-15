@@ -879,8 +879,8 @@ the clock's, run to its horizon; without it a fresh one, prediction.lisp)."
   (log nil :type list)                          ; the SHIP log, (t text), newest first
   (log-read nil)                                ; the log's newest entry when Y was pressed
   (checkpoint nil)                              ; the latest checkpoint, a sim, or nil
-  ;; The autopilot (decision 117): the plan last engaged, kept for the map
-  ;; after it ends; task 204 makes it the preset menu's model.
+  ;; The autopilot's preset menu, its planning job and the plan last
+  ;; engaged (autopilot-model, autopilot.lisp; decision 118).
   (autopilot nil))
 
 (defun new-clock (sim)
@@ -892,7 +892,8 @@ prediction two periods ahead while coasting (decision 116)."
                             (make-array *rate-meter-frames* :element-type 'double-float
                                                             :initial-element 0d0))))
     (setf (clock-previous-t clock) (sim-t sim)
-          (clock-game-t clock) (sim-t sim))
+          (clock-game-t clock) (sim-t sim)
+          (clock-autopilot clock) (make-autopilot-model))
     clock))
 
 (defun clock-level (clock)
@@ -1081,8 +1082,9 @@ with no hold, the next step engages an inertial hold (sim-step!)."
 ;;; Engaging and disengaging the autopilot (decision 117), between steps.
 
 (defun autopilot-engage! (clock sim plan)
-  "PLAN flown by SIM from now (sim-engage-plan!), kept by CLOCK for the map; SIM."
-  (setf (clock-autopilot clock) plan)
+  "PLAN flown by SIM from now (sim-engage-plan!), CLOCK's model :engaged with
+it kept for the map; SIM."
+  (autopilot-engaged! (clock-autopilot clock) plan)
   (sim-engage-plan! sim plan))
 
 (defun autopilot-disengage! (clock sim &optional pilot)
@@ -1091,8 +1093,10 @@ off, rate damping) with the message \"AUTOPILOT OFF\" (\"AUTOPILOT OFF:
 PILOT INPUT\"), CLOCK keeping the plan for the map. True when one was
 engaged."
   (when (sim-plan sim)
-    (sim-plan-stop! sim)
-    (clock-message! clock :autopilot (if pilot "AUTOPILOT OFF: PILOT INPUT" "AUTOPILOT OFF"))
+    (let ((text (if pilot "AUTOPILOT OFF: PILOT INPUT" "AUTOPILOT OFF")))
+      (sim-plan-stop! sim)
+      (autopilot-stopped! (clock-autopilot clock) text)
+      (clock-message! clock :autopilot text))
     t))
 
 ;;; The step and the frame
@@ -1102,7 +1106,9 @@ engaged."
 log, a checkpoint request to clock-checkpoint when checkpoint-safe-p on the
 clock's prediction; both cleared from SIM."
   (loop for (key text) in (sim-notices sim)
-        do (clock-message! clock key text))
+        do (clock-message! clock key text)
+           (when (eq key :autopilot)
+             (autopilot-notice! (clock-autopilot clock) text)))
   (setf (sim-notices sim) nil)
   (when (sim-checkpoint-request sim)
     (setf (sim-checkpoint-request sim) nil)
@@ -1116,27 +1122,38 @@ rules, the hook's until, sim-step! at the level after the hook (a hook
 that changes the controls or the level applies clock-check-level! again
 itself), the previous state and
 the held flag kept. With BUDGET (game s, the frame's accumulator) no step
-when the next h exceeds it. The step's 1/64 s ticks, or nil when none was
-taken (lost, or over BUDGET)."
+when the next h exceeds it. While the autopilot's job runs, no step past
+its barrier (autopilot-barrier): the step lands on it, there the
+accumulator is emptied. The step's 1/64 s ticks, or nil when none was
+taken (lost, over BUDGET or at the barrier)."
   (declare (type clock clock) (type sim sim) (type (or null double-float) budget)
            (inline step-h sim-step-ticks!))
   (when (sim-loss sim)
     (return-from clock-step! nil))
   (setf (clock-game-t clock) (sim-t sim))
-  (clock-check-level! clock sim)
-  (let* ((hook (clock-hook clock))
-         (until (and hook (funcall hook clock sim)))
-         (level (clock-level clock)))           ; after the hook: its warp acts now
-    (declare (type (or null double-float) until))
-    (unless (and budget (< budget (the double-float (step-h sim level until))))
-      (ship-state-assign! (clock-previous clock) (sim-ship sim))
-      (setf (clock-previous-t clock) (sim-t sim))
-      (let ((ticks (sim-step-ticks! sim level until)))
-        (setf (clock-held clock) (and (> level *fine-levels-max*) (held-p sim))
-              (clock-game-t clock) (sim-t sim))
-        (when (or (sim-notices sim) (sim-checkpoint-request sim))
-          (clock-take-notices! clock sim))
-        ticks))))
+  (let ((barrier (autopilot-barrier (clock-autopilot clock))))
+    (declare (type (or null double-float) barrier))
+    (when (and barrier (>= (sim-t sim) barrier))
+      (setf (clock-accumulator clock) 0d0)
+      (return-from clock-step! nil))
+    (clock-check-level! clock sim)
+    (let* ((hook (clock-hook clock))
+           (until (let ((until (and hook (funcall hook clock sim))))
+                    (declare (type (or null double-float) until))
+                    (if (and barrier (or (null until) (<= until (sim-t sim)) (< barrier until)))
+                        barrier
+                        until)))
+           (level (clock-level clock)))         ; after the hook: its warp acts now
+      (declare (type (or null double-float) until))
+      (unless (and budget (< budget (the double-float (step-h sim level until))))
+        (ship-state-assign! (clock-previous clock) (sim-ship sim))
+        (setf (clock-previous-t clock) (sim-t sim))
+        (let ((ticks (sim-step-ticks! sim level until)))
+          (setf (clock-held clock) (and (> level *fine-levels-max*) (held-p sim))
+                (clock-game-t clock) (sim-t sim))
+          (when (or (sim-notices sim) (sim-checkpoint-request sim))
+            (clock-take-notices! clock sim))
+          ticks)))))
 
 (defun clock-steps! (clock sim)
   "Steps while the accumulator holds the next h, within the frame's caps;
@@ -1183,13 +1200,21 @@ until the meter holds a second since the last warp change or pause."
     (and (>= real 1d0) (/ game real))))
 
 (defun clock-frame! (clock sim elapsed)
-  "One frame of ELAPSED real seconds: the prediction updated, then the
-accumulator fed min(ELAPSED, 0.1 s) × level and stepped down (the hook
-before each step gives its until); none paused (the accumulator emptied)
-or lost. The steps taken."
+  "One frame of ELAPSED real seconds: the prediction updated (while the
+autopilot plans with at most half of *prediction-work-per-frame*, its job
+the rest, paused too; decision 117), then the accumulator fed min(ELAPSED,
+0.1 s) × level and stepped down (the hook before each step gives its
+until); none paused (the accumulator emptied) or lost. The steps taken."
   (let ((elapsed (float elapsed 1d0))
-        (start (sim-t sim)))
-    (prediction-update! (clock-prediction clock) sim)
+        (start (sim-t sim))
+        (model (clock-autopilot clock))
+        (prediction (clock-prediction clock)))
+    (if (autopilot-planning-p model)
+        (progn (prediction-update! prediction sim (floor *prediction-work-per-frame* 2))
+               (autopilot-frame! model clock sim (- *prediction-work-per-frame*
+                                                    (prediction-last-work prediction))))
+        (progn (prediction-update! prediction sim)
+               (autopilot-frame! model clock sim 0)))
     (incf (clock-real-time clock) elapsed)
     (setf (clock-frame-steps clock)
           (cond ((or (clock-paused clock) (sim-loss sim))
@@ -1207,13 +1232,13 @@ or lost. The steps taken."
 
 (defun clock-restart! (clock sim checkpoint)
   "SIM restored to CHECKPOINT; CLOCK at ×1, unpaused, its accumulator,
-messages, prediction and the autopilot's plan cleared; its latest
+messages, prediction and the autopilot's model (autopilot-reset!) cleared; its latest
 checkpoint and the SHIP log kept. SIM."
   (restore-checkpoint! sim checkpoint)
   (setf (clock-game-t clock) (sim-t sim))
   (rate-meter-reset! clock)
-  (setf (clock-autopilot clock) nil
-        (clock-level-index clock) 0
+  (autopilot-reset! (clock-autopilot clock))
+  (setf (clock-level-index clock) 0
         (clock-paused clock) nil
         (clock-accumulator clock) 0d0
         (clock-message-list clock) nil

@@ -303,8 +303,10 @@ digits inside the 1–6 range, the rest by name."
                          (mapcar #'car lis::*key-map*)
                          '(:shift-left :control-left :escape)))
       ;; Tab and the Page keys are the map's, not main keys (decision 81);
-      ;; the LOST panel names Return (decision 86).
-      (unless (member key '(:tab :page-up :page-down :return))
+      ;; the LOST panel names Return (decision 86), the autopilot's panel
+      ;; and screen the arrows and Backspace (decision 118).
+      (unless (member key '(:tab :page-up :page-down :return
+                            :up :down :left :right :backspace))
         (true (title-names-key-p title key) "~A" key)))))
 
 ;;; The pointer and the camera keys (decision 82: Outside view camera:
@@ -507,7 +509,7 @@ digits inside the 1–6 range, the rest by name."
     game))
 
 (define-test input-return-and-n
-  ;; Flying: N translates, Return is unbound.
+  ;; Flying: N translates, Return is the autopilot's (the menu closed: nothing).
   (let ((game (input-game)))
     (key-event game :press :n)
     (input-frame game)
@@ -724,3 +726,88 @@ digits inside the 1–6 range, the rest by name."
     (input-tap game :p)
     (input-tap game :|8|)
     (is eq :rate-damping (first (input-attitude game)))))
+
+;;; The autopilot's keys (decision 118: Autopilot preset menu and input in
+;;; milestone 3).
+
+(defun input-model (game) (lis::clock-autopilot (input-clock game)))
+(defun input-menu-state (game) (lis::autopilot-model-state (input-model game)))
+(defun menu-value (game key) (cdr (assoc key (lis::autopilot-model-values (input-model game)))))
+
+(define-test input-autopilot-menu-keys
+  ;; O, Down, Down, Right ×3: SET PE +30 km; Right held 1.5 s at 60 Hz: the
+  ;; press's step, then 8 a second, ×10 after 1 s; O closes.
+  (let ((game (input-game)))
+    (dolist (key '(:o :down :down :right :right :right))
+      (input-tap game key))
+    (is eq :menu (input-menu-state game))
+    (is eq :set-periapsis (lis::autopilot-model-selection (input-model game)))
+    (is = 430 (menu-value game :set-periapsis))
+    (is string= "> SET PE 430 KM"
+        (third (lis::autopilot-menu-lines (input-model game) (lis::game-sim game))))
+    (input-frames game 2 1/60)
+    (key-event game :press :right)
+    (input-frames game 90 1/60)
+    (is = (+ 430 10 (* 8 10) (* 4 100)) (menu-value game :set-periapsis))
+    (key-event game :release :right)
+    (input-frames game 30 1/60)
+    (is = 920 (menu-value game :set-periapsis))
+    (input-tap game :o)
+    (is eq :closed (input-menu-state game))
+    (input-tap game :right)
+    (is = 920 (menu-value game :set-periapsis))))
+
+(define-test input-autopilot-engaged
+  ;; O, Return, frames, Return: engaged. While engaged held keys and the
+  ;; ramp never reach the controls (the executor's RCS key survives a held
+  ;; J); a new W disengages ("AUTOPILOT OFF: PILOT INPUT") and acts that frame.
+  (let* ((game (input-game))
+         (sim (lis::game-sim game))
+         (controls (game-controls game)))
+    (setf (lis::sim-model sim) :point)
+    (input-tap game :o)
+    (setf (lis::autopilot-model-selection (input-model game)) :change-orbit
+          (cdr (assoc :change-orbit (lis::autopilot-model-values (input-model game)))) 800)
+    (input-tap game :return)
+    (is eq :planning (input-menu-state game))
+    (loop repeat 100 while (eq :planning (input-menu-state game)) do (game-frames game 1))
+    (is eq :shown (input-menu-state game))
+    (key-event game :press :j)
+    (key-event game :press :shift-left)
+    (input-frame game)
+    (is equalp #(0 -1 0) (translation-keys game))
+    (input-tap game :return)
+    (is eq :engaged (input-menu-state game))
+    (true (lis::sim-plan sim))
+    (lis::controls-set-translation-key controls :x 1)
+    (input-frames game 5 1/60)
+    (is equalp #(1 0 0) (translation-keys game))
+    (is = 0d0 (input-throttle game))
+    (true (lis::sim-plan sim))
+    (key-event game :press :w)
+    (false (lis::sim-plan sim))
+    (is eq :off (input-menu-state game))
+    (is equal '("AUTOPILOT OFF: PILOT INPUT") (lis::clock-messages (input-clock game)))
+    (input-frame game)
+    (is equalp #(0 -1 0) (rotation-keys game))
+    (is equalp #(0 -1 0) (translation-keys game))))
+
+(define-test input-autopilot-gating
+  ;; Paused the menu acts; lost or during a flight its keys are ignored.
+  (let ((game (input-game)))
+    (input-tap game :p)
+    (input-tap game :o)
+    (is eq :menu (input-menu-state game))
+    (input-tap game :down)
+    (is eq :set-apoapsis (lis::autopilot-model-selection (input-model game))))
+  (let ((game (input-game)))
+    (setf (lis::sim-loss (lis::game-sim game)) (lis::make-loss :crash :earth 0d0 100d0 0d0 0d0))
+    (dolist (key '(:o :down :right :backspace))
+      (input-tap game key))
+    (is eq :closed (input-menu-state game)))
+  (let ((game (input-game)))
+    (lis::fly "burn" :game game)
+    (dolist (key '(:o :down :return))
+      (input-tap game key))
+    (is eq :closed (input-menu-state game))
+    (lis::flight-stop :game game)))

@@ -58,6 +58,8 @@
     (:m . :map) (:tab . :map-focus) (:page-up . :map-zoom-in) (:page-down . :map-zoom-out)
     (:g . :grapple) (:b . :transfer) (:y . :acknowledge)
     (:] . :target-next) (:[ . :target-previous) (:\\ . :target-clear)
+    (:o . :autopilot-open) (:up . :autopilot-up) (:down . :autopilot-down)
+    (:left . :autopilot-left) (:right . :autopilot-right) (:backspace . :autopilot-backspace)
     (:return . :restart) (:n . :new-game))
   "(key . command): luv's physical key names; run-command's commands.")
 
@@ -69,6 +71,13 @@
 
 (defparameter *target-commands* '(:target-next :target-previous :target-clear)
   "Act paused and at every level, not while lost or a flight runs (decision 114).")
+
+(defparameter *autopilot-commands*
+  '((:autopilot-open . :open) (:autopilot-up . :up) (:autopilot-down . :down)
+    (:autopilot-left . :left) (:autopilot-right . :right) (:autopilot-return . :return)
+    (:autopilot-backspace . :backspace))
+  "(command . autopilot-key!'s): act paused and at every level, not while lost or
+a flight runs; Return is :autopilot-return unless lost (decision 118).")
 
 (defparameter *flight-commands*
   '(:fine :throttle-full :throttle-cut :rate-damping :inertial-hold
@@ -83,6 +92,11 @@
 (defparameter *throttle-down-key* :control-left)
 (defparameter *rcs-off-message* "RCS OFF ABOVE ×4" "decision 31: Warp choices within the time-warp rules.")
 (defparameter *engine-locked-message* "ENGINE LOCKED: BERTHED" "decision 113.")
+
+(defparameter *pilot-commands* (remove-if (lambda (c) (member c '(:grapple :transfer)))
+                                          *flight-commands*)
+  "Commands whose press, with the keys of *flight-keys* and the throttle
+keys, disengages the autopilot (\"AUTOPILOT OFF: PILOT INPUT\"; decision 118).")
 
 (defparameter *script-commands* '(:warp-up :warp-down :warp-reset :restart :new-game)
   "Ignored, with the flight commands, while a flight script runs: the script owns them (decision 87).")
@@ -129,6 +143,10 @@
       (:target-next (sim-cycle-target! sim 1))
       (:target-previous (sim-cycle-target! sim -1))
       (:target-clear (sim-set-target! sim nil))
+      ((:autopilot-open :autopilot-up :autopilot-down :autopilot-left :autopilot-right
+        :autopilot-return :autopilot-backspace)
+       (autopilot-key! (clock-autopilot clock) clock sim
+                       (cdr (assoc command *autopilot-commands*))))
       (:restart (game-return! game))
       (:new-game (game-new-game! game))
       (:map-focus (when (map-p game) (map-view-cycle-focus! (game-map-view game))))
@@ -162,13 +180,29 @@ view as it was. The frame snaps the exposure (view-changed-p)."
       (eq command :throttle-full)
       (member key (list *throttle-up-key* *throttle-down-key*))))
 
+(defun pilot-key-p (key command)
+  "KEY (its COMMAND) is the pilot's: a rotation or translation key, a throttle
+key or one of *pilot-commands*."
+  (or (assoc key *flight-keys*)
+      (member key (list *throttle-up-key* *throttle-down-key*))
+      (member command *pilot-commands*)))
+
 (defun key-pressed! (game key)
-  "A new press of KEY: its command (Return and N only while lost), the
-locked engine's message for an engine or RCS key while berthed, or the
-RCS-off message for a flight key above ×4."
+  "A new press of KEY: its command (Return and N only while lost; Return the
+autopilot's otherwise), the locked engine's message for an engine or RCS key
+while berthed, or the RCS-off message for a flight key above ×4. A pilot's
+key that acts disengages an engaged autopilot first (decision 118)."
   (let ((command (cdr (assoc key *key-map*))))
+    (when (and (eq command :restart) (not (sim-lost-p (game-sim game))))
+      (setf command :autopilot-return))
     (when (and (member command *lost-commands*) (not (sim-lost-p (game-sim game))))
       (setf command nil))
+    (when (and (assoc command *autopilot-commands*)
+               (or (sim-lost-p (game-sim game)) (flight-running-p game)))
+      (return-from key-pressed!))
+    (when (and (sim-plan (game-sim game)) (pilot-key-p key command)
+               (not (flight-keys-ignored-p game)))
+      (autopilot-disengage! (game-clock game) (game-sim game) t))
     (when (and (member command *flying-commands*) (sim-lost-p (game-sim game)))
       (return-from key-pressed!))
     (when (and (member command *script-commands*) (flight-running-p game))
@@ -190,7 +224,7 @@ RCS-off message for a flight key above ×4."
 
 (defun window-title ()
   "The window's title: the main keys by QWERTY position (decision 81)."
-  "Luv in Space · WASD QE turn · HN IK JL move · Shift/Ctrl throttle · Z/X full/cut · T damp · R 1–6 hold · 7–0 target holds · F fine · . , / warp · P pause · C/Home camera · M map · G grapple · B refuel · Y ack · [ ] \\ target · Esc quit")
+  "Luv in Space · WASD QE turn · HN IK JL move · Shift/Ctrl throttle · Z/X full/cut · T damp · R 1–6 hold · 7–0 target holds · F fine · . , / warp · P pause · C/Home camera · M map · O autopilot · G grapple · B refuel · Y ack · [ ] \\ target · Esc quit")
 
 ;; Runs on the canvas thread: only flag the quit; STOP runs on the caller's.
 (defun handle-event (game event)
@@ -264,18 +298,27 @@ below 0.1 off (controls-set-throttle)."
 (defun input-frame! (game elapsed)
   "Once per frame, before clock-frame!: the held and tapped keys to the
 sim's controls (none while paused, lost, berthed or above ×4; not written
-while a flight runs, whose :keys own them) and the throttle ramp (not while
-paused, lost, berthed or flying), the pointer to the view (always); then the
-latches clear. ELAPSED: real seconds."
+while a flight runs, whose :keys own them, nor while the autopilot is
+engaged, whose executor owns them) and the throttle ramp (not while paused,
+lost, berthed, flying or engaged), a held Left or Right to the autopilot's
+menu (autopilot-held!), the pointer to the view (always); then the latches
+clear. ELAPSED: real seconds."
   (let* ((input (game-input game))
-         (controls (sim-controls (game-sim game)))
+         (sim (game-sim game))
+         (controls (sim-controls sim))
          (keys (input-frame-keys input))
-         (ignored (or (flight-keys-ignored-p game) (sim-berthed (game-sim game)))))
-    (unless (flight-running-p game)
+         (engaged (and (sim-plan sim) t))
+         (ignored (or (flight-keys-ignored-p game) (sim-berthed sim))))
+    (unless (or (flight-running-p game) engaged)
       (controls-apply-held-keys! controls
                                  (if (or ignored (clock-kinematic-p (game-clock game))) '() keys)))
-    (unless ignored
+    (unless (or ignored engaged)
       (throttle-ramp! controls keys elapsed))
+    (unless (or (sim-lost-p sim) (flight-running-p game))
+      (let ((held (input-held input)))
+        (autopilot-held! (clock-autopilot (game-clock game)) sim
+                         (- (if (member :right held) 1 0) (if (member :left held) 1 0))
+                         elapsed)))
     (pointer-frame! game input)
     (setf (input-pressed input) '()
           (input-released input) '()

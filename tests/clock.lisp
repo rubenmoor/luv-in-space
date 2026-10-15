@@ -1141,7 +1141,7 @@ the cons RECORD, the live messages it has seen onto its cdr."
          (record (list nil))
          (clock (eager-clock sim record)))
     (lis::autopilot-engage! clock sim plan)
-    (is eq plan (lis::clock-autopilot clock))
+    (is eq plan (lis::autopilot-model-flown (lis::clock-autopilot clock)))
     (loop repeat 20000
           while (lis::sim-plan sim)
           do (lis::clock-frame! clock sim 1/60))
@@ -1169,7 +1169,7 @@ the cons RECORD, the live messages it has seen onto its cdr."
         (false (lis::sim-plan checkpoint))
         (is eq :prograde (lis::controls-hold (lis::sim-controls checkpoint)))
         (true (lis::checkpoint-safe-p checkpoint))))
-    (is eq plan (lis::clock-autopilot clock))))
+    (is eq plan (lis::autopilot-model-flown (lis::clock-autopilot clock)))))
 
 (define-test autopilot-rcs-burn-warp
   ;; A 0.3 m/s RCS burn: warp ≤ ×4 while it runs, with its message; warp up
@@ -1209,4 +1209,140 @@ the cons RECORD, the live messages it has seen onto its cdr."
     (is eq :rate-damping (lis::controls-attitude-mode (lis::sim-controls sim)))
     (true (messages-p clock "AUTOPILOT OFF: PILOT INPUT"))
     (false (lis::autopilot-disengage! clock sim))
-    (true (lis::clock-autopilot clock))))
+    (true (lis::autopilot-model-flown (lis::clock-autopilot clock)))))
+
+;;; The preset menu's planning through the clock (decision 117, decision
+;;; 118): the barrier, the budget split, engaging, staleness, Backspace.
+
+(defun menu-key (clock sim &rest keys)
+  (dolist (key keys)
+    (lis::autopilot-key! (lis::clock-autopilot clock) clock sim key)))
+
+(defun menu-state (clock) (lis::autopilot-model-state (lis::clock-autopilot clock)))
+
+(defun menu-orbit! (clock km)
+  "The ORBIT row selected with KM, its INC kept."
+  (let ((model (lis::clock-autopilot clock)))
+    (setf (lis::autopilot-model-selection model) :change-orbit
+          (cdr (assoc :change-orbit (lis::autopilot-model-values model))) km)))
+
+(defun frames-while-planning (clock sim &optional (limit 200))
+  "clock-frame!s of 1/60 s while CLOCK's model plans, at most LIMIT; their
+count and the largest sim t seen while planning."
+  (let ((frames 0) (latest (lis::sim-t sim)))
+    (loop while (and (eq :planning (menu-state clock)) (< frames limit))
+          do (lis::clock-frame! clock sim 1/60)
+             (incf frames)
+             (when (eq :planning (menu-state clock))
+               (setf latest (max latest (lis::sim-t sim)))))
+    (values frames latest)))
+
+(define-test autopilot-menu-planning-barrier
+  ;; ×1,000,000: Return plans ORBIT 800 KM over frames, the prediction and
+  ;; the job within the frame's budget, the sim held at the snapshot's
+  ;; t + 60 s; the plan equalp to autopilot-plan-now's from the snapshot.
+  (let* ((lis::*frame-step-time-limit* nil)
+         (sim (model-sim :point))
+         (clock (clock-at sim 1000000))
+         (model (lis::clock-autopilot clock)))
+    (menu-key clock sim :open)
+    (menu-orbit! clock 800)
+    (let ((snapshot (lis::copy-sim sim))
+          (job-work 0))
+      (menu-key clock sim :return)
+      (is eq :planning (menu-state clock))
+      (is string= "PLANNING…" (lis::autopilot-model-text model))
+      (lis::clock-frame! clock sim 1/60)
+      (is = (+ (lis::sim-t snapshot) 60) (lis::sim-t sim))
+      (true (<= (lis::prediction-last-work (lis::clock-prediction clock)) 2048))
+      (setf job-work (lis::autopilot-job-work (lis::autopilot-model-job model)))
+      (true (<= (+ job-work (lis::prediction-last-work (lis::clock-prediction clock))) 4096))
+      (multiple-value-bind (frames latest) (frames-while-planning clock sim)
+        (true (> frames 2))
+        (is = (+ (lis::sim-t snapshot) 60) latest))
+      (is eq :shown (menu-state clock))
+      (true (equalp (lis::autopilot-plan-now snapshot :change-orbit (list 800000d0 nil))
+                    (lis::autopilot-model-plan model)))
+      ;; Warped past its first hold-at − 10 s: stale, re-planned, engaged.
+      (loop repeat 10 do (lis::clock-frame! clock sim 1/60))
+      (let ((old (lis::autopilot-model-plan model)))
+        (true (> (lis::sim-t sim)
+                 (- (lis::planned-burn-hold-at (svref (lis::burn-plan-burns old) 0)) 10)))
+        (menu-key clock sim :return)
+        (true (find "PLAN STALE: REPLANNING" (log-texts clock) :test #'string=))
+        (is eq :planning (menu-state clock))
+        (frames-while-planning clock sim)
+        (is eq :engaged (menu-state clock))
+        (true (lis::sim-plan sim))
+        (false (eq old (lis::sim-plan sim)))
+        (is eq (lis::sim-plan sim) (lis::autopilot-model-flown model))))))
+
+(define-test autopilot-menu-engage-and-backspace
+  ;; Paused: planning acts, a second Return engages; Backspace in each state.
+  (let* ((sim (model-sim :point))
+         (clock (lis::new-clock sim))
+         (t0 (lis::sim-t sim)))
+    (lis::clock-toggle-pause clock)
+    (menu-key clock sim :backspace)
+    (is eq :closed (menu-state clock))
+    (menu-key clock sim :open)
+    (is eq :menu (menu-state clock))
+    (menu-key clock sim :backspace)
+    (is eq :closed (menu-state clock))
+    (menu-key clock sim :open)
+    (menu-orbit! clock 800)
+    (menu-key clock sim :return)
+    (menu-key clock sim :backspace)
+    (is eq :menu (menu-state clock))
+    (menu-key clock sim :return)
+    (frames-while-planning clock sim)
+    (is = t0 (lis::sim-t sim))
+    (is eq :shown (menu-state clock))
+    (menu-key clock sim :backspace)
+    (is eq :menu (menu-state clock))
+    (false (lis::autopilot-model-plan (lis::clock-autopilot clock)))
+    (menu-key clock sim :return)
+    (frames-while-planning clock sim)
+    (let ((plan (lis::autopilot-model-plan (lis::clock-autopilot clock))))
+      (menu-key clock sim :return)
+      (is eq :engaged (menu-state clock))
+      (is eq plan (lis::sim-plan sim)))
+    (menu-key clock sim :backspace)
+    (is eq :off (menu-state clock))
+    (false (lis::sim-plan sim))
+    (is string= "AUTOPILOT OFF" (lis::autopilot-model-text (lis::clock-autopilot clock)))
+    ;; Off: Return re-plans the row and engages once shown.
+    (menu-key clock sim :return)
+    (is eq :planning (menu-state clock))
+    (frames-while-planning clock sim)
+    (is eq :engaged (menu-state clock))
+    (true (lis::sim-plan sim))
+    (menu-key clock sim :backspace)
+    (menu-key clock sim :backspace)
+    (is eq :closed (menu-state clock))
+    ;; Refused: 300 kg for 2,000 km; Backspace back to the menu.
+    (setf (lis::ship-state-m-p (lis::sim-ship sim)) 300d0)
+    (menu-key clock sim :open)
+    (menu-orbit! clock 2000)
+    (menu-key clock sim :return)
+    (frames-while-planning clock sim)
+    (is eq :refused (menu-state clock))
+    (true (eql 0 (search "NEEDS " (lis::autopilot-model-text (lis::clock-autopilot clock)))))
+    (true (find-if (lambda (m) (eql 0 (search "PLAN REFUSED: NEEDS " m))) (log-texts clock)))
+    (menu-key clock sim :backspace)
+    (is eq :menu (menu-state clock))))
+
+(define-test autopilot-menu-abort-and-restart
+  ;; An abort leaves the model :off with its text; a restart closes it.
+  (let* ((sim (plan-sim))
+         (clock (lis::new-clock sim)))
+    (lis::autopilot-engage! clock sim (lis::sim-plan sim))
+    (is eq :engaged (menu-state clock))
+    (lis::sim-notice! sim :autopilot "AUTOPILOT ABORT: CONTACT")
+    (lis::sim-plan-stop! sim)
+    (lis::clock-take-notices! clock sim)
+    (is eq :off (menu-state clock))
+    (is string= "AUTOPILOT ABORT: CONTACT" (lis::autopilot-model-text (lis::clock-autopilot clock)))
+    (lis::clock-restart! clock sim (lis::new-game-sim))
+    (is eq :closed (menu-state clock))
+    (false (lis::autopilot-model-flown (lis::clock-autopilot clock)))))

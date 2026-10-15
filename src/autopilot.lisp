@@ -940,3 +940,421 @@ scripts): (values plan nil) or (values nil reason)."
   (autopilot-job-start! job sim preset goal)
   (autopilot-job-work! job most-positive-fixnum)
   (values (autopilot-job-plan job) (autopilot-job-reason job)))
+
+;;; The preset menu (decision 118: Autopilot preset menu and input in
+;;; milestone 3): the clock's model (clock-autopilot, not in the sim or
+;;; checkpoints), driven by O, the arrows, Return and Backspace; drawn by the
+;;; cockpit and the overlay.
+
+(defparameter *plan-barrier* 60d0
+  "s past a running job's snapshot the clock steps the sim at most; decision 117.")
+(defparameter *plan-stale-lead* 10d0 "s before the first hold-at a shown plan goes stale; decision 117.")
+(defparameter *plan-stale-distance* 1d0 "m off the job's final shot: stale; decision 117.")
+(defparameter *menu-altitude-step* 10 "km a step; decision 118.")
+(defparameter *menu-altitude-min* 150 "km; decision 118.")
+(defparameter *menu-altitude-max* 300000 "km; decision 118.")
+(defparameter *menu-inclination-step* 1 "Half degrees a step (0.5°); decision 118.")
+(defparameter *menu-inclination-max* 360 "Half degrees (180°); decision 118.")
+(defparameter *menu-repeat-rate* 8 "Steps per real second while Left or Right is held; decision 118.")
+(defparameter *menu-fast-after* 1 "s held: then each step ×*menu-fast-factor*; decision 118.")
+(defparameter *menu-fast-factor* 10 "decision 118.")
+(declaim (type double-float *plan-barrier* *plan-stale-lead* *plan-stale-distance*)
+         (type fixnum *menu-altitude-step* *menu-altitude-min* *menu-altitude-max*
+               *menu-inclination-step* *menu-inclination-max* *menu-repeat-rate*
+               *menu-fast-after* *menu-fast-factor*))
+
+(defstruct (autopilot-row (:constructor make-autopilot-row (key kind init text goal &key offered))
+                          (:copier nil))
+  (key nil :type keyword :read-only t)
+  ;; What Left/Right do: :altitude (km), :inclination (half degrees),
+  ;; :inclination-keep ((half degrees . the start's): KEEP at the start),
+  ;; :apsis (:apoapsis ↔ :periapsis), :none.
+  (kind :none :type (member :altitude :inclination :inclination-keep :apsis :none) :read-only t)
+  (init nil :type function :read-only t)        ; (sim orbit) → the value on opening
+  (text nil :type function :read-only t)        ; (value) → the row's text
+  (goal nil :type function :read-only t)        ; (model) → (values preset goal)
+  (offered nil :type (or null function) :read-only t)) ; (sim) → listed; nil: always
+
+(defun round-to (x step)
+  "X rounded to a multiple of STEP, an integer."
+  (* step (round x step)))
+
+(defun menu-altitude (radius)
+  "km: RADIUS's altitude rounded to *menu-altitude-step*, within the menu's range."
+  (max *menu-altitude-min*
+       (min *menu-altitude-max*
+            (round-to (/ (- radius +radius-earth+) 1000) *menu-altitude-step*))))
+
+(defun menu-inclination (orbit)
+  "Half degrees: ORBIT's inclination rounded to *menu-inclination-step*."
+  (round-to (* 2 (rad->deg (orbit-i orbit))) *menu-inclination-step*))
+
+(defun format-half-degrees (half)
+  (format nil "~,1F°" (/ half 2)))
+
+(defun model-value (model key)
+  (cdr (assoc key (autopilot-model-values model))))
+
+(defun half-degrees->rad (half) (deg->rad (/ half 2d0)))
+
+(defun orbit-goal (model)
+  (let ((inc (model-value model :orbit-inc)))
+    (values :change-orbit
+            (list (* 1000d0 (model-value model :change-orbit))
+                  (and (/= (car inc) (cdr inc)) (half-degrees->rad (car inc)))))))
+
+(defparameter *autopilot-rows*
+  (list
+   (make-autopilot-row :circularise :apsis
+                       (lambda (sim orbit)
+                         (let ((ap (orbit-next-apsis orbit (sim-t sim) :apoapsis))
+                               (pe (orbit-next-apsis orbit (sim-t sim) :periapsis)))
+                           (if (and ap (or (null pe) (< ap pe))) :apoapsis :periapsis)))
+                       (lambda (value) (format nil "CIRCULARISE ~:[PE~;AP~]" (eq value :apoapsis)))
+                       (lambda (model) (values :circularise (model-value model :circularise))))
+   (make-autopilot-row :set-apoapsis :altitude
+                       (lambda (sim orbit)
+                         (declare (ignore sim))
+                         (menu-altitude (or (orbit-apoapsis-radius orbit) (orbit-q orbit))))
+                       (lambda (km) (format nil "SET AP ~:D KM" km))
+                       (lambda (model)
+                         (values :set-apoapsis (* 1000d0 (model-value model :set-apoapsis)))))
+   (make-autopilot-row :set-periapsis :altitude
+                       (lambda (sim orbit)
+                         (declare (ignore sim))
+                         (menu-altitude (orbit-q orbit)))
+                       (lambda (km) (format nil "SET PE ~:D KM" km))
+                       (lambda (model)
+                         (values :set-periapsis (* 1000d0 (model-value model :set-periapsis)))))
+   (make-autopilot-row :change-orbit :altitude
+                       (lambda (sim orbit)
+                         (declare (ignore sim))
+                         (menu-altitude (orbit-a orbit)))
+                       (lambda (km) (format nil "ORBIT ~:D KM" km))
+                       #'orbit-goal)
+   (make-autopilot-row :orbit-inc :inclination-keep
+                       (lambda (sim orbit)
+                         (declare (ignore sim))
+                         (let ((half (menu-inclination orbit))) (cons half half)))
+                       (lambda (inc)
+                         (if (= (car inc) (cdr inc))
+                             "ORBIT INC KEEP"
+                             (format nil "ORBIT INC ~A" (format-half-degrees (car inc)))))
+                       #'orbit-goal)
+   (make-autopilot-row :change-plane :inclination
+                       (lambda (sim orbit)
+                         (declare (ignore sim))
+                         (menu-inclination orbit))
+                       (lambda (half) (format nil "PLANE ~A" (format-half-degrees half)))
+                       (lambda (model)
+                         (values :change-plane (half-degrees->rad (model-value model :change-plane)))))
+   (make-autopilot-row :plane-target :none
+                       (lambda (sim orbit) (declare (ignore sim orbit)) nil)
+                       (lambda (value) (declare (ignore value)) "PLANE TARGET")
+                       (lambda (model) (declare (ignore model)) (values :change-plane :target))
+                       :offered (lambda (sim) (and (sim-target sim) t))))
+  "The menu's rows in order (decision 118); task 161 appends its rendezvous rows.")
+
+(defstruct (autopilot-model (:constructor make-autopilot-model ()) (:copier nil))
+  (open nil :type boolean)                      ; the menu shown: state not :closed
+  (rows (copy-list *autopilot-rows*) :type list)
+  (selection :circularise :type keyword)        ; the selected row's key
+  (values '() :type list)                       ; (key . value) per row
+  (job nil :type (or null autopilot-job))       ; made at the first plan, reused
+  (row nil :type (or null keyword))             ; the row the job plans, or the plan's
+  (plan nil :type (or null burn-plan))          ; the plan shown
+  (flown nil :type (or null burn-plan))         ; the plan last engaged: the map's, grey after
+  (engage nil :type boolean)                    ; engage the job's plan once shown
+  (engaged nil :type boolean)                   ; one of its plans in the sim (mirrored)
+  (state :closed :type (member :closed :menu :planning :shown :refused :engaged :off))
+  (text nil :type (or null string))             ; the refusal or the abort, or a state's text
+  (held 0 :type fixnum)                         ; −1 Left, +1 Right held since its press, 0
+  (held-time 0d0 :type double-float)            ; real s held
+  (held-steps 0 :type fixnum))                  ; repeats made while held
+
+(defun sim-earth-orbit (sim)
+  "SIM's osculating orbit about Earth; a hyperbola as it is."
+  (let ((ship (sim-ship sim)))
+    (state->orbit (ship-state-r ship) (ship-state-v ship) +mu-earth+ (sim-t sim))))
+
+(defun autopilot-offered-rows (model sim)
+  "MODEL's rows SIM offers, in order."
+  (remove-if-not (lambda (row)
+                   (let ((offered (autopilot-row-offered row)))
+                     (or (null offered) (funcall offered sim))))
+                 (autopilot-model-rows model)))
+
+(defun autopilot-selected-row (model sim)
+  "The selected row, or the first offered when it is not offered."
+  (let ((rows (autopilot-offered-rows model sim)))
+    (or (find (autopilot-model-selection model) rows :key #'autopilot-row-key)
+        (first rows))))
+
+(defun autopilot-init-values! (model sim)
+  "Each row's value from SIM's current orbit (decision 118)."
+  (let ((orbit (sim-earth-orbit sim)))
+    (unless (elliptic-p orbit)
+      ;; Out of orbit: a circular orbit at the ship's radius for the values.
+      (let ((r (vec3-norm (ship-state-r (sim-ship sim)))))
+        (setf orbit (make-elliptic-orbit +mu-earth+ r 0d0 (orbit-i orbit) 0d0 0d0 0d0 (sim-t sim)))))
+    (setf (autopilot-model-values model)
+          (mapcar (lambda (row)
+                    (cons (autopilot-row-key row) (funcall (autopilot-row-init row) sim orbit)))
+                  (autopilot-model-rows model))))
+  model)
+
+(defun autopilot-step-value! (model sim direction factor)
+  "The selected row's value DIRECTION (±1) steps of FACTOR, within its range."
+  (let* ((row (autopilot-selected-row model sim))
+         (cell (and row (assoc (autopilot-row-key row) (autopilot-model-values model)))))
+    (when cell
+      (flet ((clamp (x low high) (max low (min high x))))
+        (ecase (autopilot-row-kind row)
+          (:altitude
+           (setf (cdr cell) (clamp (+ (cdr cell) (* direction factor *menu-altitude-step*))
+                                   *menu-altitude-min* *menu-altitude-max*)))
+          (:inclination
+           (setf (cdr cell) (clamp (+ (cdr cell) (* direction factor *menu-inclination-step*))
+                                   0 *menu-inclination-max*)))
+          (:inclination-keep
+           (setf (cdr cell) (cons (clamp (+ (cadr cell) (* direction factor *menu-inclination-step*))
+                                         0 *menu-inclination-max*)
+                                  (cddr cell))))
+          (:apsis
+           (setf (cdr cell) (if (eq (cdr cell) :apoapsis) :periapsis :apoapsis)))
+          (:none)))))
+  model)
+
+(defun autopilot-set-state! (model state &optional text)
+  (setf (autopilot-model-state model) state
+        (autopilot-model-open model) (not (eq state :closed))
+        (autopilot-model-text model) text)
+  model)
+
+(defun autopilot-drop! (model sim)
+  "A shown, refused or planning plan dropped back to the menu (the job
+abandoned); :off back to the menu."
+  (when (member (autopilot-model-state model) '(:planning :shown :refused :off))
+    (setf (autopilot-model-plan model) nil
+          (autopilot-model-engage model) nil)
+    (autopilot-set-state! model (if (sim-plan sim) :engaged :menu)))
+  model)
+
+(defun autopilot-plan! (model clock sim &optional engage)
+  "A job for the selected row from SIM now: :planning \"PLANNING…\"; ENGAGE:
+engaged once shown. A refusal at the start shows at once."
+  (let ((row (autopilot-selected-row model sim)))
+    (when row
+      (multiple-value-bind (preset goal) (funcall (autopilot-row-goal row) model)
+        (let ((job (or (autopilot-model-job model)
+                       (setf (autopilot-model-job model) (new-autopilot-job sim)))))
+          (autopilot-job-start! job sim preset goal)
+          (setf (autopilot-model-row model) (autopilot-row-key row)
+                (autopilot-model-plan model) nil
+                (autopilot-model-engage model) engage)
+          (autopilot-set-state! model :planning "PLANNING…")
+          (autopilot-job-poll! model clock sim)))))
+  model)
+
+(defun autopilot-plan-stale-p (model sim)
+  "MODEL's shown plan is stale for SIM (decision 117): its first hold-at −
+*plan-stale-lead* passed, or SIM's r more than *plan-stale-distance* off
+the job's final shot at SIM's t."
+  (let* ((plan (autopilot-model-plan model))
+         (shot (autopilot-job-shot (autopilot-model-job model)))
+         (time (sim-t sim))
+         (p (make-vec3)))
+    (or (> time (- (planned-burn-hold-at (svref (burn-plan-burns plan) 0)) *plan-stale-lead*))
+        (not (prediction-position! p shot time))
+        (> (vec3-norm (vec3-sub! p p (ship-state-r (sim-ship sim)))) *plan-stale-distance*))))
+
+(defun autopilot-engage-shown! (model clock sim)
+  "The shown plan engaged, or when stale \"PLAN STALE: REPLANNING\" and a new
+job engaged once shown."
+  (if (autopilot-plan-stale-p model sim)
+      (progn (clock-message! clock :autopilot "PLAN STALE: REPLANNING")
+             (autopilot-plan! model clock sim t))
+      (autopilot-engage! clock sim (autopilot-model-plan model))))
+
+(defun autopilot-job-poll! (model clock sim)
+  "While :planning, the job's end: :shown (engaged with the engage flag), or
+:refused with the message \"PLAN REFUSED: <REASON>\"."
+  (when (eq (autopilot-model-state model) :planning)
+    (let ((job (autopilot-model-job model)))
+      (case (autopilot-job-stage job)
+        (:done
+         (setf (autopilot-model-plan model) (autopilot-job-plan job))
+         (autopilot-set-state! model :shown)
+         (when (autopilot-model-engage model)
+           (setf (autopilot-model-engage model) nil)
+           (autopilot-engage-shown! model clock sim)))
+        (:refused
+         (let ((reason (autopilot-job-reason job)))
+           (setf (autopilot-model-engage model) nil)
+           (autopilot-set-state! model :refused reason)
+           (clock-message! clock :autopilot-refused (format nil "PLAN REFUSED: ~A" reason)))))))
+  model)
+
+(defun autopilot-key! (model clock sim key)
+  "A menu command (decision 118), between frames: :open (O: open or close),
+:up, :down (select, wrapping), :left, :right (one step of the value; held:
+autopilot-held!), :return (plan; engage a shown plan; after a disengage or
+abort re-plan and engage once shown), :backspace (disengage a running plan,
+else drop a shown, refused or planning one, else close). The arrows and
+Return act with the menu open."
+  (autopilot-sync! model sim)
+  (let ((state (autopilot-model-state model))
+        (open (autopilot-model-open model)))
+    (ecase key
+      (:open
+       (if open
+           (progn (setf (autopilot-model-plan model) nil
+                        (autopilot-model-engage model) nil)
+                  (autopilot-set-state! model :closed))
+           (progn (autopilot-init-values! model sim)
+                  (autopilot-set-state! model (if (sim-plan sim) :engaged :menu)))))
+      ((:up :down)
+       (when open
+         (autopilot-drop! model sim)
+         (let* ((rows (autopilot-offered-rows model sim))
+                (i (or (position (autopilot-row-key (autopilot-selected-row model sim)) rows
+                                 :key #'autopilot-row-key)
+                       0)))
+           (setf (autopilot-model-selection model)
+                 (autopilot-row-key (nth (mod (+ i (if (eq key :down) 1 -1)) (length rows)) rows))))))
+      ((:left :right)
+       (when open
+         (autopilot-drop! model sim)
+         (let ((direction (if (eq key :right) 1 -1)))
+           (autopilot-step-value! model sim direction 1)
+           (setf (autopilot-model-held model) direction
+                 (autopilot-model-held-time model) 0d0
+                 (autopilot-model-held-steps model) 0))))
+      (:return
+       (when open
+         (case state
+           ((:menu :refused :engaged) (autopilot-plan! model clock sim))
+           (:off (autopilot-plan! model clock sim t))
+           (:shown (autopilot-engage-shown! model clock sim)))))
+      (:backspace
+       (cond ((sim-plan sim) (autopilot-disengage! clock sim))
+             ((member state '(:planning :shown :refused))
+              (autopilot-drop! model sim))
+             (open (autopilot-set-state! model :closed))))))
+  model)
+
+(defun autopilot-held! (model sim direction elapsed)
+  "Once per frame while the arrow of DIRECTION (±1) pressed last is held,
+ELAPSED real s: *menu-repeat-rate* steps a second after the press's own,
+each ×*menu-fast-factor* after *menu-fast-after* s (decision 118); another
+DIRECTION or 0 ends the repeat."
+  (if (or (/= direction (autopilot-model-held model)) (= direction 0)
+          (not (autopilot-model-open model)))
+      (setf (autopilot-model-held model) 0)
+      (let* ((time (incf (autopilot-model-held-time model) (float elapsed 1d0)))
+             (due (floor (+ (* time *menu-repeat-rate*) 1d-9))))
+        (loop while (< (autopilot-model-held-steps model) due)
+              do (let ((k (incf (autopilot-model-held-steps model))))
+                   (autopilot-step-value! model sim direction
+                                          (if (> k (* *menu-fast-after* *menu-repeat-rate*))
+                                              *menu-fast-factor*
+                                              1))))))
+  model)
+
+(defun autopilot-engaged! (model plan)
+  "PLAN engaged (autopilot-engage!): kept for the map, :engaged."
+  (setf (autopilot-model-flown model) plan
+        (autopilot-model-plan model) nil
+        (autopilot-model-engage model) nil
+        (autopilot-model-engaged model) t)
+  (autopilot-set-state! model :engaged))
+
+(defun autopilot-stopped! (model text &optional (state :off))
+  "The engaged plan ended with TEXT: STATE (:off after a disengage or abort,
+:closed after completion) unless a new plan is planned or shown."
+  (setf (autopilot-model-engaged model) nil)
+  (unless (member (autopilot-model-state model) '(:planning :shown :refused))
+    (autopilot-set-state! model state text))
+  model)
+
+(defun autopilot-notice! (model text)
+  "A sim notice of key :autopilot (clock-take-notices!): an abort leaves
+:off with TEXT, completion or a missed goal :closed."
+  (when (autopilot-model-engaged model)
+    (autopilot-stopped! model text (if (search "ABORT" text) :off :closed)))
+  model)
+
+(defun autopilot-sync! (model sim)
+  "The engaged flag mirrored from SIM: a plan gone without a notice (a
+restart, a script) ends as completion does."
+  (when (and (autopilot-model-engaged model) (null (sim-plan sim)))
+    (autopilot-stopped! model nil :closed))
+  model)
+
+(defun autopilot-planning-p (model)
+  (eq (autopilot-model-state model) :planning))
+
+(defun autopilot-barrier (model)
+  "The t the clock steps the sim to at most while MODEL's job runs (its
+snapshot's + *plan-barrier*), or nil."
+  (when (autopilot-planning-p model)
+    (+ (sim-t (autopilot-job-snapshot (autopilot-model-job model))) *plan-barrier*)))
+
+(defun autopilot-frame! (model clock sim budget)
+  "Once per frame (clock-frame!): the job's BUDGET work units, its end polled;
+the engaged flag mirrored."
+  (when (autopilot-planning-p model)
+    (autopilot-job-work! (autopilot-model-job model) budget)
+    (autopilot-job-poll! model clock sim))
+  (autopilot-sync! model sim))
+
+(defun autopilot-menu-lines (model sim)
+  "The offered rows' texts with their values, the selection marked \"> \", the
+others \"  \"; second value the selection's index (decision 118)."
+  (let* ((rows (autopilot-offered-rows model sim))
+         (selected (autopilot-selected-row model sim)))
+    (values (mapcar (lambda (row)
+                      (concatenate 'string (if (eq row selected) "> " "  ")
+                                   (funcall (autopilot-row-text row)
+                                            (model-value model (autopilot-row-key row)))))
+                    rows)
+            (position selected rows))))
+
+(defun autopilot-plan-summary (plan sim)
+  "PLAN against SIM now, for the instruments (docs/design.md \"Instruments\",
+Burn): a plist :burns (count), :index (the current burn: SIM's cursor when
+PLAN is engaged, else 0), :total-dv (m/s, every burn), :propellant (kg
+the burns from the current one need, rocket equation from the stack's mass
+now), :left (kg after them), :next-in (s to the current burn's start, 0
+once started), :next-dv, :next-duration (s, start to cut), :arrival (the last
+cut's t). Pure; conses only its result."
+  (let* ((burns (burn-plan-burns plan))
+         (engaged (eq (sim-plan sim) plan))
+         (index (if engaged (sim-plan-index sim) 0))
+         (burn (svref burns index))
+         (m-p (ship-state-m-p (sim-ship sim)))
+         (mass (+ *ship-dry-mass* m-p (with-stack-load (load sim) (stack-load-mass load))))
+         (end mass))
+    (loop for i from index below (length burns)
+          for b = (svref burns i)
+          do (setf end (* end (exp (- (/ (planned-burn-dv b) (* (planned-burn-isp b) +g0+)))))))
+    (list :burns (length burns)
+          :index index
+          :total-dv (loop for b across burns sum (planned-burn-dv b))
+          :propellant (- mass end)
+          :left (- m-p (- mass end))
+          :next-in (max 0d0 (- (planned-burn-start burn) (sim-t sim)))
+          :next-dv (planned-burn-dv burn)
+          :next-duration (- (planned-burn-cut-t burn) (planned-burn-start burn))
+          :arrival (planned-burn-cut-t (svref burns (1- (length burns)))))))
+
+(defun autopilot-reset! (model)
+  "MODEL as new (clock-restart!): closed, no plan or job running, the values
+and the job's buffers kept."
+  (setf (autopilot-model-plan model) nil
+        (autopilot-model-flown model) nil
+        (autopilot-model-row model) nil
+        (autopilot-model-engage model) nil
+        (autopilot-model-engaged model) nil
+        (autopilot-model-held model) 0)
+  (autopilot-set-state! model :closed))

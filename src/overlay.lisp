@@ -53,9 +53,10 @@
     (#\, "....." "....." "....." "....." ".##.." "..#.." ".#...")
     (#\° ".##.." "#..#." "#..#." ".##.." "....." "....." ".....")
     (#\× "....." "#...#" ".#.#." "..#.." ".#.#." "#...#" ".....")
-    (#\… "....." "....." "....." "....." "....." "....." "#.#.#"))
+    (#\… "....." "....." "....." "....." "....." "....." "#.#.#")
+    (#\> ".#..." "..#.." "...#." "....#" "...#." "..#.." ".#..."))
   "5x7 dot-matrix glyphs: A-Z, 0-9, space, - . : ( ) and decision 85's
-% / ! + , ° × …; a character missing here draws blank (decision 85: the
+% / ! + , ° × …, and > (the autopilot menu's selection, decision 118); a character missing here draws blank (decision 85: the
 tests require every one used, glyph-missing).")
 
 (defparameter *label-dot-px* 2 "Dot pitch of labels, cap 14 px; decision 85.")

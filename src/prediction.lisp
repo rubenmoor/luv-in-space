@@ -1,35 +1,45 @@
 (in-package #:luv-in-space)
 
-;;; Trajectory prediction, milestone 2's form: sim-step! on a copy of the
-;;; sim at a coarse level, every step's t, r, v kept, and the events found
+;;; Trajectory prediction: sim-step! on a copy of the sim at a coarse level,
+;;; every step's t, r, v kept (and the target's r, v), and the events found
 ;;; on them (docs/architecture.md "Trajectory prediction"; decision 75:
 ;;; Prediction in milestone 2: the step function on a copy, decision 20:
-;;; Trajectory prediction on the frame thread).
+;;; Trajectory prediction on the frame thread, decision 116: Prediction in
+;;; milestone 3: horizon, target nodes, closest approach, relative nodes,
+;;; budget).
 
 (defparameter *prediction-level* 1000
   "The warp level the copy steps at: coarse, kinematic, decision 75.")
-(defparameter *prediction-steps-per-frame* 4096
-  "sim-step!s per prediction-update!, about 1 ms; decision 72.")
+(defparameter *prediction-rcs-level* 4
+  "The copy's level while a planned RCS burn runs: fine, keys on; decision 115.")
+(defparameter *prediction-work-per-frame* 4096
+  "Work per prediction-update!: per copy step 1, plus 1 per promoted object
+stepped, plus 1 for a rails target (decision 116). As many as the clock's
+steps per frame, so warp never outruns it: ~4.6 ms at the start orbit
+(1.13 us per unit, :full), ~2.7 ms at Skua Yard (0.66 us; tests/prediction.lisp).")
 (defparameter *prediction-capacity* 20000
   "Stored steps, the horizon's last bound; decision 75.")
 (defparameter *prediction-deviation* 1d0
-  "m: the flown r farther than this from the stored path restarts; decision 75.")
-(defparameter *prediction-event-capacity* 64 "Events kept ahead of the flown t.")
+  "m: the flown r (or target) farther than this from the stored path restarts; decision 75, 116.")
+(defparameter *prediction-event-capacity* 128 "Events kept ahead of the flown t; decision 116.")
 (defparameter *apsis-time-tolerance* 1d-6 "s, the apsides' root; decision 75.")
-(declaim (type fixnum *prediction-level* *prediction-steps-per-frame* *prediction-capacity*
-               *prediction-event-capacity*)
+(declaim (type fixnum *prediction-level* *prediction-rcs-level* *prediction-work-per-frame*
+               *prediction-capacity* *prediction-event-capacity*)
          (type double-float *prediction-deviation* *apsis-time-tolerance*))
 
 (defconstant +node-size+ 7)                     ; t, r, v
+(defconstant +target-node-size+ 6)              ; the target's r, v
 
-(defstruct (prediction (:constructor %make-prediction (nodes event-times event-kinds
-                                                        event-objects))
+(defstruct (prediction (:constructor %make-prediction (nodes target-nodes event-times event-kinds
+                                                        event-objects event-values))
                        (:copier nil))
   (sim nil :type (or null sim))                 ; the copy that steps ahead
   (nodes nil :type (simple-array double-float (*)))
+  (target-nodes nil :type (simple-array double-float (*))) ; per node the target's r, v
   (head 0 :type fixnum)                         ; the node at or before the flown t
   (count 0 :type fixnum)                        ; nodes stored
-  (periods 1 :type (integer 1 2))               ; the horizon in osculating periods
+  (target-count 0 :type fixnum)                 ; nodes from 0 with the target's state
+  (periods 1 :type (integer 1 2))               ; the coasting horizon in osculating periods
   (end 0d0 :type double-float)                  ; the horizon's t
   (state :empty :type (member :empty :running :complete))
   (now 0d0 :type double-float)                  ; the flown t at the last update
@@ -37,25 +47,36 @@
   (event-kinds nil :type simple-vector)
   (event-count 0 :type fixnum)
   (event-objects nil :type simple-vector)       ; :contact: the object's index
+  (event-values nil :type (simple-array double-float (*)))
   (contact-starts (make-array 0 :element-type 'double-float) ; a step's start: ship, candidates
    :type (simple-array double-float (*)))
   (impact nil)                                  ; the copy's loss record
   (signature (new-controls) :type controls)     ; the controls it was made with
   (signature-cutoff nil :type (or null double-float))
   (signature-model :full :type keyword)
+  (signature-target nil :type (or null keyword))
+  (signature-plan nil :type (or null burn-plan))
+  (signature-plan-index 0 :type fixnum)
+  (signature-plan-phase :done :type keyword)
+  (signature-plan-rcs-target 0d0 :type double-float)
   (source-loss nil)                             ; the flown sim's loss at the restart
   (restarts 0 :type fixnum)
-  (last-steps 0 :type fixnum))                  ; sim-step!s in the last call
+  (last-steps 0 :type fixnum)                   ; sim-step!s in the last call
+  (last-work 0 :type fixnum))                   ; their work, *prediction-work-per-frame*'s unit
 
 (defun new-prediction (&key (periods 1))
-  "An empty prediction; PERIODS 2 for the map."
+  "An empty prediction; PERIODS its coasting horizon (2 for the clock's: the map)."
   (let ((p (%make-prediction
             (make-array (* +node-size+ *prediction-capacity*) :element-type 'double-float
                                                                :initial-element 0d0)
+            (make-array (* +target-node-size+ *prediction-capacity*) :element-type 'double-float
+                                                                      :initial-element 0d0)
             (make-array *prediction-event-capacity* :element-type 'double-float
                                                     :initial-element 0d0)
             (make-array *prediction-event-capacity* :initial-element nil)
-            (make-array *prediction-event-capacity* :initial-element nil))))
+            (make-array *prediction-event-capacity* :initial-element nil)
+            (make-array *prediction-event-capacity* :element-type 'double-float
+                                                    :initial-element 0d0))))
     (setf (prediction-periods p) periods)
     p))
 
@@ -79,8 +100,11 @@ ends (decision 75)."
         (head (prediction-head pred)))
     (when (and (>= (prediction-count pred) *prediction-capacity*) (> head 0))
       (replace nodes nodes :start2 (* +node-size+ head))
+      (let ((targets (prediction-target-nodes pred)))
+        (replace targets targets :start2 (* +target-node-size+ head)))
       (decf (prediction-count pred) head)
-      (setf (prediction-head pred) 0))
+      (setf (prediction-target-count pred) (max 0 (- (prediction-target-count pred) head))
+            (prediction-head pred) 0))
     (let ((i (prediction-count pred)))
       (when (< i *prediction-capacity*)
         (let ((k (* +node-size+ i))
@@ -90,6 +114,27 @@ ends (decision 75)."
           (replace nodes (ship-state-v ship) :start1 (+ k 4)))
         (setf (prediction-count pred) (1+ i))
         t))))
+
+(defun push-target! (pred sim)
+  "After push-node!: SIM's target's r, v at its t for the last node, while
+the target nodes are contiguous and SIM has a target with a state. The work:
+1 for a rails evaluation, else 0. Conses nothing."
+  (declare (optimize speed) (type prediction pred) (type sim sim)
+           (inline target-state-into! target-rails-segment))
+  (let ((i (1- (prediction-count pred))))
+    (if (and (sim-target sim) (= (prediction-target-count pred) i))
+        (let ((r (make-vec3)) (v (make-vec3))
+              (time (sim-t sim)))
+          (declare (dynamic-extent r v))
+          (cond ((target-state-into! r v sim time)
+                 (let ((k (* +target-node-size+ i))
+                       (targets (prediction-target-nodes pred)))
+                   (replace targets r :start1 k)
+                   (replace targets v :start1 (+ k 3)))
+                 (setf (prediction-target-count pred) (1+ i))
+                 (if (target-rails-segment sim time) 1 0))
+                (t 0)))
+        0)))
 
 (defun node-interval (pred time)
   "The index i ≥ head with t_i ≤ TIME < t_(i+1), the last node if TIME is
@@ -109,65 +154,111 @@ its t; nil outside the stored nodes."
                (if (<= (node-t nodes mid) time) (setf lo mid) (setf hi mid))))
     lo))
 
-(defun interval-hermite! (c pred i)
-  "C: the Hermite of the stored path over [t_i, t_(i+1)]; its h."
+(defun interval-hermite! (c pred i &optional target)
+  "C: the Hermite of the stored path (TARGET: the target's) over [t_i,
+t_(i+1)]; its h."
   (declare (optimize speed) (type hermite c) (type prediction pred) (type fixnum i))
   (let* ((nodes (prediction-nodes pred))
-         (k0 (* +node-size+ i)) (k1 (+ k0 +node-size+))
-         (h (- (aref nodes k1) (aref nodes k0))))
+         (h (- (node-t nodes (1+ i)) (node-t nodes i)))
+         (data (if target (prediction-target-nodes pred) nodes))
+         (size (if target +target-node-size+ +node-size+))
+         (k0 (+ (* size i) (if target 0 1))) (k1 (+ k0 size)))
+    (declare (type (simple-array double-float (*)) data) (type fixnum size k0 k1))
     (dotimes (j 3)
-      (let* ((a (aref nodes (+ k0 1 j))) (b (aref nodes (+ k1 1 j)))
-             (m0 (* h (aref nodes (+ k0 4 j)))) (m1 (* h (aref nodes (+ k1 4 j)))))
+      (let* ((a (aref data (+ k0 j))) (b (aref data (+ k1 j)))
+             (m0 (* h (aref data (+ k0 3 j)))) (m1 (* h (aref data (+ k1 3 j)))))
         (setf (aref c j) a
               (aref c (+ 3 j)) m0
               (aref c (+ 6 j)) (- (* 3 (- b a)) (* 2 m0) m1)
               (aref c (+ 9 j)) (+ (* 2 (- a b)) m0 m1))))
     h))
 
-(defun prediction-position! (out pred time)
-  "OUT: the stored path's position at TIME (the Hermite between nodes); nil
-outside it."
+(defun path-position! (out pred time target)
+  "OUT: the stored path's (TARGET: the target's) position at TIME, the
+Hermite between nodes; nil outside it."
   (declare (type vec3 out) (type prediction pred) (type double-float time))
   (let ((i (node-interval pred time))
         (nodes (prediction-nodes pred)))
     (cond ((null i) nil)
+          ((and target (>= i (prediction-target-count pred))) nil)
           ((= time (node-t nodes i))
-           (replace out nodes :start2 (+ (* +node-size+ i) 1) :end2 (+ (* +node-size+ i) 4)))
+           (if target
+               (let ((k (* +target-node-size+ i)))
+                 (replace out (prediction-target-nodes pred) :start2 k :end2 (+ k 3)))
+               (replace out nodes :start2 (+ (* +node-size+ i) 1) :end2 (+ (* +node-size+ i) 4))))
+          ((and target (>= (1+ i) (prediction-target-count pred))) nil)
           (t
            (let ((c (make-array 12 :element-type 'double-float))
                  (dp (make-vec3)))
              (declare (dynamic-extent c dp))
-             (let ((h (interval-hermite! c pred i)))
+             (let ((h (interval-hermite! c pred i target)))
                (hermite-point! out dp c (/ (- time (node-t nodes i)) h)))
              out)))))
 
-;;; Events: kept in time order, dropped once the flown t passes them.
+(defun prediction-position! (out pred time)
+  "OUT: the stored path's position at TIME (the Hermite between nodes); nil
+outside it."
+  (path-position! out pred time nil))
 
-(defun push-event! (pred kind time &optional object)
-  "KIND at TIME (a :contact with its OBJECT's index), unless the flown t is
-there already."
+(defun prediction-target-position! (out pred time)
+  "OUT: the target's stored position at TIME (the Hermite between its
+nodes); nil outside them or without a target."
+  (path-position! out pred time t))
+
+(defun prediction-node-count (pred)
+  "The nodes stored from the one at or before the flown t."
+  (- (prediction-count pred) (prediction-head pred)))
+
+(defun prediction-node (pred i &optional r v)
+  "Node I (0: at or before the flown t): its t, its r and v into R, V if given."
+  (let ((k (* +node-size+ (+ (prediction-head pred) i)))
+        (nodes (prediction-nodes pred)))
+    (when r (replace r nodes :start2 (+ k 1) :end2 (+ k 4)))
+    (when v (replace v nodes :start2 (+ k 4) :end2 (+ k 7)))
+    (aref nodes k)))
+
+(defun prediction-target-node (pred i &optional r v)
+  "The target at node I: its t, its r and v into R, V if given; nil without
+the target's state there."
+  (let ((j (+ (prediction-head pred) i)))
+    (when (< j (prediction-target-count pred))
+      (let ((k (* +target-node-size+ j))
+            (targets (prediction-target-nodes pred)))
+        (when r (replace r targets :start2 k :end2 (+ k 3)))
+        (when v (replace v targets :start2 (+ k 3) :end2 (+ k 6)))
+        (node-t (prediction-nodes pred) j)))))
+
+;;; Events: kept in time order, dropped once the flown t passes them; each
+;;; with a double value (decision 116).
+
+(defun push-event! (pred kind time &optional object (value 0d0))
+  "KIND at TIME with VALUE (a :contact with its OBJECT's index), unless the
+flown t is there already."
   (let ((n (prediction-event-count pred)))
     (when (and (< n *prediction-event-capacity*) (> time (prediction-now pred)))
       (setf (aref (prediction-event-times pred) n) time
             (svref (prediction-event-kinds pred) n) kind
             (svref (prediction-event-objects pred) n) object
+            (aref (prediction-event-values pred) n) value
             (prediction-event-count pred) (1+ n)))))
 
 (defun drop-past-events! (pred)
   (let* ((times (prediction-event-times pred))
          (kinds (prediction-event-kinds pred))
          (objects (prediction-event-objects pred))
+         (amounts (prediction-event-values pred))
          (n (prediction-event-count pred))
          (now (prediction-now pred))
          (k (loop for i of-type fixnum below n
                   while (<= (aref times i) now)
                   finally (return i))))
-    (declare (type (simple-array double-float (*)) times) (type fixnum n k)
+    (declare (type (simple-array double-float (*)) times amounts) (type fixnum n k)
              (type double-float now))
     (when (> k 0)
       (replace times times :start2 k :end2 n)
       (replace kinds kinds :start2 k :end2 n)
       (replace objects objects :start2 k :end2 n)
+      (replace amounts amounts :start2 k :end2 n)
       (setf (prediction-event-count pred) (- n k)))))
 
 (defun apsis-search! (pred i)
@@ -283,8 +374,8 @@ nothing."
 ;;; Restart and extension
 
 (defun signature-matches-p (pred sim)
-  "SIM's controls and cut-off are those PRED was made with (throttle, mode,
-hold, roll offset, inertial target, keys, fine, cut-off, model)."
+  "SIM's controls, cut-off, model, target, plan (eq) and its cursor are
+those PRED was made with (decision 75, decision 116)."
   (declare (type prediction pred) (type sim sim))
   (let ((a (prediction-signature pred))
         (b (sim-controls sim)))
@@ -297,7 +388,12 @@ hold, roll offset, inertial target, keys, fine, cut-off, model)."
          (equalp (controls-translation-keys a) (controls-translation-keys b))
          (eq (controls-fine a) (controls-fine b))
          (eql (prediction-signature-cutoff pred) (sim-cutoff sim))
-         (eq (prediction-signature-model pred) (sim-model sim)))))
+         (eq (prediction-signature-model pred) (sim-model sim))
+         (eq (prediction-signature-target pred) (sim-target sim))
+         (eq (prediction-signature-plan pred) (sim-plan sim))
+         (= (prediction-signature-plan-index pred) (sim-plan-index sim))
+         (eq (prediction-signature-plan-phase pred) (sim-plan-phase sim))
+         (= (prediction-signature-plan-rcs-target pred) (sim-plan-rcs-target sim)))))
 
 (defun osculating-period (sim)
   "2π √(a³/μ) of SIM's ship about its body; nil unless bound."
@@ -319,14 +415,21 @@ hold, roll offset, inertial target, keys, fine, cut-off, model)."
   (controls-assign! (prediction-signature pred) (sim-controls sim))
   (setf (prediction-signature-cutoff pred) (sim-cutoff sim)
         (prediction-signature-model pred) (sim-model sim)
+        (prediction-signature-target pred) (sim-target sim)
+        (prediction-signature-plan pred) (sim-plan sim)
+        (prediction-signature-plan-index pred) (sim-plan-index sim)
+        (prediction-signature-plan-phase pred) (sim-plan-phase sim)
+        (prediction-signature-plan-rcs-target pred) (sim-plan-rcs-target sim)
         (prediction-source-loss pred) (sim-loss sim)
         (prediction-head pred) 0
         (prediction-count pred) 0
+        (prediction-target-count pred) 0
         (prediction-event-count pred) 0
         (prediction-impact pred) nil
         (prediction-state pred) :running)
   (incf (prediction-restarts pred))
   (push-node! pred (prediction-sim pred))
+  (push-target! pred (prediction-sim pred))
   pred)
 
 (defun prediction-invalidate! (pred)
@@ -335,9 +438,11 @@ hold, roll offset, inertial target, keys, fine, cut-off, model)."
   pred)
 
 (defun prediction-stale-p (pred sim)
-  "True when PRED must restart from SIM (decision 75's rules); else moves
-its head to SIM's t."
-  (declare (type prediction pred) (type sim sim))
+  "True when PRED must restart from SIM (decision 75's rules, and decision
+116's: the target's path off by more than *prediction-deviation*); else
+moves its head to SIM's t."
+  (declare (type prediction pred) (type sim sim)
+           (inline target-state-into!))
   (when (or (eq (prediction-state pred) :empty)
             (> (controls-throttle (sim-controls sim)) 0d0)
             (not (eq (sim-loss sim) (prediction-source-loss pred)))
@@ -346,23 +451,51 @@ its head to SIM's t."
   (let ((i (node-interval pred (sim-t sim))))
     (when (null i)
       (return-from prediction-stale-p t))
-    (let ((p (make-vec3)))
-      (declare (dynamic-extent p))
+    (let ((p (make-vec3)) (r (make-vec3)) (v (make-vec3)))
+      (declare (dynamic-extent p r v))
       (prediction-position! p pred (sim-t sim))
       (vec3-sub! p p (ship-state-r (sim-ship sim)))
       (when (> (vec3-norm p) *prediction-deviation*)
-        (return-from prediction-stale-p t)))
+        (return-from prediction-stale-p t))
+      (let ((flown (target-state-into! r v sim (sim-t sim)))
+            (stored (prediction-target-position! p pred (sim-t sim))))
+        (unless (eq (not flown) (not stored))
+          (return-from prediction-stale-p t))
+        (when (and flown (> (vec3-norm (vec3-sub! p p r)) *prediction-deviation*))
+          (return-from prediction-stale-p t))))
     (setf (prediction-head pred) i)
     nil))
 
+(declaim (inline prediction-step-work))
+(defun prediction-step-work (sim)
+  "The most work a step of the copy SIM can take: 1, 1 per promoted object,
+1 with a target (its rails evaluation)."
+  (declare (type sim sim))
+  (let ((work (if (sim-target sim) 2 1)))
+    (declare (type fixnum work))
+    (loop for object across (sim-objects sim)
+          when (eq (object-status object) :promoted)
+            do (incf work))
+    work))
+
+(declaim (inline plan-rcs-burning-p))
+(defun plan-rcs-burning-p (sim)
+  "SIM's plan runs an RCS burn now."
+  (let ((plan (sim-plan sim)))
+    (and plan (eq (sim-plan-phase sim) :burning)
+         (planned-burn-rcs (svref (burn-plan-burns plan) (sim-plan-index sim))))))
+
 (defun prediction-extend! (pred budget)
-  "Up to BUDGET sim-step!s of the copy toward the horizon, each stored with
-its events; PRED."
+  "sim-step!s of the copy toward the horizon, each stored with its target's
+state and its events, while their work stays within BUDGET; PRED. The
+copy's plan flies at *prediction-rcs-level* while an RCS burn runs, else at
+*prediction-level* (decision 115)."
   (declare (optimize speed) (type prediction pred) (type fixnum budget)
-           (inline sim-step!))
+           (inline sim-step-ticks! prediction-step-work plan-rcs-burning-p))
   (let ((sim (prediction-sim pred))
-        (steps 0))
-    (declare (type fixnum steps))
+        (steps 0)
+        (work 0))
+    (declare (type fixnum steps work))
     (loop
       (when (or (sim-loss sim)
                 (>= (sim-t sim) (prediction-end pred))
@@ -370,21 +503,40 @@ its events; PRED."
                      (= (prediction-head pred) 0)))
         (setf (prediction-state pred) :complete)
         (return))
-      (when (>= steps budget)
+      (when (> (+ work (prediction-step-work sim)) budget)
         (return))
+      (incf work (- (prediction-step-work sim) (if (sim-target sim) 1 0)))
+      ;; The plan's controls at the step's start, as the step itself would
+      ;; set them (it does again, a no-op): the level, the cut-off and
+      ;; :burn-start see this step's.
+      (when (sim-plan sim)
+        (let ((index (sim-plan-index sim))
+              (burning (eq (sim-plan-phase sim) :burning)))
+          (plan-step-controls! sim)
+          (when (and (eq (sim-plan-phase sim) :burning)
+                     (or (not burning) (/= index (sim-plan-index sim))))
+            (push-event! pred :burn-start (sim-t sim) nil
+                         (float (sim-plan-index sim) 1d0)))))
       (contact-starts! pred sim)
       (let* ((cutoff (sim-cutoff sim))
-             (zero (eql (sim-step-ticks! sim *prediction-level* nil) 0)))
+             (zero (eql (sim-step-ticks! sim (if (plan-rcs-burning-p sim)
+                                                 *prediction-rcs-level*
+                                                 *prediction-level*)
+                                         nil)
+                        0)))
         ;; The copy's notices and requests are nobody's (decision 112).
         (setf (sim-notices sim) nil
               (sim-checkpoint-request sim) nil)
         (incf steps)
         ;; A contact answered at the step's start: its node replaced.
         (when (and zero (> (prediction-count pred) (prediction-head pred)))
-          (decf (prediction-count pred)))
+          (decf (prediction-count pred))
+          (setf (prediction-target-count pred)
+                (min (prediction-target-count pred) (prediction-count pred))))
         (unless (push-node! pred sim)
           (setf (prediction-state pred) :complete)
           (return))
+        (incf work (the fixnum (push-target! pred sim)))
         (unless zero
           (apsis-search! pred (- (prediction-count pred) 2))
           (contact-crossing! pred sim))
@@ -394,18 +546,21 @@ its events; PRED."
                (push-event! pred :impact (loss-time (sim-loss sim))))
               ((and cutoff (null (sim-cutoff sim)))
                (push-event! pred :cutoff (sim-t sim))))))
-    (setf (prediction-last-steps pred) steps)
+    (setf (prediction-last-steps pred) steps
+          (prediction-last-work pred) work)
     pred))
 
 (defun prediction-refresh! (pred sim)
-  "Restart PRED from SIM if stale; the horizon from SIM's t."
+  "Restart PRED from SIM if stale; the horizon from SIM's t: prediction-periods
+osculating periods coasting, one with the throttle on (decision 116)."
   (declare (type prediction pred) (type sim sim))
   (when (prediction-stale-p pred sim)
     (prediction-restart! pred sim))
-  (let ((period (osculating-period sim)))
+  (let ((period (osculating-period sim))
+        (periods (if (> (controls-throttle (sim-controls sim)) 0d0) 1 (prediction-periods pred))))
     (setf (prediction-now pred) (sim-t sim)
           (prediction-end pred) (if period
-                                    (+ (sim-t sim) (* (prediction-periods pred) period))
+                                    (+ (sim-t sim) (* periods period))
                                     most-positive-double-float))
     (when (and (eq (prediction-state pred) :complete)
                (null (sim-loss (prediction-sim pred)))
@@ -414,11 +569,11 @@ its events; PRED."
   (drop-past-events! pred)
   pred)
 
-(defun prediction-update! (pred sim)
-  "Once per frame: restart from the flown SIM when stale (decision 75),
-else extend the tail; at most *prediction-steps-per-frame* steps. PRED."
+(defun prediction-update! (pred sim &optional (budget *prediction-work-per-frame*))
+  "Once per frame: restart from the flown SIM when stale (decision 75,
+decision 116), else extend the tail; at most BUDGET work. PRED."
   (prediction-refresh! pred sim)
-  (prediction-extend! pred *prediction-steps-per-frame*))
+  (prediction-extend! pred budget))
 
 (defun prediction-run! (pred sim)
   "PRED updated from SIM and run to its horizon (tests, scripts); PRED."
@@ -432,16 +587,21 @@ else extend the tail; at most *prediction-steps-per-frame* steps. PRED."
 
 (defun prediction-event (pred kind)
   "The first event of KIND (:apoapsis, :periapsis, :impact, :cutoff,
-:contact) after the flown t: its time (for :impact also the copy's loss
-record, for :contact the object's index in sim-objects), or nil."
+:contact, :burn-start) after the flown t: (values time datum value), the
+datum the copy's loss record for :impact, the object's index in
+sim-objects for :contact, else the event's double value (:burn-start: the
+burn's index); nil without one."
   (let ((times (prediction-event-times pred))
-        (kinds (prediction-event-kinds pred)))
+        (kinds (prediction-event-kinds pred))
+        (amounts (prediction-event-values pred)))
     (dotimes (i (prediction-event-count pred) nil)
       (when (and (eq (svref kinds i) kind) (> (aref times i) (prediction-now pred)))
-        (return (case kind
-                  (:impact (values (aref times i) (prediction-impact pred)))
-                  (:contact (values (aref times i) (svref (prediction-event-objects pred) i)))
-                  (t (aref times i))))))))
+        (return (values (aref times i)
+                        (case kind
+                          (:impact (prediction-impact pred))
+                          (:contact (svref (prediction-event-objects pred) i))
+                          (t (aref amounts i)))
+                        (aref amounts i)))))))
 
 (defun prediction-apsis (pred kind)
   "(values time radius) of the next :apoapsis or :periapsis of PRED: on the

@@ -288,7 +288,7 @@ elapsed times cycling through ELAPSED-LIST: (values record sim-at-the-end)."
          (clock (lis::new-clock sim))
          (lis::*frame-step-time-limit* nil)
          ;; At x1 the prediction steers no step; the waits run it to the end.
-         (lis::*prediction-steps-per-frame* 64))
+         (lis::*prediction-work-per-frame* 64))
     (lis::flight-install! clock flight (lambda (flight sim)
                                          (declare (ignore flight))
                                          (setf end (lis::copy-sim sim))))

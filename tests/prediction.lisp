@@ -50,10 +50,10 @@
     ;; Frames of 500 steps.
     (let ((framed (lis::new-prediction))
           (frames 0))
-      (let ((lis::*prediction-steps-per-frame* 500))
+      (let ((lis::*prediction-work-per-frame* 500))
         (loop do (lis::prediction-update! framed sim)
                  (incf frames)
-                 (true (<= (lis::prediction-last-steps framed) 500))
+                 (true (<= (lis::prediction-last-work framed) 500))
               until (lis::prediction-complete-p framed)))
       (true (> frames 5))
       (is = 1 (lis::prediction-restarts framed))
@@ -189,10 +189,12 @@
   (let* ((sim (lis::new-game-sim))
          (pred (lis::new-prediction :periods 2)))
     (lis::prediction-update! pred sim)
-    (is = lis::*prediction-steps-per-frame* (lis::prediction-last-steps pred))
+    (is = lis::*prediction-work-per-frame* (lis::prediction-last-work pred))
     (false (lis::prediction-complete-p pred))
-    (lis::prediction-update! pred sim)
+    (loop repeat 20 until (lis::prediction-complete-p pred)
+          do (lis::prediction-update! pred sim))
     (true (lis::prediction-complete-p pred))
+    (is = 1 (lis::prediction-restarts pred))
     (let ((consed (least-bytes-consed
                    (lambda ()
                      (lis::prediction-invalidate! pred)
@@ -325,3 +327,191 @@ put on J2-free rails when on rails. (values sim index)."
     (lis::clock-step! clock sim)
     (false (lis::sim-checkpoint-request sim))
     (false (lis::clock-checkpoint clock))))
+
+;;; Milestone 3's form (docs/architecture.md "Trajectory prediction";
+;;; decision 116: Prediction in milestone 3: horizon, target nodes, closest
+;;; approach, relative nodes, budget): the plan flown by the copy, the
+;;; target's nodes, the restart rules and the work budget.
+
+;;; The time per work unit, outside scripts/test (2026-10-15, :full, two
+;;; periods: the start orbit 1.13 us per unit, with Tern Station targeted
+;;; 0.68 us, at Skua Yard with Skua Yard 3 targeted 0.66 us, 9.2 per step):
+#+(or)
+(flet ((ns-per-work (sim)
+         (let ((pred (lis::new-prediction :periods 2)) (work 0))
+           (lis::prediction-run! pred sim)
+           (let ((start (get-internal-real-time)))
+             (dotimes (i 10)
+               (lis::prediction-invalidate! pred)
+               (lis::prediction-run! pred sim)
+               (incf work (lis::prediction-last-work pred)))
+             (round (* 1d9 (/ (- (get-internal-real-time) start) internal-time-units-per-second))
+                    work)))))
+  (list (ns-per-work (lis::new-game-sim))
+        (ns-per-work (let ((s (lis::new-game-sim))) (lis::sim-set-target! s :tern-station) s))
+        (ns-per-work (let ((s (skua-yard-sim))) (lis::sim-set-target! s :skua-yard-3) s))))
+
+(defun tern-beside! (sim)
+  "Tern Station promoted 1 km behind SIM's ship on its velocity, on J2-free
+rails through that state, and targeted; SIM."
+  (let* ((object (lis::sim-object sim :tern-station))
+         (ship (lis::sim-ship sim))
+         (t0 (lis::sim-t sim))
+         (v (lis::ship-state-v ship))
+         (r (lis::vec3-sub (lis::ship-state-r ship) (lis::vec3-scale (lis::vec3-normalize v) 1000d0))))
+    (setf (lis::object-rails object)
+          (lis::make-rails (lis::state->orbit r v lis::+mu-earth+ t0) t0 :j2 nil))
+    (lis::object-promote! object t0)
+    (lis::sim-set-target! sim :tern-station)
+    sim))
+
+(defun target-nodes (pred)
+  "The stored target nodes from the head, as a fresh array."
+  (subseq (lis::prediction-target-nodes pred)
+          (* 6 (lis::prediction-head pred)) (* 6 (lis::prediction-target-count pred))))
+
+(defun prediction-event-list (pred)
+  (loop for i below (lis::prediction-event-count pred)
+        collect (list (svref (lis::prediction-event-kinds pred) i)
+                      (aref (lis::prediction-event-times pred) i)
+                      (aref (lis::prediction-event-values pred) i))))
+
+(define-test prediction-plan-and-target
+  ;; Tern Station beside the ship, the Hohmann plan: every node and target
+  ;; node is the flight's at ×1,000, bit for bit; budgeted updates equal it.
+  (let* ((sim (tern-beside! (plan-sim)))
+         (burns (lis::burn-plan-burns (lis::sim-plan sim)))
+         (pred (run-prediction sim :periods 2))
+         (n (lis::prediction-node-count pred)))
+    (true (lis::prediction-complete-p pred))
+    (is = n (lis::prediction-target-count pred))
+    (is equal (list (lis::planned-burn-start (aref burns 0)) (lis::planned-burn-start (aref burns 1)))
+        (loop for e in (prediction-event-list pred) when (eq (first e) :burn-start) collect (second e)))
+    (is equal '(0d0 1d0)
+        (loop for e in (prediction-event-list pred) when (eq (first e) :burn-start) collect (third e)))
+    (is = 2 (count :cutoff (prediction-event-list pred) :key #'first))
+    (multiple-value-bind (time datum value) (lis::prediction-event pred :burn-start)
+      (is = (lis::planned-burn-start (aref burns 0)) time)
+      (is = 0d0 datum)
+      (is = 0d0 value))
+    (let ((flown (lis::copy-sim sim))
+          (r (lis::make-vec3)) (v (lis::make-vec3))
+          (rt (lis::make-vec3)) (vt (lis::make-vec3))
+          (mismatches 0))
+      (loop for i from 1 below n
+            do (step-sim flown 1 1000)
+               (let ((time (lis::prediction-node pred i r v)))
+                 (lis::prediction-target-node pred i rt vt)
+                 (multiple-value-bind (fr fv) (values (lis::vec3-copy (lis::ship-state-r (lis::sim-ship flown)))
+                                                      (lis::vec3-copy (lis::ship-state-v (lis::sim-ship flown))))
+                   (let ((tr (lis::make-vec3)) (tv (lis::make-vec3)))
+                     (lis::target-state-into! tr tv flown)
+                     (unless (and (= time (lis::sim-t flown)) (equalp r fr) (equalp v fv)
+                                  (equalp rt tr) (equalp vt tv))
+                       (incf mismatches))))))
+      (is = 0 mismatches)
+      ;; Promoted beside the ship, demoted once the Hohmann carries it off.
+      (is eq :rails (lis::object-status (lis::sim-object flown :tern-station)))
+      (is eq :done (lis::sim-plan-phase flown)))
+    (let ((framed (lis::new-prediction :periods 2))
+          (frames 0))
+      (loop do (lis::prediction-update! framed sim 300)
+               (incf frames)
+               (true (<= (lis::prediction-last-work framed) 300))
+            until (lis::prediction-complete-p framed))
+      (true (> frames 10))
+      (is = 1 (lis::prediction-restarts framed))
+      (true (equalp (prediction-nodes pred) (prediction-nodes framed)))
+      (true (equalp (target-nodes pred) (target-nodes framed)))
+      (is equal (prediction-event-list pred) (prediction-event-list framed)))))
+
+(define-test prediction-horizons
+  ;; Coasting two periods (the clock's), under thrust one.
+  (flet ((span (sim)
+           (let* ((pred (lis::prediction-run! (lis::new-prediction :periods 2) sim))
+                  (period (lis::osculating-period sim))
+                  (n (lis::prediction-node-count pred)))
+             (list (/ (- (lis::prediction-node pred (- n 1)) (lis::sim-t sim)) period)
+                   (/ (- (lis::prediction-node pred (- n 2)) (lis::sim-t sim)) period)))))
+    (let ((sim (lis::new-game-sim)))
+      (setf (lis::sim-model sim) :point)
+      (destructuring-bind (last before) (span sim)
+        (true (and (>= last 2) (< before 2)) "~F ~F" last before))
+      (lis::controls-set-throttle (lis::sim-controls sim) 0.1d0)
+      (setf (lis::sim-cutoff sim) 5d0)
+      (destructuring-bind (last before) (span sim)
+        (true (and (>= last 1) (< before 1)) "~F ~F" last before)))
+    (is = 2 (lis::prediction-periods (lis::clock-prediction (lis::new-clock (lis::new-game-sim)))))))
+
+(define-test prediction-target-restarts
+  ;; A target or plan change restarts, the target moved 2 m by hand too.
+  (flet ((restarts-after (change)
+           (let ((sim (tern-beside! (plan-sim)))
+                 (pred (lis::new-prediction)))
+             (lis::prediction-run! pred sim)
+             (frames pred sim 2)
+             (let ((before (lis::prediction-restarts pred)))
+               (funcall change sim)
+               (lis::prediction-update! pred sim)
+               (- (lis::prediction-restarts pred) before))))
+         (tern-r (sim)
+           (lis::ship-state-r (lis::object-state (lis::sim-object sim :tern-station)))))
+    (is = 0 (restarts-after (lambda (sim) sim)))
+    (is = 1 (restarts-after (lambda (sim) (lis::sim-set-target! sim :fulmar-depot))))
+    (is = 1 (restarts-after (lambda (sim) (lis::sim-set-target! sim nil))))
+    (is = 1 (restarts-after (lambda (sim) (lis::sim-set-plan! sim (hohmann-plan sim)))))
+    (is = 1 (restarts-after (lambda (sim) (lis::sim-set-plan! sim nil))))
+    (is = 1 (restarts-after (lambda (sim) (incf (aref (tern-r sim) 1) 2d0))))
+    (is = 0 (restarts-after (lambda (sim) (incf (aref (tern-r sim) 1) 0.1d0))))))
+
+(define-test prediction-target-cons-nothing
+  ;; Tern Station on rails 2,370 km ahead: a two-period prediction conses
+  ;; nothing after the first.
+  (let ((sim (lis::new-game-sim))
+        (pred (lis::new-prediction :periods 2)))
+    (setf (lis::sim-model sim) :j2)
+    (lis::sim-set-target! sim :tern-station)
+    (lis::prediction-run! pred sim)
+    (is = (lis::prediction-node-count pred) (lis::prediction-target-count pred))
+    (let ((consed (least-bytes-consed (lambda ()
+                                        (lis::prediction-invalidate! pred)
+                                        (lis::prediction-run! pred sim)))))
+      (true (< consed 1024) "~D bytes" consed))))
+
+(define-test prediction-work-budget
+  ;; At Skua Yard, nine objects promoted and Skua Yard 3 targeted: each
+  ;; update's work within the budget, ten per step.
+  (let ((sim (skua-yard-sim))
+        (pred (lis::new-prediction :periods 2))
+        (budget lis::*prediction-work-per-frame*))
+    (setf (lis::sim-model sim) :j2)
+    (lis::sim-set-target! sim :skua-yard-3)
+    (lis::prediction-update! pred sim)
+    (is = (* 10 (lis::prediction-last-steps pred)) (lis::prediction-last-work pred))
+    (true (>= (lis::prediction-last-work pred) (- budget 11)))
+    (loop repeat 100
+          until (lis::prediction-complete-p pred)
+          do (lis::prediction-update! pred sim)
+             (true (<= (lis::prediction-last-work pred) budget)))
+    (true (lis::prediction-complete-p pred))))
+
+(define-test prediction-rcs-burn
+  ;; A planned RCS burn: the copy flies it at ×4, fine steps, and marks its
+  ;; start.
+  (let* ((sim (lis::new-game-sim))
+         (t0 (lis::sim-t sim)))
+    (setf (lis::sim-model sim) :point)
+    (lis::sim-set-plan!
+     sim (lis::make-burn-plan
+          (vector (lis::make-planned-burn :trim (+ t0 30) (+ t0 60)
+                                          (lis::quat-copy (lis::ship-state-q (lis::sim-ship sim)))
+                                          0d0 1 0.3d0))))
+    (let* ((pred (run-prediction sim))
+           (n (lis::prediction-node-count pred))
+           (times (loop for i below n collect (lis::prediction-node pred i))))
+      (is = (+ t0 60) (lis::prediction-event pred :burn-start))
+      (is eq :done (lis::sim-plan-phase (lis::prediction-sim pred)))
+      ;; From the burn's start, fine steps until the burn ends.
+      (let ((burn (member (+ t0 60) times)))
+        (true burn)
+        (true (every (lambda (a b) (= (- b a) 1/64)) burn (subseq burn 1 64)))))))

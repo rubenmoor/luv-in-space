@@ -272,7 +272,7 @@ at LEVEL. (values mismatches checks steps-per-frame clock)."
         (mismatches 0) (checks 0) (per-frame '())
         (lis::*frame-step-time-limit* nil)
         ;; The drift orbit has no drop-out event; a short prediction saves time.
-        (lis::*prediction-steps-per-frame* 64))
+        (lis::*prediction-work-per-frame* 64))
     (declare (inline lis::sim-step!))
     (setf (lis::clock-hook clock)
           (lambda (clock s)
@@ -377,7 +377,7 @@ at LEVEL. (values mismatches checks steps-per-frame clock)."
          (h (lis::coarse-step (lis::ship-state-r (lis::sim-ship sim)) (lis::sim-t sim) nil :earth))
          (expected (* 4096 h 60))
          (lis::*frame-step-time-limit* nil)
-         (lis::*prediction-steps-per-frame* 64))
+         (lis::*prediction-work-per-frame* 64))
     (lis::clock-set-level-index! clock (level-index 1000000))
     (dotimes (i 59) (lis::clock-frame! clock sim 1/60))
     (false (lis::clock-actual-rate clock) "under a second metered")

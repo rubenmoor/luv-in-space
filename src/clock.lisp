@@ -686,8 +686,9 @@ the clock's, run to its horizon; without it a fresh one, prediction.lisp)."
   (checkpoint nil))                             ; the latest checkpoint, a sim, or nil
 
 (defun new-clock (sim)
-  "A clock at ×1, unpaused, its previous state SIM's, no checkpoint."
-  (let ((clock (%make-clock (copy-ship-state (sim-ship sim)) (new-prediction)
+  "A clock at ×1, unpaused, its previous state SIM's, no checkpoint; its
+prediction two periods ahead while coasting (decision 116)."
+  (let ((clock (%make-clock (copy-ship-state (sim-ship sim)) (new-prediction :periods 2)
                             (make-array *rate-meter-frames* :element-type 'double-float
                                                             :initial-element 0d0)
                             (make-array *rate-meter-frames* :element-type 'double-float

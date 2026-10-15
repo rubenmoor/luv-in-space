@@ -4882,9 +4882,9 @@ tasks for what the plan asks beyond them. A task that writes a plan gets `--kind
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (181, 34, 'create tasks for plan 34: Earth''s night lights and clouds', 'split', 'done', 1000, '2026-10-15, tasks.sql: tasks 248 (convert and commit the textures, --web), 249 (night lights), 250 (clouds and shadow); no new decisions, decision 130 covers the open numbers', 'Split `plan 34: Earth''s night lights and clouds` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
 done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
 tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-15T07:30:09Z', '2026-10-15T07:53:25Z', 168, 0);
-INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (182, 35, 'create tasks for plan 35: Flight screenshots, the live runs and the Done when', 'split', 'open', 1000, NULL, 'Split `plan 35: Flight screenshots, the live runs and the Done when` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (182, 35, 'create tasks for plan 35: Flight screenshots, the live runs and the Done when', 'split', 'done', 1000, '2026-10-15, tasks.sql: tasks 251-255 (pieces 1-5 of plan 35); no new decisions (decision 131 covers the plan)', 'Split `plan 35: Flight screenshots, the live runs and the Done when` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
 done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
-tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-15T07:37:10Z', NULL, 169, 0);
+tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-15T07:37:10Z', '2026-10-15T07:54:45Z', 169, 0);
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (183, 23, 'Rails and attitude modes of the objects', 'work', 'open', NULL, NULL, 'Piece 1 of `plan 23: Objects on rails and the Earth-orbit places` (read the plan''s "The object" section; it is the specification here). Files: `src/physics.lisp`, `tests/physics.lisp`, `docs/architecture.md` "Rails".
 
 ## What
@@ -6031,6 +6031,138 @@ INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, crea
 ## Done when
 - A screenshot from the start state (`scripts/screenshot`) shows clouds over the day side and their shadows near the terminator (look at it).
 - `scripts/test` passes within its budget; `nix build` passes.', '2026-10-15T07:53:07Z', NULL, 181, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (251, 35, 'Screen state in flight screenshots and the screenshot waits (:in-burn, :terminal, :range-below, :approach :screenshots)', 'work', 'open', NULL, NULL, 'Piece 1 of `plan 35: Flight screenshots, the live runs and the Done when`. Rule: `decision 131: Flight screenshots and live runs in milestone 3: the screen state, screenshot waits, live shots, the cockpit capture script`; builds on `decision 122: Flight scripts in milestone 3: autopilot steps, the record, close work, start states`, `decision 106: Captures freeze the game, not the clock''s pause`, `decision 117: Autopilot in milestone 3: planning jobs, goal measures, burns, execution rules in the step, trims` and `decision 119: Rendezvous planning in milestone 3: Lambert, search, aim and stop points, checks, shooting, burns` (burn labels), `decision 129: Overlay of the outside and map views in milestone 3: the message line and the autopilot panel`.
+
+Why: the autopilot panel, the message line, the strip, COMMS, the lamps and the readout''s warp read the clock, but a `:screenshot` entry held only a sim; and timed shots inside burns would otherwise need `:after` steps that split coarse steps and change trajectories.
+
+## What
+- `src/clock.lisp` (pure, no HAL): `(clock-screen-snapshot clock)` → a fresh `clock-screen` struct: the nominal warp level, the live messages, the SHIP log (`clock-log`) and its read mark (`clock-log-read`), a copy of the autopilot model; shares nothing with the clock. `(clock-screen-load! clock screen)` writes a copy back.
+- `src/flights.lisp`:
+  - the `:screenshot` entry gains `screen` (`clock-screen-snapshot` at the step);
+  - waits (conditions checked after each step, none passes an `until` to the step, so no step boundary is added), all with `:within` (default 30 days), each also usable as an expectation:
+    - `(:wait :in-burn <label>)`: the engaged plan''s cursor inside that labelled burn (first step with the burn''s controls to its cut); labels as the record''s: `:phasing`, `:departure`, `:arrival`, `:circularise`, `:apsis`, `:plane`, `:trim`;
+    - `(:wait :terminal)`: the cursor''s phase is `:terminal`;
+    - `(:wait :range-below <m>)`: target CoM within m of the stack''s CoM; without a target fails "NO TARGET".
+  - `(:approach <fixture> … :screenshots (<view> …))`: at the step where the 20 m hold goes on (stopped, offset, angle and lateral speed inside the hold''s limits) one `:screenshot` entry per view, labelled `approach-20m-<view>`; views `:outside`, `:map`, `:cockpit`; copies only, the approach''s states unchanged.
+  - Reader: `(:wait :in-burn)` without a label, an unknown label, negative `:range-below`, an unknown view in `:screenshots` → read errors.
+- `src/main.lisp`: the game''s clock takes a screen in `game-load-state!` (as needed by the capture).
+- `src/capture.lisp`: `capture-game-state game path :sim s :screen sc`: `game-load-state!` restarts the frozen game''s clock on the sim, then `clock-screen-load!`; without `:screen` as `decision 106` (WARP ×1, no messages). With a screen: the snapshot''s nominal warp in the readout, no ACT caution (rate meter empty), the newest message fresh (`:message-age` 0), lamps and strip snapped as `plan 32`''s captures. `fly-screenshots` passes each entry''s sim, view and screen (outside at its default pose, cockpit head at Home, map framed with the prediction run to completion).
+- Script rule (document it): `:screenshot` steps sit only after condition waits or other steps, never after `:after`, `:at` or event waits added for them, so a script and its copy without them fly the same states bit for bit.
+
+## Tests (in `scripts/test`; this whole plan adds < 0.5 s to it)
+- `tests/clock.lisp`: a snapshot `equalp` to a second one taken at once; a message added after leaves it unchanged; `clock-screen-load!` then a snapshot gives an `equalp` one.
+- `tests/flights.lisp` (`:model :point`, crafted starts):
+  - `(:autopilot :set-ap 500e3)` from the start, `(:warp :coast)`, `(:wait :in-burn :apsis)`, `(:screenshot "burn")`: entry t between the record''s burn start and cut; its screen''s warp level ≤ ×100; its log holds the engage''s notice.
+  - `(:wait :range-below 1000)` from `(:near :tern-station :behind 1500)` closing at 1 m/s: ends at the first step under 1,000 m (brute-force range per step); without a target "NO TARGET".
+  - The script rule: the same script with its `:screenshot` steps and their waits removed: end sim `equalp`.
+  - `:approach :screenshots (:cockpit :outside)` from `(:on-axis :k-17 25)`: two entries `approach-20m-cockpit` and `approach-20m-outside` at one t, the stop inside the hold''s limits; latched as without.
+  - Reader errors above.
+- `tests/capture.lisp` (GPU, in `render-frames`'' canvas, 1280 × 800): `fly-screenshots` of the `set-ap` record with one shot per view: three PNGs, signature and size, none fully black; outside: the panel''s #0A0C0C box top right with text pixels above 100 in it (`plan 33`''s placement), the readout''s warp row differs in glyph pixels from a capture of the same sim without `:screen`; cockpit differs from outside in over half its pixels.
+
+## Docs
+- `docs/architecture.md` "Waits and expectations" (the three waits, `:screenshots`, the script rule), "Running scripts" (screenshots with the screen state), "GPU tests" (the check), "Files in load order" (`clock.lisp`, `flights.lisp`, `main.lisp`, `capture.lisp`), citing `decision 131`.
+
+## Done when
+- `nix build`, `scripts/test` and `scripts/test-slow` pass; `scripts/test` grows by under 0.5 s for the whole plan (measure, note it).', '2026-10-15T07:54:10Z', NULL, 182, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (252, 35, 'Screenshots in the five preset flight scripts', 'work', 'open', NULL, NULL, 'Piece 2 of `plan 35: Flight screenshots, the live runs and the Done when`. Needs piece 1 (`:in-burn`, `:range-below`, the screen state). Rules: `decision 131: Flight screenshots and live runs in milestone 3: the screen state, screenshot waits, live shots, the cockpit capture script`, `decision 87: Flight scripts in milestone 2: additions, apsis conditions, live fly and scripts/fly` (PNGs not committed), `decision 123: Milestone 3''s flight scripts run in scripts/test-slow, not scripts/test`.
+
+## What
+`flights/preset-tern-station.sexp`, `preset-fulmar-depot.sexp`, `preset-k-17.sexp`, `preset-highport.sexp`, `preset-skua-yard.sexp` gain `:screenshot` steps (views: o outside, m map, c cockpit), only after condition waits or other steps (the script rule of piece 1; never `:after`, `:at` or event waits added for them):
+- `start` (c) at t 0: the cockpit in the start orbit.
+- After the `:autopilot` step (engaged): `plan` (m: the trajectory, the target''s orbit magenta, burn markers with Δv, the dashed path after the first burn), `plan-panel` (o: the autopilot panel with the burns, the message line).
+- Plans with a `:phasing` burn: `(:wait :in-burn :phasing)`, `phasing` (m).
+- `(:wait :in-burn :departure)`: `departure` (o: engine lit or RCS), `departure-cockpit` (c: ATTITUDE on the burn attitude, AUTOPILOT screen in the burn).
+- `(:wait :in-burn :arrival)`: `arrival` (m: the closest approach at the place).
+- `(:wait :range-below 1000)`: `terminal` (c: the place through the window, TARGET''s range closing), `terminal-outside` (o: the place lit near the ship).
+- `(:wait :autopilot-done)`: `on-station` (o), `on-station-cockpit` (c), `on-station-map` (m).
+- Then `plan 28`''s expectations, unchanged.
+- If a plan has no `:departure` or `:arrival` label as built (`decision 119`), wait on the labels it has and say so in the comment.
+- Each script''s opening comment lists its PNGs and what each must show.
+
+## Tests (`scripts/test-slow`, `tests/slow-flights.lisp`)
+- Of the two runs per script `plan 28` already makes, the second flies the script with its screenshot steps and their waits removed: end sims `equalp`, records `record-equal` once the `:screenshot` entries are removed; each screenshot entry present with its label, in order. No run added; total stays under `plan 28`''s 3 minutes.
+
+## Check
+- `scripts/fly preset-<place> /tmp/<dir>` exits 0 for each; look at every PNG against the script''s comment (the place visible on station, the panel and markers in the plan shots, the cockpit''s screens filled). A picture wrong because of an earlier part: `pm task add` in that part''s plan (29–34), named in the done note; not fixed here. Delete the directories.
+
+## Docs
+- `docs/architecture.md` "Scripts by milestone": each preset''s screenshots and `scripts/fly`''s measured time per preset.
+
+## Done when
+- `nix build`, `scripts/test`, `scripts/test-slow` pass; every PNG looked at.', '2026-10-15T07:54:10Z', NULL, 182, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (253, 35, 'Screenshots in the approach and rendezvous scripts, and the cockpit rendezvous and capture cockpit-k-17', 'work', 'open', NULL, NULL, 'Piece 3 of `plan 35: Flight screenshots, the live runs and the Done when`. Needs pieces 1 and 2. Rules: `decision 131: Flight screenshots and live runs in milestone 3: the screen state, screenshot waits, live shots, the cockpit capture script`, `decision 122: Flight scripts in milestone 3: autopilot steps, the record, close work, start states`, `decision 123: Milestone 3''s flight scripts run in scripts/test-slow, not scripts/test`.
+
+## What
+`:screenshot` steps (o outside, m map, c cockpit), only after condition waits or other steps (piece 1''s script rule); each script''s opening comment lists its PNGs and what each must show:
+- `flights/approach-tern.sexp`, `approach-k-17.sexp`: `start` (c: the fixture ahead at 100 m), `start-outside` (o); `(:approach … :screenshots (:cockpit :outside))`; `berthed` / `latched` (c: the grapple camera on the TARGET screen, GRPL green), `berthed-outside` / `latched-outside` (o: the stack).
+- `rendezvous-fulmar-phasing.sexp`: `start` (m), `plan` (m), `departure` (m), `arrival` (m), `on-station` (o: Fulmar Depot with TANKER 2), `on-station-cockpit` (c).
+- `rendezvous-skua-yard.sexp`: `berthed` (o: at Highport''s plant), after `(:release)` and `:translate`: `released` (o); then as a preset: `plan` (m), `departure` (o), `terminal` (c: the yard''s rocks in their nets), `on-station` (o), `on-station-map` (m).
+- `skua-yard-apogee-approach.sexp`: `start` (o: Skua Yard 5 ahead at 1 km), `plan` (m), `terminal` (c), `on-station` (o).
+- `flights/cockpit-k-17.sexp` (new; the design''s "Flying from the cockpit alone"): `(:start :new-game)`; `start` (c); `(:autopilot :rendezvous :k-17)`, `(:warp :coast)`; `plan` (c: the AUTOPILOT screen''s plan and orbit plot), `departure` (c), `arrival` (c), `terminal` (c) on piece 1''s waits, `(:wait :autopilot-done :within 259200)`, `on-station` (c); `(:approach :k-17 :screenshots (:cockpit))` (grapple camera at 20 m), `(:wait :latched :k-17)`, `latched` (c). Expects `:latched :k-17`, the stack''s mass the ship''s + 2,500 kg (as `approach-k-17`), and `preset-k-17`''s `:dv-below` + 2 m/s for the approach. Every screenshot `:view :cockpit`.
+
+## Tests (`scripts/test-slow`, `tests/slow-flights.lisp`)
+- The five scripts as in piece 2: the second of `plan 28`''s two runs flies the copy without screenshot steps and their waits: end sims `equalp`, records `record-equal` without the `:screenshot` entries, the entries present with their labels in order.
+- `cockpit-k-17` flown twice bit for bit, latched, its mass exact, every screenshot entry''s view `:cockpit`. Measure its game time and wall time; `scripts/test-slow`''s total stays under `plan 28`''s 3 minutes, else profile and add a follow-up task.
+
+## Check
+- `scripts/fly` of each exits 0; look at every PNG (the grapple camera on the TARGET screen at 20 m and latched, GRPL green, the yard''s rocks, the depot''s tanker). A picture wrong because of an earlier part: `pm task add` in that part''s plan, named in the done note. Delete the directories.
+
+## Docs
+- `docs/architecture.md` "Scripts by milestone": the screenshots, and `cockpit-k-17` (start, flies, expects, times).
+- `docs/design.md` "The cockpit" → "Interaction" names `cockpit-k-17` as the cockpit rendezvous and capture; the "Feature list" row "Autopilot headless test per Earth-orbit preset … a cockpit rendezvous and capture, with screenshots" cites it.
+- `AGENTS.md` "Layout": `flights/` lists `cockpit-k-17`.
+
+## Done when
+- `nix build`, `scripts/test`, `scripts/test-slow` pass; `scripts/fly cockpit-k-17` shows K-17 latched from the cockpit.', '2026-10-15T07:54:41Z', NULL, 182, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (254, 35, 'Live fly with screenshots: fly :shots, the pending shot and the fly-shots thread', 'work', 'open', NULL, NULL, 'Piece 4 of `plan 35: Flight screenshots, the live runs and the Done when`. Needs piece 1. Rules: `decision 131: Flight screenshots and live runs in milestone 3: the screen state, screenshot waits, live shots, the cockpit capture script`, `decision 109: Live fly: the restart at once, Return and N ignored, the record in ./sly log`, `decision 87: Flight scripts in milestone 2: additions, apsis conditions, live fly and scripts/fly`, `decision 77: The frame in main.lisp: render state, capture of a given sim, part 4''s placeholders and first asset`.
+
+Why: a `./sly screenshot` cannot be timed at ×100,000; the in-game Done when needs each preset flown once with PNGs.
+
+## What
+- `src/flights.lisp`: `(fly name &key (game *game*) shots)`; without `shots` as now (no pause). With `shots` a directory:
+  - at a `:screenshot` step (and `:approach`''s 20 m shots) the hook records the entry as headless, sets the flight''s pending shot and the clock''s pause;
+  - a thread of the image, started by `fly`, named `fly-shots`, waits for a pending shot, calls `fly-live-shot!`, clears the pending shot, unpauses;
+  - `(flight-stop)` ends the thread and unpauses; at the end the record lines and the PNG paths go to `./sly log`; `(flight-status)` returns both (paths written so far).
+- `src/main.lisp`: `clock-frame!` takes no more steps in a frame once the hook paused it; the render state shows the sim''s state (the clock''s previous state set to the current, as `decision 77`''s rule for no previous state).
+- `src/capture.lisp`: `fly-live-shot!`: sets the game''s view to the entry''s as `fly-screenshots` does (outside at its default pose, cockpit head at Home, map framed on opening), waits 10 frames, writes `<shots>/<nn>-<label>.png` by `screenshot`. The view stays the shot''s afterwards.
+- `src/input.lisp`: P ignored while a shot is pending.
+- The record and end sim equal `run-flight`''s, shots or not: the pause only delays frames.
+
+## Tests (`scripts/test`)
+- `tests/flights.lisp`: piece 1''s `set-ap` script flown through `clock-frame!` as `flights-live-frames` does (a game-less clock, frames of 1/60 s), the driver taking each pending shot after 3 frames (clearing it, unpausing): end sim and record equal `run-flight`''s; no step taken while a shot is pending.
+- `tests/input.lisp`: P while a shot is pending leaves the clock paused.
+
+## Check, by hand
+- `./sly start`, `./sly play`, `./sly eval ''(fly "approach-k-17" :shots "/tmp/live-k17")'' --package LUV-IN-SPACE`, poll `(flight-status)` until `END`; one PNG per screenshot entry, each looked at; record lines equal `scripts/fly approach-k-17`''s; `./sly stop`; no process left; directory deleted. Note the wall time.
+
+## Docs
+- `AGENTS.md` "Commands" → "Live image": `fly … :shots`, `(flight-status)` with paths, `approach-k-17`''s live wall time.
+- `docs/architecture.md` "Running scripts" (live shots, wall times; `decision 131`), "Files in load order" (`flights.lisp`, `main.lisp`, `capture.lisp`, `input.lisp`).
+
+## Done when
+- `nix build`, `scripts/test`, `scripts/test-slow` pass; the hand check done.', '2026-10-15T07:54:41Z', NULL, 182, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (255, 35, 'Check milestone 3''s Done when from a clean checkout', 'work', 'open', NULL, NULL, 'Piece 5 of `plan 35: Flight screenshots, the live runs and the Done when`, after every other task of `milestone 3` (pieces 1–4 of this plan and plans 23–34). Not code: an agent checks `milestone 3`''s Done when, as `plan 22: Flight scripts and the Done when`''s piece 4 did for `milestone 2`. A failure becomes a follow-up task (`pm task add` in the plan of the part that owns it); this task stays open until they are done, or is dropped with the reason. Screenshots not committed (`decision 87: Flight scripts in milestone 2: additions, apsis conditions, live fly and scripts/fly`).
+
+## From a clean checkout
+`git clone` into a temporary directory (no `build/`, no `result`), times noted:
+- `nix build`; `scripts/test` (passes, ~15 s); `scripts/test-slow` (passes; every preset reached by autopilot from the start orbit: the headless Done when); `nix flake check` (both checks).
+- `scripts/screenshot` with `--view outside`, `cockpit`, `map`.
+- `scripts/fly` of every script in `flights/` (`burn`, `raise-orbit`, `deorbit` and the eleven of `milestone 3`): exit 0; look at every PNG against its script''s comment.
+
+## In the running game
+- Each Earth-orbit preset once (the in-game Done when): `./sly start`, `./sly play`; for each of the five `preset-<place>`, `(fly "preset-<place>" :shots "/tmp/live-<place>")`, polled with `(flight-status)` until `END PASSED`; record lines equal `scripts/fly`''s; every PNG looked at; wall time noted. `./sly stop`.
+- As a player, from the cockpit alone (the Outcome''s "the player can fly from the cockpit alone"): in `./sly play`, synthetic key and mouse events through `./sly eval` (as `plan 22`''s piece 4): ] to target Tern Station, O and the AUTOPILOT menu by clicks to "Rendezvous: Tern Station", Return twice, a warp up, G to arm and back, Y on MSTR, V to the outside view and back; a `./sly screenshot` after each, the screens'' values moving as expected.
+- `nix run` in the background, closed by its PID (`kill $!`) after a few seconds: the window opens in the cockpit without error. No process left running.
+
+## Docs against what was built
+- `AGENTS.md`: the intro paragraph (`milestone 3` built: the cockpit, the autopilot, the five places, grappling, berthing and towing; next `milestone 4`); "Commands" (every command runs as written, with the times: `scripts/test-slow`, `scripts/fly`, `scripts/screenshot --view`, live `fly` with `:shots`, the window title''s keys); "Layout" (every file in `src/`, `tests/`, `flights/`, `assets/`, `scripts/`).
+- `docs/architecture.md`: "Files in load order" against `luv-in-space.asd` and `src/`; "Testing" against `tests/` (each named test exists, or its row names the milestone that writes it); "Scripted runs" against `flights.lisp` and `flights/`.
+- `docs/design.md` "Feature list": every milestone-3 must row built; each should row (the sunlit patch, night lights and clouds, …) built or noted not built with a follow-up task; "Controls" against `*key-map*` and the window title.
+- `rg -n ''PLACEHOLDER\('' src tests`: only tasks of later milestones (TEMP, LIFE, the hull gauge, `SOI --:--`), each id checked with `pm show`.
+- `docs/luv-capabilities.md`, `docs/luv-wishlist.md`: the luv gaps met in `milestone 3`.
+
+## Done when
+- Every check passes, or each failure has a follow-up task named in the done note; the done note lists the commands, the times and the follow-ups and is the milestone''s evidence. Temporary clones and directories deleted.', '2026-10-15T07:54:41Z', NULL, 182, 0);
 
 INSERT INTO decision (id, subject, status, options, body, answer, reason, created_at, closed_at, created_by_task, signoff, kind, decided_by_task, consequences) VALUES (1, 'How the game consumes luv', 'answered', '[]', 'Findings of `task 17: Build and run luv''s programs and test suite; record the runs` (docs/luv-capabilities.md, Packaging and Runs).
 - luv''s flake exports apps, devShells, packages and lib; lib has only environmentFor, which returns everything the packaging needs (pkgs, lisp, applicationEnvironment/Packages, developmentEnvironmentHook, slynkSource, swashPackage, …). No overlays.
@@ -6380,6 +6512,7 @@ INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, b
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (178, 179, '2026-10-15T07:49:52Z', '2026-10-15T07:51:35Z', 'done', NULL, 0, '2a676f38d456a6df915e9f43734df00f3c5012d3', 'claude-opus-5-5[1m]', 'fbed1ea6-f835-4dfc-bcbf-0a747a2e3cd3', 8, 16, 9195, 363221, 56027, 0.7048242, 2373073);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (179, 180, '2026-10-15T07:51:35Z', '2026-10-15T07:52:28Z', 'done', NULL, 0, '2f23ba66460587e06a9d10ff978c6887ee3e80d2', 'claude-opus-5-5[1m]', '4bd1331c-a634-4fce-97ab-e13b2e99234a', 8, 16, 4988, 339894, 45506, 0.53185080000000018, 2373073);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (180, 181, '2026-10-15T07:52:28Z', '2026-10-15T07:53:31Z', 'done', NULL, 0, '2b32fa0a352c57ead2f94a9586b2c3d4e7666090', 'claude-opus-5-5[1m]', '80863ead-6937-45ac-a00e-36b9e5bf8d1c', 9, 18, 6255, 385476, 41858, 0.5371312, 2373073);
+INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (181, 182, '2026-10-15T07:53:31Z', '2026-10-15T07:54:50Z', 'done', NULL, 0, '45f7678cf328fdfe6283503bb22cea1811e0e44c', 'claude-opus-5-5[1m]', 'd6615713-cf95-49d8-880d-33456564d5bf', 8, 16, 9302, 361121, 51880, 0.6733682, 2373073);
 
 INSERT INTO task_decision (task_id, decision_id) VALUES (44, 28);
 INSERT INTO task_decision (task_id, decision_id) VALUES (44, 45);

@@ -246,9 +246,22 @@ drift; CONTROLS. Conses nothing."
   (cut-v nil :type (or null vec3) :read-only t)
   (isp 0d0 :type double-float :read-only t))    ; s: the engine's or the RCS's
 
+(defstruct (rendezvous-part (:constructor make-rendezvous-part
+                                (target fixture range aim side offset arrival passes))
+                            (:copier nil))
+  "A rendezvous plan's (decision 119): what the terminal phase flies to."
+  (target nil :type keyword :read-only t)       ; a target key (sim-target's)
+  (fixture nil :read-only t)                    ; a fixture, or Skua Yard's :drop-point or :front
+  (range 100d0 :type double-float :read-only t) ; m from the pin
+  (aim 1 :type fixnum :read-only t)             ; the aim point's number, (1)–(3)
+  (side 1 :type fixnum :read-only t)            ; (3)'s side
+  (offset nil :type vec3 :read-only t)          ; m: the aim point less the target at the arrival
+  (arrival 0d0 :type double-float :read-only t) ; s: the aim point's t
+  (passes '() :type list :read-only t))         ; (key . m) the shot path's least distances
+
 (defstruct (burn-plan (:constructor make-burn-plan
                           (burns &key (coast-hold :prograde) preset goal goal-orbit
-                                   (reserve-dv 0d0) (reserve-mass 0d0) measure))
+                                   (reserve-dv 0d0) (reserve-mass 0d0) measure rendezvous))
                       (:copier nil))
   (burns #() :type simple-vector :read-only t)
   (coast-hold :prograde :type (member :prograde :retrograde :normal :anti-normal
@@ -263,7 +276,8 @@ drift; CONTROLS. Conses nothing."
   (reserve-mass 0d0 :type double-float :read-only t)
   ;; The planner's goal measure (autopilot.lisp): a plan with one is
   ;; measured at each cut; candidates and hand-made plans have none.
-  (measure nil :read-only t))
+  (measure nil :read-only t)
+  (rendezvous nil :type (or null rendezvous-part) :read-only t))
 
 ;;; The RCS mixer (decision 70): duty cycles u in [0, 1] minimising
 ;;; |w (B_τ u − τ_c)|² + |B_F u − F_c|² + e² |u|² by Stark–Parker BVLS,

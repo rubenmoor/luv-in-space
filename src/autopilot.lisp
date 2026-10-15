@@ -429,17 +429,19 @@ SHOT: SIM's coast shot (autopilot-coast-shot) if already run."
 (defparameter *apsis-tolerance-min* 1d3 "m; decision 117.")
 (defparameter *plane-tolerance* (deg->rad 0.01d0) "rad; decision 117.")
 (defparameter *plan-iterations* 8 "Newton steps at most, then \"NOT CONVERGED\"; decision 117.")
+(defparameter *rendezvous-halvings* 4
+  "A rendezvous's Newton step that worsens the largest residual is halved back at most this often.")
 (defparameter *shot-perturbation* 1d0
   "m/s: the Jacobian's finite difference; well above the cut's grain (a
 1/64 s tick at full throttle, 0.044 m/s wet).")
 (defparameter *plan-max-burns* 4 "Burns a job refines.")
-(defparameter *plan-max-residuals* 4 "Goal residuals a job measures.")
+(defparameter *plan-max-residuals* 6 "Goal residuals a job measures: a rendezvous's position and velocity.")
 (defparameter *shot-cap-margin* 600d0
   "s: a shot whose plan never ends (no propellant) stops this after its last burn's planned end.")
 (declaim (type double-float *plan-floor-margin* *plan-moon-margin* *goal-altitude-max*
                *apsis-tolerance-fraction* *apsis-tolerance-min* *plane-tolerance*
                *shot-perturbation* *shot-cap-margin*)
-         (type fixnum *plan-iterations* *plan-max-burns* *plan-max-residuals*))
+         (type fixnum *plan-iterations* *rendezvous-halvings* *plan-max-burns* *plan-max-residuals*))
 
 (defun apsis-tolerance (radius)
   "m: max(0.1 % of RADIUS, 1 km); decision 117."
@@ -592,19 +594,43 @@ pivoting; a singular J J ᵀ is regularised. OUT."
 ;;; The planning job (decision 117): resumable, on a snapshot, in the
 ;;; prediction's work units.
 
-(defstruct (autopilot-job (:constructor %make-autopilot-job (snapshot scratch coast shot))
+(defstruct (autopilot-job (:constructor %make-autopilot-job (snapshot scratch coast shot lead research lead-scan))
                           (:copier nil))
   (snapshot nil :type sim)                      ; the flown sim at the request
   (scratch nil :type sim)                       ; the snapshot with the candidate, for a shot
+  ;; A rendezvous: the snapshot flying the candidate's fixed burns to
+  ;; lead-t, where its shots start (job-lead-start!), their cut states, its
+  ;; path's clearances, an abort.
+  (lead nil :type sim)
+  (lead-t 0d0 :type double-float)
+  (lead-cuts '() :type list)                    ; per fixed burn (t r v), in order
+  (lead-scan nil :type prediction)              ; only its clearance buffers
+  (lead-abort nil :type (or null string))
+  (research nil :type sim)                      ; the lead's world at lead-t, for planning
+  (researched nil :type boolean)                ; research holds it
   (coast nil :type prediction)                  ; the snapshot coasting: nodes, coast radii
   (shot nil :type prediction)                   ; the last shot, the final plan's at the end
   (preset nil :type (or null keyword))
   (goal nil)
-  (stage :done :type (member :coast :search :guess :iterate :check :done :refused))
+  (stage :done :type (member :coast :search :guess :lead :iterate :check :done :refused))
   (search nil)                                  ; a rendezvous-search, run after :coast
   ;; A replan (decision 117): the plan flown and its first burn left to re-shoot.
   (base nil :type (or null burn-plan))
   (from 0 :type fixnum)
+  ;; A rendezvous (decision 119): its stop point, the :plane guess, the
+  ;; search's candidates, the one shot and its aim point.
+  (target nil :type (or null keyword))
+  (fixture nil)
+  (range 0d0 :type double-float)
+  (plane nil :type (or null planned-burn))
+  (candidates #() :type simple-vector)
+  (index 0 :type fixnum)
+  (aim 1 :type fixnum)
+  (side 1 :type fixnum)
+  (fixed 0 :type fixnum)                        ; leading burns Newton keeps (:plane, :phasing)
+  (last-largest 0d0 :type double-float)         ; a rendezvous: the accepted shot's largest residual
+  (fraction 1d0 :type double-float)             ; of the last step applied
+  (halvings 0 :type fixnum)
   (iteration 0 :type fixnum)                    ; Newton steps taken
   (column -1 :type fixnum)                      ; the parameter being perturbed, −1 the base shot
   (plan nil :type (or null burn-plan))          ; the result, :done
@@ -635,8 +661,14 @@ pivoting; a singular J J ᵀ is regularised. OUT."
   (work 0 :type fixnum))                        ; units done in the last call
 
 (defun new-autopilot-job (sim)
-  "A job for sims with SIM's objects: its snapshot, scratch and two predictions."
-  (%make-autopilot-job (copy-sim sim) (copy-sim sim) (new-prediction) (new-prediction)))
+  "A job for sims with SIM's objects: its snapshot, scratch, lead, research
+and two predictions."
+  (let* ((empty (make-array 0 :element-type 'double-float))
+         (job (%make-autopilot-job (copy-sim sim) (copy-sim sim) (new-prediction) (new-prediction)
+                                   (copy-sim sim) (copy-sim sim)
+                                   (%make-prediction empty empty empty #() #() empty))))
+    (setf (prediction-sim (autopilot-job-lead-scan job)) (autopilot-job-lead job))
+    job))
 
 (defun goal-altitude (preset goal)
   "The goal altitude (m) of PRESET and GOAL, or nil."
@@ -657,16 +689,29 @@ pivoting; a singular J J ᵀ is regularised. OUT."
         (autopilot-job-candidate job) nil)
   job)
 
-(defun autopilot-job-start! (job sim preset goal)
-  "JOB planning PRESET with GOAL (autopilot-first-guess's) from a snapshot
-of SIM; refused at once outside Earth orbit, for a goal above
-*goal-altitude-max* or a target's plane without a target. JOB."
+(defun autopilot-job-start! (job sim preset goal &key base (from 0))
+  "JOB planning PRESET with GOAL (autopilot-first-guess's, or :rendezvous's
+(target &key range limit)) from a snapshot of SIM, or re-planning BASE's
+burns FROM on; refused at once outside Earth orbit, for a goal above
+*goal-altitude-max*, a target's plane without a target or a rendezvous's
+stop point (job-rendezvous-start!). JOB."
   (let ((snapshot (autopilot-job-snapshot job)))
     (sim-assign! snapshot sim)
     (setf (autopilot-job-preset job) preset
           (autopilot-job-goal job) goal
-          (autopilot-job-base job) nil
-          (autopilot-job-from job) 0
+          (autopilot-job-base job) base
+          (autopilot-job-from job) from
+          (autopilot-job-target job) nil
+          (autopilot-job-fixture job) nil
+          (autopilot-job-plane job) nil
+          (autopilot-job-candidates job) #()
+          (autopilot-job-index job) 0
+          (autopilot-job-aim job) 1
+          (autopilot-job-side job) 1
+          (autopilot-job-fixed job) 0
+          (autopilot-job-researched job) nil
+          (autopilot-job-lead-cuts job) '()
+          (autopilot-job-lead-abort job) nil
           (autopilot-job-iteration job) 0
           (autopilot-job-column job) -1
           (autopilot-job-plan job) nil
@@ -686,6 +731,7 @@ of SIM; refused at once outside Earth orbit, for a goal above
              (job-refuse! job "GOAL OUT OF RANGE"))
             ((and (eq (goal-plane preset goal) :target) (null (sim-target snapshot)))
              (job-refuse! job "NO TARGET"))
+            ((and (eq preset :rendezvous) (not (job-rendezvous-start! job))))
             (t (coast-shot-start! (autopilot-job-coast job) (autopilot-job-scratch job) snapshot))))
     job))
 
@@ -726,7 +772,9 @@ earlier burns, re-centred; the propellant needed. JOB."
 (defun job-shoot! (job &optional column)
   "Start JOB's shot of its candidate, COLUMN's parameter perturbed by
 *shot-perturbation* (the candidate rebuilt either way); horizon the last
-cut plus a period, capped *shot-cap-margin* past the last burn's planned end."
+cut plus a period, capped *shot-cap-margin* past the last burn's planned end
+(a rendezvous: the cap, its clearance window from the first burn's start to
+the last's)."
   (let ((params (autopilot-job-params job)))
     (when column (incf (aref params column) *shot-perturbation*))
     (job-candidate! job)
@@ -734,23 +782,40 @@ cut plus a period, capped *shot-cap-margin* past the last burn's planned end."
   (let* ((plan (autopilot-job-candidate job))
          (burns (burn-plan-burns plan))
          (last (svref burns (1- (length burns))))
+         (rendezvous (eq (autopilot-job-preset job) :rendezvous))
          (cap (+ (planned-burn-cut-t last)
                  (* 3 (- (planned-burn-cut-t last) (planned-burn-start last)))
-                 *shot-cap-margin*)))
-    (prediction-shoot! (autopilot-job-shot job)
-                       (shot-sim-assign! (autopilot-job-scratch job) (autopilot-job-snapshot job) plan)
-                       cap :after-plan t)
+                 *shot-cap-margin*))
+         (shot (prediction-shoot! (autopilot-job-shot job)
+                                  (shot-sim-assign! (autopilot-job-scratch job)
+                                                    (if rendezvous
+                                                        (autopilot-job-lead job)
+                                                        (autopilot-job-snapshot job))
+                                                    plan)
+                                  cap :after-plan (not rendezvous))))
+    (when rendezvous
+      (let ((scratch (prediction-sim shot)))
+        (setf (sim-plan-index scratch) (autopilot-job-fixed job)))
+      (prediction-clearance! shot (planned-burn-start (svref burns 0)) (planned-burn-start last)))
     (setf (autopilot-job-column job) (or column -1))
     job))
 
+(defun shot-first-burn (job)
+  "The burn JOB's shots start from: a rendezvous's first free one (its lead
+flies the fixed), else 0."
+  (if (eq (autopilot-job-preset job) :rendezvous) (autopilot-job-fixed job) 0))
+
 (defun shot-last-cut (job)
   "The t of the last burn's cut in JOB's shot, or nil if the shot ended first."
-  (prediction-cut-time (autopilot-job-shot job) (1- (autopilot-job-burn-count job))))
+  (prediction-cut-time (autopilot-job-shot job)
+                       (- (autopilot-job-burn-count job) 1 (shot-first-burn job))))
 
 (defun job-shot-residuals! (job out)
   "OUT: the Newton residuals of JOB's finished shot (goal-residuals!);
 (values count largest), LARGEST the goal measure's, large for a shot lost
-or cut short."
+or cut short; a rendezvous's rendezvous-residuals!."
+  (when (eq (autopilot-job-preset job) :rendezvous)
+    (return-from job-shot-residuals! (rendezvous-residuals! job out)))
   (let* ((cut (shot-last-cut job))
          (shot (autopilot-job-shot job))
          (start (if (and cut (null (sim-loss (prediction-sim shot)))) cut most-positive-double-float))
@@ -760,9 +825,10 @@ or cut short."
 
 (defun replan-remaining-guess (snapshot base from)
   "The first guess re-shooting BASE's burns from FROM on, from SNAPSHOT: each
-on its old node (the middle of its start and cut) with its old Δv vector,
-the node's state by Kepler from SNAPSHOT's osculating orbit after the
-earlier burns applied at their nodes."
+on its old node (the middle of its start and cut; a rendezvous's :arrival
+on the aim point's t) with its old Δv vector, the node's state by Kepler
+from SNAPSHOT's osculating orbit after the earlier burns applied at their
+nodes."
   (let* ((ship (sim-ship snapshot))
          (mu +mu-earth+)
          (coast (state->orbit (ship-state-r ship) (ship-state-v ship) mu (sim-t snapshot)))
@@ -774,7 +840,9 @@ earlier burns applied at their nodes."
          (previous nil))
     (loop for i from from below (length old-burns)
           for old = (svref old-burns i)
-          for node = (grid-round (* 0.5d0 (+ (planned-burn-start old) (planned-burn-cut-t old))))
+          for node = (if (and (eq (planned-burn-label old) :arrival) (burn-plan-rendezvous base))
+                         (rendezvous-part-arrival (burn-plan-rendezvous base))
+                         (grid-round (* 0.5d0 (+ (planned-burn-start old) (planned-burn-cut-t old)))))
           do (multiple-value-bind (r v) (orbit-state orbit node)
                (let ((dv (burn-dv-vector old)))
                  (multiple-value-bind (burn propellant)
@@ -824,6 +892,26 @@ is met."
               (multiple-value-bind (plan reason) (autopilot-first-guess snapshot preset goal coast)
                 (values plan reason t)))))))
 
+(defparameter *rendezvous-terminal-dv* 20d0
+  "m/s the propellant check keeps for a rendezvous's terminal phase, on the RCS; decision 119.")
+(declaim (type double-float *rendezvous-terminal-dv*))
+
+(defun job-propellant-needed (job)
+  "kg JOB's candidate needs: its burns', a rendezvous's terminal allowance
+(*rendezvous-terminal-dv* at the RCS's Isp from the mass after them) and
+the reserve."
+  (let* ((candidate (autopilot-job-candidate job))
+         (burns (autopilot-job-propellant job))
+         (snapshot (autopilot-job-snapshot job))
+         (end-mass (- (+ *ship-dry-mass* (ship-state-m-p (sim-ship snapshot))
+                         (stack-load-mass (sim-stack-load snapshot)))
+                      burns)))
+    (+ burns
+       (if (eq (autopilot-job-preset job) :rendezvous)
+           (propellant-for end-mass *rendezvous-terminal-dv* *rcs-isp*)
+           0d0)
+       (burn-plan-reserve-mass candidate))))
+
 (defun job-guess! (job)
   "From the coast shot: the first guess (a replan's: replan-guess), its
 burns' nodes and LVLH Δv, the goal measure (a replan's the base's), the
@@ -834,13 +922,15 @@ without a plan."
         (preset (autopilot-job-preset job))
         (goal (autopilot-job-goal job))
         (base (autopilot-job-base job))
+        (rendezvous (eq (autopilot-job-preset job) :rendezvous))
         (trim nil))
     (multiple-value-bind (guess reason)
-        (if base
-            (multiple-value-bind (plan reason trimming) (replan-guess job)
-              (setf trim trimming)
-              (values plan reason))
-            (autopilot-first-guess snapshot preset goal coast))
+        (cond (base
+               (multiple-value-bind (plan reason trimming) (replan-guess job)
+                 (setf trim trimming)
+                 (values plan reason)))
+              (rendezvous (rendezvous-guess job))
+              (t (autopilot-first-guess snapshot preset goal coast)))
       (unless guess
         (return-from job-guess!
           (if reason
@@ -853,7 +943,12 @@ without a plan."
              (states (autopilot-job-node-states job))
              (params (autopilot-job-params job)))
         (assert (<= n *plan-max-burns*))
-        (setf (autopilot-job-burn-count job) n)
+        (setf (autopilot-job-burn-count job) n
+              ;; a rendezvous's Newton: the :departure's and :arrival's Δv
+              (autopilot-job-fixed job)
+              (if rendezvous
+                  (or (position :departure burns :key #'planned-burn-label) (1- n))
+                  0))
         (dotimes (i n)
           (let* ((burn (svref burns i))
                  (dv (burn-dv-vector burn))
@@ -878,56 +973,79 @@ without a plan."
                (radius (and altitude (+ +radius-earth+ altitude)))
                (plane (goal-plane preset goal)))
           (setf (autopilot-job-measure job)
-                (if base
-                    (burn-plan-measure base)
-                    (ecase preset
-                      (:circularise (make-goal-measure here here nil :shape))
-                      ((:set-apoapsis :set-periapsis)
-                       (make-goal-measure (max here radius) (min here radius) nil))
-                      (:change-orbit (make-goal-measure radius radius plane :circle))
-                      (:change-plane (make-goal-measure nil nil plane))))))
+                (cond (rendezvous nil)
+                      (base (burn-plan-measure base))
+                      (t (ecase preset
+                           (:circularise (make-goal-measure here here nil :shape))
+                           ((:set-apoapsis :set-periapsis)
+                            (make-goal-measure (max here radius) (min here radius) nil))
+                           (:change-orbit (make-goal-measure radius radius plane :circle))
+                           (:change-plane (make-goal-measure nil nil plane)))))))
         (job-candidate! job)
-        (let ((needed (+ (autopilot-job-propellant job)
-                         (burn-plan-reserve-mass (autopilot-job-candidate job)))))
+        (let ((needed (job-propellant-needed job)))
           (when (> needed (ship-state-m-p (sim-ship snapshot)))
             (return-from job-guess!
               (job-refuse! job (format nil "NEEDS ~D KG" (ceiling needed))))))
-        (setf (autopilot-job-stage job) :iterate)
-        (job-shoot! job)))))
+        (if rendezvous
+            (job-lead-start! job)
+            (progn (setf (autopilot-job-stage job) :iterate)
+                   (job-shoot! job)))))))
 
 (defun job-shot-done! (job)
   "JOB's shot finished: a base shot converged goes to :check, else the
 Jacobian's columns one shot each, then the minimum-norm step and the next
-base shot; past *plan-iterations* steps \"NOT CONVERGED\"."
-  (let ((column (autopilot-job-column job))
-        (n-params (* 3 (autopilot-job-burn-count job))))
+base shot; past *plan-iterations* steps \"NOT CONVERGED\" (a rendezvous:
+the next candidate, job-next-candidate!). The parameters are the burns'
+after the fixed ones (autopilot-job-fixed)."
+  (let* ((column (autopilot-job-column job))
+         (n-params (* 3 (autopilot-job-burn-count job)))
+         (first (* 3 (autopilot-job-fixed job)))
+         (free (- n-params first)))
     (if (< column 0)
         (multiple-value-bind (m largest) (job-shot-residuals! job (autopilot-job-residuals job))
           (setf (autopilot-job-residual-count job) m)
-          (cond ((or (<= largest 1d0)
+          (cond ((and (eq (autopilot-job-preset job) :rendezvous)
+                      (> (autopilot-job-iteration job) 0)
+                      (> largest (autopilot-job-last-largest job))
+                      (< (autopilot-job-halvings job) *rendezvous-halvings*))
+                 ;; worse: back half the step off and shoot again
+                 (let ((half (* 0.5d0 (autopilot-job-fraction job)))
+                       (step (autopilot-job-delta job))
+                       (params (autopilot-job-params job)))
+                   (dotimes (k free)
+                     (decf (aref params (+ first k)) (* half (aref step k))))
+                   (setf (autopilot-job-fraction job) half)
+                   (incf (autopilot-job-halvings job))
+                   (job-shoot! job)))
+                ((or (<= largest 1d0)
                      ;; A crash or an abort: :check refuses it.
                      (sim-loss (prediction-sim (autopilot-job-shot job)))
                      (prediction-abort (autopilot-job-shot job)))
                  (setf (autopilot-job-stage job) :check))
                 ((or (>= (autopilot-job-iteration job) *plan-iterations*)
                      (null (shot-last-cut job)))
-                 (job-refuse! job "NOT CONVERGED"))
-                (t (job-shoot! job 0))))
+                 (if (eq (autopilot-job-preset job) :rendezvous)
+                     (job-next-candidate! job "NOT CONVERGED")
+                     (job-refuse! job "NOT CONVERGED")))
+                (t (setf (autopilot-job-last-largest job) largest)
+                   (job-shoot! job first))))
         (let ((out (autopilot-job-column-residuals job))
               (base (autopilot-job-residuals job))
               (jacobian (autopilot-job-jacobian job))
               (m (autopilot-job-residual-count job)))
           (job-shot-residuals! job out)
           (dotimes (i m)
-            (setf (aref jacobian (+ (* i n-params) column))
+            (setf (aref jacobian (+ (* i free) (- column first)))
                   (/ (- (aref out i) (aref base i)) *shot-perturbation*)))
           (if (< (1+ column) n-params)
               (job-shoot! job (1+ column))
               (let ((step (autopilot-job-delta job))
                     (params (autopilot-job-params job)))
-                (minimum-norm-step! step jacobian base m n-params)
-                (dotimes (k n-params)
-                  (incf (aref params k) (aref step k)))
+                (minimum-norm-step! step jacobian base m free)
+                (dotimes (k free)
+                  (incf (aref params (+ first k)) (aref step k)))
+                (setf (autopilot-job-fraction job) 1d0
+                      (autopilot-job-halvings job) 0)
                 (incf (autopilot-job-iteration job))
                 (job-shoot! job)))))))
 
@@ -958,29 +1076,33 @@ its reason."
                               (progn (body-state-into moon moon-v :moon (node-t nodes i) :earth)
                                      (< (vec3-norm (vec3-sub! moon moon r)) near))))
            "TOO NEAR THE MOON")
-          (t (let ((needed (+ (autopilot-job-propellant job)
-                              (burn-plan-reserve-mass (autopilot-job-candidate job)))))
+          (t (let ((needed (job-propellant-needed job)))
                (cond ((> needed (ship-state-m-p (sim-ship (autopilot-job-snapshot job))))
                       (format nil "NEEDS ~D KG" (ceiling needed)))
                      (abort (subseq abort (length "AUTOPILOT ABORT: ")))))))))
 
-(defun shot-cut-plan (plan shot measure)
+(defun shot-cut-plan (plan shot measure &optional rendezvous lead-cuts)
   "PLAN with each burn's cut state the SHOT's (the copy's t, r, v at its
-cut), the goal orbit from the last and the goal MEASURE (measured at each
-cut in flight)."
+cut; the burns before the shot's start LEAD-CUTS' (t r v)), the goal orbit
+from the last, the goal MEASURE (measured at each cut in flight) and the
+RENDEZVOUS part."
   (let* ((nodes (prediction-nodes shot))
+         (first (length lead-cuts))
          (burns (map 'simple-vector
                      (lambda (burn i)
-                       (let* ((time (prediction-cut-time shot i))
-                              (k (* +node-size+ (node-interval shot time))))
-                         (make-planned-burn (planned-burn-label burn) (planned-burn-hold-at burn)
-                                            (planned-burn-start burn) (planned-burn-attitude burn)
-                                            (planned-burn-throttle burn) (planned-burn-rcs burn)
-                                            (planned-burn-dv burn)
-                                            :cut-t time
-                                            :cut-r (subseq nodes (+ k 1) (+ k 4))
-                                            :cut-v (subseq nodes (+ k 4) (+ k 7))
-                                            :isp (planned-burn-isp burn))))
+                       (flet ((cut (time r v)
+                                (make-planned-burn (planned-burn-label burn) (planned-burn-hold-at burn)
+                                                   (planned-burn-start burn) (planned-burn-attitude burn)
+                                                   (planned-burn-throttle burn) (planned-burn-rcs burn)
+                                                   (planned-burn-dv burn)
+                                                   :cut-t time :cut-r r :cut-v v
+                                                   :isp (planned-burn-isp burn))))
+                         (if (< i first)
+                             (destructuring-bind (time r v) (nth i lead-cuts)
+                               (cut time (vec3-copy r) (vec3-copy v)))
+                             (let* ((time (prediction-cut-time shot (- i first)))
+                                    (k (* +node-size+ (node-interval shot time))))
+                               (cut time (subseq nodes (+ k 1) (+ k 4)) (subseq nodes (+ k 4) (+ k 7)))))))
                      (burn-plan-burns plan)
                      (loop for i below (length (burn-plan-burns plan)) collect i)))
          (last (svref burns (1- (length burns)))))
@@ -990,17 +1112,34 @@ cut in flight)."
                                                     +mu-earth+ (planned-burn-cut-t last))
                           :reserve-dv (burn-plan-reserve-dv plan)
                           :reserve-mass (burn-plan-reserve-mass plan)
-                          :measure measure)))
+                          :measure measure
+                          :rendezvous rendezvous)))
 
 (defun job-check! (job)
-  "The refusals on JOB's final shot, else the plan with the shot's cut states: :done."
-  (let ((reason (shot-refusal job)))
-    (if reason
-        (job-refuse! job reason)
-        (setf (autopilot-job-plan job) (shot-cut-plan (autopilot-job-candidate job)
-                                                      (autopilot-job-shot job)
-                                                      (autopilot-job-measure job))
-              (autopilot-job-stage job) :done))
+  "The refusals on JOB's final shot, else the plan with the shot's cut
+states: :done. A rendezvous's shot also passes the path check
+(shot-path-margin); a candidate failing it or refused but for propellant
+gives way to the next (job-next-candidate!)."
+  (let ((reason (or (let ((abort (autopilot-job-lead-abort job)))
+                      (and abort (subseq abort (length "AUTOPILOT ABORT: "))))
+                    (shot-refusal job)))
+        (rendezvous (eq (autopilot-job-preset job) :rendezvous)))
+    (cond ((and reason (or (not rendezvous) (eql 0 (search "NEEDS" reason))))
+           (job-refuse! job reason))
+          (reason (job-next-candidate! job reason))
+          ((not rendezvous)
+           (setf (autopilot-job-plan job) (shot-cut-plan (autopilot-job-candidate job)
+                                                         (autopilot-job-shot job)
+                                                         (autopilot-job-measure job))
+                 (autopilot-job-stage job) :done))
+          (t (multiple-value-bind (margin passes) (shot-path-margin job)
+               (if (< margin 0d0)
+                   (job-next-candidate! job "NO CLEAR TRANSFER")
+                   (setf (autopilot-job-plan job)
+                         (shot-cut-plan (autopilot-job-candidate job) (autopilot-job-shot job)
+                                        :aim-point (job-rendezvous-part job passes)
+                                        (autopilot-job-lead-cuts job))
+                         (autopilot-job-stage job) :done)))))
     job))
 
 (defun autopilot-job-work! (job budget)
@@ -1016,9 +1155,12 @@ stage: :coast, with a search :search (rendezvous-search-work!), :guess,
       (loop
         (ecase (autopilot-job-stage job)
           ((:done :refused) (return))
-          (:coast (if (advance (autopilot-job-coast job))
-                      (setf (autopilot-job-stage job) (if (autopilot-job-search job) :search :guess))
-                      (return)))
+          (:coast (cond ((not (advance (autopilot-job-coast job))) (return))
+                        ((and (eq (autopilot-job-preset job) :rendezvous)
+                              (null (autopilot-job-base job)))
+                         (job-rendezvous-search! job))
+                        (t (setf (autopilot-job-stage job)
+                                 (if (autopilot-job-search job) :search :guess)))))
           (:search (multiple-value-bind (done units)
                        (rendezvous-search-advance! (autopilot-job-search job) left)
                      (decf left units)
@@ -1026,6 +1168,9 @@ stage: :coast, with a search :search (rendezvous-search-work!), :guess,
                          (setf (autopilot-job-stage job) :guess)
                          (return))))
           (:guess (job-guess! job))
+          (:lead (multiple-value-bind (done units) (job-lead-advance! job left)
+                   (decf left units)
+                   (if done (job-lead-done! job) (return))))
           (:iterate (if (advance (autopilot-job-shot job))
                         (job-shot-done! job)
                         (return)))
@@ -1045,10 +1190,8 @@ scripts): (values plan nil) or (values nil reason)."
 burns after the one cut re-shot from a snapshot of SIM, or after the last
 one a :trim burn when the goal measure misses; same preset and goal. JOB."
   (let ((plan (sim-plan sim)))
-    (autopilot-job-start! job sim (burn-plan-preset plan) (burn-plan-goal plan))
-    (setf (autopilot-job-base job) plan
-          (autopilot-job-from job) (1+ (sim-plan-index sim)))
-    job))
+    (autopilot-job-start! job sim (burn-plan-preset plan) (burn-plan-goal plan)
+                          :base plan :from (1+ (sim-plan-index sim)))))
 
 (defun autopilot-replan-now (sim &optional (job (new-autopilot-job sim)))
   "SIM's replan at once: (values plan reason); neither when the goal is met."
@@ -1225,10 +1368,30 @@ number r v side), SIDE the out-of-plane side of (3) (1 otherwise), or
 
 (defconstant +golden+ (/ (- (sqrt 5d0) 1) 2) "1/φ.")
 
+(defvar *coast-j2* t
+  "The search's coasts drift with J2's secular rates: nil when its sim's model is :point.")
+
+;; decision 159: The rendezvous search's coasts at the sim's mean motion.
+(defvar *coast-delta* nil
+  "m: a search's short-period a term (the snapshot's osculating a less its
+mean, j2-mean-semi-major-axis), kept by every coast it derives from its own
+rails' states, which are no osculating states; nil: from the state itself.")
+
 (defun coast-rails (r v time)
-  "The rails of the state R, V at TIME about Earth, with J2's secular rates:
-the search's coasts drift as the objects' rails do."
-  (make-rails (state->orbit r v +mu-earth+ time) time))
+  "The rails of the search's coast from R, V at TIME about Earth
+(state-rails): J2's secular rates (*coast-j2*) at the mean motion the
+integrated motion keeps (the osculating a less *coast-delta*), so the ship
+drifts as the sim flies it (the osculating a's mean motion is off by up to
+0.2 %: ~1,000 km in 19 h at 400 km)."
+  (state-rails r v time :j2 *coast-j2* :delta *coast-delta*))
+
+(defun state-coast-delta (r v)
+  "m: the short-period a term of the integrated state R, V (*coast-delta*'s)."
+  (- (orbit-a (state->orbit r v +mu-earth+ 0d0)) (j2-mean-semi-major-axis r v)))
+
+(defun model-coast-j2 (sim)
+  "*coast-j2* for a search from SIM: a :point sim's ship coasts on conics."
+  (not (eq (sim-model sim) :point)))
 
 (defun rails-drift-rates (rails)
   "(values u̇ Ω̇) rad/s: J2's secular drift of RAILS' argument of latitude
@@ -1299,13 +1462,18 @@ passes its periapsis below the radius FLOOR."
   (q 0d0 :type double-float :read-only t)       ; its conic's radii
   (big-q 0d0 :type double-float :read-only t))
 
+(defvar *search-ignored* '()
+  "Object keys the search's Kepler filter leaves out, so only the shot-path
+check sees them (tests of its fallback).")
+
 (defun search-objects (sim target)
   "The objects a rendezvous with TARGET from SIM must clear, the target first:
-neither removed nor latched, on their planning rails."
+neither removed nor latched nor in *search-ignored*, on their planning rails."
   (let ((object (target-object sim target))
         (out '()))
     (loop for other across (sim-objects sim)
-          unless (member (object-status other) '(:removed :latched))
+          unless (or (member (object-status other) '(:removed :latched))
+                     (member (object-key other) *search-ignored*))
             do (let ((rails (object-planning-rails other sim)))
                  (multiple-value-bind (q big-q) (rails-radii rails)
                    (let ((entry (make-search-object (object-key other) rails
@@ -1536,6 +1704,7 @@ the aim point checked at its arrival."
   (target nil) (fixture nil) (range 100d0 :type double-float)
   (ship-rails nil :type list)                   ; the ship's coast before its first burn
   (normal nil :type (or null vec3))             ; Lambert's prograde sense
+  (delta nil :type (or null double-float))      ; its coasts' *coast-delta*
   (ship-period 0d0 :type double-float)
   (earliest 0d0 :type double-float)             ; the first node
   (deadline 0d0 :type double-float)             ; the latest aim point
@@ -1625,7 +1794,11 @@ its first node at EARLIEST or later (default SIM's t + *plan-min-lead* +
          (r (or r (vec3-copy (ship-state-r ship))))
          (v (or v (vec3-copy (ship-state-v ship))))
          (time (float (or time (sim-t sim)) 1d0))
-         (ship-rails (coast-rails r v time))
+         (delta (and (model-coast-j2 sim)
+                     (elliptic-p (state->orbit (ship-state-r ship) (ship-state-v ship) +mu-earth+ 0d0))
+                     (state-coast-delta (ship-state-r ship) (ship-state-v ship))))
+         (ship-rails (let ((*coast-j2* (model-coast-j2 sim)) (*coast-delta* delta))
+                       (coast-rails r v time)))
          (object (target-object sim target))
          (target-rails (if object
                            (object-planning-rails object sim)
@@ -1640,6 +1813,7 @@ its first node at EARLIEST or later (default SIM's t + *plan-min-lead* +
           (rendezvous-search-range search) (float range 1d0)
           (rendezvous-search-ship-rails search) ship-rails
           (rendezvous-search-normal search) (vec3-normalize (vec3-cross r v))
+          (rendezvous-search-delta search) delta
           (rendezvous-search-ship-period search)
           (or (orbit-period (rails-segment-orbit (first ship-rails))) 0d0)
           (rendezvous-search-earliest search) earliest
@@ -1710,6 +1884,29 @@ its first node at EARLIEST or later (default SIM's t + *plan-min-lead* +
                (n (orbit-n orbit)))
           (/ (mod (- (orbit-mean-anomaly orbit time) m) +two-pi+) n))))))
 
+(defun rails-period (rails)
+  "s: one revolution in argument of latitude on RAILS' first segment (its
+mean motion and ω̇), as the search's coasts and the objects move."
+  (let ((segment (first rails)))
+    (/ +two-pi+ (+ (rails-segment-mean-rate segment) (rails-segment-argp-rate segment)))))
+
+(defun phasing-speed (r v period)
+  "m/s at R along V whose coast (coast-rails) revolves in PERIOD s, or nil:
+the Kepler a of PERIOD, corrected three times by the coast's own rate (a ∝
+T^(2/3))."
+  (let* ((rn (vec3-norm r))
+         (vn (vec3-norm v))
+         (a (expt (* +mu-earth+ (expt (/ period +two-pi+) 2)) 1/3)))
+    (flet ((speed (a)
+             (let ((s2 (* +mu-earth+ (- (/ 2 rn) (/ a)))))
+               (and (> s2 0d0) (sqrt s2)))))
+      (dotimes (i 3 (speed a))
+        (let ((s (speed a)))
+          (unless s (return nil))
+          (let ((coast (rails-period (coast-rails r (vec3-scale v (/ s vn)) 0d0))))
+            (unless (> coast 0d0) (return nil))
+            (setf a (* a (expt (/ period coast) 2/3)))))))))
+
 (defun phasing-orbit-ok-p (r v-new)
   "The phasing orbit from R, V-NEW is bound, its periapsis above the floor,
 its apoapsis within *phasing-apoapsis-max*."
@@ -1722,7 +1919,7 @@ its apoapsis within *phasing-apoapsis-max*."
   "Phasing point K: for each N and direction its phasing burn's Δv, kept per
 (N, direction) where least (ties to the earlier point)."
   (let* ((period (rendezvous-search-ship-period search))
-         (tt (rendezvous-search-target-period search))
+         (tt (rails-period (rendezvous-search-target-rails search)))
          (step (/ period *search-departures*))
          (time (+ (periapsis-grid-start (rendezvous-search-ship-rails search)
                                         (rendezvous-search-earliest search) step)
@@ -1732,7 +1929,7 @@ its apoapsis within *phasing-apoapsis-max*."
          (r (make-vec3)) (v (make-vec3)))
     (rails-state-into! r v (first (rendezvous-search-ship-rails search)) time)
     (let ((lead (target-lead search r time))
-          (rn (vec3-norm r)) (vn (vec3-norm v)))
+          (vn (vec3-norm v)))
       (loop for n from 1 to *phasing-max-revolutions*
             do (loop for direction in '(:catch-up :fall-back)
                      for d from 0
@@ -1743,11 +1940,9 @@ its apoapsis within *phasing-apoapsis-max*."
                                    (<= (+ time (* n t-ph)) deadline)
                                    (<= (+ time (* (- n 0.5d0) t-ph) (* (first *search-close-transfers*) tt))
                                        deadline))
-                          (let* ((a (expt (* +mu-earth+ (expt (/ t-ph +two-pi+) 2)) 1/3))
-                                 (speed2 (* +mu-earth+ (- (/ 2 rn) (/ a)))))
-                            (when (> speed2 0d0)
-                              (let* ((speed (sqrt speed2))
-                                     (v-new (vec3-scale v (/ speed vn)))
+                          (let ((speed (phasing-speed r v t-ph)))
+                            (when speed
+                              (let* ((v-new (vec3-scale v (/ speed vn)))
                                      (cost (abs (- speed vn)))
                                      (i (+ (* 2 (1- n)) d))
                                      (old (svref best i)))
@@ -2311,7 +2506,9 @@ among those within *search-tie-dv* of the least total left."
 the next call; a call that fits none takes one); true once :done
 (rendezvous-search-result: the best *search-candidates* clear candidates in
 order)."
-  (let ((left budget))
+  (let ((left budget)
+        (*coast-j2* (model-coast-j2 (rendezvous-search-sim search)))
+        (*coast-delta* (rendezvous-search-delta search)))
     (loop until (or (eq (rendezvous-search-stage search) :done) (<= left 0))
           do (let ((most (search-item-units search)))
                (when (and (> most left) (< left budget))
@@ -2343,6 +2540,366 @@ candidates nil), a simple-vector in order, or (values nil reason)."
                 (values result nil)
                 (values nil "NO CLEAR TRANSFER")))))))
 
+;;; Rendezvous: the job (docs/design.md "Rendezvous: search, phasing and the
+;;; approach"; decision 119, decision 158: The rendezvous job as built: the
+;;; lead, the transfer re-guess, step halving, the planning world, the
+;;; checks): [:plane] [:phasing] :departure :arrival from the search's
+;;; candidates in order, the fixed burns flown by the lead, the :departure's
+;;; and :arrival's Δv shot from it to the aim point, the path checked; the
+;;; terminal phase is the step's.
+
+(defparameter *rendezvous-plane-min* (deg->rad 0.01d0)
+  "rad between the ship's plane and the target's: a :plane burn first; decision 119.")
+(defparameter *rendezvous-position-tolerance* 100d0 "m at the :arrival cut; decision 119.")
+(defparameter *rendezvous-velocity-tolerance* 0.1d0 "m/s at the :arrival cut; decision 119.")
+(declaim (type double-float *rendezvous-plane-min* *rendezvous-position-tolerance*
+               *rendezvous-velocity-tolerance*))
+
+(defun rendezvous-goal-parts (goal sim)
+  "A rendezvous GOAL, (<target, (target fixture-name) or :target (SIM's)>
+&key range limit): (values target fixture-name range limit)."
+  (destructuring-bind (spec &key (range *stop-range*) (limit *rendezvous-limit*)) goal
+    (let ((target (if (consp spec) (first spec) spec)))
+      (values (if (eq target :target) (sim-target sim) target)
+              (and (consp spec) (second spec))
+              (float range 1d0) (float limit 1d0)))))
+
+(defun job-rendezvous-start! (job)
+  "JOB's rendezvous from its snapshot: the stop point's choice (a replan's
+its base's), the snapshot's target set to it; refused \"NO TARGET\", \"NO
+FREE FIXTURE\", \"RANGE TOO LONG\" or \"RANGE TOO SHORT\"; true when on."
+  (let* ((snapshot (autopilot-job-snapshot job))
+         (base (and (autopilot-job-base job) (burn-plan-rendezvous (autopilot-job-base job)))))
+    (if base
+        (setf (autopilot-job-target job) (rendezvous-part-target base)
+              (autopilot-job-fixture job) (rendezvous-part-fixture base)
+              (autopilot-job-range job) (rendezvous-part-range base)
+              (autopilot-job-aim job) (rendezvous-part-aim base)
+              (autopilot-job-side job) (rendezvous-part-side base))
+        (multiple-value-bind (target name range) (rendezvous-goal-parts (autopilot-job-goal job) snapshot)
+          (unless target
+            (job-refuse! job "NO TARGET")
+            (return-from job-rendezvous-start! nil))
+          (multiple-value-bind (fixture reason) (rendezvous-stop snapshot target :fixture name :range range)
+            (when reason
+              (job-refuse! job reason)
+              (return-from job-rendezvous-start! nil))
+            (setf (autopilot-job-target job) target
+                  (autopilot-job-fixture job) fixture
+                  (autopilot-job-range job) range))))
+    (sim-set-target! snapshot (autopilot-job-target job))
+    (shot-sim-assign! (autopilot-job-lead job) snapshot nil)
+    t))
+
+(defun plane-angle (r v rt vt)
+  "rad between the planes of R, V and RT, VT."
+  (let ((h (vec3-cross r v)) (ht (vec3-cross rt vt)))
+    (atan (vec3-norm (vec3-cross h ht)) (vec3-dot h ht))))
+
+(defun job-rendezvous-search! (job)
+  "After JOB's coast shot: with the planes ≥ *rendezvous-plane-min* apart
+the :plane burn's first guess (the target's plane at the cheaper relative
+node), the search from its cut, its first node ≥ the cut + *plan-min-lead*
++ *search-node-lead*; else from the snapshot. Stage :search."
+  (let* ((snapshot (autopilot-job-snapshot job))
+         (ship (sim-ship snapshot))
+         (target (autopilot-job-target job))
+         (fixture (autopilot-job-fixture job))
+         (range (autopilot-job-range job))
+         (limit (nth-value 3 (rendezvous-goal-parts (autopilot-job-goal job) snapshot)))
+         (search (new-rendezvous-search))
+         (rt (make-vec3)) (vt (make-vec3)))
+    (stop-target-state-into! rt vt snapshot target :drop-point (sim-t snapshot))
+    (if (>= (plane-angle (ship-state-r ship) (ship-state-v ship) rt vt) *rendezvous-plane-min*)
+        (multiple-value-bind (plan reason)
+            (autopilot-first-guess snapshot :change-plane :target (autopilot-job-coast job))
+          (unless plan
+            (return-from job-rendezvous-search! (job-refuse! job reason)))
+          (let* ((burn (svref (burn-plan-burns plan) 0))
+                 (cut (planned-burn-cut-t burn)))
+            (setf (autopilot-job-plane job) burn)
+            (rendezvous-search-start! search snapshot target fixture range
+                                      :r (vec3-copy (planned-burn-cut-r burn))
+                                      :v (vec3-copy (planned-burn-cut-v burn))
+                                      :time cut :earliest (+ cut *plan-min-lead* *search-node-lead*)
+                                      :limit limit :plane-dv (planned-burn-dv burn))))
+        (rendezvous-search-start! search snapshot target fixture range :limit limit))
+    (setf (autopilot-job-search job) search
+          (autopilot-job-stage job) :search)
+    job))
+
+(defun rendezvous-guess (job)
+  "The first guess of JOB's current candidate (autopilot-job-index of the
+search's result): the :plane burn, then each impulse built (build-burn) on
+its node with the propellant after the earlier; its aim point JOB's.
+(values plan nil), or (values nil \"NO CLEAR TRANSFER\") past the last."
+  (let ((candidates (rendezvous-search-result (autopilot-job-search job)))
+        (index (autopilot-job-index job)))
+    (setf (autopilot-job-candidates job) candidates)
+    (if (>= index (length candidates))
+        (values nil "NO CLEAR TRANSFER")
+        (let* ((candidate (svref candidates index))
+               (snapshot (autopilot-job-snapshot job))
+               (ship (sim-ship snapshot))
+               (orbit (state->orbit (ship-state-r ship) (ship-state-v ship) +mu-earth+ (sim-t snapshot)))
+               (load (sim-stack-load snapshot))
+               (m-p (ship-state-m-p ship))
+               (plane (autopilot-job-plane job))
+               (burns '())
+               (previous nil))
+          (flet ((add! (label node r v dv)
+                   (multiple-value-bind (burn propellant)
+                       (build-burn label node r v dv m-p load previous orbit)
+                     (push burn burns)
+                     (setf previous (planned-burn-attitude burn))
+                     (decf m-p propellant))))
+            (when plane
+              (let ((dv (burn-dv-vector plane)))
+                (add! :plane (planned-burn-cut-t plane) (planned-burn-cut-r plane)
+                      (vec3-sub (planned-burn-cut-v plane) dv) dv)))
+            (loop for impulse across (rendezvous-candidate-impulses candidate)
+                  do (add! (rendezvous-impulse-label impulse) (rendezvous-impulse-time impulse)
+                           (rendezvous-impulse-r impulse) (rendezvous-impulse-v impulse)
+                           (rendezvous-impulse-dv impulse))))
+          (setf (autopilot-job-aim job) (rendezvous-candidate-aim candidate)
+                (autopilot-job-side job) (rendezvous-candidate-side candidate))
+          (values (assemble-burn-plan (coerce (nreverse burns) 'simple-vector)
+                                      :rendezvous (autopilot-job-goal job) m-p load)
+                  nil)))))
+
+(defparameter *shot-lead* 600d0
+  "s before a rendezvous candidate's first hold-at its shots start, from the lead's coast.")
+(declaim (type double-float *shot-lead*))
+
+(defun job-planning-sim (job)
+  "The sim JOB's aim points and the target's planning states come from: once
+its lead is at lead-t, the lead's world there (the research copy: a
+promotion on the way may have re-railed the target); before, the search's
+sim (the snapshot); a replan's snapshot without a search."
+  (cond ((autopilot-job-researched job) (autopilot-job-research job))
+        ((autopilot-job-search job) (rendezvous-search-sim (autopilot-job-search job)))
+        (t (autopilot-job-snapshot job))))
+
+(defun job-lead-start! (job)
+  "Stage :lead: JOB's lead from the snapshot, its candidate engaged, to fly
+the fixed burns and coast to *shot-lead* before the first free burn's
+hold-at; its cuts, clearance window (from the first burn's start) and abort
+reset."
+  (let* ((lead (autopilot-job-lead job))
+         (snapshot (autopilot-job-snapshot job))
+         (burns (burn-plan-burns (autopilot-job-candidate job)))
+         (free (svref burns (autopilot-job-fixed job))))
+    (shot-sim-assign! lead snapshot (autopilot-job-candidate job))
+    (setf (autopilot-job-researched job) nil
+          (autopilot-job-lead-t job)
+          (max (sim-t snapshot) (grid-round (- (planned-burn-hold-at free) *shot-lead*)))
+          (autopilot-job-lead-cuts job) '()
+          (autopilot-job-lead-abort job) nil
+          (autopilot-job-stage job) :lead)
+    (prediction-clearance! (autopilot-job-lead-scan job)
+                           (planned-burn-start (svref burns 0)) (autopilot-job-lead-t job))
+    job))
+
+(defun job-lead-advance! (job budget)
+  "JOB's lead stepped towards lead-t while its steps' work
+(prediction-step-work) fits BUDGET, as prediction-extend! steps a shot (at
+*prediction-level*, an RCS burn at *prediction-rcs-level*): each burn's cut
+(t r v) kept, the clearances scanned, an abort kept.
+(values done units)."
+  (let ((lead (autopilot-job-lead job))
+        (scan (autopilot-job-lead-scan job))
+        (until (autopilot-job-lead-t job))
+        (units 0))
+    (loop while (and (< (sim-t lead) until) (null (sim-loss lead)))
+          do (let ((work (prediction-step-work lead)))
+               (when (> (+ units work) budget) (return))
+               (when (sim-plan lead)
+                 (let ((index (sim-plan-index lead))
+                       (burning (eq (sim-plan-phase lead) :burning)))
+                   (plan-step-controls! lead)
+                   (when (and burning (or (/= index (sim-plan-index lead))
+                                          (not (eq (sim-plan-phase lead) :burning))))
+                     (setf (autopilot-job-lead-cuts job)
+                           (append (autopilot-job-lead-cuts job)
+                                   (list (list (sim-t lead) (vec3-copy (ship-state-r (sim-ship lead)))
+                                               (vec3-copy (ship-state-v (sim-ship lead))))))))))
+               (contact-starts! scan lead)
+               (let ((ticks (sim-step-ticks! lead (if (plan-rcs-burning-p lead)
+                                                      *prediction-rcs-level*
+                                                      *prediction-level*)
+                                             until)))
+                 (let ((notice (find :autopilot (sim-notices lead) :key #'first)))
+                   (when (and notice (eql 0 (search "AUTOPILOT ABORT" (second notice))))
+                     (setf (autopilot-job-lead-abort job) (second notice))))
+                 (setf (sim-notices lead) nil
+                       (sim-checkpoint-request lead) nil)
+                 (unless (eql ticks 0)
+                   (clearance-step! scan lead)))
+               (incf units work)))
+    (values (or (>= (sim-t lead) until) (and (sim-loss lead) t)) units)))
+
+(defun job-lead-done! (job)
+  "JOB's lead at lead-t: its world there the planning sim (job-planning-sim),
+the transfer guessed again from it (job-transfer-guess!) before the
+candidate's first shot, then that shot."
+  (shot-sim-assign! (autopilot-job-research job) (autopilot-job-lead job) nil)
+  (setf (autopilot-job-researched job) t)
+  (when (= (autopilot-job-iteration job) 0)
+    (job-transfer-guess! job))
+  (setf (autopilot-job-stage job) :iterate)
+  (job-shoot! job))
+
+(defparameter *transfer-guess-ratio* 1.5d0
+  "The re-guessed transfer is kept at most this times the search's Δv …")
+(defparameter *transfer-guess-slack* 2d0 "… plus this, m/s.")
+(declaim (type double-float *transfer-guess-ratio* *transfer-guess-slack*))
+
+(defun job-params-dv (job from below)
+  "m/s: the Δv of JOB's burns FROM to BELOW by their parameters."
+  (let ((params (autopilot-job-params job)))
+    (loop for i from from below below
+          sum (sqrt (+ (expt (aref params (* 3 i)) 2) (expt (aref params (+ (* 3 i) 1)) 2)
+                       (expt (aref params (+ (* 3 i) 2)) 2))))))
+
+(defun job-transfer-guess! (job)
+  "JOB's :departure and :arrival guessed again from where its lead's ship
+is: the scratch coasted from the lead to the :departure's node, the
+transfer there to the aim point at the :arrival's node by
+coast-lambert-into! in the ship's plane (the search's kept when it has
+none, or costs over *transfer-guess-ratio* times the search's plus
+*transfer-guess-slack*); their node states and LVLH Δv."
+  (let* ((n (autopilot-job-burn-count job))
+         (d (autopilot-job-fixed job))
+         (labels (autopilot-job-burn-labels job)))
+    (when (and (= n (+ d 2)) (eq (svref labels d) :departure) (eq (svref labels (1+ d)) :arrival))
+      (let* ((times (autopilot-job-node-times job))
+             (t-d (setf (aref times d) (grid-round (aref times d))))
+             (t-a (aref times (1+ d)))
+             (scratch (shot-sim-assign! (autopilot-job-scratch job) (autopilot-job-lead job) nil))
+             (planning (job-planning-sim job))
+             (*coast-j2* (model-coast-j2 planning))
+             (*coast-delta* nil))
+        (loop while (and (< (sim-t scratch) t-d) (null (sim-loss scratch)))
+              do (sim-step-ticks! scratch *prediction-level* t-d))
+        (multiple-value-bind (r-a v-a)
+            (aim-point planning (autopilot-job-target job) (autopilot-job-fixture job)
+                       (autopilot-job-range job) (autopilot-job-aim job) t-a (autopilot-job-side job))
+          (let* ((ship (sim-ship scratch))
+                 (r-d (vec3-copy (ship-state-r ship)))
+                 (v-d (vec3-copy (ship-state-v ship)))
+                 (normal (vec3-normalize (vec3-cross r-d v-d)))
+                 ;; in the ship's plane: near 180° an offset out of it
+                 ;; would tilt the transfer's; Newton's N terms take it
+                 (r-in (vec3-add-scaled r-a normal (- (vec3-dot r-a normal))))
+                 (v1 (make-vec3)) (v2 (make-vec3))
+                 (group (make-coast-group (coast-rails r-d v-d t-d))))
+            (when (and (= (sim-t scratch) t-d)
+                       (coast-lambert-into! v1 v2 r-d t-d r-in (- t-a t-d) normal group)
+                       ;; near 180° Lambert's branch can be dear: the search's then
+                       (<= (+ (vec3-norm (vec3-sub v1 v-d)) (vec3-norm (vec3-sub v-a v2)))
+                           (+ (* *transfer-guess-ratio* (job-params-dv job d (+ d 2)))
+                              *transfer-guess-slack*)))
+              (let ((states (autopilot-job-node-states job))
+                    (params (autopilot-job-params job)))
+                (loop for i in (list d (1+ d))
+                      for r in (list r-d r-in)
+                      for v in (list v-d v2)
+                      for dv in (list (vec3-sub v1 v-d) (vec3-sub v-a v2))
+                      do (replace states r :start1 (* 6 i))
+                         (replace states v :start1 (+ (* 6 i) 3))
+                         (multiple-value-bind (ta na ra) (lvlh-axes r v)
+                           (setf (aref params (* 3 i)) (vec3-dot dv ta)
+                                 (aref params (+ (* 3 i) 1)) (vec3-dot dv na)
+                                 (aref params (+ (* 3 i) 2)) (vec3-dot dv ra))))))))))
+    job))
+
+(defun job-next-candidate! (job reason)
+  "JOB's current candidate dropped: the next one guessed and shot, past the
+last \"NO CLEAR TRANSFER\"; a replan (one plan only) refused with REASON."
+  (if (and (null (autopilot-job-base job))
+           (< (1+ (autopilot-job-index job)) (length (autopilot-job-candidates job))))
+      (setf (autopilot-job-index job) (1+ (autopilot-job-index job))
+            (autopilot-job-iteration job) 0
+            (autopilot-job-column job) -1
+            (autopilot-job-stage job) :guess)
+      (job-refuse! job (if (autopilot-job-base job) reason "NO CLEAR TRANSFER")))
+  job)
+
+(defun job-aim-offset (job time)
+  "(values dr dv): JOB's aim point at TIME less the target's planning state
+there (stop-target-state-into!, the drop point itself for Skua Yard), from
+its snapshot."
+  (let ((snapshot (job-planning-sim job))
+        (rt (make-vec3)) (vt (make-vec3)))
+    (multiple-value-bind (r v)
+        (aim-point snapshot (autopilot-job-target job) (autopilot-job-fixture job)
+                   (autopilot-job-range job) (autopilot-job-aim job) time (autopilot-job-side job))
+      (stop-target-state-into! rt vt snapshot (autopilot-job-target job) :drop-point time)
+      (values (vec3-sub r rt) (vec3-sub v vt)))))
+
+(defun rendezvous-residuals! (job out)
+  "OUT: at JOB's shot's :arrival cut the ship's position and velocity less
+the aim point's (the shot's target there plus job-aim-offset), over
+*rendezvous-position-tolerance* and *rendezvous-velocity-tolerance*; the
+velocity alone when no :departure is left to steer the position (a replan
+after it). (values count largest); large for a shot lost or cut short."
+  (let* ((shot (autopilot-job-shot job))
+         (n (autopilot-job-burn-count job))
+         (cut (shot-last-cut job))
+         (m (if (find :departure (autopilot-job-burn-labels job) :end n) 6 3))
+         (i (and cut (node-interval shot cut))))
+    (if (or (null i) (sim-loss (prediction-sim shot)))
+        (progn (fill out 1d3 :end m)
+               (values m 1d3))
+        (let ((r (make-vec3)) (v (make-vec3)) (rt (make-vec3)) (vt (make-vec3))
+              (nodes (prediction-nodes shot)))
+          (replace r nodes :start2 (+ (* +node-size+ i) 1))
+          (replace v nodes :start2 (+ (* +node-size+ i) 4))
+          (unless (prediction-target-node shot (- i (prediction-head shot)) rt vt)
+            (stop-target-state-into! rt vt (job-planning-sim job) (autopilot-job-target job)
+                                     :drop-point cut))
+          (multiple-value-bind (dr dv) (job-aim-offset job cut)
+            (dotimes (j 3)
+              (when (= m 6)
+                (setf (aref out j) (/ (- (aref r j) (aref rt j) (aref dr j))
+                                      *rendezvous-position-tolerance*)))
+              (setf (aref out (+ j (- m 3))) (/ (- (aref v j) (aref vt j) (aref dv j))
+                                                *rendezvous-velocity-tolerance*))))
+          (values m (loop for j below m maximize (abs (aref out j))))))))
+
+(defun shot-path-margin (job)
+  "The path check of JOB's lead and shot (decisions 58, 59): over their
+clearance windows the least of each promoted object's distance (the target's too) less
+its bound + *object-clearance*: (values margin passes), PASSES (key . m)
+per object it came near."
+  (let* ((shot (autopilot-job-shot job))
+         (objects (sim-objects (prediction-sim shot)))
+         (least (prediction-clearance-least shot))
+         (lead (prediction-clearance-least (autopilot-job-lead-scan job)))
+         (margin most-positive-double-float)
+         (passes '()))
+    (loop for i below (min (length least) (length objects))
+          for d = (if (< i (length lead)) (min (aref least i) (aref lead i)) (aref least i))
+          when (< d most-positive-double-float)
+            do (let ((object (svref objects i)))
+                 (push (cons (object-key object) d) passes)
+                 (setf margin (min margin (- d (object-def-bound (object-def-of object))
+                                             *object-clearance*)))))
+    (values margin (nreverse passes))))
+
+(defun job-rendezvous-part (job passes)
+  "JOB's rendezvous-part for its plan: the stop point's choice, the aim
+point (its offset from the target at the :arrival node), PASSES."
+  (let ((arrival (aref (autopilot-job-node-times job) (1- (autopilot-job-burn-count job)))))
+    (make-rendezvous-part (autopilot-job-target job) (autopilot-job-fixture job)
+                          (autopilot-job-range job) (autopilot-job-aim job) (autopilot-job-side job)
+                          (job-aim-offset job arrival) arrival passes)))
+
+(defun rendezvous-plan-aim-point (plan)
+  "The number of PLAN's aim point, (1)–(3), or nil for a plan not a rendezvous."
+  (let ((rendezvous (burn-plan-rendezvous plan)))
+    (and rendezvous (rendezvous-part-aim rendezvous))))
+
 ;;; The preset menu (decision 118: Autopilot preset menu and input in
 ;;; milestone 3): the clock's model (clock-autopilot, not in the sim or
 ;;; checkpoints), driven by O, the arrows, Return and Backspace; drawn by the
@@ -2368,8 +2925,9 @@ candidates nil), a simple-vector in order, or (values nil reason)."
   (key nil :type keyword :read-only t)
   ;; What Left/Right do: :altitude (km), :inclination (half degrees),
   ;; :inclination-keep ((half degrees . the start's): KEEP at the start),
-  ;; :apsis (:apoapsis ↔ :periapsis), :none.
-  (kind :none :type (member :altitude :inclination :inclination-keep :apsis :none) :read-only t)
+  ;; :apsis (:apoapsis ↔ :periapsis), :hours (a rendezvous's limit), :none.
+  (kind :none :type (member :altitude :inclination :inclination-keep :apsis :hours :none)
+        :read-only t)
   (init nil :type function :read-only t)        ; (sim orbit) → the value on opening
   (text nil :type function :read-only t)        ; (value) → the row's text
   (goal nil :type function :read-only t)        ; (model) → (values preset goal)
@@ -2403,7 +2961,7 @@ candidates nil), a simple-vector in order, or (values nil reason)."
             (list (* 1000d0 (model-value model :change-orbit))
                   (and (/= (car inc) (cdr inc)) (half-degrees->rad (car inc)))))))
 
-(defparameter *autopilot-rows*
+(defparameter *orbit-rows*
   (list
    (make-autopilot-row :circularise :apsis
                        (lambda (sim orbit)
@@ -2453,7 +3011,32 @@ candidates nil), a simple-vector in order, or (values nil reason)."
                        (lambda (value) (declare (ignore value)) "PLANE TARGET")
                        (lambda (model) (declare (ignore model)) (values :change-plane :target))
                        :offered (lambda (sim) (and (sim-target sim) t))))
-  "The menu's rows in order (decision 118); task 161 appends its rendezvous rows.")
+  "The orbit rows in order (decision 118).")
+
+(defun rendezvous-row (key name target &optional offered)
+  "The row \"RDV <NAME> <h> H\" of KEY: a rendezvous with TARGET (a key, or
+:target: the sim's) within its limit in hours (decision 119)."
+  (make-autopilot-row key :hours
+                      (lambda (sim orbit)
+                        (declare (ignore sim orbit))
+                        (round *rendezvous-limit* 3600))
+                      (lambda (hours) (format nil "RDV ~A ~D H" name hours))
+                      (lambda (model)
+                        (values :rendezvous (list target :limit (* 3600d0 (model-value model key)))))
+                      :offered offered))
+
+(defparameter *autopilot-rows*
+  (append *orbit-rows*
+          (loop for place in *places*
+                collect (rendezvous-row (intern (format nil "RDV-~A" (place-key place)) :keyword)
+                                        (place-name place) (place-key place)))
+          (list (rendezvous-row :rdv-target "TARGET" :target
+                                (lambda (sim)
+                                  (let ((target (sim-target sim)))
+                                    (and target (not (find target *places* :key #'place-key))))))))
+  "The menu's rows in order (decision 118): the orbit rows, then \"RDV
+<PLACE>\" for each of *places* and \"RDV TARGET\" with a target not a place
+(decision 119).")
 
 (defstruct (autopilot-model (:constructor make-autopilot-model ()) (:copier nil))
   (open nil :type boolean)                      ; the menu shown: state not :closed
@@ -2525,6 +3108,10 @@ candidates nil), a simple-vector in order, or (values nil reason)."
                                   (cddr cell))))
           (:apsis
            (setf (cdr cell) (if (eq (cdr cell) :apoapsis) :periapsis :apoapsis)))
+          (:hours
+           (let ((step (round *rendezvous-limit-step* 3600)))
+             (setf (cdr cell) (clamp (+ (cdr cell) (* direction factor step))
+                                     step (round *rendezvous-limit-max* 3600)))))
           (:none)))))
   model)
 
@@ -2564,7 +3151,9 @@ engaged once shown. A refusal at the start shows at once."
 *plan-stale-lead* passed, or SIM's r more than *plan-stale-distance* off
 the job's final shot at SIM's t."
   (let* ((plan (autopilot-model-plan model))
-         (shot (autopilot-job-shot (autopilot-model-job model)))
+         (job (autopilot-model-job model))
+         ;; a rendezvous's shots start late (job-lead-start!): its coast
+         (shot (if (burn-plan-rendezvous plan) (autopilot-job-coast job) (autopilot-job-shot job)))
          (time (sim-t sim))
          (p (make-vec3)))
     (or (> time (- (planned-burn-hold-at (svref (burn-plan-burns plan) 0)) *plan-stale-lead*))

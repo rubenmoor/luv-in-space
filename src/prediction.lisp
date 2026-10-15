@@ -56,6 +56,11 @@ decision 149).")
   (cut-count 0 :type fixnum)
   (contact-starts (make-array 0 :element-type 'double-float) ; a step's start: ship, candidates
    :type (simple-array double-float (*)))
+  ;; A rendezvous shot's path check (decision 119): over [from, until] the
+  ;; least distance from the ship to each promoted object's CoM, per index.
+  (clearance-from 0d0 :type double-float)
+  (clearance-until -1d0 :type double-float)
+  (clearance-least (make-array 0 :element-type 'double-float) :type (simple-array double-float (*)))
   (impact nil)                                  ; the copy's loss record
   (abort nil)                                   ; the copy's plan's abort notice, a string
   (signature (new-controls) :type controls)     ; the controls it was made with
@@ -491,6 +496,72 @@ nothing."
           (when (>= best-i 0)
             (push-event! pred :contact (+ t0 (* best h)) best-i)))))))
 
+(defun hermite-least (c lo hi)
+  "The least |p(s)| on C over [LO, HI] ⊆ [0, 1]: the ends, or where p·p'
+goes from − to + between them, bisected. Conses nothing."
+  (declare (optimize speed) (type hermite c) (type double-float lo hi) (inline hermite-point!))
+  (let ((p (make-vec3)) (dp (make-vec3)))
+    (declare (dynamic-extent p dp))
+    (flet ((at (s) (hermite-point! p dp c s) (values (vec3-norm p) (vec3-dot p dp))))
+      (multiple-value-bind (d0 g0) (at lo)
+        (multiple-value-bind (d1 g1) (at hi)
+          (if (and (< g0 0d0) (> g1 0d0))
+              (let ((a lo) (b hi))
+                (declare (type double-float a b))
+                (loop repeat 50
+                      do (let ((s (* 0.5d0 (+ a b))))
+                           (if (< (nth-value 1 (at s)) 0d0) (setf a s) (setf b s))))
+                (min d0 d1 (the double-float (at (* 0.5d0 (+ a b))))))
+              (min d0 d1)))))))
+
+(defun clearance-step! (pred sim)
+  "After a step of PRED's copy SIM (contact-starts! before it), the part of
+it within PRED's clearance window: each object a candidate at both ends, the
+least distance from the ship on their relative Hermite kept per index.
+Conses nothing."
+  (declare (optimize speed) (type prediction pred) (type sim sim) (inline hermite-set!))
+  (let* ((objects (sim-objects sim))
+         (buffer (prediction-contact-starts pred))
+         (least (prediction-clearance-least pred))
+         (t0 (if (> (length buffer) 0) (aref buffer 0) (sim-t sim)))
+         (t1 (sim-t sim))
+         (h (- t1 t0))
+         (from (max t0 (prediction-clearance-from pred)))
+         (until (min t1 (prediction-clearance-until pred))))
+    (declare (type double-float t0 t1 h from until))
+    (when (and (> h 0d0) (<= from until)
+               (= (length buffer) (* 7 (1+ (length objects))))
+               (= (length least) (length objects)))
+      (let ((ship (sim-ship sim))
+            (c (make-array 12 :element-type 'double-float))
+            (p0 (make-vec3)) (u0 (make-vec3)) (p1 (make-vec3)) (u1 (make-vec3)))
+        (declare (dynamic-extent c p0 u0 p1 u1))
+        (dotimes (i (length objects))
+          (let ((k (* 7 (1+ i)))
+                (object (svref objects i)))
+            (when (and (= (aref buffer k) 1d0) (contact-candidate-p sim object i))
+              (let ((state (object-state object)))
+                (dotimes (j 3)
+                  (setf (aref p0 j) (- (aref buffer (+ k 1 j)) (aref buffer (+ 1 j)))
+                        (aref u0 j) (- (aref buffer (+ k 4 j)) (aref buffer (+ 4 j)))
+                        (aref p1 j) (- (aref (ship-state-r state) j) (aref (ship-state-r ship) j))
+                        (aref u1 j) (- (aref (ship-state-v state) j) (aref (ship-state-v ship) j))))
+                (hermite-set! c p0 u0 p1 u1 h)
+                (setf (aref least i)
+                      (min (aref least i) (hermite-least c (/ (- from t0) h) (/ (- until t0) h))))))))))
+    nil))
+
+(defun prediction-clearance! (pred from until)
+  "PRED's clearance window [FROM, UNTIL] (after a restart, before its
+steps), its least distances reset; PRED."
+  (let ((n (length (sim-objects (prediction-sim pred)))))
+    (unless (= (length (prediction-clearance-least pred)) n)
+      (setf (prediction-clearance-least pred) (make-array n :element-type 'double-float)))
+    (fill (prediction-clearance-least pred) most-positive-double-float)
+    (setf (prediction-clearance-from pred) (float from 1d0)
+          (prediction-clearance-until pred) (float until 1d0))
+    pred))
+
 ;;; Restart and extension
 
 (defun signature-matches-p (pred sim)
@@ -548,6 +619,8 @@ those PRED was made with (decision 75, decision 116)."
         (prediction-cut-count pred) 0
         (prediction-impact pred) nil
         (prediction-abort pred) nil
+        (prediction-clearance-from pred) 0d0
+        (prediction-clearance-until pred) -1d0
         (prediction-state pred) :running)
   (incf (prediction-restarts pred))
   (push-node! pred (prediction-sim pred))
@@ -672,7 +745,9 @@ copy's plan flies at *prediction-rcs-level* while an RCS burn runs, else at
           (apsis-search! pred (- (prediction-count pred) 2))
           (when (= (prediction-target-count pred) (prediction-count pred))
             (target-search! pred (- (prediction-count pred) 2)))
-          (contact-crossing! pred sim))
+          (contact-crossing! pred sim)
+          (when (<= (prediction-clearance-from pred) (prediction-clearance-until pred))
+            (clearance-step! pred sim)))
         ;; A contact death is no :impact: its spheres' meeting came first.
         (cond ((and (sim-loss sim) (not (eq (loss-cause (sim-loss sim)) :contact)))
                (setf (prediction-impact pred) (sim-loss sim))

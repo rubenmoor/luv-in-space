@@ -471,11 +471,12 @@ advancing at MEAN-RATE; START if it is below RADIUS there; nil if never."
             (cond ((< m0 mc) (+ start (/ (- mc m0) mean-rate)))
                   ((< m0 (- mc)) start)))))))
 
-(defun make-rails (orbit start &key (body :earth) (j2 t))
+(defun make-rails (orbit start &key (body :earth) (j2 t) mean-a)
   "The segment list of an object on ORBIT (around BODY) from START: one
 segment to the first inbound crossing of the crash radius, or to
 *rails-horizon*; an Earth-centred ellipse with J2's secular rates unless J2
-is nil."
+is nil, its mean anomaly moving at the mean motion of MEAN-A (m) if given
+(state-rails), else of ORBIT's a."
   (let* ((body (body body))
          (orbit (copy-orbit orbit))
          (start (float start 1d0))
@@ -486,7 +487,10 @@ is nil."
             (values 0d0 0d0 0d0))
       (when (< (abs (cos (orbit-i orbit))) *polar-cos*)
         (setf raan-rate 0d0))
-      (let* ((mean-rate (+ (orbit-n orbit) mean-delta))
+      (let* ((mean-rate (+ (if (and mean-a j2 (elliptic-p orbit) (eq (body-key body) :earth))
+                                   (sqrt (/ (body-mu body) (expt (float mean-a 1d0) 3)))
+                                   (orbit-n orbit))
+                               mean-delta))
              (crash (rails-crash-time orbit start m0 mean-rate (body-crash-radius body)))
              (crash (and crash (< crash *rails-horizon*) crash)))
         (list (%make-rails-segment :start start
@@ -495,6 +499,19 @@ is nil."
                                    :raan-rate raan-rate :argp-rate argp-rate
                                    :mean-rate mean-rate
                                    :end-kind (if crash :crash :horizon)))))))
+
+(defun state-rails (r v start &key (body :earth) (j2 t) delta)
+  "The rails of an integrated state R, V at START around BODY: its osculating
+conic with J2's secular rates (unless J2 is nil) at the mean motion of its
+mean semi-major axis, a less DELTA (m) or, without, j2-mean-semi-major-axis,
+as the integrated J2 motion moves on average."
+  (let* ((orbit (state->orbit r v (body-mu (body body)) start))
+         (mean-a (and j2 (eq body :earth) (elliptic-p orbit)
+                      (if delta (- (orbit-a orbit) delta) (j2-mean-semi-major-axis r v body)))))
+    ;; first order only where the term is small (not near-parabolic)
+    (make-rails orbit start :body body :j2 j2
+                            :mean-a (and mean-a (< (abs (- mean-a (orbit-a orbit))) (* 1d-2 (orbit-a orbit)))
+                                         mean-a))))
 
 (defun rails-raan (segment time)
   "Ω of SEGMENT at TIME."

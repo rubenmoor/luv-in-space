@@ -401,3 +401,25 @@ Newton on z inside a bisection bracket. Conses nothing."
     (values (* -3/2 k ci)
             (* 3/4 k (- (* 5 ci ci) 1))
             (* 3/4 k (sqrt (- 1 (* e e))) (- (* 3 ci ci) 1)))))
+
+(defun j2-mean-semi-major-axis (r v &optional (body :earth))
+  "m: the mean semi-major axis of the state R, V about BODY, its osculating a
+less J2's first-order short-period term (Kozai): (J2 R²/a) [(1 − 3/2 sin²
+i) ((a/r)³ − (1 − e²)^(−3/2)) + 3/2 sin² i (a/r)³ cos 2u]. Integrated J2
+motion keeps the mean motion of this a, not of the osculating one (0.2 % off
+at 400 km)."
+  (let* ((body (body body))
+         (orbit (state->orbit r v (body-mu body) 0d0))
+         (a (orbit-a orbit))
+         (e (orbit-e orbit))
+         (s2 (expt (sin (orbit-i orbit)) 2))
+         (h (vec3-normalize (vec3-cross r v)))
+         (out (vec3-normalize r))
+         ;; u from the ascending node, ẑ × ĥ (x̂ for an equatorial orbit)
+         (node (let ((n (vec3-cross (vec3 0 0 1) h)))
+                 (if (> (vec3-norm n) 1d-12) (vec3-normalize n) (vec3 1 0 0))))
+         (u (atan (vec3-dot (vec3-cross node out) h) (vec3-dot node out)))
+         (ar3 (expt (/ a (vec3-norm r)) 3)))
+    (- a (* (/ (* (body-j2 body) (expt (body-radius body) 2)) a)
+            (+ (* (- 1 (* 1.5d0 s2)) (- ar3 (expt (- 1 (* e e)) -1.5d0)))
+               (* 1.5d0 s2 ar3 (cos (* 2 u))))))))

@@ -416,6 +416,8 @@ velocity is off its shot by more than max(*cut-error-min*,
 *cut-error-fraction* of the burn's Δv)."
   (and (burn-plan-measure plan)
        (planned-burn-cut-v burn)
+       ;; a rendezvous's terminal phase absorbs the arrival's error (decision 119)
+       (not (eq (planned-burn-label burn) :arrival))
        (> (plan-cut-error sim burn)
           (max *cut-error-min* (* *cut-error-fraction* (planned-burn-dv burn))))))
 
@@ -546,8 +548,12 @@ translation keys released, rate damping, sim-plan nil; SIM."
 (defun sim-engage-plan! (sim plan)
   "PLAN engaged in SIM as the autopilot does (decision 117), and as its
 shots start: throttle off, no cut-off, keys released, PLAN from its first
-burn, its coast hold at once; SIM."
-  (let ((controls (sim-controls sim)))
+burn, its coast hold at once, a rendezvous's target the sim's (decision
+119); SIM."
+  (let ((controls (sim-controls sim))
+        (rendezvous (burn-plan-rendezvous plan)))
+    (when rendezvous
+      (sim-set-target! sim (rendezvous-part-target rendezvous)))
     (controls-throttle-cut controls)
     (fill (controls-rotation-keys controls) 0)
     (fill (controls-translation-keys controls) 0)

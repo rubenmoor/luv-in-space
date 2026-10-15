@@ -200,7 +200,7 @@ nil."
 (defun object-planning-state-into! (r v object sim time)
   "OBJECT's position and velocity at TIME for planning: object-state-into!
 on rails or at SIM's t; a promoted or latched object at another time on
-Kepler rails of its state at SIM's t, with J2's rates (conses). True, or
+the rails of its state at SIM's t (object-planning-rails; conses). True, or
 nil (removed, past its rails' crash)."
   (declare (type vec3 r v) (type double-float time))
   (let ((status (object-status object)))
@@ -222,15 +222,14 @@ nil (removed, past its rails' crash)."
 
 (defun object-planning-rails (object sim)
   "The rails object-planning-state-into! puts OBJECT on away from SIM's t:
-its own, or for a promoted or latched object the Kepler rails (J2's rates)
-of its state at SIM's t (conses); nil when removed."
+its own, or for a promoted or latched object the rails of its state at
+SIM's t (state-rails: J2's rates at its mean motion; conses); nil when
+removed."
   (case (object-status object)
     (:removed nil)
     (:rails (object-rails object))
     (t (let ((state (object-state object)))
-         (make-rails (state->orbit (ship-state-r state) (ship-state-v state)
-                                   (body-mu (body (sim-body sim))) (sim-t sim))
-                     (sim-t sim) :body (sim-body sim))))))
+         (state-rails (ship-state-r state) (ship-state-v state) (sim-t sim) :body (sim-body sim))))))
 
 (defun stop-target-state-into! (r v sim target fixture time)
   "The state at TIME of what the stop point of TARGET with FIXTURE moves

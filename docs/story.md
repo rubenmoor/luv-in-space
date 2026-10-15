@@ -194,7 +194,7 @@ How `quests.lisp` runs the line; per-quest sections only add what differs.
 ### 2. Home port
 - Giver: TERN (the job assigned by CAIRN OPS at 1.6). Goal: rendezvous with Tern Station and berth. Place: Tern Station, 420 km, u₀ 20°.
 - Skills: targets (] [), the autopilot's "Rendezvous: Tern Station" (O, Up/Down, Return to plan, Return to fly), the AUTOPILOT screen's plan and the Burn instrument; warp through the coast and its drop-outs; the TARGET screen; target and relative holds (7, 0); grapple armed (G) with the grapple camera; fine translation (F, H/N, I/K, J/L); berthing; an R-bar approach to the zenith fixture.
-- Milestone: 3. Propellant: 11 m/s (+ phasing) from the start (`docs/design.md` "Earth-orbit points of interest": Hohmann 400 → 420 km, 5.65 + 5.64 m/s), phasing by waiting ~19 h inside the autopilot's 48 h search; terminal phase and braking budget 20 m/s: 31 m/s, 254 kg. Time: ≤ 1 day. Expected state at start: 27,919 kg, 400 km circular. A late start (Tern Station behind) makes the plan dearer; the tanks hold 6.6 km/s and quest 4 refuels.
+- Milestone: 3. Propellant: 11 m/s (+ phasing) from the start (`docs/design.md` "Earth-orbit points of interest": Hohmann 400 → 420 km, 5.65 + 5.64 m/s), phasing by waiting ~19 h (12.6 h as built, `decision 159: The rendezvous search's coasts at the sim's mean motion`) inside the autopilot's 48 h search; terminal phase and braking budget 20 m/s: 31 m/s, 254 kg. Time: ≤ 1 day. Expected state at start: 27,919 kg, 400 km circular. A late start (Tern Station behind) makes the plan dearer; the tanks hold 6.6 km/s and quest 4 refuels.
 
 | Step | JOB card | Y | Completion |
 |---|---|---|---|

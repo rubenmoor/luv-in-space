@@ -413,23 +413,24 @@ at ×1,000 and ×100 within its goal's tolerances; the plan."
       (true (member (first lines) '("> CIRCULARISE AP" "> CIRCULARISE PE") :test #'string=))
       (is equal '("  SET AP 400 KM" "  SET PE 400 KM" "  ORBIT 400 KM" "  ORBIT INC KEEP"
                   "  PLANE 90.0°")
-          (rest lines))
+          (subseq lines 1 6))
       (is = 0 index)
       (dolist (line lines) (false (lis::glyph-missing line) "~S" line)))
-    (dolist (key '(:right :up :left :left :up :right :right))
+    (dolist (key '(:right :down :down :down :down :down :left :left :up :right :right))
       (lis::autopilot-key! model clock sim key))
     (is equal '("> ORBIT INC 91.0°" "  PLANE 89.0°")
-        (last (lis::autopilot-menu-lines model sim) 2))
+        (subseq (lis::autopilot-menu-lines model sim) 4 6))
     (lis::sim-set-target! sim :tern-station)
-    (is string= "  PLANE TARGET" (car (last (lis::autopilot-menu-lines model sim))))
+    (is string= "  PLANE TARGET" (seventh (lis::autopilot-menu-lines model sim)))
     (lis::autopilot-key! model clock sim :down)
     (lis::autopilot-key! model clock sim :down)
     (is equal '(:change-plane :target)
         (multiple-value-list (funcall (lis::autopilot-row-goal (lis::autopilot-selected-row model sim))
                                       model)))
-    (lis::autopilot-key! model clock sim :down)
-    (is eq :circularise (lis::autopilot-model-selection model))
-    (dotimes (i 3) (lis::autopilot-key! model clock sim :up))
+    (dotimes (i 6) (lis::autopilot-key! model clock sim :down))
+    (is eq :circularise (lis::autopilot-model-selection model) "past the five RDV rows")
+    ;; 12 rows with Tern (a place) targeted: up 8 times wraps to ORBIT INC
+    (dotimes (i 8) (lis::autopilot-key! model clock sim :up))
     (dotimes (i 40000) (lis::autopilot-step-value! model sim 1 10))
     (is string= "> ORBIT INC 180.0°" (fifth (lis::autopilot-menu-lines model sim)))
     (lis::autopilot-key! model clock sim :up)
@@ -697,16 +698,18 @@ Skua Yard 5 on its rails, at its velocity."
     sim))
 
 (define-test rendezvous-search-tern
-  ;; From the start: A, waiting ~19 h, 11 m/s, passing ≥ 239.8 m from
-  ;; Tern's CoM. 24 h, not 48: the same winner (it arrives at 19.9 h) at
-  ;; half the time (~60 ms).
+  ;; From the start: A, waiting 12.6 h (the coasts at the sim's mean motion,
+  ;; decision 159: the 400 km start's mean a lies 9.7 km lower, so the ship
+  ;; reaches Tern sooner than the design's ~19 h), 11.41 m/s (11.4 ± 1),
+  ;; passing ≥ 239.8 m from Tern's CoM. 24 h, not 48: the same winner at
+  ;; half the time (~55 ms).
   (let* ((sim (lis::new-game-sim))
          (candidates (search-now sim :tern-station :limit 86400d0))
          (best (svref candidates 0)))
     (check-candidates sim candidates 86400d0)
     (is eq :a (lis::rendezvous-candidate-family best))
-    (true (<= 15 (hours-after sim (lis::rendezvous-impulse-time (impulse best :departure))) 23))
-    (true (<= (lis::rendezvous-candidate-total best) 11.4d0) "~,3F m/s" (lis::rendezvous-candidate-total best))
+    (true (<= 11 (hours-after sim (lis::rendezvous-impulse-time (impulse best :departure))) 14))
+    (true (near-dv (lis::rendezvous-candidate-total best) 11.4d0) "~,3F m/s" (lis::rendezvous-candidate-total best))
     (true (>= (lis::rendezvous-candidate-target-distance best) 239.8d0))
     (is = 1 (lis::rendezvous-candidate-aim best))
     (true (<= (length candidates) lis::*search-candidates*))))
@@ -735,15 +738,17 @@ Skua Yard 5 on its rails, at its velocity."
     (true (>= (lis::rendezvous-candidate-target-distance best) 233.7d0))))
 
 (define-test rendezvous-search-fulmar-phasing
-  ;; 296° short: B, the phasing ≤ 33 m/s, ≤ 91 m/s in all, the aim point
-  ;; within 48 h, the final transfer passing ≥ 233.7 m.
+  ;; 296° short: B, the phasing ≤ 33 m/s, ≤ 96 m/s in all (95.5: at the
+  ;; sim's mean motion the 400 km start lags further, decision 159; the
+  ;; design's 89.3 took the osculating a's), the aim point within 48 h, the
+  ;; final transfer passing ≥ 233.7 m.
   (let* ((sim (fulmar-phasing-sim))
          (candidates (search-now sim :fulmar-depot))
          (best (svref candidates 0)))
     (check-candidates sim candidates lis::*rendezvous-limit*)
     (is eq :b (lis::rendezvous-candidate-family best))
     (true (<= (impulse-dv best :phasing) 33d0) "phasing ~,2F m/s" (impulse-dv best :phasing))
-    (true (<= (lis::rendezvous-candidate-total best) 91d0) "~,2F m/s" (lis::rendezvous-candidate-total best))
+    (true (<= (lis::rendezvous-candidate-total best) 96d0) "~,2F m/s" (lis::rendezvous-candidate-total best))
     (true (>= (lis::rendezvous-candidate-target-distance best) 233.7d0))))
 
 (define-test rendezvous-search-highport
@@ -758,43 +763,32 @@ Skua Yard 5 on its rails, at its velocity."
             "phase ~D: ~,1F m/s" k (lis::rendezvous-candidate-total (svref candidates 0))))))
 
 (define-test rendezvous-search-skua-yard
-  ;; From Highport's plant 1 h before perigee: B with one revolution falling
-  ;; back, its phasing burn at perigee 0.22 ± 0.05 m/s (the ship's 0.2 m/s
-  ;; off the plant doubles the design's 0.11), the aim point within 26 h. An
-  ;; A at 21.5 h, 1.5 m/s, comes first: within 1 m/s the earlier arrival
-  ;; wins, and the B pays ~0.75 m/s at aim point (2), 1 km above the stop
-  ;; point at perigee. Those and the winner keep ≥ 500 m from every object but
-  ;; the target; B with N = 2 burns 22 min before perigee, ~420 m from
-  ;; Highport.
+  ;; From Highport's plant 1 h before perigee (decision 159: the ship's
+  ;; coast at the sim's mean motion against the yard's rails): an A leaving
+  ;; at 2.4 h, a 19.6 h transfer, 1.43 m/s, arriving within 26 h; the
+  ;; design's B with one revolution (0.22 m/s at perigee) no longer comes
+  ;; first nor among the eight. The winner keeps ≥ 500 m from every object
+  ;; but the target.
   (let* ((sim (skua-plant-sim))
          (candidates (search-now sim :skua-yard-5))
-         (best (svref candidates 0))
-         (one (find-if (lambda (c) (and (eq (lis::rendezvous-candidate-family c) :b)
-                                        (= (lis::rendezvous-candidate-revolutions c) 1)))
-                       candidates)))
+         (best (svref candidates 0)))
     (check-candidates sim candidates lis::*rendezvous-limit*)
-    (true one)
-    (when one
-      (is eq :fall-back (lis::rendezvous-candidate-direction one))
-      (true (< (abs (- (impulse-dv one :phasing) 0.22d0)) 0.05d0) "~,3F m/s" (impulse-dv one :phasing))
-      (true (<= (hours-after sim (lis::rendezvous-candidate-arrival one)) 26))
-      (true (< (abs (- (lis::rendezvous-impulse-time (impulse one :phasing)) (highport-apsis :periapsis)))
-               (/ (lis::orbit-period (highport-orbit*)) 128))))
+    (true (<= (lis::rendezvous-candidate-total best) 1.5d0) "~,3F m/s" (lis::rendezvous-candidate-total best))
     (true (<= (hours-after sim (lis::rendezvous-candidate-arrival best)) 26))
-    (loop for c across candidates
-          when (or (eq c best) (= (lis::rendezvous-candidate-revolutions c) 1))
-            do (true (>= (lis::rendezvous-candidate-other-distance c) 500d0)
-                     "~,1F m" (lis::rendezvous-candidate-other-distance c)))))
+    (true (>= (lis::rendezvous-candidate-other-distance best) 500d0)
+          "~,1F m" (lis::rendezvous-candidate-other-distance best))))
 
 (define-test rendezvous-search-apogee-approach
-  ;; 1 km behind Skua Yard 5 at apogee: (1) passes Skua Yard 1, so a close
-  ;; grid transfer (under 0.4 target periods) to aim point (2).
+  ;; 1 km behind Skua Yard 5 at apogee at its velocity: both integrated, the
+  ;; ship stays co-orbital (decision 159), so at 48 h it waits (an A of
+  ;; 0.04 m/s over 20 h); within 6 h a close-grid transfer (under 0.4 target
+  ;; periods) of under 0.1 m/s.
   (let* ((sim (apogee-approach-sim))
-         (best (svref (search-now sim :skua-yard-5) 0)))
-    (is = 2 (lis::rendezvous-candidate-aim best))
+         (best (svref (search-now sim :skua-yard-5 :limit 21600d0) 0)))
     (true (< (- (lis::rendezvous-candidate-arrival best)
                 (lis::rendezvous-impulse-time (impulse best :departure)))
-             (* 0.4d0 (lis::orbit-period (highport-orbit*)))))))
+             (* 0.4d0 (lis::orbit-period (highport-orbit*)))))
+    (true (< (lis::rendezvous-candidate-total best) 0.1d0) "~,3F m/s" (lis::rendezvous-candidate-total best))))
 
 (define-test rendezvous-search-slices
   ;; In 300-unit calls, each within its budget: the same candidates as at
@@ -820,3 +814,224 @@ Skua Yard 5 on its rails, at its velocity."
             until (member stage '(:done :refused)))
       (is eq :done (lis::autopilot-job-stage job))
       (true (equalp whole (lis::rendezvous-search-result (lis::autopilot-job-search job)))))))
+
+;;; Rendezvous: the job (docs/design.md "Rendezvous: search, phasing and the
+;;; approach"; decision 119, decision 158: The rendezvous job as built: the
+;;; lead, the transfer re-guess, step halving, the planning world, the checks).
+;;; Objects are promoted within 500 m here: a target promoted at 100 km leaves
+;;; its rails at up to ~15 m/s (its rails take its elements as mean ones,
+;;; integration as osculating), which the search cannot foresee; task 267
+;;; makes promotion keep an undisturbed object on its rails.
+;;;
+;;; Time per plan (outside scripts/test; record in docs/architecture.md
+;;; "Testing"):
+;;; (dolist (case (list (list :point (lis::new-game-sim) '(:tern-station))
+;;;                     (list :j2 (lis::new-game-sim) '(:tern-station))
+;;;                     (list :point (lis::new-game-sim) '(:k-17 :limit 86400d0))))
+;;;   (destructuring-bind (model sim goal) case
+;;;     (setf (lis::sim-model sim) model)
+;;;     (with-rails-objects
+;;;       (let ((start (get-internal-run-time)))
+;;;         (dotimes (i 5) (lis::autopilot-plan-now sim :rendezvous goal))
+;;;         (format t "~&~A ~S ~,1F ms~%" model goal
+;;;                 (/ (- (get-internal-run-time) start) (/ internal-time-units-per-second 200)))))))
+
+(defmacro with-rails-objects (&body body)
+  "BODY with objects promoted only within 500 m of the ship (task 267)."
+  `(let ((lis::*promotion-distance* 500d0)) ,@body))
+
+(defun rendezvous-now (sim goal &optional (job (lis::new-autopilot-job sim)))
+  "SIM's rendezvous with GOAL planned at once: (values plan job)."
+  (multiple-value-bind (plan reason) (lis::autopilot-plan-now sim :rendezvous goal job)
+    (true plan "~S: ~A" goal reason)
+    (values plan job)))
+
+(defun plan-labels (plan) (map 'list #'lis::planned-burn-label (lis::burn-plan-burns plan)))
+
+(defun job-search-total (job)
+  "The search's impulsive total of JOB's chosen candidate."
+  (lis::rendezvous-candidate-total (svref (lis::autopilot-job-candidates job) (lis::autopilot-job-index job))))
+
+(defun check-pass (plan key least)
+  "PLAN's shot path keeps LEAST m from KEY's CoM: the pass, or never promoted (farther)."
+  (let ((pass (cdr (assoc key (lis::rendezvous-part-passes (lis::burn-plan-rendezvous plan))))))
+    (true (or (null pass) (>= pass least)) "~A ~,1F m" key pass)))
+
+(defun check-arrival (job)
+  "JOB's final shot meets the aim point within 100 m and 0.1 m/s at the :arrival cut."
+  (let ((largest (nth-value 1 (lis::rendezvous-residuals! job (make-array 6 :element-type 'double-float)))))
+    (true (<= largest 1d0) "~,3F of the tolerance" largest)))
+
+(define-test rendezvous-plan-tern
+  ;; From the start state, 18 h (the same plan as 48 h at a third of the
+  ;; time): :departure and :arrival to aim point (1), the shot path ≥ 239.8 m
+  ;; from Tern's CoM; :point within 3 % of the search's impulsive figure
+  ;; (11.52 both), :j2 ≤ 20 m/s (19.1 against the search's 11.4: J2's
+  ;; short-period terms over the transfer, which the search's secular coasts
+  ;; do not see).
+  (with-rails-objects
+    (dolist (model '(:point :j2))
+      (let ((sim (model-sim model)))
+        (multiple-value-bind (plan job) (rendezvous-now sim '(:tern-station :limit 64800d0))
+          (when plan
+            (is equal '(:departure :arrival) (plan-labels plan))
+            (is = 1 (lis::rendezvous-plan-aim-point plan))
+            (check-arrival job)
+            (check-pass plan :tern-station 239.8d0)
+            (if (eq model :point)
+                (true (< (relative-error (plan-dv plan) (job-search-total job)) 0.03)
+                      "~,2F m/s, search ~,2F" (plan-dv plan) (job-search-total job))
+                (true (<= (plan-dv plan) 20d0) "~,2F m/s" (plan-dv plan)))
+            (let ((part (lis::burn-plan-rendezvous plan)))
+              (is eq :tern-station (lis::rendezvous-part-target part))
+              (is = 100d0 (lis::rendezvous-part-range part)))))))))
+
+(define-test rendezvous-plan-k-17
+  ;; :point, 18 h: ≥ 208.5 m from K-17's CoM, within 3 % of 219.5 m/s.
+  (with-rails-objects
+    (multiple-value-bind (plan job) (rendezvous-now (model-sim :point) '(:k-17 :limit 64800d0))
+      (when plan
+        (check-arrival job)
+        (check-pass plan :k-17 208.5d0)
+        (true (< (relative-error (plan-dv plan) 219.5d0) 0.03) "~,2F m/s" (plan-dv plan))))))
+
+(define-test rendezvous-plan-plane
+  ;; The start turned 0.5° in Ω (:point): the plan begins with :plane, its
+  ;; total within 3 % of that plane change plus the coplanar plan.
+  (with-rails-objects
+    (let* ((sim (model-sim :point))
+           (ship (lis::sim-ship sim))
+           (turn (lis::quat-from-axis-angle (lis::vec3 0 0 1) (lis::deg->rad 0.5d0)))
+           (coplanar (rendezvous-now (model-sim :point) '(:tern-station :limit 64800d0))))
+      (place-ship! sim (lis::quat-rotate turn (lis::ship-state-r ship))
+                   (lis::quat-rotate turn (lis::ship-state-v ship)))
+      (multiple-value-bind (plan job) (rendezvous-now sim '(:tern-station :limit 64800d0))
+        (when (and plan coplanar)
+          (is eq :plane (first (plan-labels plan)))
+          (check-arrival job)
+          (let ((expected (+ (lis::planned-burn-dv (plan-burn plan 0)) (plan-dv coplanar))))
+            (true (< (relative-error (plan-dv plan) expected) 0.03)
+                  "~,2F m/s, expected ~,2F" (plan-dv plan) expected)))))))
+
+(defun kepler-object (key r v time)
+  "A 1 m towable object on the conic rails (no J2: as :point flies it) of R, V at TIME."
+  (lis::new-object
+   (lis::make-object-def key (string key) :towable 1000d0 (lis::mat3 1 0 0 0 1 0 0 0 1) '() '()
+                         (lis::make-attitude :inertial) 1d0
+                         (lis::make-rails (lis::state->orbit r v lis::+mu-earth+ time) time :j2 nil))))
+
+(defun sim-with (sim &rest objects)
+  "A copy of SIM with OBJECTS added, rechecked."
+  (let ((copy (lis::copy-sim sim)))
+    (setf (lis::sim-objects copy) (concatenate 'simple-vector (lis::sim-objects copy) objects))
+    (lis::sim-recheck-objects! copy)
+    copy))
+
+(define-test rendezvous-plan-blocked
+  ;; Tern Station, :point, 18 h. An object the search does not see (*search-ignored*)
+  ;; crossing the ship's coast at the first candidate's :departure start
+  ;; blocks it: the second is shot and chosen. One 150 m behind the ship on
+  ;; its orbit blocks every candidate: "NO CLEAR TRANSFER" (two kept, not
+  ;; eight, for the time: each is coasted and shot).
+  (with-rails-objects
+    (let* ((sim (model-sim :point))
+           (goal '(:tern-station :limit 64800d0))
+           (first (rendezvous-now sim goal))
+           (start (lis::planned-burn-start (find :departure (lis::burn-plan-burns first)
+                                                 :key #'lis::planned-burn-label)))
+           (coast (lis::shot-sim-assign! (lis::copy-sim sim) sim nil)))
+      (loop while (< (lis::sim-t coast) start) do (lis::sim-step-ticks! coast lis::*prediction-level* start))
+      (let* ((r (lis::ship-state-r (lis::sim-ship coast)))
+             (v (lis::vec3-add-scaled (lis::ship-state-v (lis::sim-ship coast)) (lis::vec3-normalize r) 300d0))
+             (lis::*search-ignored* '(:crossing :behind)))
+        (multiple-value-bind (plan job) (rendezvous-now (sim-with sim (kepler-object :crossing r v start)) goal)
+          (when plan
+            (is = 1 (lis::autopilot-job-index job))
+            (check-arrival job)
+            (check-pass plan :crossing 201d0)))
+        (let* ((ship (lis::sim-ship sim))
+               (v0 (lis::ship-state-v ship))
+               (behind (lis::vec3-add-scaled (lis::ship-state-r ship) (lis::vec3-normalize v0) -150d0)))
+          (is equal '(nil "NO CLEAR TRANSFER")
+              (let ((lis::*search-candidates* 2))
+                (multiple-value-list
+                 (lis::autopilot-plan-now (sim-with sim (kepler-object :behind behind v0 (lis::sim-t sim)))
+                                          :rendezvous goal)))))))))
+
+(define-test rendezvous-plan-refusals
+  ;; 300 kg for Highport: "NEEDS <n> KG", n the burns', the reserve and the
+  ;; terminal phase's 20 m/s on the RCS from the mass after the burns. No
+  ;; target for RDV TARGET: "NO TARGET"; the stop point's refusals.
+  (let* ((sim (model-sim :point))
+         (job (lis::new-autopilot-job sim)))
+    (setf (lis::ship-state-m-p (lis::sim-ship sim)) 300d0)
+    (let* ((reason (nth-value 1 (lis::autopilot-plan-now sim :rendezvous '(:highport) job)))
+           (burns (lis::autopilot-job-propellant job))
+           (end-mass (- (+ lis::*ship-dry-mass* 300d0) burns))
+           (terminal (lis::propellant-for end-mass 20d0 lis::*rcs-isp*))
+           (reserve (lis::propellant-for end-mass (lis::plan-reserve-dv (job-search-total job))
+                                         lis::*engine-isp*)))
+      (is equal (format nil "NEEDS ~D KG" (ceiling (+ burns terminal reserve))) reason)
+      (true (> terminal 0d0))))
+  (let ((sim (model-sim :point)))
+    (is equal '(nil "NO TARGET")
+        (multiple-value-list (lis::autopilot-plan-now sim :rendezvous '(:target))))
+    (is equal '(nil "NO FREE FIXTURE")
+        (multiple-value-list (lis::autopilot-plan-now sim :rendezvous '((:fulmar-depot "B")))))
+    (is equal '(nil "RANGE TOO SHORT")
+        (multiple-value-list (lis::autopilot-plan-now sim :rendezvous '(:tern-station :range 50))))))
+
+(define-test rendezvous-plan-job
+  ;; In 300-unit calls, each within its budget: equalp to the plan at once
+  ;; (Tern, 18 h).
+  (with-rails-objects
+    (let* ((sim (model-sim :point))
+           (goal '(:tern-station :limit 64800d0))
+           (whole (rendezvous-now sim goal))
+           (job (lis::new-autopilot-job sim))
+           (calls 0))
+      (lis::autopilot-job-start! job sim :rendezvous goal)
+      (loop for stage = (lis::autopilot-job-work! job 300)
+            do (incf calls)
+               (true (<= (lis::autopilot-job-work job) 300))
+            until (member stage '(:done :refused)))
+      (true (> calls 100))
+      (true (equalp whole (lis::autopilot-job-plan job))))))
+
+(define-test rendezvous-menu-rows
+  ;; The five RDV rows after plan 26's, in *places*' order; RDV TARGET only
+  ;; with a target not a place; Right ×3 → 84 H, 240 H the top, 12 H the
+  ;; bottom; the goal; engaging a rendezvous sets the sim's target.
+  (let* ((sim (model-sim :point))
+         (clock (lis::new-clock sim))
+         (model (lis::clock-autopilot clock)))
+    (lis::autopilot-key! model clock sim :open)
+    (is equal '("  RDV TERN STATION 48 H" "  RDV FULMAR DEPOT 48 H" "  RDV DERELICT K-17 48 H"
+                "  RDV HIGHPORT 48 H" "  RDV SKUA YARD 48 H")
+        (subseq (lis::autopilot-menu-lines model sim) 6))
+    (lis::sim-set-target! sim :tern-station)
+    (is = 12 (length (lis::autopilot-menu-lines model sim)))
+    (lis::sim-set-target! sim :skua-yard-5)
+    (is string= "  RDV TARGET 48 H" (car (last (lis::autopilot-menu-lines model sim))))
+    (dolist (line (lis::autopilot-menu-lines model sim)) (false (lis::glyph-missing line) "~S" line))
+    (setf (lis::autopilot-model-selection model) :rdv-k-17)
+    (dotimes (i 3) (lis::autopilot-key! model clock sim :right))
+    (flet ((k-17-line () (find "RDV DERELICT" (lis::autopilot-menu-lines model sim) :test #'search)))
+    (is string= "> RDV DERELICT K-17 84 H" (k-17-line))
+    (is equal (list :rendezvous (list :k-17 :limit (* 84 3600d0)))
+        (multiple-value-list (funcall (lis::autopilot-row-goal (lis::autopilot-selected-row model sim)) model)))
+    (dotimes (i 30) (lis::autopilot-step-value! model sim 1 1))
+    (is string= "> RDV DERELICT K-17 240 H" (k-17-line))
+    (dotimes (i 30) (lis::autopilot-step-value! model sim -1 1))
+    (is string= "> RDV DERELICT K-17 12 H" (k-17-line)))
+    (setf (lis::autopilot-model-selection model) :rdv-target)
+    (is equal (list :target :limit (* 48 3600d0))
+        (nth-value 1 (funcall (lis::autopilot-row-goal (lis::autopilot-selected-row model sim)) model)))
+    (lis::sim-set-target! sim nil)
+    (let* ((burn (lis::make-planned-burn :departure (+ (lis::sim-t sim) 600) (+ (lis::sim-t sim) 700)
+                                         (lis::quat 1 0 0 0) 1d0 nil 1d0))
+           (plan (lis::make-burn-plan (vector burn)
+                                      :rendezvous (lis::make-rendezvous-part :k-17 nil 100d0 1 1 (lis::make-vec3)
+                                                                             0d0 '()))))
+      (lis::autopilot-engage! clock sim plan)
+      (is eq :k-17 (lis::sim-target sim)))))

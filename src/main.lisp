@@ -41,6 +41,8 @@
    (input :initform (make-input) :reader game-input
           :documentation "Held keys, taps and the pointer (input.lisp); not in the sim.")
    (view :initform :outside :accessor game-view :documentation "The view: :outside or :map.")
+   (flight :initform nil :accessor game-flight
+           :documentation "The flight fly started (flights.lisp), kept after its end; nil.")
    (view-changed-p :initform nil :accessor game-view-changed-p
                    :documentation "Set by M; the next frame snaps the exposure and clears it.")
    (quit-requested-p :initform nil :accessor game-quit-requested-p)
@@ -132,12 +134,12 @@ the record clears."
              (setf (game-view game) :outside
                    (game-view-changed-p game) t))))))
 
-(defun game-restart! (game)
-  "Return and N on the LOST panel: the start checkpoint restored by
+(defun game-restart! (game &optional (checkpoint (game-start-checkpoint game)))
+  "Return and N on the LOST panel: the start CHECKPOINT restored by
 clock-restart! (×1, unpaused), the outside view at its default pose, the
 map closed, the input cleared, the death record cleared, the exposure
 snapped. GAME."
-  (clock-restart! (game-clock game) (game-sim game) (game-start-checkpoint game))
+  (clock-restart! (game-clock game) (game-sim game) checkpoint)
   (outside-view-reset! (game-outside-view game))
   (when (input-drag (game-input game))
     (set-relative-pointer-mode game nil))
@@ -184,6 +186,7 @@ lights' clock. No GPU."
   (if (game-frozen-p game)
       (prediction-update! (clock-prediction (game-clock game)) (game-sim game))
       (clock-frame! (game-clock game) (game-sim game) elapsed))
+  (flight-frame! (game-clock game) (game-sim game))
   (notice-death! game)
   (unless (or (clock-paused (game-clock game)) (game-frozen-p game))
     (incf (render-state-lights-t (game-render-state game)) elapsed)))
@@ -223,6 +226,12 @@ lights' clock. No GPU."
                                 (declare (ignore timestamp))
                                 (setf result (funcall function))))
     result))
+
+(defun call-in-game (game function)
+  "FUNCTION on GAME's canvas thread when its canvas is open, else here."
+  (if (and (game-canvas game) (eq :open (luv:canvas-state (game-canvas game))))
+      (call-on-canvas-thread game function)
+      (funcall function)))
 
 (defun start (&key (visible t) (width 1280) (height 800) (sim (new-game-sim)) paused
                 frozen (readout t))

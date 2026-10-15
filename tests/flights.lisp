@@ -275,3 +275,34 @@
               "raised apoapsis ~,3F km" (/ (lis::flight-entry-apoapsis raised) 1d3))
         (true (within (lis::flight-entry-periapsis raised))
               "raised periapsis ~,3F km" (/ (lis::flight-entry-periapsis raised) 1d3))))))
+
+(defun flown-by-frames (name elapsed-list)
+  "NAME flown through clock-frame! with a game-less clock, the frames'
+elapsed times cycling through ELAPSED-LIST: (values record sim-at-the-end)."
+  (let* ((sim (lis::new-game-sim))
+         (end nil)
+         (flight (lis::new-flight (lis::read-flight name) sim))
+         (clock (lis::new-clock sim))
+         (lis::*frame-step-time-limit* nil)
+         ;; At x1 the prediction steers no step; the waits run it to the end.
+         (lis::*prediction-steps-per-frame* 64))
+    (lis::flight-install! clock flight (lambda (flight sim)
+                                         (declare (ignore flight))
+                                         (setf end (lis::copy-sim sim))))
+    (loop for frames from 0
+          for elapsed = (nth (mod frames (length elapsed-list)) elapsed-list)
+          until (or (lis::flight-done flight) (> frames 100000))
+          do (lis::clock-frame! clock sim elapsed)
+             (lis::flight-frame! clock sim))
+    (false (lis::clock-hook clock))
+    (values (lis::flight-record flight) end)))
+
+(define-test flights-live-frames
+  ;; docs/architecture.md "Running scripts": live and headless take the same
+  ;; steps, bit for bit, at any frame rate.
+  (multiple-value-bind (record sim) (lis::run-flight "burn")
+    (dolist (elapsed-list '((1/60) (0.013d0 0.021d0 0.0007d0 0.05d0 0.2d0 0.016d0 0d0)))
+      (multiple-value-bind (live live-sim) (flown-by-frames "burn" elapsed-list)
+        (true (equalp sim live-sim) "~A: end sims differ" elapsed-list)
+        (true (record-equal record live) "~A: records differ~%~A~%~A" elapsed-list
+              (script-record-lines record) (script-record-lines live))))))

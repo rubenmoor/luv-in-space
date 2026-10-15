@@ -249,6 +249,32 @@
     (false (lis::controls-fine (game-controls game)))
     (is = 0d0 (input-throttle game))))
 
+(define-test input-gating-flight
+  ;; decision 87: while a flight runs, flight, warp and restart keys do
+  ;; nothing and no held keys are written; M still acts.
+  (let ((game (input-game)))
+    (lis::fly "burn" :game game)
+    (true (lis::flight-running-p game))
+    (key-event game :press :w)
+    (key-event game :press :shift-left)
+    (dolist (key '(:f :z :t :r :|2| :|.| :n :return))
+      (input-tap game key))
+    (input-frames game 3 1/60)
+    (is equalp #(0 0 0) (rotation-keys game))
+    (is equal '(:hold :prograde) (input-attitude game))
+    (false (lis::controls-fine (game-controls game)))
+    (is = 0d0 (input-throttle game))
+    (is = 1 (lis::clock-level (input-clock game)))
+    (input-tap game :m)
+    (is eq :map (lis::game-view game))
+    (input-tap game :m)
+    (is eq :outside (lis::game-view game))
+    (lis::flight-stop :game game)
+    (false (lis::flight-running-p game))
+    (false (lis::clock-hook (input-clock game)))
+    (input-frames game 1 1/60)
+    (is equalp #(0 -1 0) (rotation-keys game))))
+
 (defun title-names-key-p (title key)
   "KEY's label among TITLE's tokens: letters inside an upper-case group,
 digits inside the 1–6 range, the rest by name."

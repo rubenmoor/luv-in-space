@@ -427,6 +427,7 @@ run-flight's prediction during burns and the hook's order in clock-step!).")
   (dropout nil)                                 ; t of the last drop-out to :impact
   (failure nil)                                 ; the failure entry
   (done nil)
+  (restart nil)                                 ; live: (:restart)'s function, else clock-restart!
   (cache nil))                                  ; (t steps . until) of the last hook
 
 (defun new-flight (steps sim)
@@ -670,7 +671,9 @@ second value), a wait set up. True when STEP is over at once."
           t)
          (:restart
           (if (sim-loss sim)
-              (progn (clock-restart! clock sim (flight-start flight))
+              (progn (if (flight-restart flight)
+                         (funcall (flight-restart flight))
+                         (clock-restart! clock sim (flight-start flight)))
                      (setf (flight-loss-seen flight) nil
                            (flight-coast flight) nil
                            (flight-burn flight) nil)
@@ -855,3 +858,66 @@ record end-sim flight)."
                 (:end (format nil "END ~:[FAILED~;PASSED~]: ~A"
                               (flight-record-passed-p record) state)))))
           record))
+
+;;; Live (decision 87): fly runs a script in the game, frame by frame through
+;;; clock-frame! and clock-step!, the same steps as run-flight.
+
+(defun flight-install! (clock flight &optional on-end)
+  "CLOCK's hook runs FLIGHT; at its end the hook is removed and ON-END
+called with FLIGHT and the sim (before the frame's further steps)."
+  (setf (clock-hook clock)
+        (lambda (clock sim) (flight-hook! flight clock sim on-end))))
+
+(defun flight-hook! (flight clock sim on-end)
+  (prog1 (flight-step-hook flight clock sim)
+    (when (flight-done flight)
+      (setf (clock-hook clock) nil)
+      (when on-end
+        (funcall on-end flight sim)))))
+
+(defun flight-frame! (clock sim)
+  "After a frame's steps: a lost SIM takes none, so the hook runs once here,
+as run-flight calls it after a loss."
+  (when (and (sim-loss sim) (clock-hook clock))
+    (funcall (clock-hook clock) clock sim)))
+
+(defun flight-running-p (&optional (game *game*))
+  "GAME runs a flight: input-frame! leaves the controls and warp alone."
+  (let ((flight (and game (game-flight game))))
+    (and flight (not (flight-done flight)))))
+
+(defun fly (name &key (game *game*))
+  "Fly the script NAME (read-flight's source) in GAME from its start state,
+the view outside; returns at once. At the end the record lines are printed
+to the image's output; flight-status reads them."
+  (let ((steps (read-flight name)))
+    (call-in-game game
+                  (lambda ()
+                    (let ((flight (new-flight steps (new-game-sim))))
+                      (setf (flight-restart flight)
+                            (lambda () (game-restart! game (flight-start flight))))
+                      (game-restart! game (flight-start flight))
+                      (setf (game-flight game) flight)
+                      (flight-install! (game-clock game) flight
+                                       (lambda (flight sim)
+                                         (declare (ignore sim))
+                                         (format t "~&~{~A~%~}" (flight-record-lines
+                                                                 (flight-record flight)))
+                                         (finish-output))))))
+    name))
+
+(defun flight-status (&key (game *game*))
+  "The record lines of GAME's flight so far, or nil."
+  (call-in-game game
+                (lambda ()
+                  (let ((flight (game-flight game)))
+                    (and flight (flight-record-lines (flight-record flight)))))))
+
+(defun flight-stop (&key (game *game*))
+  "Stop GAME's flight: the hook removed, the slot cleared."
+  (call-in-game game
+                (lambda ()
+                  (when (game-flight game)
+                    (setf (clock-hook (game-clock game)) nil
+                          (game-flight game) nil))))
+  (values))

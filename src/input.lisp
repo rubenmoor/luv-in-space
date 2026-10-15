@@ -72,9 +72,12 @@
 (defparameter *throttle-down-key* :control-left)
 (defparameter *rcs-off-message* "RCS OFF ABOVE ×4" "decision 31: Warp choices within the time-warp rules.")
 
+(defparameter *script-commands* '(:warp-up :warp-down :warp-reset :restart)
+  "Ignored, with the flight commands, while a flight script runs: the script owns them (decision 87).")
+
 (defun flight-keys-ignored-p (game)
-  "Paused or lost: flight keys do nothing (decision 81)."
-  (or (clock-paused (game-clock game)) (sim-lost-p (game-sim game))))
+  "Paused, lost or a flight running: flight keys do nothing (decision 81, decision 87)."
+  (or (clock-paused (game-clock game)) (sim-lost-p (game-sim game)) (flight-running-p game)))
 
 (defun run-command (game command)
   (let* ((sim (game-sim game))
@@ -130,6 +133,8 @@ RCS-off message for a flight key above ×4."
   (let ((command (cdr (assoc key *key-map*))))
     (when (and (member command *lost-commands*) (not (sim-lost-p (game-sim game))))
       (setf command nil))
+    (when (and (member command *script-commands*) (flight-running-p game))
+      (return-from key-pressed!))
     (cond ((and command (member command *flight-commands*))
            (unless (flight-keys-ignored-p game)
              (run-command game command)))
@@ -214,15 +219,17 @@ below 0.1 off (controls-set-throttle)."
 
 (defun input-frame! (game elapsed)
   "Once per frame, before clock-frame!: the held and tapped keys to the
-sim's controls (none while paused, lost or above ×4) and the throttle ramp
-(not while paused or lost), the pointer to the view (always); then the
-latches clear. ELAPSED: real seconds."
+sim's controls (none while paused, lost or above ×4; not written while a
+flight runs, whose :keys own them) and the throttle ramp (not while paused,
+lost or flying), the pointer to the view (always); then the latches clear.
+ELAPSED: real seconds."
   (let* ((input (game-input game))
          (controls (sim-controls (game-sim game)))
          (keys (input-frame-keys input))
          (ignored (flight-keys-ignored-p game)))
-    (controls-apply-held-keys! controls
-                               (if (or ignored (clock-kinematic-p (game-clock game))) '() keys))
+    (unless (flight-running-p game)
+      (controls-apply-held-keys! controls
+                                 (if (or ignored (clock-kinematic-p (game-clock game))) '() keys)))
     (unless ignored
       (throttle-ramp! controls keys elapsed))
     (pointer-frame! game input)

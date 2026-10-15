@@ -194,3 +194,231 @@
     (mass-properties-loop 1 p b)
     (let ((consed (least-bytes-consed (lambda () (mass-properties-loop 3334 p b)))))
       (true (< consed 1024) "~D bytes" consed))))
+
+;;; The stack and the ship's collision shapes (plan 24, task 187; decision
+;;; 112: Grapple, stack and berth in the sim: state, notices to the clock,
+;;; the latest checkpoint).
+
+(define-test ship-mass-properties-unloaded
+  ;; The values before the load existed, printed readably: bit for bit.
+  (loop for (m-p com inertia)
+          in '((28000d0 (10.340613955716982d0 0d0 -0.21826979227496454d0)
+                (89975.71194156798d0 0d0 19915.702938786257d0 0d0 452196.27640097216d0 0d0
+                 19915.702938786257d0 0d0 424934.85548783d0))
+               (14000d0 (9.462244748557758d0 0d0 -0.357415418241428d0)
+                (72710.7300942318d0 0d0 26810.198519620448d0 0d0 339315.7821470713d0 0d0
+                 26810.198519620448d0 0d0 313146.5430812654d0))
+               (0d0 (9.46078130888079d0 0d0 -0.9859565381233514d0)
+                (51604.38513605464d0 0d0 26821.685350332904d0 0d0 203446.94811655593d0 0d0
+                 26821.685350332904d0 0d0 182211.2540089268d0)))
+        for p = (lis::ship-mass-properties m-p nil)
+        do (is equalp (coerce com 'lis::vec3) (lis::mass-properties-com p))
+           (is equalp (coerce inertia 'lis::mat3) (lis::mass-properties-inertia p))))
+
+(define-test stack-inertia-table
+  ;; docs/design.md "Inertia", the loaded rows: (m-p rock mass com I_xx I_yy
+  ;; I_zz I_xz) at stack-design-pose, against the unloaded row of the same
+  ;; propellant. The tensor within 0.5 % plus the unloaded ship's own
+  ;; deviation from its row (decision 71's model; decision 135: The stack
+  ;; in ship.lisp: the load's form, loaded inertia bounds, the range
+  ;; finder's details).
+  (loop for (m-p key mass com ixx iyy izz ixz base)
+          in '((28000d0 :skua-yard-3 85961d0 (15.21d0 0 -0.09d0) 1.55d5 1.98d6 1.95d6 -1.9d4
+                (8.79d4 4.48d5 4.21d5))
+               (0d0 :skua-yard-3 57961d0 (17.44d0 0 -0.14d0) 1.22d5 8.60d5 8.32d5 -3.6d4
+                (4.95d4 1.99d5 1.78d5))
+               (28000d0 :skua-yard-5 135961d0 (16.85d0 0 -0.06d0) 2.98d5 2.73d6 2.70d6 -3.1d4
+                (8.79d4 4.48d5 4.21d5)))
+        for unloaded = (lis::ship-mass-properties m-p nil)
+        for p = (lis::ship-mass-properties
+                 m-p (lis::stack-design-pose (lis::object-definition key)))
+        do (is = mass (lis::mass-properties-mass p))
+           (dotimes (i 3)
+             (true (<= (abs (- (aref (lis::mass-properties-com p) i) (nth i com))) 0.005d0)))
+           (loop for axis from 0
+                 for row in (list ixx iyy izz)
+                 for own in base
+                 do (true (<= (abs (- (tensor p axis axis) row))
+                              (+ (* 0.005d0 row) (abs (- (tensor unloaded axis axis) own))))
+                          "~D ~A axis ~D: ~F" m-p key axis (tensor p axis axis)))
+           (true (<= (abs (- (tensor p 0 2) ixz)) 1d3))))
+
+(define-test stack-design-pose
+  (let ((load (lis::stack-design-pose (lis::object-definition :skua-yard-3))))
+    ;; The rock's centre at 16.9 + r, its +x along the ship's −x.
+    (is equalp (lis::vec3 (+ 16.6d0 2.114d0) 0 0) (lis::stack-load-com load))
+    (is equalp (lis::vec3 -1 0 0)
+            (lis::quat-rotate (lis::stack-load-q load) (lis::vec3 1 0 0)))))
+
+(define-test stack-turned-load
+  ;; K-17 (not isotropic) turned 90° about x at p: the parallel-axis sum
+  ;; done by hand about the stack's CoM.
+  (let* ((def (lis::object-definition :k-17))
+         (q (lis::quat-from-axis-angle (lis::vec3 1 0 0) (/ pi 2)))
+         (pos (lis::vec3 22.0d0 0.4d0 -0.3d0))
+         (ship (lis::ship-mass-properties 14000d0 nil))
+         (p (lis::ship-mass-properties 14000d0 (lis::make-stack-load def pos q)))
+         (m0 (lis::mass-properties-mass ship))
+         (m1 (lis::object-def-mass def))
+         (c (lis::vec3-scale (lis::vec3-add (lis::vec3-scale (lis::mass-properties-com ship) m0)
+                                            (lis::vec3-scale pos m1))
+                             (/ (+ m0 m1))))
+         (r (lis::mat3-from-quat q))
+         (turned (lis::mat3* (lis::mat3* r (lis::object-def-tensor def)) (lis::mat3-transpose r)))
+         (expected (lis::make-mat3)))
+    (loop for (m centre own) in (list (list m0 (lis::mass-properties-com ship)
+                                            (lis::mass-properties-inertia ship))
+                                      (list m1 pos turned))
+          for d = (lis::vec3-sub centre c)
+          do (dotimes (i 3)
+               (dotimes (j 3)
+                 (incf (aref expected (+ (* 3 i) j))
+                       (+ (aref own (+ (* 3 i) j))
+                          (* m (- (if (= i j) (lis::vec3-dot d d) 0)
+                                  (* (aref d i) (aref d j)))))))))
+    ;; The turn swaps I_yy and I_zz of K-17's own tensor.
+    (true (< (relative-error (aref turned 4) 5.65d4) 1d-12))
+    (is = (+ m0 m1) (lis::mass-properties-mass p))
+    (dotimes (i 3)
+      (true (< (relative-error (aref (lis::mass-properties-com p) i)
+                               (if (zerop (aref c i)) 1d0 (aref c i)))
+               1d-12)))
+    (dotimes (k 9)
+      (true (< (/ (abs (- (aref (lis::mass-properties-inertia p) k) (aref expected k)))
+                  (aref expected 0))
+               1d-12)))))
+
+(defun loaded-mass-properties-loop (n p load)
+  (declare (type fixnum n) (inline lis::ship-mass-properties lis::stack-bound))
+  (let ((sum 0d0))
+    (declare (type double-float sum))
+    (dotimes (i n sum)
+      (lis::ship-mass-properties (* 2.8d0 i) load p)
+      (incf sum (lis::stack-bound (lis::mass-properties-com p) load)))))
+
+(define-test stack-conses-nothing
+  (let ((p (lis::make-mass-properties))
+        (load (lis::stack-design-pose (lis::object-definition :skua-yard-3))))
+    (loaded-mass-properties-loop 1 p load)
+    (let ((consed (least-bytes-consed (lambda () (loaded-mass-properties-loop 3334 p load)))))
+      (true (< consed 1024) "~D bytes" consed))))
+
+(define-test stack-bound
+  ;; Unloaded wet: the farthest corner, the truss's aft corners from the CoM
+  ;; (THRIFT's bound 12.6 m, docs/design.md "Rigid bodies").
+  (let* ((com (lis::mass-properties-com (lis::ship-mass-properties 28000d0 nil)))
+         (expected (loop for shape across lis::*ship-collision-boxes*
+                         maximize (loop for k below 8
+                                        maximize (lis::vec3-norm
+                                                  (lis::vec3-sub
+                                                   (lis::vec3-add
+                                                    (lis::shape-centre shape)
+                                                    (let ((s (lis::shape-size shape)))
+                                                      (lis::vec3 (* (if (logbitp 0 k) 0.5 -0.5) (aref s 0))
+                                                                 (* (if (logbitp 1 k) 0.5 -0.5) (aref s 1))
+                                                                 (* (if (logbitp 2 k) 0.5 -0.5) (aref s 2)))))
+                                                   com))))))
+    (is = expected (lis::stack-bound com))
+    (true (< (abs (- (lis::stack-bound com) 12.6d0)) 0.05d0)))
+  ;; Loaded: the farther of the ship's corners and the load's bound sphere
+  ;; from the stack's CoM; K-17's reaches past the aft corners.
+  (dolist (key '(:skua-yard-3 :k-17))
+    (let* ((load (lis::stack-design-pose (lis::object-definition key)))
+           (com (lis::mass-properties-com (lis::ship-mass-properties 28000d0 load)))
+           (sphere (+ (lis::vec3-norm (lis::vec3-sub (lis::stack-load-com load) com))
+                      (lis::object-def-bound (lis::stack-load-def load)))))
+      (is = (max (lis::stack-bound com) sphere) (lis::stack-bound com load))
+      (if (eq key :k-17)
+          (true (> sphere (lis::stack-bound com)))
+          (true (< sphere (lis::stack-bound com)))))))
+
+;;; The range finder (decision 113: Grapple and contact details the design
+;;; leaves open).
+
+(defun range-scene (sim &key (range 50d0) (offset-y 0.2d0) (offset-z 0d0) (angle 5d0)
+                             (closing 0.1d0) (rotation 0.3d0))
+  "SIM with Skua Yard 3 promoted by hand in a 500 km orbit and a wet ship
+before its fixture: RANGE m, the pin at OFFSET-Y, OFFSET-Z in ship axes,
+yawed ANGLE degrees off the fixture axis, closing at CLOSING m/s and
+rotating ROTATION °/s relative to it (about the ship's z); SIM."
+  (let* ((rock (lis::sim-object sim :skua-yard-3))
+         (state (lis::object-state rock))
+         (radius (+ lis::+radius-earth+ 500d3))
+         (q-o (lis::quat-from-axis-angle (lis::vec3 1 2 3) 0.7d0))
+         (theta (lis::deg->rad angle))
+         (q-s (lis::quat-mul (lis::quat-mul q-o (lis::quat 0 0 0 1))
+                             (lis::quat-from-axis-angle (lis::vec3 0 0 1) theta)))
+         (axis (lis::quat-rotate q-o (lis::vec3 1 0 0)))
+         (pin (lis::vec3-add (lis::vec3 radius 0 0)
+                             (lis::quat-rotate q-o (lis::fixture-pin
+                                                    (first (lis::object-def-fixtures
+                                                            (lis::object-def-of rock)))))))
+         (d-b (lis::vec3 (/ (+ range (* offset-y (sin theta))) (cos theta)) offset-y offset-z))
+         (com (lis::mass-properties-com (lis::ship-mass-properties 28000d0 nil)))
+         (tip-b (lis::quat-rotate q-s (lis::vec3-sub lis::*grapple-tip* com)))
+         (tip (lis::vec3-sub pin (lis::quat-rotate q-s d-b)))
+         (v-o (lis::vec3 0 (sqrt (/ lis::+mu-earth+ radius)) 0))
+         (w-o (lis::vec3 (lis::deg->rad 0.15d0) 0 0))
+         (w-s-i (lis::vec3-add (lis::quat-rotate q-o w-o)
+                               (lis::quat-rotate q-s (lis::vec3 0 0 (lis::deg->rad rotation)))))
+         (v-s (lis::vec3-sub (lis::vec3-sub v-o (lis::vec3-scale axis closing))
+                             (lis::vec3-cross w-s-i tip-b))))
+    (setf (lis::object-status rock) :promoted)
+    (lis::ship-state-assign! state (lis::make-ship-state (lis::vec3 radius 0 0) v-o q-o w-o 0d0))
+    (lis::ship-state-assign! (lis::sim-ship sim)
+                             (lis::make-ship-state (lis::vec3-sub tip tip-b) v-s q-s
+                                                   (lis::quat-rotate (lis::quat-conjugate q-s) w-s-i)
+                                                   28000d0))
+    sim))
+
+(defun range-reading (sim &rest scene)
+  (lis::grapple-range-into! (lis::make-grapple-reading) (apply #'range-scene sim scene)))
+
+(define-test grapple-range-finder
+  (let* ((sim (lis::new-game-sim))
+         (reading (range-reading sim)))
+    (true reading)
+    (is = (position :skua-yard-3 (lis::sim-objects sim) :key #'lis::object-key)
+        (lis::grapple-reading-object reading))
+    (is = 0 (lis::grapple-reading-fixture reading))
+    (loop for (value expected) in `((,(lis::grapple-reading-range reading) 50d0)
+                                    (,(lis::grapple-reading-offset-y reading) 0.2d0)
+                                    (,(lis::grapple-reading-offset-z reading) 0d0)
+                                    (,(lis::grapple-reading-closing-speed reading) 0.1d0)
+                                    (,(lis::grapple-reading-angle reading) ,(lis::deg->rad 5d0))
+                                    (,(lis::grapple-reading-rotation reading)
+                                     ,(lis::deg->rad 0.3d0)))
+          do (true (< (abs (- value expected)) 1d-9) "~F, not ~F" value expected))
+    (true (and (lis::grapple-reading-closing-ok reading) (lis::grapple-reading-offset-ok reading)
+               (lis::grapple-reading-angle-ok reading) (lis::grapple-reading-rotation-ok reading)))
+    ;; Each tolerance's edges: (scene inside outside reader).
+    (loop for (key inside outside reader)
+            in '((:closing 0.0101d0 0.0099d0 lis::grapple-reading-closing-ok)
+                 (:closing 0.2999d0 0.3001d0 lis::grapple-reading-closing-ok)
+                 (:offset-y 0.2999d0 0.3001d0 lis::grapple-reading-offset-ok)
+                 (:offset-z -0.2999d0 -0.3001d0 lis::grapple-reading-offset-ok)
+                 (:angle 9.99d0 10.01d0 lis::grapple-reading-angle-ok)
+                 (:rotation 0.499d0 0.501d0 lis::grapple-reading-rotation-ok))
+          do (flet ((flag (value)
+                      (funcall reader (range-reading sim key value
+                                                     :offset-y (if (eq key :offset-y) value 0d0)))))
+               (true (flag inside) "~A ~F inside" key inside)
+               (false (flag outside) "~A ~F outside" key outside)))
+    ;; The radial offset: 0.2 and 0.2 inside, 0.25 and 0.2 outside.
+    (true (lis::grapple-reading-offset-ok (range-reading sim :offset-y 0.2d0 :offset-z 0.2d0)))
+    (false (lis::grapple-reading-offset-ok (range-reading sim :offset-y 0.25d0 :offset-z 0.2d0)))
+    ;; Behind the tip, beyond 500 m from the tip, or on rails: nil.
+    (false (range-reading sim :range -1d0))
+    (false (range-reading sim :range 501d0))
+    (true (range-reading sim :range 495d0))
+    (range-scene sim)
+    (setf (lis::object-status (lis::sim-object sim :skua-yard-3)) :rails)
+    (false (lis::grapple-range-into! (lis::make-grapple-reading) sim))))
+
+(define-test grapple-range-conses-nothing
+  (let ((sim (range-scene (lis::new-game-sim)))
+        (reading (lis::make-grapple-reading)))
+    (lis::grapple-range-into! reading sim)
+    (let ((consed (least-bytes-consed
+                   (lambda () (dotimes (i 1000) (lis::grapple-range-into! reading sim))))))
+      (true (< consed 1024) "~D bytes" consed))))

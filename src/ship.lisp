@@ -57,6 +57,8 @@ weights in kg per member before the ×1.15 that scales them to the row."
 ;;; Mass sums about R: mass, first moment Σ m c, second moment
 ;;; Σ (I_c + m (|c|² 𝟙 − c cᵀ)) (docs/design.md "Inertia").
 
+(declaim (inline add-mass!))
+
 (defun add-mass! (second m centre local)
   "Add a body of mass m at CENTRE with tensor LOCAL about it to SECOND."
   (declare (type mat3 second local) (type vec3 centre) (type double-float m))
@@ -171,13 +173,46 @@ CoM (I = J − m (|C|² 𝟙 − C Cᵀ)) and its inverse."
     (mat3-inverse-symmetric! (mass-properties-inertia-inverse out) inertia)
     out))
 
+;;; A grappled load (decision 112: Grapple, stack and berth in the sim:
+;;; state, notices to the clock, the latest checkpoint): its definition and
+;;; its pose in ship axes, fixed at the capture.
+
+(defstruct (stack-load (:constructor make-stack-load (def com q)) (:copier nil))
+  (def nil :type object-def)
+  (com (make-vec3) :type vec3)                 ; m, its CoM in body axes from R
+  (q (quat 1 0 0 0) :type quat))               ; its body axes -> the ship's
+
+(declaim (inline rotated-tensor!))
+
+(defun rotated-tensor! (out q tensor)
+  "R I Rᵀ into OUT, R the rotation of the unit Q."
+  (declare (type mat3 out tensor) (type quat q))
+  (let ((r (make-mat3)))
+    (declare (dynamic-extent r))
+    (with-quat (((w x y z) q))
+      (setf (aref r 0) (- 1 (* 2 (+ (* y y) (* z z)))) (aref r 1) (* 2 (- (* x y) (* w z)))
+            (aref r 2) (* 2 (+ (* x z) (* w y))) (aref r 3) (* 2 (+ (* x y) (* w z)))
+            (aref r 4) (- 1 (* 2 (+ (* x x) (* z z)))) (aref r 5) (* 2 (- (* y z) (* w x)))
+            (aref r 6) (* 2 (- (* x z) (* w y))) (aref r 7) (* 2 (+ (* y z) (* w x)))
+            (aref r 8) (- 1 (* 2 (+ (* x x) (* y y))))))
+    (dotimes (i 3 out)
+      (dotimes (j 3)
+        (setf (aref out (+ (* 3 i) j))
+              (let ((sum 0d0))
+                (declare (type double-float sum))
+                (dotimes (k 3 sum)
+                  (dotimes (l 3)
+                    (incf sum (* (aref r (+ (* 3 i) k)) (aref tensor (+ (* 3 k) l))
+                                 (aref r (+ (* 3 j) l))))))))))))
+
 (declaim (sb-ext:maybe-inline ship-mass-properties))
 
 (defun ship-mass-properties (m-p &optional load (out (make-mass-properties)))
   "The Mule's mass, CoM, tensor about the CoM and its inverse with m-p kg of
-propellant, written into OUT. LOAD (a grappled load) is milestone 3's."
-  (declare (optimize speed) (type double-float m-p) (type null load)
-           (type mass-properties out) (ignorable load))
+propellant and the stack-load LOAD (or nil), written into OUT. Conses
+nothing inline."
+  (declare (optimize speed) (type double-float m-p) (type (or null stack-load) load)
+           (type mass-properties out))
   (let ((first (make-vec3)) (second (make-mat3))
         (f (/ m-p *propellant-full*))
         (r2 (* *propellant-radius* *propellant-radius*)))
@@ -198,7 +233,181 @@ propellant, written into OUT. LOAD (a grappled load) is milestone 3's."
       (let ((lh2 (/ m-p (+ 1 *mixture-ratio*))))
         (tank lh2 *lh2-aft-end* *lh2-length*)
         (tank (- m-p lh2) *lox-aft-end* *lox-length*)))
-    (mass-properties-from-sums! out (+ *ship-dry-mass* m-p) first second)))
+    (if load
+        (let* ((def (stack-load-def load))
+               (m (object-def-mass def))
+               (p (stack-load-com load))
+               (turned (make-mat3)))
+          (declare (dynamic-extent turned))
+          (rotated-tensor! turned (stack-load-q load) (object-def-tensor def))
+          (vec3-add-scaled! first first p m)
+          (add-mass! second m p turned)
+          (mass-properties-from-sums! out (+ *ship-dry-mass* m-p m) first second))
+        (mass-properties-from-sums! out (+ *ship-dry-mass* m-p) first second))))
+
+;;; The ship's collision shapes and the stack (docs/design.md "Grappling and
+;;; berthing", "Inertia").
+
+(defparameter *ship-collision-boxes*
+  (vector (make-shape :box (vec3 6.5d0 0 0) :size (vec3 17.0d0 3.6d0 3.6d0))
+          (make-shape :box (vec3 12.75d0 0 -3.5d0) :size (vec3 4.5d0 3.0d0 3.0d0))
+          (make-shape :box (vec3 15.8d0 0 0) :size (vec3 1.6d0 1.6d0 1.6d0)))
+  "Truss with tanks and engine, cab, grapple cone; centres in body axes from
+R, unlike an object's shapes about its CoM.")
+
+(defparameter *grapple-tip* (vec3 16.6d0 0 0) "m, body axes from R: the cone's tip.")
+(declaim (type simple-vector *ship-collision-boxes*) (type vec3 *grapple-tip*))
+
+(defun stack-design-pose (def &optional (fixture (first (object-def-fixtures def))))
+  "DEF's stack-load at docs/design.md \"Inertia\"'s pose: FIXTURE's pin at
+the grapple's tip, its outward axis along −x (a rock's centre at 16.9 + r)."
+  (let* ((axis (fixture-axis fixture))
+         (inward (vec3 -1 0 0))
+         (c (vec3-dot axis inward))
+         (q (cond ((> c (- 1d0 1d-12)) (quat 1 0 0 0))
+                  ;; Opposite: half a turn about z.
+                  ((< c (- 1d-12 1d0)) (quat 0 0 0 1))
+                  (t (quat-from-axis-angle (vec3-cross axis inward) (acos c))))))
+    (make-stack-load def (vec3-sub *grapple-tip* (quat-rotate q (fixture-pin fixture))) q)))
+
+(declaim (sb-ext:maybe-inline stack-bound))
+
+(defun stack-bound (com &optional load)
+  "m: the largest distance from COM (body axes from R) to a corner of the
+ship's boxes or to LOAD's bounding sphere."
+  (declare (optimize speed) (type vec3 com) (type (or null stack-load) load))
+  (let ((bound 0d0))
+    (declare (type double-float bound))
+    (loop for shape across *ship-collision-boxes*
+          for c of-type vec3 = (shape-centre shape)
+          for size of-type vec3 = (shape-size shape)
+          do (dotimes (k 8)
+               (flet ((corner (axis)
+                        (- (+ (aref c axis)
+                              (* (if (logbitp axis k) 0.5d0 -0.5d0) (aref size axis)))
+                           (aref com axis))))
+                 (let ((dx (corner 0)) (dy (corner 1)) (dz (corner 2)))
+                   (setf bound (max bound (+ (* dx dx) (* dy dy) (* dz dz))))))))
+    (setf bound (sqrt bound))
+    (if load
+        (let* ((p (stack-load-com load))
+               (dx (- (aref p 0) (aref com 0)))
+               (dy (- (aref p 1) (aref com 1)))
+               (dz (- (aref p 2) (aref com 2))))
+          (max bound (+ (sqrt (+ (* dx dx) (* dy dy) (* dz dz)))
+                        (object-def-bound (stack-load-def load)))))
+        bound)))
+
+;;; The range finder (docs/design.md "Grappling and berthing"; decision 113:
+;;; Grapple and contact details the design leaves open).
+
+(defparameter *grapple-range-max* 500d0 "m: the range finder's reach.")
+(defparameter *capture-closing-min* 0.01d0 "m/s, decision 33 and decision 113.")
+(defparameter *capture-closing-max* 0.30d0 "m/s, decision 33.")
+(defparameter *capture-offset* 0.30d0 "m, the pin's lateral offset; decision 33.")
+(defparameter *capture-angle* (deg->rad 10d0) "rad, decision 33.")
+(defparameter *capture-rotation* (deg->rad 0.5d0) "rad/s, decision 33.")
+(declaim (type double-float *grapple-range-max* *capture-closing-min* *capture-closing-max*
+               *capture-offset* *capture-angle* *capture-rotation*))
+
+(defstruct (grapple-reading (:copier nil))
+  (object 0 :type fixnum)                      ; index in sim-objects
+  (fixture 0 :type fixnum)                     ; index in its fixtures
+  (range 0d0 :type double-float)               ; m, tip to the plate's plane along the axis
+  (closing-speed 0d0 :type double-float)       ; m/s, the range's rate of fall
+  (offset-y 0d0 :type double-float)            ; m, the pin from the tip, body axes
+  (offset-z 0d0 :type double-float)
+  (angle 0d0 :type double-float)               ; rad, +x to the inward axis
+  (rotation 0d0 :type double-float)            ; rad/s, |ω_ship − ω_object|
+  (closing-ok nil :type boolean)               ; each value inside its capture tolerance
+  (offset-ok nil :type boolean)                ; √(y² + z²)
+  (angle-ok nil :type boolean)
+  (rotation-ok nil :type boolean))
+
+(defun grapple-range-into! (out sim)
+  "OUT, a grapple-reading, for the nearest free fixture of a promoted object
+whose pin lies ahead of the tip (body x) within *grapple-range-max* and
+whose axis faces it; nil when there is none. Pure; conses nothing."
+  (declare (optimize speed) (type grapple-reading out)
+           (inline ship-mass-properties make-mass-properties))
+  (let* ((ship (sim-ship sim))
+         (q-s (ship-state-q ship))
+         (com (make-vec3)) (inertia (make-mat3)) (inverse (make-mat3))
+         (properties (make-mass-properties :com com :inertia inertia :inertia-inverse inverse))
+         (q-s* (make-quat)) (tip-b (make-vec3)) (tip (make-vec3)) (w-s (make-vec3))
+         (w-o (make-vec3))
+         (pin (make-vec3)) (axis (make-vec3)) (d (make-vec3)) (d-b (make-vec3))
+         (u (make-vec3)) (u-v (make-vec3))
+         (best-object -1) (best-fixture 0) (best 0d0))
+    (declare (dynamic-extent com inertia inverse properties q-s* tip-b tip w-s w-o
+                             pin axis d d-b u u-v)
+             (type fixnum best-object best-fixture) (type double-float best))
+    ;; PLACEHOLDER(188): the latched load's mass and exclusion, once the sim
+    ;; holds the grapple; until then every promoted object is free.
+    (ship-mass-properties (ship-state-m-p ship) nil properties)
+    (quat-conjugate! q-s* q-s)
+    ;; The tip in inertial axes: r + q (tip − com).
+    (vec3-sub! tip-b *grapple-tip* com)
+    (quat-rotate! tip q-s tip-b)
+    (vec3-add! tip tip (ship-state-r ship))
+    (flet ((fixture-geometry (state fixture)
+             ;; PIN, AXIS (inertial) and D = pin − tip, D-B in ship axes.
+             (quat-rotate! pin (ship-state-q state) (fixture-pin fixture))
+             (vec3-add! pin pin (ship-state-r state))
+             (quat-rotate! axis (ship-state-q state) (fixture-axis fixture))
+             (vec3-sub! d pin tip)
+             (quat-rotate! d-b q-s* d)))
+      ;; A promoted object's state is the sim's own (object-state-into!).
+      (loop for object across (the simple-vector (sim-objects sim))
+            for i of-type fixnum from 0
+            when (object-promoted-p object)
+              do (loop for fixture in (object-def-fixtures (object-def-of object))
+                       for j of-type fixnum from 0
+                       when (fixture-free fixture)
+                         do (fixture-geometry (object-state object) fixture)
+                            (let ((distance (vec3-norm d)))
+                              (when (and (> (aref d-b 0) 0d0)
+                                         (<= distance *grapple-range-max*)
+                                         (< (vec3-dot axis d) 0d0)
+                                         (or (< best-object 0) (< distance best)))
+                                (setf best-object i best-fixture j best distance)))))
+      (when (>= best-object 0)
+        (let* ((object (aref (the simple-vector (sim-objects sim)) best-object))
+               (fixture (nth best-fixture (object-def-fixtures (object-def-of object))))
+               (state (object-state object)))
+          (fixture-geometry state fixture)
+          ;; Rates: ω in inertial axes; the pin's and the tip's velocities.
+          (quat-rotate! w-o (ship-state-q state) (ship-state-w state))
+          (quat-rotate! w-s q-s (ship-state-w ship))
+          (vec3-sub! u pin (ship-state-r state))
+          (vec3-cross! u w-o u)
+          (vec3-add! u u (ship-state-v state))     ; the pin's velocity
+          (quat-rotate! u-v q-s tip-b)
+          (vec3-cross! u-v w-s u-v)
+          (vec3-add! u-v u-v (ship-state-v ship))  ; the tip's
+          (vec3-sub! u u u-v)
+          (let ((closing (+ (vec3-dot axis u)
+                            (vec3-dot (vec3-cross! u-v w-o axis) d))))
+            (vec3-sub! w-s w-s w-o)
+            (quat-rotate! u q-s* axis)
+            (let ((y (aref d-b 1)) (z (aref d-b 2))
+                  (angle (acos (max -1d0 (min 1d0 (- (aref u 0))))))
+                  (rotation (vec3-norm w-s)))
+              (setf (grapple-reading-object out) best-object
+                    (grapple-reading-fixture out) best-fixture
+                    (grapple-reading-range out) (- (vec3-dot axis d))
+                    (grapple-reading-closing-speed out) closing
+                    (grapple-reading-offset-y out) y
+                    (grapple-reading-offset-z out) z
+                    (grapple-reading-angle out) angle
+                    (grapple-reading-rotation out) rotation
+                    (grapple-reading-closing-ok out) (<= *capture-closing-min* closing
+                                                         *capture-closing-max*)
+                    (grapple-reading-offset-ok out) (<= (sqrt (+ (* y y) (* z z)))
+                                                        *capture-offset*)
+                    (grapple-reading-angle-ok out) (<= angle *capture-angle*)
+                    (grapple-reading-rotation-ok out) (<= rotation *capture-rotation*))
+              out)))))))
 
 ;;; Main engine (docs/design.md "Propulsion"): thrust along +x through the
 ;;; CoM, the gimbal trimmed, no torque.

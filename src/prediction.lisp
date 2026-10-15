@@ -650,14 +650,21 @@ those PRED was made with (decision 75, decision 116)."
   (setf (prediction-state pred) :empty)
   pred)
 
+(declaim (inline thrust-like-p))
+(defun thrust-like-p (sim)
+  "SIM's prediction runs as under thrust: the throttle up, or a rendezvous's
+:terminal or :station (decision 120)."
+  (or (> (controls-throttle (sim-controls sim)) 0d0)
+      (plan-terminal-p sim)))
+
 (defun prediction-stale-p (pred sim)
-  "True when PRED must restart from SIM (decision 75's rules, and decision
-116's: the target's path off by more than *prediction-deviation*); else
-moves its head to SIM's t."
+  "True when PRED must restart from SIM (decision 75's rules, decision 116's:
+the target's path off by more than *prediction-deviation*, and every frame
+as under thrust, thrust-like-p); else moves its head to SIM's t."
   (declare (type prediction pred) (type sim sim)
            (inline target-state-into!))
   (when (or (eq (prediction-state pred) :empty)
-            (> (controls-throttle (sim-controls sim)) 0d0)
+            (thrust-like-p sim)
             (not (eq (sim-loss sim) (prediction-source-loss pred)))
             (not (signature-matches-p pred sim)))
     (return-from prediction-stale-p t))
@@ -778,12 +785,13 @@ copy's plan flies at *prediction-rcs-level* while an RCS burn runs, else at
 
 (defun prediction-refresh! (pred sim)
   "Restart PRED from SIM if stale; the horizon from SIM's t: prediction-periods
-osculating periods coasting, one with the throttle on (decision 116)."
+osculating periods coasting, one as under thrust (thrust-like-p; decision
+116, decision 120)."
   (declare (type prediction pred) (type sim sim))
   (when (prediction-stale-p pred sim)
     (prediction-restart! pred sim))
   (let ((period (osculating-period sim))
-        (periods (if (> (controls-throttle (sim-controls sim)) 0d0) 1 (prediction-periods pred))))
+        (periods (if (thrust-like-p sim) 1 (prediction-periods pred))))
     (setf (prediction-now pred) (sim-t sim)
           (prediction-end pred) (cond ((prediction-until pred))
                                       (period (+ (sim-t sim) (* periods period)))

@@ -645,6 +645,72 @@ target: the position's rate), so it is −d(range)/dt. Conses nothing."
       (replace out b :start1 5))
     out))
 
+;;; A rendezvous's terminal phase and station-keeping (decision 120:
+;;; Rendezvous terminal phase and station-keeping in the step): the law the
+;;; step runs on fine steps.
+
+(defparameter *terminal-time* 100d0 "s: the wanted velocity is −p / it; decision 120.")
+(defparameter *terminal-speed-max* 10d0 "m/s, the wanted speed in :terminal; decision 120.")
+(defparameter *station-speed-max* 0.05d0 "m/s, the wanted speed in :station; decision 120.")
+(defparameter *terminal-key-on* 0.01d0 "m/s of error along an axis that holds its key; decision 120.")
+(defparameter *terminal-key-off* 0.003d0 "m/s: under it the key is released; decision 120.")
+(defparameter *terminal-throttle* 0.1d0 "decision 120.")
+(defparameter *terminal-throttle-on* 0.3d0 "m/s of −e along +x that lights the engine; decision 120.")
+(defparameter *terminal-throttle-off* 0.05d0 "m/s: under it the engine is cut; decision 120.")
+(defparameter *terminal-throttle-cone* (cos (deg->rad 10d0))
+  "cos of the angle −e may make with +x for the engine; decision 120.")
+(declaim (type double-float *terminal-time* *terminal-speed-max* *station-speed-max*
+               *terminal-key-on* *terminal-key-off* *terminal-throttle*
+               *terminal-throttle-on* *terminal-throttle-off* *terminal-throttle-cone*))
+
+(defun terminal-controls! (controls p u q phase)
+  "The terminal law (decision 120) into CONTROLS: P the controlled point less
+the stop point (m), U their relative velocity (m/s), Q the ship's attitude
+(body -> inertial), PHASE :terminal or :station. The wanted velocity w =
+−P / *terminal-time*, at most *terminal-speed-max* (*station-speed-max* in
+:station), the error e = U − w; per body axis the translation key opposing e
+held above *terminal-key-on*, released under *terminal-key-off*; the
+throttle *terminal-throttle* while −e lies within 10° of +x and exceeds
+*terminal-throttle-on* along it, cut under *terminal-throttle-off*; full
+RCS, not fine; the hold :relative-retrograde in :terminal, :target in
+:station, its roll transported from Q when engaged. Pure; CONTROLS. Conses
+nothing."
+  (declare (optimize speed) (type controls controls) (type vec3 p u) (type quat q)
+           (type (member :terminal :station) phase))
+  (let* ((n (vec3-norm p))
+         (cap (if (eq phase :station) *station-speed-max* *terminal-speed-max*))
+         (scale (if (> (* n (/ *terminal-time*)) cap) (/ cap n) (/ *terminal-time*)))
+         (e (make-vec3)) (c (make-quat))
+         (keys (controls-translation-keys controls))
+         (kind (if (eq phase :station) :target :relative-retrograde)))
+    (declare (dynamic-extent e c) (type double-float n cap scale))
+    (vec3-add-scaled! e u p scale)
+    (quat-conjugate! c q)
+    (quat-rotate! e c e)
+    (dotimes (i 3)
+      (let* ((ei (aref e i))
+             (opposing (if (> ei 0d0) -1 1))
+             (key (aref keys i)))
+        (setf (aref keys i)
+              (cond ((and (= key opposing) (> (abs ei) *terminal-key-off*)) key)
+                    ((> (abs ei) *terminal-key-on*) opposing)
+                    (t 0)))))
+    (let ((along (- (aref e 0)))
+          (on (> (controls-throttle controls) 0d0)))
+      (setf (controls-throttle controls)
+            (if (and (>= along (* *terminal-throttle-cone* (vec3-norm e)))
+                     (> along (if on *terminal-throttle-off* *terminal-throttle-on*)))
+                *terminal-throttle*
+                0d0)))
+    (setf (controls-fine controls) nil)
+    (unless (and (eq (controls-attitude-mode controls) :hold) (eq (controls-hold controls) kind))
+      (setf (controls-attitude-mode controls) :hold
+            (controls-hold controls) kind
+            (controls-roll-offset controls) 0d0
+            (controls-settled controls) nil)
+      (replace (controls-target-attitude controls) q))
+    controls))
+
 ;;; The flight computer (decision 70): commanded body torque and force, once
 ;;; per step from the state at its start.
 

@@ -838,3 +838,64 @@ target's exact state."
       (true (equalp sim copy))
       (false (eq (lis::controls-target-state (lis::sim-controls sim))
                  (lis::controls-target-state (lis::sim-controls copy)))))))
+
+;;; The terminal law (decision 120: Rendezvous terminal phase and
+;;; station-keeping in the step)
+
+(defun terminal-law (p u &key (phase :terminal) (q (lis::quat 1 0 0 0)) (keys '(0 0 0)) (throttle 0d0))
+  "terminal-controls! from KEYS and THROTTLE: (values keys throttle controls)."
+  (let ((c (lis::new-controls)))
+    (replace (lis::controls-translation-keys c) keys)
+    (setf (lis::controls-throttle c) throttle
+          (lis::controls-fine c) t)
+    (lis::terminal-controls! c (apply #'lis::vec3 p) (apply #'lis::vec3 u) q phase)
+    (values (coerce (lis::controls-translation-keys c) 'list) (lis::controls-throttle c) c)))
+
+(define-test terminal-law
+  (flet ((keys (p u &rest more) (values (apply #'terminal-law p u more)))
+         (throttle (p u &rest more) (nth-value 1 (apply #'terminal-law p u more))))
+    ;; At the stop point w = 0, so e = u: the key opposing it above 0.01
+    ;; m/s, kept down to 0.003 m/s.
+    (is equal '(-1 1 0) (keys '(0 0 0) '(0.011d0 -0.011d0 0.009d0)))
+    (is equal '(0 0 0) (keys '(0 0 0) '(0.009d0 -0.009d0 0d0)))
+    (is equal '(-1 1 0) (keys '(0 0 0) '(0.004d0 -0.004d0 0d0) :keys '(-1 1 1)))
+    (is equal '(0 0 0) (keys '(0 0 0) '(0.002d0 -0.002d0 0d0) :keys '(-1 1 1)))
+    ;; A held key whose error turned: released, or the other one above 0.01.
+    (is equal '(0 -1 0) (keys '(0 0 0) '(-0.005d0 0.02d0 0d0) :keys '(-1 1 0)))
+    ;; w = −p / 100 s, capped at 10 m/s, 0.05 m/s on station.
+    (is equal '(0 0 0) (keys '(-500 0 0) '(5 0 0)))
+    (is equal '(0 0 0) (keys '(-2000 0 0) '(10 0 0)))
+    (is equal '(-1 0 0) (keys '(-2000 0 0) '(10.02d0 0 0)))
+    (is equal '(0 0 0) (keys '(-10 0 0) '(0.05d0 0 0) :phase :station))
+    (is equal '(1 0 0) (keys '(-10 0 0) '(0.05d0 0 0)))
+    ;; The engine at 10 % while −e lies within 10° of +x and exceeds 0.3
+    ;; m/s along it, cut under 0.05 m/s.
+    (is = 0.1d0 (throttle '(0 0 0) '(-0.31d0 0 0)))
+    (is = 0d0 (throttle '(0 0 0) '(-0.29d0 0 0)))
+    (is = 0.1d0 (throttle '(0 0 0) '(-0.06d0 0 0) :throttle 0.1d0))
+    (is = 0d0 (throttle '(0 0 0) '(-0.04d0 0 0) :throttle 0.1d0))
+    (is = 0d0 (throttle '(0 0 0) '(0.5d0 0 0) :throttle 0.1d0))
+    (flet ((off-axis (degrees)
+             (throttle '(0 0 0) (list -1d0 0d0 (tan (lis::deg->rad degrees))))))
+      (is = 0.1d0 (off-axis 9))
+      (is = 0d0 (off-axis 11)))
+    ;; Body axes: turned 90° about z, body x is inertial y.
+    (multiple-value-bind (keys throttle)
+        (terminal-law '(0 0 0) '(0 -0.5d0 0) :q (lis::quat-from-axis-angle (lis::vec3 0 0 1) (/ pi 2)))
+      (is equal '(1 0 0) keys)
+      (is = 0.1d0 throttle))
+    ;; The hold, its roll from the ship's attitude; fine control off.
+    (let ((q (lis::quat-from-axis-angle (lis::vec3 1 0 0) 0.3d0)))
+      (multiple-value-bind (keys throttle c) (terminal-law '(0 0 0) '(0 0 0) :q q)
+        (declare (ignore keys throttle))
+        (is eq :hold (lis::controls-attitude-mode c))
+        (is eq :relative-retrograde (lis::controls-hold c))
+        (true (equalp q (lis::controls-target-attitude c)))
+        (false (lis::controls-fine c))
+        (lis::terminal-controls! c (lis::vec3 0 0 0) (lis::vec3 0 0 0) (lis::quat 1 0 0 0) :station)
+        (is eq :target (lis::controls-hold c))
+        ;; Kept, not re-engaged, while the kind stays.
+        (setf (lis::controls-settled c) t)
+        (lis::terminal-controls! c (lis::vec3 0 0 0) (lis::vec3 0 0 0) q :station)
+        (true (lis::controls-settled c))
+        (true (equalp (lis::quat 1 0 0 0) (lis::controls-target-attitude c)))))))

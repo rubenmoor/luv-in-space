@@ -722,3 +722,21 @@ every 1/16 s without the parabola until task 261: 4x the samples.)"
                                (lis::orbit-period (lis::burn-plan-goal-orbit plan)))
                1d-3))
       (true (>= (last-node shot) (lis::prediction-end shot))))))
+
+(define-test prediction-terminal-as-thrust
+  ;; In a rendezvous's :terminal and :station the prediction runs as under
+  ;; thrust (decision 120): one period, restarted each frame.
+  (let* ((sim (terminal-sim :tern-station))
+         (pred (lis::new-prediction :periods 2)))
+    (dotimes (i 3)
+      (step-sim sim 2 1)
+      (lis::prediction-update! pred sim 64))
+    (is = 3 (lis::prediction-restarts pred))
+    (true (< (relative-error (- (lis::prediction-end pred) (lis::sim-t sim)) (lis::osculating-period sim))
+             1d-9))
+    ;; Disengaged, coasting: two periods, kept.
+    (lis::sim-plan-stop! sim)
+    (dotimes (i 3)
+      (step-sim sim 2 1)
+      (lis::prediction-update! pred sim 64))
+    (is = 4 (lis::prediction-restarts pred))))

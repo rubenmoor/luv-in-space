@@ -1555,3 +1555,201 @@ first; MESSAGES the autopilot's, in order (the log fills with warp's)."
     (is eq :prograde (lis::controls-hold (lis::sim-controls sim)))
     (lis::clock-take-notices! clock sim)
     (is eq :closed (menu-state clock))))
+
+;;; A rendezvous's terminal phase and station-keeping (decision 120:
+;;; Rendezvous terminal phase and station-keeping in the step). Fine steps
+;;; only; ×1 and ×4 take the same steps.
+
+(defun terminal-sim (target &key (number 1) (time (lis::start-t)) burn)
+  "The start state at TIME under :j2, the ship at TARGET's aim point NUMBER
+(range 100 m) at its velocity, nose prograde, full tanks, the objects
+rechecked, engaged with a rendezvous plan to it: with BURN (an :arrival
+planned-burn) pending, else in :terminal from TIME."
+  (let ((sim (lis::new-game-sim)))
+    (setf (lis::sim-t sim) time
+          (lis::sim-model sim) :j2)
+    (let ((fixture (lis::rendezvous-stop sim target)))
+      (multiple-value-bind (r v) (lis::aim-point sim target fixture 100d0 number time)
+        (lis::ship-state-assign! (lis::sim-ship sim)
+                                 (lis::make-ship-state r v (lis::hold-attitude :prograde r v 0d0)
+                                                       (lis::make-vec3) lis::*propellant-full*)))
+      (lis::sim-recheck-objects! sim)
+      (lis::sim-engage-plan!
+       sim (lis::make-burn-plan
+            (vector (or burn (lis::make-planned-burn :arrival (- time 10) (- time 5) (lis::quat 1 0 0 0)
+                                                     0.1d0 nil 0d0)))
+            :rendezvous (lis::make-rendezvous-part target fixture 100d0 number 1 (lis::make-vec3)
+                                                   time '())))
+      (unless burn
+        (setf (lis::sim-plan-phase sim) :terminal
+              (lis::sim-plan-terminal-t sim) time))
+      sim)))
+
+(defun ship-arm ()
+  "m: the grapple's tip ahead of the CoM along x, full tanks."
+  (- (aref lis::*grapple-tip* 0)
+     (aref (lis::mass-properties-com (lis::ship-mass-properties lis::*propellant-full*)) 0)))
+
+(defun station-sim (target &optional (time (lis::start-t)))
+  "terminal-sim with the tip at TARGET's stop point, moving with it, the
+nose prograde: on station at the first step, then the :target hold's slew."
+  (let* ((sim (terminal-sim target :time time))
+         (fixture (lis::rendezvous-part-fixture (lis::burn-plan-rendezvous (lis::sim-plan sim)))))
+    (multiple-value-bind (s sv) (stop-point sim target fixture time)
+      (let ((rt (object-com sim target time)))
+        (replace (lis::ship-state-r (lis::sim-ship sim))
+                 (lis::vec3-add-scaled s (lis::vec3-normalize (lis::vec3-sub rt s)) (- (ship-arm))))
+        (replace (lis::ship-state-v (lis::sim-ship sim)) sv)))
+    (lis::sim-recheck-objects! sim)))
+
+(defun terminal-relative (sim)
+  "(values p u): the controlled point less the stop point, their relative velocity."
+  (let ((p (lis::make-vec3)) (u (lis::make-vec3)))
+    (true (lis::terminal-relative-into! p u sim (lis::burn-plan-rendezvous (lis::sim-plan sim))))
+    (values p u)))
+
+(defun controlled-point (sim)
+  "The controlled point, Earth-centred (task 270's Skua Yard approach)."
+  (let ((part (lis::burn-plan-rendezvous (lis::sim-plan sim))))
+    (lis::vec3-add (terminal-relative sim)
+                   (stop-point sim (lis::rendezvous-part-target part) (lis::rendezvous-part-fixture part)
+                               (lis::sim-t sim)))))
+
+(defun station-bounds (sim seconds &optional (level 4) (step (lambda (sim level) (step-sim sim 1 level))))
+  "SIM stepped SECONDS at LEVEL in :station: (values the largest |p| and |u|)."
+  (let ((end (+ (lis::sim-t sim) seconds)) (p-max 0d0) (u-max 0d0))
+    (loop while (< (lis::sim-t sim) end)
+          do (funcall step sim level)
+             (is eq :station (lis::sim-plan-phase sim))
+             (multiple-value-bind (p u) (terminal-relative sim)
+               (setf p-max (max p-max (lis::vec3-norm p)) u-max (max u-max (lis::vec3-norm u)))))
+    (values p-max u-max)))
+
+(define-test terminal-approach-tern
+  ;; From aim point (1) 1 km behind a promoted Tern Station at ×1, each
+  ;; step's notices and checkpoint request handed to a clock, then 120 s of
+  ;; station-keeping at ×4 (one orbit, 0.87 m and 0.011 m/s at most, takes
+  ;; 1.8 s: task 270 moves it to the slow command). The closing speed exceeds |p| / 100 s by up to 0.20 m/s
+  ;; between 600 and 360 m, where the RCS's 0.05 m/s² cannot follow w's
+  ;; decay and the engine waits for 0.3 m/s (decision 162: The terminal
+  ;; approach's bounds: the closing speed's lag and the controlled point).
+  (let* ((sim (terminal-sim :tern-station))
+         (clock (lis::new-clock sim))
+         (t0 (lis::sim-t sim))
+         (dv0 (lis::ship-state-dv (lis::sim-ship sim)))
+         (tern (lis::sim-object sim :tern-station))
+         (excess 0d0) (nearest most-positive-double-float))
+    (is equal '(:tern-station) (promoted-keys sim))
+    (loop until (or (eq (lis::sim-plan-phase sim) :station) (> (lis::sim-t sim) (+ t0 1800)))
+          do (step-sim sim 1 1)
+             (lis::clock-take-notices! clock sim)
+             (multiple-value-bind (p u) (terminal-relative sim)
+               (let ((n (lis::vec3-norm p)))
+                 (setf excess (max excess (- (- (/ (lis::vec3-dot p u) n)) (/ n 100))))))
+             (setf nearest (min nearest (lis::vec3-norm (lis::vec3-sub (lis::ship-state-r (lis::object-state tern))
+                                                                (lis::ship-state-r (lis::sim-ship sim)))))))
+    (is eq :station (lis::sim-plan-phase sim))
+    (true (<= (- (lis::sim-t sim) t0) 1800d0) "~,1F s" (- (lis::sim-t sim) t0))
+    (true (<= excess 0.3d0) "~,3F m/s" excess)
+    (true (>= nearest 100d0) "~,1F m" nearest)
+    (let ((dv (- (lis::ship-state-dv (lis::sim-ship sim)) dv0)))
+      (true (<= dv 20d0) "~,2F m/s" dv))
+    (is = 1 (count "ON STATION: TERN STATION" (log-texts clock) :test #'string=))
+    (let ((checkpoint (lis::clock-checkpoint clock)))
+      (true checkpoint)
+      (is eq :station (lis::sim-plan-phase checkpoint)))
+    (multiple-value-bind (p-max u-max)
+        (station-bounds sim 120d0 4 (lambda (sim level)
+                                      (step-sim sim 1 level)
+                                      (lis::clock-take-notices! clock sim)))
+      (true (<= p-max 5d0) "~,2F m" p-max)
+      (true (<= u-max 0.05d0) "~,3F m/s" u-max))
+    (is = 1 (count "ON STATION: TERN STATION" (log-texts clock) :test #'string=))
+    (true (lis::sim-plan sim))))
+
+(define-test terminal-station-keeping
+  ;; Fulmar Depot's A (Sun-pointing) and K-17's fixture (spinning) for 150
+  ;; s each, not the plan's quarter orbit (1.1 m and 0.6 m at most over it;
+  ;; task 270 for the slow command); from the stop point, so the
+  ;; :target hold's slew comes first.
+  (dolist (target '(:fulmar-depot :k-17))
+    (let ((sim (station-sim target (+ (lis::start-t) 3600d0))))
+      (step-sim sim 1 1)
+      (is eq :station (lis::sim-plan-phase sim))
+      (multiple-value-bind (p-max u-max) (station-bounds sim 150d0)
+        (true (<= p-max 5d0) "~A ~,2F m" target p-max)
+        (true (<= u-max 0.05d0) "~A ~,3F m/s" target u-max)))))
+
+(define-test terminal-warp
+  (let ((lis::*frame-step-time-limit* nil))
+    ;; The :arrival cut at ×100 (put back before each step: the burn's
+    ;; drop-out lowers it) starts :terminal; the next step's check lowers
+    ;; to ×4 with its message.
+    (let* ((t0 (+ (lis::start-t) 60d0))
+           (sim (terminal-sim :tern-station
+                              :burn (lis::make-planned-burn :arrival t0 (+ t0 10) (lis::quat 1 0 0 0)
+                                                            0.1d0 nil 0.05d0)))
+           (clock (clock-at sim 100)))
+      (loop until (eq (lis::sim-plan-phase sim) :terminal)
+            do (lis::clock-set-level-index! clock (level-index 100))
+               (lis::clock-step! clock sim))
+      (let ((start (lis::sim-plan-terminal-t sim)))
+        (true (on-grid-p start))
+        (true (<= (+ t0 10) start (lis::sim-t sim))))
+      (lis::clock-step! clock sim)
+      (is = 4 (lis::clock-level clock))
+      (true (messages-p clock "WARP ×4: TERMINAL PHASE"))
+      ;; Above ×4 refused.
+      (false (lis::clock-warp-up clock sim))
+      (is = 4 (lis::clock-level clock))
+      (true (member "WARP REFUSED: STATION-KEEPING, LIMIT ×4" (lis::clock-messages clock) :test #'string=)))
+    ;; A coarse step releases the keys and the throttle.
+    (let* ((sim (terminal-sim :tern-station))
+           (controls (lis::sim-controls sim)))
+      (step-sim sim 64 1)
+      (replace (lis::controls-translation-keys controls) '(1 -1 1))
+      (setf (lis::controls-throttle controls) 0.1d0)
+      (step-sim sim 1 1000)
+      (is equalp #(0 0 0) (lis::controls-translation-keys controls))
+      (is = 0d0 (lis::controls-throttle controls))
+      (is eq :terminal (lis::sim-plan-phase sim)))))
+
+(define-test terminal-aborts
+  ;; K-17 removed in :station: "TARGET LOST" at the next step.
+  (let ((sim (station-sim :k-17)))
+    (step-sim sim 1 1)
+    (is eq :station (lis::sim-plan-phase sim))
+    (setf (lis::sim-notices sim) nil)
+    (setf (lis::object-status (lis::sim-object sim :k-17)) :removed)
+    (step-sim sim 1 1)
+    (check-aborted sim "TARGET LOST")
+    (true (member "TARGET LOST: K-17" (notice-texts sim) :test #'string=)))
+  ;; *terminal-timeout* at 60 s: the step starting at the start + 60 s aborts.
+  (let ((lis::*terminal-timeout* 60d0)
+        (sim (terminal-sim :tern-station)))
+    (step-sim sim (* 60 64) 1)
+    (is = (+ (lis::start-t) 60d0) (lis::sim-t sim))
+    (is eq :terminal (lis::sim-plan-phase sim))
+    (step-sim sim 1 1)
+    (check-aborted sim "APPROACH TIMED OUT")))
+
+(define-test terminal-determinism
+  ;; 15 s of the approach at ×4 through clock-frame! at two frame rates,
+  ;; each step compared with direct steps; a restored checkpoint flies the same.
+  (dolist (frames (list '(1/60) *irregular-frames*))
+    (let ((sim (terminal-sim :tern-station)))
+      (is = 0 (clock-run sim 4 (+ (lis::start-t) 15d0) frames) "~A" frames)))
+  (let* ((sim (step-sim (terminal-sim :tern-station) 640 4))
+         (checkpoint (lis::take-checkpoint sim))
+         (flown (lis::copy-sim (step-sim sim 1280 4))))
+    (lis::restore-checkpoint! sim checkpoint)
+    (true (equalp (step-sim sim 1280 4) flown))))
+
+(define-test terminal-cons-nothing
+  (let ((sim (station-sim :tern-station)))
+    (step-sim sim 640 4)
+    (is eq :station (lis::sim-plan-phase sim))
+    (setf (lis::sim-notices sim) nil)
+    (let ((consed (least-bytes-consed (lambda () (step-sim sim 10000 4)) 1)))
+      (true (< consed 1024) "~D bytes" consed))
+    (is eq :station (lis::sim-plan-phase sim))))

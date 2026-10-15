@@ -197,12 +197,16 @@ nil."
   (let ((key (target-object-key target)))
     (and key (sim-object sim key))))
 
+;; The terminal law (clock.lisp) inlines them: a full call boxes the time.
+(declaim (sb-ext:maybe-inline object-planning-state-into! stop-target-state-into!
+                              terminal-frame-into! stop-point-into!))
+
 (defun object-planning-state-into! (r v object sim time)
   "OBJECT's position and velocity at TIME for planning: object-state-into!
 on rails or at SIM's t; a promoted or latched object at another time on
 the rails of its state at SIM's t (object-planning-rails; conses). True, or
 nil (removed, past its rails' crash)."
-  (declare (type vec3 r v) (type double-float time))
+  (declare (type vec3 r v) (type double-float time) (inline rails-state-into!))
   (let ((status (object-status object)))
     (cond ((eq status :removed) nil)
           ((eq status :rails)
@@ -235,6 +239,8 @@ removed."
   "The state at TIME of what the stop point of TARGET with FIXTURE moves
 with: the object's CoM, Skua Yard's drop point (FIXTURE :drop-point) or its
 front (:front, *yard-front-lead* s ahead on the same rails). True or nil."
+  (declare (type vec3 r v) (type double-float time)
+           (inline object-planning-state-into! rails-state-into!))
   (let ((object (target-object sim target)))
     (if object
         (object-planning-state-into! r v object sim time)
@@ -247,7 +253,8 @@ front (:front, *yard-front-lead* s ahead on the same rails). True or nil."
 R, V and TIME: Q (body -> inertial) its attitude with a :spin about the
 fixture axis removed (the mode's q₀), W the frame's angular velocity
 (rad/s, inertial axes); Q. Conses nothing."
-  (declare (type quat q) (type vec3 w r v) (type double-float time))
+  (declare (type quat q) (type vec3 w r v) (type double-float time)
+           (inline object-attitude-into!))
   (let ((mode (if object (object-attitude object) (load-time-value (make-attitude :lvlh) t))))
     (if (eq (attitude-kind mode) :spin)
         (progn (replace q (attitude-q mode))
@@ -265,7 +272,8 @@ the grapple cone's tip: FIXTURE's pin plus RANGE along its outward axis,
 turned by the terminal frame, moving at v_T + ω × offset. FIXTURE :drop-point
 or :front (Skua Yard): that point itself, for the stack's CoM. True or nil
 (the target removed). Conses nothing at SIM's t."
-  (declare (type vec3 r v) (type double-float range time))
+  (declare (type vec3 r v) (type double-float range time)
+           (inline stop-target-state-into! terminal-frame-into!))
   (when (stop-target-state-into! r v sim target fixture time)
     (when (typep fixture 'fixture)
       (let ((q (make-quat)) (w (make-vec3)) (offset (make-vec3)))

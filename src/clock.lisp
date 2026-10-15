@@ -52,8 +52,9 @@
   ;; The engaged burn plan, shared by copies, and its cursor (decision 115).
   (plan nil :type (or null burn-plan))
   (plan-index 0 :type fixnum)                   ; the current burn
-  (plan-phase :done :type (member :pending :holding :burning :replan :done))
+  (plan-phase :done :type (member :pending :holding :burning :replan :done :terminal :station))
   (plan-rcs-target 0d0 :type double-float)      ; the RCS burn's odometer target
+  (plan-terminal-t 0d0 :type double-float)      ; a rendezvous's :terminal start (decision 120)
   ;; The autopilot's (decision 117): attitude cuts so far, replans so far,
   ;; the Δv a burn cut for its attitude resumes with (0: none), and the cut
   ;; that set :replan (plan-index the burn cut).
@@ -99,6 +100,7 @@ nothing; OUT."
         (sim-plan-index out) (sim-plan-index sim)
         (sim-plan-phase out) (sim-plan-phase sim)
         (sim-plan-rcs-target out) (sim-plan-rcs-target sim)
+        (sim-plan-terminal-t out) (sim-plan-terminal-t sim)
         (sim-plan-retries out) (sim-plan-retries sim)
         (sim-plan-replans out) (sim-plan-replans sim)
         (sim-plan-resume out) (sim-plan-resume sim)
@@ -376,6 +378,7 @@ retries, replans and resume 0; SIM."
         (sim-plan-index sim) 0
         (sim-plan-phase sim) (if (and plan (> (length (burn-plan-burns plan)) 0)) :pending :done)
         (sim-plan-rcs-target sim) 0d0
+        (sim-plan-terminal-t sim) 0d0
         (sim-plan-retries sim) 0
         (sim-plan-replans sim) 0
         (sim-plan-resume sim) 0d0
@@ -432,7 +435,8 @@ the last. A burn cut for its attitude (plan-step-checks!) resumes with the
 each cut (plan-cut-missed-p): off its shot, the cursor goes :replan at the
 burn cut, with the cut's t, for the clock to install a new plan
 (autopilot-replan-due!); after *plan-max-replans* the plan ends with the
-notice \"AUTOPILOT: GOAL MISSED\", the coast hold kept. Several at one t in
+notice \"AUTOPILOT: GOAL MISSED\", the coast hold kept. A rendezvous's
+:arrival cut starts its :terminal phase (decision 120). Several at one t in
 turn. SIM; conses nothing but at a measured cut."
   (declare (optimize speed) (type sim sim))
   (let ((plan (sim-plan sim)))
@@ -447,7 +451,7 @@ turn. SIM; conses nothing but at a measured cut."
                 (odometer (ship-state-dv ship)))
             (declare (type planned-burn burn) (type double-float odometer))
             (ecase (sim-plan-phase sim)
-              ((:done :replan) (return))
+              ((:done :replan :terminal :station) (return))
               (:pending
                (when (< time (planned-burn-hold-at burn)) (return))
                (controls-engage-hold! controls :inertial (planned-burn-attitude burn))
@@ -486,6 +490,10 @@ turn. SIM; conses nothing but at a measured cut."
                      ((< (1+ (sim-plan-index sim)) (length burns))
                       (setf (sim-plan-index sim) (1+ (sim-plan-index sim))
                             (sim-plan-phase sim) :pending))
+                     ((and (burn-plan-rendezvous plan) (eq (planned-burn-label burn) :arrival))
+                      (setf (sim-plan-phase sim) :terminal
+                            (sim-plan-terminal-t sim) time)
+                      (return))
                      (t (setf (sim-plan-phase sim) :done))))))))))
   sim)
 
@@ -676,6 +684,97 @@ notice."
                          ((eq (grapple-state (sim-grapple sim)) :closing) "LATCHED")
                          (t "CONTACT"))))
 
+;;; A rendezvous's terminal phase and station-keeping (decision 120:
+;;; Rendezvous terminal phase and station-keeping in the step): the cursor's
+;;; :terminal from the :arrival cut, then :station; the law is controls.lisp's.
+
+(defparameter *terminal-timeout* 7200d0 "s of game time :terminal may last; decision 120.")
+(defparameter *station-distance* 1d0 "m from the stop point that is on station; decision 120.")
+(defparameter *station-speed* 0.02d0 "m/s relative to the stop point that is on station; decision 120.")
+(declaim (type double-float *terminal-timeout* *station-distance* *station-speed*))
+
+(declaim (inline plan-terminal-p))
+(defun plan-terminal-p (sim)
+  "SIM's plan is in its :terminal or :station phase."
+  (member (sim-plan-phase sim) '(:terminal :station)))
+
+(defun terminal-relative-into! (p u sim part)
+  "The controlled point less the rendezvous PART's stop point into P (m) and
+their relative velocity into U (m/s), at SIM's t; nil when the stop point is
+gone. For a fixture the grapple cone's tip as the :target hold places it,
+the stack's CoM plus the target's direction times the tip's distance ahead
+of the CoM along x (so the hold's slew on station moves it not); for a
+point on rails (Skua Yard) the stack's CoM. Conses nothing."
+  (declare (optimize speed) (type vec3 p u) (type sim sim) (type rendezvous-part part)
+           (inline ship-mass-properties make-mass-properties stop-point-into!
+                   stop-target-state-into!))
+  (let* ((ship (sim-ship sim))
+         (r (ship-state-r ship)) (v (ship-state-v ship))
+         (time (sim-t sim))
+         (target (rendezvous-part-target part))
+         (fixture (rendezvous-part-fixture part))
+         (stop-v (make-vec3)))
+    (declare (dynamic-extent stop-v) (type double-float time))
+    (when (stop-point-into! p stop-v sim target fixture (rendezvous-part-range part) time)
+      (vec3-sub! p r p)
+      (vec3-sub! u v stop-v)
+      (when (typep fixture 'fixture)
+        (let* ((com (make-vec3)) (inertia (make-mat3)) (inverse (make-mat3))
+               (properties (make-mass-properties :com com :inertia inertia :inertia-inverse inverse))
+               (rt (make-vec3)) (vt (make-vec3)))
+          (declare (dynamic-extent com inertia inverse properties rt vt))
+          (with-stack-load (load sim)
+            (ship-mass-properties (ship-state-m-p ship) load properties))
+          (stop-target-state-into! rt vt sim target fixture time)
+          (vec3-sub! rt rt r)
+          (vec3-sub! vt vt v)
+          (let ((n (vec3-norm rt))
+                (arm (- (aref *grapple-tip* 0) (aref com 0))))
+            (declare (type double-float n arm))
+            (when (> n 0d0)
+              (vec3-scale! rt rt (/ n))
+              ;; d̂ and its rate (ḋ − d̂ (d̂·ḋ)) / |d|
+              (vec3-add-scaled! vt vt rt (- (vec3-dot rt vt)))
+              (vec3-add-scaled! p p rt arm)
+              (vec3-add-scaled! u u vt (/ arm n))))))
+      t)))
+
+(defun terminal-step! (sim coarse)
+  "At SIM's step start in :terminal or :station, after plan-step-controls!
+(decision 120): aborts \"TARGET LOST\" (the target removed or latched) and
+\"APPROACH TIMED OUT\" (:terminal *terminal-timeout* old); on a COARSE step
+the keys and the throttle released; else on station (|p| ≤
+*station-distance*, |u| ≤ *station-speed*) :station with the notice \"ON
+STATION: <NAME>\" and a checkpoint request, then terminal-controls!. SIM;
+conses nothing but the notice."
+  (declare (optimize speed) (type sim sim) (type boolean coarse))
+  (let* ((part (burn-plan-rendezvous (sim-plan sim)))
+         (target (rendezvous-part-target part))
+         (controls (sim-controls sim)))
+    (cond ((not (target-available-p sim target))
+           (plan-abort! sim "TARGET LOST"))
+          ((and (eq (sim-plan-phase sim) :terminal)
+                (>= (- (sim-t sim) (sim-plan-terminal-t sim)) *terminal-timeout*))
+           (plan-abort! sim "APPROACH TIMED OUT"))
+          (coarse
+           (fill (controls-translation-keys controls) 0)
+           (controls-throttle-cut controls))
+          (t
+           (let ((p (make-vec3)) (u (make-vec3)))
+             (declare (dynamic-extent p u))
+             (if (terminal-relative-into! p u sim part)
+                 (progn
+                   (when (and (eq (sim-plan-phase sim) :terminal)
+                              (<= (vec3-norm p) *station-distance*)
+                              (<= (vec3-norm u) *station-speed*))
+                     (setf (sim-plan-phase sim) :station
+                           (sim-checkpoint-request sim) t)
+                     (sim-notice! sim :station (format nil "ON STATION: ~A" (target-name target))))
+                   (terminal-controls! controls p u (ship-state-q (sim-ship sim))
+                                       (sim-plan-phase sim)))
+                 (plan-abort! sim "TARGET LOST")))))
+    sim))
+
 ;;; The step (decision 72)
 
 (defparameter *fine-levels-max* 4
@@ -771,6 +870,8 @@ contact answered at the step's start) or nil."
     (contact-save! sim level until))
   (when (sim-plan sim)
     (plan-step-controls! sim)
+    (when (plan-terminal-p sim)
+      (terminal-step! sim (> level *fine-levels-max*)))
     (plan-step-checks! sim (> level *fine-levels-max*)))
   (let* ((ship (sim-ship sim))
          (controls (sim-controls sim))
@@ -868,8 +969,9 @@ contact answered at the step's start) or nil."
 (declaim (inline sim-step!))
 (defun sim-step! (sim level &key until)
   "One step of SIM at warp LEVEL (×1, ×4, ×10 …) with every rule (decision
-72): the plan's controls first (plan-step-controls!) and the autopilot's
-rules (plan-step-checks!), the fine step to
+72): the plan's controls first (plan-step-controls!), a rendezvous's
+terminal law (terminal-step!) and the autopilot's rules
+(plan-step-checks!), the fine step to
 ×4, above it the coarse step with kinematic attitude (an inertial hold
 engaged first if no hold is, unless berthed), shortened to land on UNTIL
 (a grid time; one not ahead is ignored), on the plan's next hold-at or
@@ -1039,9 +1141,12 @@ DATA as prediction-event's second value."
 
 (defun warp-refusal (clock sim level)
   "The message refusing a warp up to LEVEL, or nil (decision 19, decision
-73; an RCS burn's ×4, decision 117)."
+73; an RCS burn's ×4, decision 117; the terminal phase's and
+station-keeping's ×4, decision 120)."
   (multiple-value-bind (delta kind) (clock-dropout clock sim)
-    (cond ((and (> level *fine-levels-max*)
+    (cond ((and (> level *fine-levels-max*) (plan-terminal-p sim))
+           (format nil "WARP REFUSED: STATION-KEEPING, LIMIT ×~D" *fine-levels-max*))
+          ((and (> level *fine-levels-max*)
                 (let ((burn (plan-burn-due sim))) (and burn (planned-burn-rcs burn))))
            (format nil "WARP REFUSED: RCS BURN, LIMIT ×~D" *fine-levels-max*))
           ((and (sim-engine-on-p sim) (> level (thrust-warp-limit sim)))
@@ -1071,7 +1176,8 @@ decision 117's for a :burn."
 above ×4, the highest level with the drop-out event ≥ 3 s of real time
 ahead; each lowering writes its message. A plan's burn due in the step
 (plan-burn-due) counts from that step: ×4 on the RCS, *cutoff-warp-limit*
-on the engine (decision 117)."
+on the engine (decision 117); ×4 in a rendezvous's :terminal and :station
+(decision 120)."
   (flet ((lower! (level text)
            (when (< level (clock-level clock))
              (clock-set-level-index! clock (position level *warp-levels*))
@@ -1087,6 +1193,8 @@ on the engine (decision 117)."
               (when (> (clock-level clock) *cutoff-warp-limit*)
                 (lower! *cutoff-warp-limit*
                         (format nil "WARP ×~:D: ENGINE ON" *cutoff-warp-limit*)))))))
+    (when (and (plan-terminal-p sim) (> (clock-level clock) *fine-levels-max*))
+      (lower! *fine-levels-max* (format nil "WARP ×~D: TERMINAL PHASE" *fine-levels-max*)))
     (when (and (clock-held clock) (not (held-p sim)) (> (clock-level clock) *fine-levels-max*))
       (lower! *fine-levels-max* (format nil "WARP ×~D: HOLD RELEASED" *fine-levels-max*)))
     (multiple-value-bind (delta kind data) (clock-dropout clock sim)

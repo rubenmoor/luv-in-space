@@ -34,6 +34,8 @@
                :documentation "The real time (game-real-time) the frame first saw the loss.")
    (death-elapsed :initform nil :accessor game-death-elapsed
                   :documentation "nil, or the seconds since the death the glow shows (captures).")
+   (frozen-p :initarg :frozen :initform nil :accessor game-frozen-p
+             :documentation "Captures: the clock takes no steps, unpaused (its prediction still updates).")
    (readout-p :initarg :readout :initform t :accessor game-readout-p
               :documentation "Whether the frame draws the readout (decision 85).")
    (input :initform (make-input) :reader game-input
@@ -175,12 +177,15 @@ the outside view's distance."
 
 (defun game-frame! (game elapsed)
   "One frame's simulation, ELAPSED real seconds: the real time, the input,
-the clock's steps, the death record, the lights' clock. No GPU."
+the clock's steps (only its prediction while frozen), the death record, the
+lights' clock. No GPU."
   (incf (game-real-time game) elapsed)
   (input-frame! game elapsed)
-  (clock-frame! (game-clock game) (game-sim game) elapsed)
+  (if (game-frozen-p game)
+      (prediction-update! (clock-prediction (game-clock game)) (game-sim game))
+      (clock-frame! (game-clock game) (game-sim game) elapsed))
   (notice-death! game)
-  (unless (clock-paused (game-clock game))
+  (unless (or (clock-paused (game-clock game)) (game-frozen-p game))
     (incf (render-state-lights-t (game-render-state game)) elapsed)))
 
 (defun draw (game)
@@ -220,10 +225,11 @@ the clock's steps, the death record, the lights' clock. No GPU."
     result))
 
 (defun start (&key (visible t) (width 1280) (height 800) (sim (new-game-sim)) paused
-                (readout t))
+                frozen (readout t))
   "Open the game window on SIM (used as is, the start checkpoint taken of
-it) and start drawing; PAUSED starts with the clock paused, READOUT nil
-without the readout. Returns the game."
+it) and start drawing; PAUSED starts with the clock paused, FROZEN with the
+clock taking no steps though not paused (captures, decision 77), READOUT
+nil without the readout. Returns the game."
   (let* ((canvas (luv:make-sdl-canvas :title (window-title) :width width :height height
                                       :visible-p visible))
          (_ (luv:open-canvas canvas))
@@ -237,6 +243,7 @@ without the readout. Returns the game."
          (game (make-instance 'game :canvas canvas :device device :context context
                                     :renderer (make-frame-renderer device context)
                                     :sim sim :clock clock :readout readout
+                                    :frozen (and frozen t)
                                     :start-checkpoint (take-checkpoint sim))))
     (declare (ignore _))
     (setf (clock-paused clock) (and paused t))

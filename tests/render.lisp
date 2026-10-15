@@ -805,6 +805,8 @@ without it the scene shows there."
                                                     (lis::game-real-time game)))))
         (allowed (mapcar #'rgb-bytes '(#x0A0C0C #x8A8A80 #xE8E4D8)))
         (x0 lis::*readout-margin-px*) (y0 lis::*readout-margin-px*))
+    ;; frozen, not paused (task 151)
+    (true (member "WARP ×1" (mapcar #'lis::line-text lines) :test #'string=))
     (multiple-value-bind (box-width box-height) (lis::readout-box-size lines)
       (true (and (< (+ x0 box-width) width) (< (+ y0 box-height) height)))
       (flet ((colours (readout)

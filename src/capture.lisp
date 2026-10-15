@@ -6,7 +6,7 @@
 ;;; state, capture of a given sim, part 4's placeholders and first asset).
 
 (defparameter *screenshot-frames* 10
-  "Frames drawn before the capture; the clock is paused, so a few suffice.")
+  "Frames drawn before the capture; the game is frozen, so a few suffice.")
 
 (defun screenshot (pathname &key (game *game*))
   "Write a PNG of GAME's scene at its canvas size; returns PATHNAME, width,
@@ -27,20 +27,21 @@ height, the packed pixels and their colour format."
            (sleep 0.01)))
 
 (defun game-load-state! (game sim)
-  "GAME's sim becomes a copy of SIM, its clock restarted on it and paused."
+  "GAME's sim becomes a copy of SIM, its clock restarted on it (×1,
+unpaused); a frozen GAME (captures) takes no steps from it."
   (call-on-canvas-thread game (lambda ()
-                                (clock-restart! (game-clock game) (game-sim game) sim)
-                                (setf (clock-paused (game-clock game)) t))))
+                                (clock-restart! (game-clock game) (game-sim game) sim))))
 
 (defmacro with-capture-game ((game &key (width 1280) (height 800) sim (readout t)) &body body)
-  "Run BODY with GAME on a hidden canvas of WIDTH x HEIGHT, its clock paused
-on a copy of SIM (default the start state), the readout drawn unless
-READOUT is nil; one canvas for several captures. Call on luv's SDL main
-thread (LUV:CALL-WITH-SDL-MAIN-THREAD)."
+  "Run BODY with GAME on a hidden canvas of WIDTH x HEIGHT, frozen (no
+steps, the clock not paused, so the readout reads WARP ×1) on a copy of
+SIM (default the start state), the readout drawn unless READOUT is nil;
+one canvas for several captures. Call on luv's SDL main thread
+(LUV:CALL-WITH-SDL-MAIN-THREAD)."
   (let ((state (gensym "SIM")))
     `(let* ((,state ,sim)
             (,game (start :visible nil :width ,width :height ,height
-                          :sim (if ,state (copy-sim ,state) (new-game-sim)) :paused t
+                          :sim (if ,state (copy-sim ,state) (new-game-sim)) :frozen t
                           :readout ,readout)))
        (unwind-protect (progn ,@body)
          (stop ,game)))))
@@ -74,7 +75,7 @@ panel and the death glow DEATH-ELAPSED real seconds after the death
 
 (defun capture-state (pathname sim &key camera-fn (view :outside) (frames *screenshot-frames*)
                                        (width 1280) (height 800) (readout t) (death-elapsed 0d0))
-  "A PNG showing exactly SIM's state (a copy, the clock paused) on a hidden
+  "A PNG showing exactly SIM's state (a copy, the game frozen) on a hidden
 canvas in VIEW (:outside or :map), with the readout unless READOUT is nil
 (decision 85); a lost SIM with the LOST panel and the glow DEATH-ELAPSED
 real seconds after the death (decision 86). Call on luv's SDL main thread."

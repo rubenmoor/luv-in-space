@@ -537,3 +537,53 @@ slot on a miss."
     (multiple-value-bind (emb-r emb-v) (emb-series time)
       (multiple-value-bind (moon-r moon-v) (moon-series time)
         (combine-into (make-vec3) (make-vec3) key origin emb-r emb-v moon-r moon-v)))))
+
+;;; Sunlight at a point (decision 79: Sunlight at a point and the sunlit
+;;; ship in the exposure rule).
+
+(declaim (inline lens-area))
+(defun lens-area (r1 r2 d)
+  "Overlap of two discs of radii R1, R2 whose centres are D apart; pure."
+  (declare (type (double-float 0d0) r1 r2 d))
+  (flet ((clamped-acos (x)
+           (acos (the (double-float -1d0 1d0) (max -1d0 (min 1d0 x))))))
+    (cond ((>= d (+ r1 r2)) 0d0)
+          ((<= d (abs (- r1 r2))) (let ((r (min r1 r2))) (* pi r r)))
+          (t (- (+ (* r1 r1 (clamped-acos (/ (+ (* d d) (* r1 r1) (- (* r2 r2))) (* 2 d r1))))
+                   (* r2 r2 (clamped-acos (/ (+ (* d d) (* r2 r2) (- (* r1 r1))) (* 2 d r2)))))
+                (* 0.5d0 (sqrt (the (double-float 0d0)
+                                    (max 0d0 (* (+ (- d) r1 r2) (+ d r1 (- r2))
+                                                (+ d (- r1) r2) (+ d r1 r2)))))))))))
+
+(declaim (ftype (function (vec3 real &optional keyword) (values double-float &optional))
+                sun-visible-fraction)
+         (inline sun-visible-fraction))   ; a double argument to a full call conses
+(defun sun-visible-fraction (p time &optional (origin :earth))
+  "The fraction of the Sun's disc seen from P (relative to ORIGIN, ICRF) at
+TIME: Earth and the Moon as occulting discs, the exact overlap of circles in
+angle, the smaller visible fraction of the two; 0 inside a body. Double,
+conses nothing."
+  (declare (optimize speed) (type vec3 p))
+  (let ((time (float time 1d0))
+        (sun (make-vec3)) (body (make-vec3)) (scratch (make-vec3)))
+    (declare (dynamic-extent sun body scratch) (type double-float time))
+    (body-state-into sun scratch :sun time origin)
+    (vec3-sub! sun sun p)
+    (let* ((sun-distance (vec3-norm sun))
+           (sun-radius (asin (the (double-float 0d0 1d0) (min 1d0 (/ +radius-sun+ sun-distance)))))
+           (sun-area (* pi sun-radius sun-radius))
+           (fraction 1d0))
+      (declare (type double-float fraction))
+      (dolist (key '(:earth :moon) fraction)
+        (body-state-into body scratch key time origin)
+        (vec3-sub! body body p)
+        (let ((distance (vec3-norm body))
+              (radius (if (eq key :earth) +radius-earth+ +radius-moon+)))
+          (when (< distance sun-distance)
+            (if (<= distance radius)
+                (setf fraction 0d0)
+                (let* ((angular (asin (the (double-float 0d0 1d0) (/ radius distance))))
+                       (separation (atan (vec3-norm (vec3-cross! scratch sun body))
+                                         (vec3-dot sun body)))
+                       (visible (- 1d0 (/ (lens-area sun-radius angular separation) sun-area))))
+                  (setf fraction (min fraction (max 0d0 visible)))))))))))

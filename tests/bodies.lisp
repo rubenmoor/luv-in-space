@@ -186,3 +186,81 @@
         for earth = (lis::mat3*vec3 (lis::body-fixed-matrix :moon time)
                                     (lis::body-state :earth time :moon))
         do (true (< (angle-between earth (lis::vec3 1 0 0)) (lis::deg->rad 10d0)))))
+
+;;; Sunlight at a point (decision 79: Sunlight at a point and the sunlit
+;;; ship in the exposure rule).
+
+(defun start-orbit ()
+  "The start orbit (decision 38) as a Kepler orbit, u = 0 at (start-t)."
+  (destructuring-bind (&key a e i raan u) lis::*start-orbit*
+    (lis::make-elliptic-orbit lis::+mu-earth+ a e (lis::deg->rad i) (lis::deg->rad raan)
+                              0d0 (lis::deg->rad u) (lis::start-t))))
+
+(define-test sun-visible-fraction-start-and-night
+  (let* ((orbit (start-orbit))
+         (t0 (lis::start-t))
+         (t180 (+ t0 (* 0.5d0 (lis::orbit-period orbit)))))
+    (true (< (abs (- 1 (lis::sun-visible-fraction (lis::orbit-state orbit t0) t0))) 1d-12))
+    (is = 0d0 (lis::sun-visible-fraction (lis::orbit-state orbit t180) t180))))
+
+(define-test sun-visible-fraction-shadow-entry
+  ;; 1 s samples over the first half orbit (docs/design.md "The start"):
+  ;; never rising, the penumbra 5-15 s, the 0.5 point at the geometric
+  ;; shadow edge, 180 deg - asin(R/a) from the Sun.
+  (let* ((orbit (start-orbit))
+         (t0 (lis::start-t))
+         (samples (coerce (loop for s below (floor (lis::orbit-period orbit) 2)
+                                for time = (+ t0 s)
+                                collect (lis::sun-visible-fraction (lis::orbit-state orbit time) time))
+                          'vector))
+         (partial (position-if (lambda (f) (< f 1)) samples))
+         (dark (position 0d0 samples)))
+    (true (and partial dark))
+    (true (every #'>= samples (subseq samples 1)))
+    (true (<= 5 (- dark partial) 15) "penumbra ~D s" (- dark partial))
+    (let* ((k (position-if (lambda (f) (< f 0.5d0)) samples))
+           (a (aref samples (1- k))) (b (aref samples k))
+           (time (+ t0 (1- k) (/ (- a 0.5d0) (- a b))))
+           (r (lis::orbit-state orbit time))
+           (angle (lis::rad->deg (angle-between r (lis::body-state :sun time))))
+           (edge (- 180 (lis::rad->deg (asin (/ lis::+radius-earth+ (lis::vec3-norm r)))))))
+      (true (< (abs (- angle edge)) 0.1d0) "0.5 at ~,3F deg from the Sun, edge ~,3F" angle edge))))
+
+(define-test sun-visible-fraction-annular
+  ;; 380,000 km beyond the Moon on the Sun-Moon line, past the umbra's tip
+  ;; (~370,000 km): the Moon's whole disc on the Sun's.
+  (let* ((time (lis::start-t))
+         (sun (lis::body-state :sun time))
+         (moon (lis::body-state :moon time))
+         (p (lis::vec3-add-scaled moon (lis::vec3-normalize (lis::vec3-sub moon sun)) 3.8d8))
+         (fraction (lis::sun-visible-fraction p time))
+         (moon-radius (asin (/ lis::+radius-moon+ 3.8d8)))
+         (sun-radius (asin (/ lis::+radius-sun+ (lis::vec3-norm (lis::vec3-sub sun p))))))
+    (true (< 0 fraction 1))
+    (true (< (abs (- fraction (- 1 (expt (/ moon-radius sun-radius) 2)))) 1d-9) "~F" fraction)))
+
+(defun monte-carlo-overlap (r1 r2 d n)
+  "The fraction of N points, uniform in the disc of radius R2 at (D, 0),
+inside the disc of radius R1 at the origin; a fixed seed."
+  (let ((state (sb-ext:seed-random-state 79)))
+    (/ (loop repeat n
+             count (let* ((rho (* r2 (sqrt (random 1d0 state))))
+                          (phi (random (* 2 pi) state))
+                          (x (+ d (* rho (cos phi)))) (y (* rho (sin phi))))
+                     (<= (+ (* x x) (* y y)) (* r1 r1))))
+       (float n 1d0))))
+
+(define-test lens-area
+  (is = 0d0 (lis::lens-area 1d0 0.5d0 1.6d0))
+  (is = (* pi 0.01d0) (lis::lens-area 1d0 0.1d0 0.5d0))
+  (is = (* pi 0.01d0) (lis::lens-area 0.1d0 1d0 0.5d0))
+  (loop for (r1 r2 d) in '((1d0 1d0 1d0) (1d0 0.5d0 1.2d0) (0.3d0 1d0 0.9d0))
+        for exact = (/ (lis::lens-area r1 r2 d) (* pi r2 r2))
+        for sampled = (monte-carlo-overlap r1 r2 d 1000000)
+        do (true (< (abs (- exact sampled)) 2d-3) "~A ~A ~A: ~F, sampled ~F" r1 r2 d exact sampled)))
+
+(define-test sun-visible-fraction-conses-nothing
+  (let ((p (lis::vec3 7d6 1d6 0d0))
+        (time (lis::start-t)))
+    (is = 0 (least-bytes-consed
+             (lambda () (dotimes (i 10000) (lis::sun-visible-fraction p time)))))))

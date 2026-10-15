@@ -204,6 +204,101 @@
   (multiple-value-bind (red blue) (pixel-red-blue pixels format width x y)
     (list red (aref pixels (+ 1 (* 4 (+ (* y width) x)))) blue)))
 
+;;; The Sun and the Moon (decision 78: Sky in numbers: stars, Sun, Moon and
+;;; Earth's look; src/impostors.lisp).
+
+(defun body-camera (key field-of-view)
+  "A camera-fn: from the ship towards body KEY, a vertical FIELD-OF-VIEW in degrees."
+  (lambda (camera state)
+    (look-along! camera (lis::vec3-sub (ecase key
+                                         (:sun (lis::render-state-sun state))
+                                         (:moon (lis::render-state-moon state)))
+                                       (lis::render-state-r state)))
+    (setf (lis::camera-field-of-view camera) (deg field-of-view))))
+
+(defun disc-pixels (key sim field-of-view height)
+  "Body KEY's angular radius from SIM's ship, in pixels of a view of
+FIELD-OF-VIEW degrees and HEIGHT pixels, at the view's centre."
+  (let* ((state (sim-render-state sim))
+         (centre (lis::vec3-sub (ecase key
+                                  (:sun (lis::render-state-sun state))
+                                  (:moon (lis::render-state-moon state)))
+                                (lis::render-state-r state)))
+         (radius (ecase key (:sun lis::+radius-sun+) (:moon lis::+radius-moon+))))
+    (/ (* 0.5d0 height (tan (asin (/ radius (lis::vec3-norm centre)))))
+       (tan (* 0.5d0 (deg field-of-view))))))
+
+(defmacro with-canvas-values ((game &rest bindings) &body body)
+  "BODY with the special variables of BINDINGS ((variable value) ...) set on
+GAME's canvas thread, restored after."
+  (let ((saved (loop repeat (length bindings) collect (gensym))))
+    `(let ,(loop for g in saved for (variable) in bindings collect `(,g ,variable))
+       (lis::call-on-canvas-thread ,game (lambda () (setf ,@(loop for (variable value) in bindings
+                                                                append (list variable value)))))
+       (unwind-protect (progn ,@body)
+         (lis::call-on-canvas-thread ,game (lambda ()
+                                             (setf ,@(loop for g in saved for (variable) in bindings
+                                                           append (list variable g)))))))))
+
+(defun sun-and-moon-checks (game png width height)
+  (let ((cx (floor width 2)) (cy (floor height 2))
+        ;; u = 340 deg: the Sun 10 deg from the zenith, Earth behind the
+        ;; camera; u = 150 deg: in Earth's shadow, the Moon 26 deg from the zenith.
+        (day (start-sim-at 340))
+        (night (start-sim-at 150)))
+    (flet ((capture (sim camera-fn)
+             (nth-value 3 (lis::capture-game-state game png :sim sim :frames 1 :camera-fn camera-fn)))
+           (at (pixels x y) (pixel-luminance pixels width x y)))
+      ;; The disc's width on the centre row and its limb darkening, bloom
+      ;; off. At decision 78's exposure 2e-5 the centre and 0.8 R read 229
+      ;; and 220 (tone-map-srgb), in the tone curve's shoulder; at 1e-5 202
+      ;; and 186.
+      (with-canvas-values (game (lis::*bloom-strength* 0.0) (lis::*exposure-sunlit* 1d-5))
+        (let* ((pixels (capture day (body-camera :sun 2)))
+               (radius (disc-pixels :sun day 2 height))
+               (lit (loop for x below width count (> (at pixels x cy) 60))))
+          (true (< (abs (- lit (* 2 radius))) 2) "Sun ~D px wide, ~,1F expected" lit (* 2 radius))
+          (true (> (- (at pixels cx cy) (at pixels (round (+ cx (* 0.8 radius))) cy)) 10)
+                "centre ~,1F, at 0.8 R ~,1F" (at pixels cx cy)
+                (at pixels (round (+ cx (* 0.8 radius))) cy))))
+      ;; Glare from the bloom: 20 px from the centre, against the same view
+      ;; without the Sun.
+      (let ((glare (capture day (body-camera :sun 50)))
+            (background (with-canvas-values (game (lis::*sun-radiance* 0d0))
+                          (capture day (body-camera :sun 50)))))
+        (loop for (x y) in (list (list (+ cx 20) cy) (list (- cx 20) cy)
+                                 (list cx (+ cy 20)) (list cx (- cy 20)))
+              do (true (> (- (at glare x y) (at background x y)) 30)
+                       "glare at ~D, ~D: ~,1F over ~,1F" x y (at glare x y) (at background x y))))
+      ;; Behind Earth at u = 180 deg: hidden by depth.
+      (let ((pixels (capture (start-sim-at 180) (body-camera :sun 20))))
+        (true (<= (nth-value 2 (brightest-pixel pixels width height)) 250)
+              "brightest ~,1F towards the hidden Sun" (nth-value 2 (brightest-pixel pixels width height))))
+      ;; The Moon, grey, lit as its phase says; bloom off, as it spreads the
+      ;; disc at the deep exposure.
+      (let* ((pixels (with-canvas-values (game (lis::*bloom-strength* 0.0))
+                       (capture night (body-camera :moon 2))))
+             (radius (disc-pixels :moon night 2 height))
+             (state (sim-render-state night))
+             (moon (lis::render-state-moon state))
+             (phase (angle-between (lis::vec3-sub (lis::render-state-sun state) moon)
+                                   (lis::vec3-sub (lis::render-state-r state) moon)))
+             (lit 0) (coloured 0))
+        (dotimes (y height)
+          (dotimes (x width)
+            (when (and (< (+ (expt (- (+ x 0.5) cx) 2) (expt (- (+ y 0.5) cy) 2)) (expt (+ radius 2) 2))
+                       (> (at pixels x y) 30))
+              (incf lit)
+              (destructuring-bind (r g b) (pixel-colour pixels width x y)
+                (unless (and (<= (abs (- r g)) 4) (<= (abs (- g b)) 4))
+                  (incf coloured))))))
+        (is = 0 coloured)
+        (let ((fraction (/ lit (* pi radius radius)))
+              (expected (* 0.5 (+ 1 (cos phase)))))
+          (true (< (abs (- fraction expected)) 0.1)
+                "Moon lit ~,3F of its disc, phase ~,1F deg: ~,3F" fraction (lis::rad->deg phase) expected)))
+      (lis::game-load-state! game (lis::new-game-sim)))))
+
 ;;; The stars (decision 78: Sky in numbers: stars, Sun, Moon and Earth's
 ;;; look), seen from Earth's shadow at u = 180 deg so the exposure is deep.
 
@@ -395,6 +490,7 @@ FIELD-OF-VIEW in degrees."
                     (n (count-above pixels width height 30)))
                (true (<= 490 n 1970) "Orion: ~D pixels above 30" n))
              (lis::game-load-state! game (lis::new-game-sim)))
+           (sun-and-moon-checks game png width height)
            (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))
            ;; Resizes replace the swapchain's textures; what the renderer kept
            ;; for the old ones goes, so its per-target state stays bounded.

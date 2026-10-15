@@ -1,15 +1,18 @@
 (in-package #:luv-in-space.shaders)
 
 ;;; PLACEHOLDER(76): the placeholder Earth sphere sampling the Blue Marble;
-;;; the stars at infinity (src/stars.lisp); screen-space quads for the
+;;; the stars at infinity (src/stars.lisp); the Sun and the Moon as sphere
+;;; impostors (src/impostors.lisp); screen-space quads for the
 ;;; overlay's labels and the tests' quads; the post passes (decision 76: Frame passes, radiance scale and exposure).
 
 ;; One uniform block for every pipeline: clip rows for camera-relative
 ;; points, the body relative to the eye (w: radius), the sun direction,
 ;; screen (xy: clip units per pixel), the rows of Earth's body-fixed
 ;; matrix (ICRF -> body-fixed), post (exposure, bloom strength, sRGB
-;; encoding 0 or 1) and stars (radiance limit, sigma, sigma per magnitude,
-;; sigma max; src/stars.lisp). RESOURCES in OPTIONS come after the block.
+;; encoding 0 or 1), stars (radiance limit, sigma, sigma per magnitude,
+;; sigma max; src/stars.lisp), and per impostor four vec4s (centre and radius;
+;; quad axis u and c.c - r^2; quad axis v; shade; src/impostors.lisp).
+;; RESOURCES in OPTIONS come after the block.
 (defmacro define-frame-shader (name (&rest options &key resources &allow-other-keys)
                                &body body)
   `(define-shader ,name
@@ -20,7 +23,9 @@
                                (clip-z :vec4) (clip-w :vec4)
                                (body :vec4) (sun :vec4) (screen :vec4)
                                (fixed-x :vec4) (fixed-y :vec4) (fixed-z :vec4)
-                               (post :vec4) (stars :vec4)))
+                               (post :vec4) (stars :vec4)
+                               (sun-c :vec4) (sun-u :vec4) (sun-v :vec4) (sun-shade :vec4)
+                               (moon-c :vec4) (moon-u :vec4) (moon-v :vec4) (moon-shade :vec4)))
                     ,@resources))
      ,@body))
 
@@ -104,6 +109,102 @@
      :outputs ((color :vec4 :location 0)))
   (set-output color (vec4 (* shade (exp (/ (* -0.5 (dot offset offset)) (* sigma sigma))))
                           0.0)))
+
+;;; Sphere impostors (src/impostors.lisp; docs/architecture.md "Rendering
+;;; precision"). CORNER: x, y and 1 for the full-screen triangle, 0 for the
+;;; quad c + x u + y v over the tangent cone.
+
+(define-shader-function impostor-clip (corner centre u v rx ry rz rw)
+  (let* ((point (vec4 (+ (swizzle centre :xyz) (* (swizzle u :xyz) (swizzle corner :x))
+                         (* (swizzle v :xyz) (swizzle corner :y)))
+                      1.0))
+         (quad (vec4 (dot rx point) (dot ry point) (dot rz point) (dot rw point))))
+    (if (> (swizzle corner :z) 0.5)
+        (vec4 (swizzle corner :x) (swizzle corner :y) 0.0 1.0)
+        quad)))
+
+;; The unit view ray through PIXEL (frag-coord): forward plus the NDC
+;; offsets over the clip rows' focal scales; SCREEN.xy is 2 / size.
+(define-shader-function view-ray (pixel screen rx ry rw)
+  (let* ((right (swizzle rx :xyz)) (down (swizzle ry :xyz))
+         (x (- (* (swizzle pixel :x) (swizzle screen :x)) 1.0))
+         (y (- (* (swizzle pixel :y) (swizzle screen :y)) 1.0)))
+    (normalize (+ (swizzle rw :xyz) (* right (/ x (dot right right)))
+                  (* down (/ y (dot down down)))))))
+
+;; h² = r² − |b d − c|² = b² − (c·c − r²), b = d·c, without the large terms
+;; cancelling; negative: a miss.
+(define-shader-function sphere-half-chord2 (ray centre radius b)
+  (let* ((q (- (* ray b) centre)))
+    (- (* radius radius) (dot q q))))
+
+;; The stable roots: t = k / (b + h) and its partner, k = c·c − r² from
+;; double on the CPU.
+(define-shader-function ray-sphere-near (b h2 k)
+  (/ k (+ b (sqrt (max h2 0.0)))))
+
+(define-shader-function ray-sphere-far (b h2 k)
+  (let* ((h (sqrt (max h2 0.0))))
+    (if (>= b 0.0) (+ b h) (/ k (- b h)))))
+
+;; The near hit's normal, (b d − c − h d) / r, from the small terms.
+(define-shader-function sphere-near-normal (ray centre radius b h2)
+  (/ (- (* ray b) centre (* ray (sqrt (max h2 0.0)))) radius))
+
+;; Reversed-Z: near / (t d·forward) (decision 4: Depth strategy).
+(define-shader-function impostor-depth (tt ray rz rw)
+  (/ (swizzle rz :w) (* tt (dot ray (swizzle rw :xyz)))))
+
+(defmacro define-impostor-vertex (name centre u v)
+  `(define-frame-shader ,name
+       (:stage :vertex
+        :inputs ((corner :vec3 :location 0))
+        :outputs ((clip-position :vec4 :built-in :position)))
+     (set-output clip-position (impostor-clip corner ,centre ,u ,v clip-x clip-y clip-z clip-w))))
+
+(define-impostor-vertex sun-vertex sun-c sun-u sun-v)
+(define-impostor-vertex moon-vertex moon-c moon-u moon-v)
+
+;; The Sun's disc (decision 78): SUN-SHADE.xyz the centre radiance's colour,
+;; .w the limb darkening u: I/I0 = 1 − u (1 − μ), μ = h / r.
+(define-frame-shader sun-fragment
+    (:stage :fragment
+     :inputs ((pixel :vec4 :built-in :frag-coord))
+     :outputs ((color :vec4 :location 0)
+               (depth :float :built-in :frag-depth)))
+  (let* ((ray (view-ray pixel screen clip-x clip-y clip-w))
+         (centre (swizzle sun-c :xyz))
+         (radius (swizzle sun-c :w))
+         (b (dot ray centre))
+         (h2 (sphere-half-chord2 ray centre radius b))
+         (tt (ray-sphere-near b h2 (swizzle sun-u :w)))
+         (mu (/ (sqrt (max h2 0.0)) radius)))
+    (when (or (< h2 0.0) (<= tt 0.0))
+      (discard))
+    (set-output color (vec4 (* (swizzle sun-shade :xyz)
+                               (- 1.0 (* (swizzle sun-shade :w) (- 1.0 mu))))
+                            1.0))
+    (set-output depth (impostor-depth tt ray clip-z clip-w))))
+
+;; The Moon: grey Lambert, MOON-SHADE.xyz the direction to the Sun, .w the
+;; albedo × (1 AU / d)².
+(define-frame-shader moon-fragment
+    (:stage :fragment
+     :inputs ((pixel :vec4 :built-in :frag-coord))
+     :outputs ((color :vec4 :location 0)
+               (depth :float :built-in :frag-depth)))
+  (let* ((ray (view-ray pixel screen clip-x clip-y clip-w))
+         (centre (swizzle moon-c :xyz))
+         (radius (swizzle moon-c :w))
+         (b (dot ray centre))
+         (h2 (sphere-half-chord2 ray centre radius b))
+         (tt (ray-sphere-near b h2 (swizzle moon-u :w)))
+         (n (sphere-near-normal ray centre radius b h2))
+         (light (* (swizzle moon-shade :w) (max (dot n (swizzle moon-shade :xyz)) 0.0))))
+    (when (or (< h2 0.0) (<= tt 0.0))
+      (discard))
+    (set-output color (vec4 light light light 1.0))
+    (set-output depth (impostor-depth tt ray clip-z clip-w))))
 
 ;; ANCHOR is a point in clip space, OFFSET a displacement in pixels.
 (define-frame-shader overlay-vertex
@@ -225,6 +326,14 @@
   (star-vertex))
 (defmethod shader-specification-for ((role (eql :stars)) (stage (eql :fragment)))
   (star-fragment))
+(defmethod shader-specification-for ((role (eql :sun)) (stage (eql :vertex)))
+  (sun-vertex))
+(defmethod shader-specification-for ((role (eql :sun)) (stage (eql :fragment)))
+  (sun-fragment))
+(defmethod shader-specification-for ((role (eql :moon)) (stage (eql :vertex)))
+  (moon-vertex))
+(defmethod shader-specification-for ((role (eql :moon)) (stage (eql :fragment)))
+  (moon-fragment))
 (defmethod shader-specification-for ((role (eql :quads)) (stage (eql :vertex)))
   (overlay-vertex))
 (defmethod shader-specification-for ((role (eql :quads)) (stage (eql :fragment)))

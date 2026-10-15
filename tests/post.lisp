@@ -98,3 +98,28 @@
     (let ((eased (lis::update-exposure! game extent 0.5d0)))
       (true (< lis::*exposure-sunlit* eased lis::*exposure-deep*)))
     (is = lis::*exposure-deep* (lis::update-exposure! game extent nil))))
+
+(defun ship-camera (state distance)
+  "A camera DISTANCE m from the ship, looking at it along a direction away
+from Earth and the Sun."
+  (let* ((r (lis::render-state-r state))
+         (away (lis::vec3-add (lis::vec3-scale (lis::vec3-normalize
+                                                (lis::vec3-cross r (lis::render-state-sun state)))
+                                               2d0)
+                              (lis::vec3-normalize r)))
+         (camera (look-along! (lis::make-camera) away)))
+    (lis::vec3-scale! (lis::camera-offset camera) (lis::vec3-normalize away) (- distance))
+    camera))
+
+(define-test exposure-sunlit-ship
+  ;; decision 79: Sunlight at a point and the sunlit ship in the exposure
+  ;; rule: the lit ship near the camera decides the exposure, not the black
+  ;; behind it; far away or in Earth's shadow it does not.
+  (let ((state (sim-render-state (lis::new-game-sim))))
+    (true (< (abs (- 1 (lis::render-state-sun-fraction state))) 1d-12))
+    (is = lis::*exposure-sunlit* (exposure (ship-camera state 40d0) state))
+    (is = lis::*exposure-deep* (exposure (ship-camera state 1000d0) state))
+    (is = lis::*exposure-map* (exposure (ship-camera state 40d0) state :map)))
+  (let ((state (sim-render-state (start-sim-at 180))))
+    (is = 0d0 (lis::render-state-sun-fraction state))
+    (is = lis::*exposure-deep* (exposure (ship-camera state 40d0) state))))

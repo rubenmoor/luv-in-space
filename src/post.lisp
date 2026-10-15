@@ -13,6 +13,10 @@
 (defparameter *exposure-time-constant* 1.0d0 "Real seconds; log2 easing.")
 (defparameter *exposure-sun-margin* (* 5 (/ pi 180)) "Beyond the half-diagonal, radians.")
 (defparameter *exposure-coverage* 0.05d0 "Least coverage, and coverage x lit fraction.")
+(defparameter *ship-bounding-radius* 10.0d0
+  "m; decision 79's ship term until the meshes part computes the stack's.")
+(defparameter *exposure-ship-coverage* 0.005d0
+  "Least coverage x sun-fraction of the ship in the outside view (decision 79).")
 
 (defconstant +hdr-format+ :rgba16-float)
 (defconstant +bloom-levels+ 4 "1/2 to 1/16.")
@@ -21,15 +25,6 @@
 
 (defun vec3-angle (a b)
   (atan (vec3-norm (vec3-cross a b)) (vec3-dot a b)))
-
-(defun lens-area (r1 r2 d)
-  "Overlap of two discs of radii R1, R2 whose centres are D apart."
-  (cond ((>= d (+ r1 r2)) 0d0)
-        ((<= d (abs (- r1 r2))) (* pi (expt (min r1 r2) 2)))
-        (t (- (+ (* r1 r1 (acos (max -1d0 (min 1d0 (/ (+ (* d d) (* r1 r1) (- (* r2 r2))) (* 2 d r1))))))
-                 (* r2 r2 (acos (max -1d0 (min 1d0 (/ (+ (* d d) (* r2 r2) (- (* r1 r1))) (* 2 d r2)))))))
-              (* 0.5d0 (sqrt (max 0d0 (* (+ (- d) r1 r2) (+ d r1 (- r2))
-                                         (+ d (- r1) r2) (+ d r1 r2)))))))))
 
 (defun view-cone (camera aspect)
   "The half-diagonal and the half-angle of the cone with the frame's solid angle."
@@ -46,7 +41,12 @@ as built: hidden Sun, coverage within the view): *exposure-map* for :map;
 half-diagonal plus *exposure-sun-margin* of the view axis, or when Earth or
 the Moon covers at least *exposure-coverage* of the frame (its disc's
 overlap with the frame's equivalent cone, flat) and coverage x lit fraction
-(1 + cos phase) / 2 is at least as much; else *exposure-deep*."
+(1 + cos phase) / 2 is at least as much, or, in the :outside view, when the
+ship (a sphere of *ship-bounding-radius* at the camera's anchor) covers the
+frame so that coverage x its sun-fraction is at least
+*exposure-ship-coverage* (decision 79: Sunlight at a point and the sunlit
+ship in the exposure rule; no ship term with the eye inside that sphere);
+else *exposure-deep*."
   (when (eq view :map)
     (return-from exposure-target *exposure-map*))
   (let* ((aspect (float aspect 1d0))
@@ -75,7 +75,16 @@ overlap with the frame's equivalent cone, flat) and coverage x lit fraction
                                  (lit (* 0.5d0 (+ 1 (cos phase)))))
                             (and (>= coverage *exposure-coverage*)
                                  (>= (* coverage lit) *exposure-coverage*)))))
-                      bodies))
+                      bodies)
+                (and (eq view :outside)
+                     (let ((d (vec3-norm (camera-offset camera))))
+                       (and (> d *ship-bounding-radius*)
+                            (let* ((rho (asin (/ *ship-bounding-radius* d)))
+                                   (ship (vec3-scale (camera-offset camera) -1d0))
+                                   (coverage (min 1d0 (/ (lens-area rho cone (vec3-angle forward ship))
+                                                         (* pi cone cone)))))
+                              (>= (* coverage (render-state-sun-fraction state))
+                                  *exposure-ship-coverage*))))))
             *exposure-sunlit*
             *exposure-deep*)))))
 

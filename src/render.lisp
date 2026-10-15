@@ -10,7 +10,8 @@
 (defstruct (render-state (:constructor make-render-state ()) (:copier nil))
   "What a frame draws, at the render time T: the ship (R, V, Q, W as in
 ship-state), M-P, CONTROLS and LOSS from the sim, the Sun and the Moon
-relative to Earth and Earth's body-fixed matrix at T."
+relative to Earth, Earth's body-fixed matrix and the ship's SUN-FRACTION
+(sun-visible-fraction) at T."
   (t 0d0 :type double-float)
   (r (make-vec3) :type vec3)
   (v (make-vec3) :type vec3)
@@ -22,6 +23,7 @@ relative to Earth and Earth's body-fixed matrix at T."
   (sun (make-vec3) :type vec3)
   (moon (make-vec3) :type vec3)
   (earth-matrix (make-mat3) :type mat3)
+  (sun-fraction 1d0 :type double-float)
   (scratch (make-vec3) :type vec3))     ; the bodies' velocities, unused
 
 (defun render-state-assign-ship! (out ship)
@@ -83,7 +85,8 @@ not below t or the sim is lost. Conses nothing; OUT."
     (let ((tr (render-state-t out)))
       (body-state-into (render-state-sun out) (render-state-scratch out) :sun tr :earth)
       (body-state-into (render-state-moon out) (render-state-scratch out) :moon tr :earth)
-      (earth-fixed-matrix! (render-state-earth-matrix out) tr))
+      (earth-fixed-matrix! (render-state-earth-matrix out) tr)
+      (setf (render-state-sun-fraction out) (sun-visible-fraction (render-state-r out) tr)))
     out))
 
 ;;; Meshes: pure functions, no GPU.
@@ -116,7 +119,8 @@ is also its normal."
 (defparameter *earth-texture* "earth/blue-marble-5400.jpg"
   "decision 40: Earth's look and drag.")
 
-(defconstant +frame-uniform-floats+ 48 "shaders.lisp's frame block: twelve vec4s.")
+(defconstant +frame-uniform-floats+ 80 "shaders.lisp's frame block: twenty vec4s.")
+(defconstant +impostor-uniform-index+ 48 "The Sun's block, then the Moon's.")
 
 (defclass frame-renderer (renderer)
   ((context :initarg :context :reader frame-renderer-context)
@@ -129,6 +133,7 @@ is also its normal."
           :documentation "The star instances (src/stars.lisp).")
    (star-corners :initarg :star-corners :reader frame-renderer-star-corners)
    (star-count :initarg :star-count :reader frame-renderer-star-count)
+   (impostor-corners :initarg :impostor-corners :reader frame-renderer-impostor-corners)
    (label :initarg :label :reader frame-renderer-label)
    (label-count :initarg :label-count :reader frame-renderer-label-count)
    (post :initarg :post :reader frame-renderer-post)
@@ -169,6 +174,7 @@ is also its normal."
      :stars (vertex-buffer renderer stars "stars")
      :star-corners (vertex-buffer renderer (star-corners) "star corners")
      :star-count (/ (length stars) +star-instance-floats+)
+     :impostor-corners (vertex-buffer renderer (impostor-corners) "impostor corners")
      :label (vertex-buffer renderer label "label")
      :label-count (/ (length label) +overlay-vertex-floats+)
      :post (vertex-buffer renderer (post-vertices) "post")
@@ -185,6 +191,7 @@ is also its normal."
                    :depth-stencil '(:format :depth32-float :depth-write-enabled t
                                     :depth-compare :greater))
     (stars-pipeline renderer layout +hdr-format+)
+    (impostor-pipelines renderer layout +hdr-format+)
     (live-pipeline renderer :quads layout (overlay-vertex-buffers) :format +hdr-format+
                    :depth-stencil '(:format :depth32-float :depth-write-enabled nil
                                     :depth-compare :always))
@@ -276,7 +283,8 @@ means luv rebuilt the swapchain: forget its old textures first."
 (defun frame-uniforms! (renderer extent state camera exposure)
   "The frame block: clip rows, Earth relative to the eye (decision 5:
 Precision of positions), the Sun's direction, clip units per pixel, Earth's
-body-fixed matrix, the post and stars vec4s."
+body-fixed matrix, the post and stars vec4s, the Sun's and the Moon's
+impostors. Returns the block and the Sun's and the Moon's draw forms."
   (destructuring-bind (width height) extent
     (let ((data (frame-renderer-uniforms renderer))
           (eye (camera-eye camera (render-state-r state) (frame-renderer-eye renderer)))
@@ -300,51 +308,58 @@ body-fixed matrix, the post and stars vec4s."
             (aref data 41) (coerce *bloom-strength* 'single-float)
             (aref data 42) (if (srgb-target-p renderer) 0f0 1f0)
             (aref data 43) 0f0)
-      (star-uniforms! data 44))))
+      (star-uniforms! data 44)
+      (multiple-value-bind (sun-form moon-form)
+          (impostor-uniforms! data +impostor-uniform-index+ state eye camera)
+        (values data sun-form moon-form)))))
 
 (defun encode-frame (renderer encoder target extent state camera exposure)
   "The frame into TARGET of EXTENT (width height) from the render STATE seen
 by CAMERA, in three stages (decision 76: Frame passes, radiance scale and
-exposure): the scene pass into the HDR target (the stars, the placeholder
-Earth, PLACEHOLDER(76)); the bloom chain; one pass on TARGET,
-the tone map at EXPOSURE and then the overlay."
+exposure): the scene pass into the HDR target (the stars, the Sun, the
+Moon, the placeholder Earth, PLACEHOLDER(76)); the bloom chain; one pass on
+TARGET, the tone map at EXPOSURE and then the overlay."
   (let* ((slot (frame-resources renderer target))
          (views (post-views renderer extent))
          (bind-groups (post-bind-groups renderer slot views))
          (bind-group (frame-slot-bind-group slot)))
-    (luv:write-buffer (frame-slot-buffer slot)
-                      (frame-uniforms! renderer extent state camera exposure))
-    (flet ((draw (pass role vertices count)
-             (luv:set-pipeline pass (renderer-pipeline renderer role))
-             (luv:set-bind-group pass 0 bind-group)
-             (luv:set-vertex-buffer pass 0 vertices)
-             (luv:draw pass count)))
-      (let ((pass (luv:begin-render-pass
-                   encoder
-                   (luv:make-render-pass-descriptor
-                    :color-attachments
-                    `((:view ,(first views) :load-op :clear :store-op :store
-                       :clear-value ,(coerce (append *background* '(1.0)) 'vector)))
-                    :depth-stencil-attachment
-                    `(:view ,(depth-view renderer extent)
-                      :depth-load-op :clear :depth-store-op :store
-                      :depth-clear-value 0.0)))))
-        (luv:set-pipeline pass (renderer-pipeline renderer :stars))
-        (luv:set-bind-group pass 0 bind-group)
-        (luv:set-vertex-buffer pass 0 (frame-renderer-star-corners renderer))
-        (luv:set-vertex-buffer pass 1 (frame-renderer-stars renderer))
-        (luv:draw pass 6 (frame-renderer-star-count renderer))
-        (draw pass :earth (frame-renderer-earth renderer) (frame-renderer-earth-count renderer))
-        (let ((quads (frame-renderer-test-quads renderer)))
-          (when quads (draw pass :quads (car quads) (cdr quads))))
-        (luv:end-pass pass))
-      (encode-bloom renderer encoder views bind-groups (frame-renderer-post renderer))
-      (let ((pass (luv:begin-render-pass
-                   encoder
-                   (luv:make-render-pass-descriptor
-                    :color-attachments
-                    `((:view ,(color-view renderer target) :load-op :clear :store-op :store
-                       :clear-value #(0.0 0.0 0.0 1.0)))))))
-        (draw-tone-map renderer pass (car (last bind-groups)) (frame-renderer-post renderer))
-        (draw pass :overlay (frame-renderer-label renderer) (frame-renderer-label-count renderer))
-        (luv:end-pass pass)))))
+    (multiple-value-bind (data sun-form moon-form)
+        (frame-uniforms! renderer extent state camera exposure)
+      (luv:write-buffer (frame-slot-buffer slot) data)
+      (flet ((draw (pass role vertices count)
+               (luv:set-pipeline pass (renderer-pipeline renderer role))
+               (luv:set-bind-group pass 0 bind-group)
+               (luv:set-vertex-buffer pass 0 vertices)
+               (luv:draw pass count)))
+        (let ((pass (luv:begin-render-pass
+                     encoder
+                     (luv:make-render-pass-descriptor
+                      :color-attachments
+                      `((:view ,(first views) :load-op :clear :store-op :store
+                         :clear-value ,(coerce (append *background* '(1.0)) 'vector)))
+                      :depth-stencil-attachment
+                      `(:view ,(depth-view renderer extent)
+                        :depth-load-op :clear :depth-store-op :store
+                        :depth-clear-value 0.0)))))
+          (luv:set-pipeline pass (renderer-pipeline renderer :stars))
+          (luv:set-bind-group pass 0 bind-group)
+          (luv:set-vertex-buffer pass 0 (frame-renderer-star-corners renderer))
+          (luv:set-vertex-buffer pass 1 (frame-renderer-stars renderer))
+          (luv:draw pass 6 (frame-renderer-star-count renderer))
+          (let ((corners (frame-renderer-impostor-corners renderer)))
+            (draw-impostor pass renderer :sun sun-form bind-group corners)
+            (draw-impostor pass renderer :moon moon-form bind-group corners))
+          (draw pass :earth (frame-renderer-earth renderer) (frame-renderer-earth-count renderer))
+          (let ((quads (frame-renderer-test-quads renderer)))
+            (when quads (draw pass :quads (car quads) (cdr quads))))
+          (luv:end-pass pass))
+        (encode-bloom renderer encoder views bind-groups (frame-renderer-post renderer))
+        (let ((pass (luv:begin-render-pass
+                     encoder
+                     (luv:make-render-pass-descriptor
+                      :color-attachments
+                      `((:view ,(color-view renderer target) :load-op :clear :store-op :store
+                         :clear-value #(0.0 0.0 0.0 1.0)))))))
+          (draw-tone-map renderer pass (car (last bind-groups)) (frame-renderer-post renderer))
+          (draw pass :overlay (frame-renderer-label renderer) (frame-renderer-label-count renderer))
+          (luv:end-pass pass))))))

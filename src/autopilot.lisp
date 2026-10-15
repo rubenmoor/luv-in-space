@@ -1047,6 +1047,120 @@ one a :trim burn when the goal measure misses; same preset and goal. JOB."
   (autopilot-job-work! job most-positive-fixnum)
   (values (autopilot-job-plan job) (autopilot-job-reason job)))
 
+;;; Rendezvous: the stop point's choice, aim points and the terminal check
+;;; (docs/design.md "The terminal path and crowded targets"; decision 119:
+;;; Rendezvous planning in milestone 3: Lambert, search, aim and stop points,
+;;; checks, shooting, burns, decision 59: Rendezvous transfers pass the target
+;;; clear). Stop points are places.lisp's.
+
+(defparameter *aim-distance* 1000d0 "m: an aim point from the target or the stop point; decision 119.")
+(defparameter *terminal-check-step* 300d0 "s between the terminal check's times; decision 119.")
+(defparameter *terminal-check-span* 1800d0 "s after the arrival the terminal check covers; decision 119.")
+(defparameter *inward-axis-cos* (cos (deg->rad 45d0))
+  "A fixture axis within 45° of nadir points inward: aim point (2) below the stop point.")
+
+(defun rendezvous-stop (sim target &key fixture (range *stop-range*))
+  "The stop point's choice for a rendezvous with TARGET (FIXTURE a fixture's
+name or nil, RANGE m): (values fixture nil), the fixture as
+rendezvous-fixture gives it, or (values nil reason)."
+  (multiple-value-bind (chosen reason) (rendezvous-fixture sim target fixture)
+    (let ((reason (or reason (stop-range-refusal chosen (float range 1d0)))))
+      (if reason (values nil reason) (values chosen nil)))))
+
+(defun segment-distance (p a b)
+  "m: from P to the segment A–B."
+  (let* ((ab (vec3-sub b a))
+         (l2 (vec3-dot ab ab))
+         (s (if (> l2 0d0) (max 0d0 (min 1d0 (/ (vec3-dot (vec3-sub p a) ab) l2))) 0d0)))
+    (vec3-norm (vec3-sub p (vec3-add-scaled a ab s)))))
+
+(defun to-terminal-frame! (out q p origin)
+  "OUT = q* (P − ORIGIN): P in the frame Q at ORIGIN; OUT."
+  (let ((c (quat-conjugate q)))
+    (quat-rotate! out c (vec3-sub! out p origin))))
+
+(defun terminal-path-margin (sim target fixture stop aim t-arr)
+  "m to spare along the terminal segment from AIM to STOP (positions at
+T-ARR, Earth-centred), fixed in the terminal frame: its distance from the
+target's CoM less *target-clearance*, and from every other object neither
+removed nor latched less its bound + *object-clearance*, those at T-ARR and
+every *terminal-check-step* to T-ARR + *terminal-check-span*. Below 0: not
+clear."
+  (let* ((object (target-object sim target))
+         (rt (make-vec3)) (vt (make-vec3)) (q (make-quat)) (w (make-vec3))
+         (r (make-vec3)) (v (make-vec3)) (a (make-vec3)) (s (make-vec3))
+         (margin most-positive-double-float))
+    (stop-target-state-into! rt vt sim target fixture t-arr)
+    (terminal-frame-into! q w object rt vt t-arr)
+    (to-terminal-frame! a q aim rt)
+    (to-terminal-frame! s q stop rt)
+    (when object
+      (setf margin (- (segment-distance (make-vec3) a s) *target-clearance*)))
+    (loop for k from 0 to (round *terminal-check-span* *terminal-check-step*)
+          for time = (+ t-arr (* k *terminal-check-step*))
+          do (stop-target-state-into! rt vt sim target fixture time)
+             (terminal-frame-into! q w object rt vt time)
+             (loop for other across (sim-objects sim)
+                   unless (or (eq other object)
+                              (member (object-status other) '(:removed :latched)))
+                     do (when (object-planning-state-into! r v other sim time)
+                          (to-terminal-frame! r q r rt)
+                          (setf margin (min margin (- (segment-distance r a s)
+                                                      (object-def-bound (object-def-of other))
+                                                      *object-clearance*))))))
+    margin))
+
+(defun terminal-path-clear-p (sim target fixture stop aim t-arr)
+  "The terminal segment from AIM to STOP keeps its clearances
+(terminal-path-margin)."
+  (>= (terminal-path-margin sim target fixture stop aim t-arr) 0d0))
+
+(defun aim-point (sim target fixture range number t-arr &optional (side 1))
+  "Aim point NUMBER at T-ARR: (values r v) (m, m/s, Earth-centred). (1) the
+target's own rails state *aim-distance* / |v_T| earlier, on its orbit; (2)
+*aim-distance* from the stop point along the target's radius, outward, inward
+when the fixture's axis is within 45° of nadir; (3) out of the plane, along
+SIDE (±1) times the target's angular momentum. (2) and (3) move with the
+terminal frame: v_T + ω × their offset from the target."
+  (let ((rt (make-vec3)) (vt (make-vec3)) (r (make-vec3)) (v (make-vec3)))
+    (stop-target-state-into! rt vt sim target fixture t-arr)
+    (if (= number 1)
+        (stop-target-state-into! r v sim target fixture
+                                 (- t-arr (/ *aim-distance* (vec3-norm vt))))
+        (let ((object (target-object sim target))
+              (q (make-quat)) (w (make-vec3))
+              (offset (if (= number 2)
+                          (vec3-normalize rt)
+                          (vec3-scale (vec3-normalize (vec3-cross rt vt)) (float side 1d0)))))
+          (terminal-frame-into! q w object rt vt t-arr)
+          (when (and (= number 2) (typep fixture 'fixture)
+                     (< (vec3-dot (quat-rotate q (fixture-axis fixture)) offset)
+                        (- *inward-axis-cos*)))
+            (vec3-scale! offset offset -1d0))
+          (stop-point-into! r v sim target fixture (float range 1d0) t-arr)
+          (vec3-add-scaled! r r offset *aim-distance*)
+          (vec3-add! v vt (vec3-cross w (vec3-sub r rt)))))
+    (values r v)))
+
+(defun rendezvous-aim (sim target fixture range t-arr)
+  "The first aim point whose terminal path is clear (decision 119): (values
+number r v side), SIDE the out-of-plane side of (3) (1 otherwise), or
+(values nil \"NO CLEAR APPROACH\"). (3) tries the clearer side first."
+  (let ((stop (make-vec3)) (stop-v (make-vec3)))
+    (stop-point-into! stop stop-v sim target fixture (float range 1d0) t-arr)
+    (flet ((margin (number side)
+             (multiple-value-bind (r v) (aim-point sim target fixture range number t-arr side)
+               (values (terminal-path-margin sim target fixture stop r t-arr) r v))))
+      (loop for number in '(1 2)
+            do (multiple-value-bind (m r v) (margin number 1)
+                 (when (>= m 0d0)
+                   (return-from rendezvous-aim (values number r v 1)))))
+      (multiple-value-bind (m+ r+ v+) (margin 3 1)
+        (multiple-value-bind (m- r- v-) (margin 3 -1)
+          (cond ((and (>= m+ m-) (>= m+ 0d0)) (values 3 r+ v+ 1))
+                ((>= m- 0d0) (values 3 r- v- -1))
+                (t (values nil "NO CLEAR APPROACH"))))))))
+
 ;;; The preset menu (decision 118: Autopilot preset menu and input in
 ;;; milestone 3): the clock's model (clock-autopilot, not in the sim or
 ;;; checkpoints), driven by O, the arrows, Return and Backspace; drawn by the

@@ -176,3 +176,125 @@ nil."
           (and (object-state-into! r v q w (sim-object sim (place-object place)) time) t))
         (progn (rails-state-into! r v (rails-segment-at (place-rails place) time) time)
                t))))
+
+;;; Stop points and the terminal frame (docs/design.md "The terminal path and
+;;; crowded targets"; decision 119: Rendezvous planning in milestone 3:
+;;; Lambert, search, aim and stop points, checks, shooting, burns, decision
+;;; 121: Skua Yard's stop point while the drop point is occupied).
+
+(defparameter *stop-range* 100d0 "m: the default range from the pin; decision 119.")
+(defparameter *stop-range-max* 1000d0 "m; decision 119.")
+(defparameter *target-clearance* 100d0
+  "m: the stop point and the terminal path from the target's CoM; decision 119.")
+(defparameter *object-clearance* 200d0 "m beyond another object's bound; decision 59.")
+(defparameter *yard-front-lead* 1.043d0
+  "s: Skua Yard's front ahead of the drop point on its rails, 1 km at apogee; decision 121.")
+(declaim (type double-float *stop-range* *stop-range-max* *target-clearance*
+               *object-clearance* *yard-front-lead*))
+
+(defun target-object (sim target)
+  "Target key TARGET's object in SIM, or nil for a point on rails."
+  (let ((key (target-object-key target)))
+    (and key (sim-object sim key))))
+
+(defun object-planning-state-into! (r v object sim time)
+  "OBJECT's position and velocity at TIME for planning: object-state-into!
+on rails or at SIM's t; a promoted or latched object at another time on
+Kepler rails of its state at SIM's t, with J2's rates (conses). True, or
+nil (removed, past its rails' crash)."
+  (declare (type vec3 r v) (type double-float time))
+  (let ((q (make-quat)) (w (make-vec3)))
+    (declare (dynamic-extent q w))
+    (if (or (member (object-status object) '(:rails :removed)) (= time (sim-t sim)))
+        (and (object-state-into! r v q w object time) t)
+        (let* ((state (object-state object))
+               (rails (make-rails (state->orbit (ship-state-r state) (ship-state-v state)
+                                                (body-mu (body (sim-body sim))) (sim-t sim))
+                                  (sim-t sim) :body (sim-body sim))))
+          (rails-state-into! r v (rails-segment-at rails time) time)
+          t))))
+
+(defun stop-target-state-into! (r v sim target fixture time)
+  "The state at TIME of what the stop point of TARGET with FIXTURE moves
+with: the object's CoM, Skua Yard's drop point (FIXTURE :drop-point) or its
+front (:front, *yard-front-lead* s ahead on the same rails). True or nil."
+  (let ((object (target-object sim target)))
+    (if object
+        (object-planning-state-into! r v object sim time)
+        (let ((time (if (eq fixture :front) (+ time *yard-front-lead*) time)))
+          (rails-state-into! r v (rails-segment-at (place-rails (place target)) time) time)
+          t))))
+
+(defun terminal-frame-into! (q w object r v time)
+  "The terminal frame of OBJECT (nil: a drop point, its LVLH) at the state
+R, V and TIME: Q (body -> inertial) its attitude with a :spin about the
+fixture axis removed (the mode's q₀), W the frame's angular velocity
+(rad/s, inertial axes); Q. Conses nothing."
+  (declare (type quat q) (type vec3 w r v) (type double-float time))
+  (let ((mode (if object (object-attitude object) (load-time-value (make-attitude :lvlh) t))))
+    (if (eq (attitude-kind mode) :spin)
+        (progn (replace q (attitude-q mode))
+               (vec3-set! w 0d0 0d0 0d0)
+               q)
+        (object-attitude-into! q w mode r v time))))
+
+(defun fixture-stop-offset (fixture range)
+  "m, body axes: FIXTURE's pin plus RANGE along its outward axis."
+  (vec3-add-scaled (fixture-pin fixture) (fixture-axis fixture) range))
+
+(defun stop-point-into! (r v sim target fixture range time)
+  "The stop point of TARGET at TIME into R, V (m, m/s, Earth-centred), for
+the grapple cone's tip: FIXTURE's pin plus RANGE along its outward axis,
+turned by the terminal frame, moving at v_T + ω × offset. FIXTURE :drop-point
+or :front (Skua Yard): that point itself, for the stack's CoM. True or nil
+(the target removed). Conses nothing at SIM's t."
+  (declare (type vec3 r v) (type double-float range time))
+  (when (stop-target-state-into! r v sim target fixture time)
+    (when (typep fixture 'fixture)
+      (let ((q (make-quat)) (w (make-vec3)) (offset (make-vec3)))
+        (declare (dynamic-extent q w offset))
+        (terminal-frame-into! q w (target-object sim target) r v time)
+        (vec3-add-scaled! offset (fixture-pin fixture) (fixture-axis fixture) range)
+        (quat-rotate! offset q offset)
+        (vec3-add! r r offset)
+        (vec3-add! v v (vec3-cross! w w offset))))
+    t))
+
+(defun yard-drop-point-clear-p (sim)
+  "No object (but a latched load) within its bound + *object-clearance* of
+Skua Yard's drop point at SIM's t (decision 121)."
+  (let ((drop (make-vec3)) (dv (make-vec3)) (r (make-vec3)) (v (make-vec3)))
+    (stop-target-state-into! drop dv sim :skua-yard :drop-point (sim-t sim))
+    (loop for object across (sim-objects sim)
+          never (and (not (member (object-status object) '(:removed :latched)))
+                     (object-planning-state-into! r v object sim (sim-t sim))
+                     (<= (vec3-norm (vec3-sub! r r drop))
+                         (+ (object-def-bound (object-def-of object)) *object-clearance*))))))
+
+(defun rendezvous-fixture (sim target &optional name)
+  "The fixture a rendezvous with TARGET stops at: the one NAMEd, else the
+target's first free berth or towable fixture; Skua Yard's :drop-point while
+it is clear, else :front (decision 121). (values fixture nil) or (values nil
+reason): \"NO TARGET\" (removed or latched), \"NO FREE FIXTURE\"."
+  (let ((object (target-object sim target)))
+    (cond ((null object)
+           (values (if (yard-drop-point-clear-p sim) :drop-point :front) nil))
+          ((member (object-status object) '(:removed :latched))
+           (values nil "NO TARGET"))
+          (t
+           (let* ((fixtures (object-def-fixtures (object-def-of object)))
+                  (fixture (if name
+                               (find name fixtures :key #'fixture-name :test #'string-equal)
+                               (find-if #'fixture-free fixtures))))
+             (if (and fixture (fixture-free fixture))
+                 (values fixture nil)
+                 (values nil "NO FREE FIXTURE")))))))
+
+(defun stop-range-refusal (fixture range)
+  "Nil, or why RANGE at FIXTURE is refused: over *stop-range-max*, \"RANGE
+TOO LONG\"; the stop point under *target-clearance* from the CoM, \"RANGE TOO
+SHORT\"."
+  (cond ((> range *stop-range-max*) "RANGE TOO LONG")
+        ((and (typep fixture 'fixture)
+              (< (vec3-norm (fixture-stop-offset fixture range)) *target-clearance*))
+         "RANGE TOO SHORT")))

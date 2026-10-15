@@ -268,3 +268,98 @@ decimals below 100."
     (is equalp v2 v)
     (setf (lis::object-status (lis::sim-object sim :tern-station)) :removed)
     (false (lis::place-target-state-into! r v (lis::place :tern-station) sim))))
+
+;;; Stop points (decision 119: Rendezvous planning in milestone 3: Lambert,
+;;; search, aim and stop points, checks, shooting, burns; decision 121:
+;;; Skua Yard's stop point while the drop point is occupied).
+
+(defun stop-point (sim target fixture time &optional (range 100d0))
+  (let ((r (lis::make-vec3)) (v (lis::make-vec3)))
+    (true (lis::stop-point-into! r v sim target fixture range time))
+    (values r v)))
+
+(defun object-com (sim key time)
+  (let ((r (lis::make-vec3)) (v (lis::make-vec3)))
+    (lis::object-planning-state-into! r v (lis::sim-object sim key) sim time)
+    (values r v)))
+
+(define-test stop-points
+  ;; docs/design.md "The terminal path and crowded targets": the stop point
+  ;; from the CoM at 100 m; K-17's out of the plane.
+  (let ((sim (lis::new-game-sim))
+        (time (+ (lis::start-t) 3600d0)))
+    (loop for (target name distance) in '((:tern-station "berth" 103.0d0) (:fulmar-depot "A" 105.2d0)
+                                          (:highport "plant" 103.3d0) (:k-17 "fixture" 106.35d0))
+          do (let ((fixture (lis::rendezvous-fixture sim target)))
+               (is string= name (lis::fixture-name fixture))
+               (let ((d (lis::vec3-sub (stop-point sim target fixture time)
+                                       (object-com sim (lis::target-object-key target) time))))
+                 (true (< (abs (- (lis::vec3-norm d) distance)) 0.05d0) "~A ~,3F m" target (lis::vec3-norm d))
+                 (when (eq target :k-17)
+                   (multiple-value-bind (r v) (object-com sim :k-17 time)
+                     (true (> (abs (lis::vec3-dot d (lis::vec3-normalize (lis::vec3-cross r v))))
+                              (- distance 1d-6))))))))))
+
+(define-test stop-point-velocity
+  ;; Promoted and stepped, the stop point's velocity against the target's is
+  ;; the rate of their offset (a five-point difference over 4 s): the frame's
+  ;; ω for LVLH (Tern) and Sun-pointing (Fulmar Depot).
+  (dolist (target '(:tern-station :fulmar-depot))
+    (let* ((sim (lis::new-game-sim))
+           (object (lis::sim-object sim target))
+           (fixture (lis::rendezvous-fixture sim target))
+           (h (* 256 lis::+fine-step+))
+           (offsets '()) (rate nil))
+      (setf (lis::sim-model sim) :j2)
+      (lis::object-promote! object (lis::sim-t sim))
+      (dotimes (k 5)
+        (multiple-value-bind (r v) (stop-point sim target fixture (lis::sim-t sim))
+          (multiple-value-bind (rt vt) (object-com sim target (lis::sim-t sim))
+            (push (lis::vec3-sub r rt) offsets)
+            (when (= k 2) (setf rate (lis::vec3-sub v vt)))))
+        (dotimes (i 256)
+          (lis::object-step! object lis::+fine-step+ (lis::sim-t sim) :j2 nil)
+          (incf (lis::sim-t sim) lis::+fine-step+)))
+      (destructuring-bind (d4 d3 d1 d0) (remove (third offsets) offsets :count 1)
+        (let ((difference (lis::vec3-scale (lis::vec3-add (lis::vec3-sub d0 d4)
+                                                          (lis::vec3-scale (lis::vec3-sub d3 d1) 8d0))
+                                           (/ (* 12 h)))))
+          (true (< (lis::vec3-norm (lis::vec3-sub difference rate)) 1d-9)
+                "~A ~,2E m/s" target (lis::vec3-norm (lis::vec3-sub difference rate)))
+          (when (eq target :tern-station)
+            (true (> (lis::vec3-norm rate) 0.1d0))))))))
+
+(define-test stop-point-fixtures
+  (let ((sim (lis::new-game-sim)))
+    (is string= "A" (lis::fixture-name (lis::rendezvous-fixture sim :fulmar-depot "a")))
+    (is equal '(nil "NO FREE FIXTURE")
+        (multiple-value-list (lis::rendezvous-fixture sim :fulmar-depot "B")))
+    (is equal '(nil "NO FREE FIXTURE")
+        (multiple-value-list (lis::rendezvous-fixture sim :highport "arm 1")))
+    (is equal '(nil "NO FREE FIXTURE")
+        (multiple-value-list (lis::rendezvous-fixture sim :rock-mover)))
+    (is string= "fixture" (lis::fixture-name (lis::rendezvous-fixture sim :pod-14)))
+    (is equal "RANGE TOO SHORT"
+        (lis::stop-range-refusal (lis::rendezvous-fixture sim :tern-station) 50d0))
+    (false (lis::stop-range-refusal (lis::rendezvous-fixture sim :tern-station) 100d0))
+    (is equal "RANGE TOO LONG"
+        (lis::stop-range-refusal (lis::rendezvous-fixture sim :tern-station) 1001d0))
+    (setf (lis::object-status (lis::sim-object sim :k-17)) :removed)
+    (is equal '(nil "NO TARGET") (multiple-value-list (lis::rendezvous-fixture sim :k-17)))
+    (setf (lis::object-status (lis::sim-object sim :skua-yard-5)) :latched)
+    (is equal '(nil "NO TARGET") (multiple-value-list (lis::rendezvous-fixture sim :skua-yard-5)))))
+
+(define-test stop-point-skua-yard
+  ;; Skua Yard 3 at the drop point: the front, 1.043 s ahead on the drop
+  ;; point's rails. Kepler's 958.9 m/s at apogee makes that 1,000.1 m; J2's
+  ;; rates (Ṁ and ω̇: −1.1 m/s there) 998.9 m, so 1.5 m, not the plan's 1 m.
+  (let* ((sim (lis::new-game-sim))
+         (apogee (lis::orbit-next-apsis (object-orbit (object-def* :skua-yard-3)) (lis::start-t)
+                                        :apoapsis))
+         (drop (stop-point sim :skua-yard :drop-point apogee)))
+    (is eq :front (lis::rendezvous-fixture sim :skua-yard))
+    (let ((d (lis::vec3-norm (lis::vec3-sub (stop-point sim :skua-yard :front apogee) drop))))
+      (true (< (abs (- d 1000d0)) 1.5d0) "front ~,2F m" d))
+    (is equalp drop (object-com sim :skua-yard-3 apogee))
+    (setf (lis::object-status (lis::sim-object sim :skua-yard-3)) :removed)
+    (is eq :drop-point (lis::rendezvous-fixture sim :skua-yard))))

@@ -471,3 +471,118 @@ at ×1,000 and ×100 within its goal's tolerances; the plan."
         (is = 1 (getf later :index))
         (is = 0d0 (getf later :next-in))
         (is = (lis::planned-burn-dv two) (getf later :next-dv))))))
+
+;;; Rendezvous: aim points and the terminal check (docs/design.md "The
+;;; terminal path and crowded targets"; decision 119: Rendezvous planning in
+;;; milestone 3: Lambert, search, aim and stop points, checks, shooting,
+;;; burns).
+
+(defun first-apsis (key kind)
+  (lis::orbit-next-apsis (lis::rails-segment-orbit (first (lis::object-def-rails (lis::object-definition key))))
+                         (lis::start-t) kind))
+
+(defun rendezvous-aim (sim target t-arr)
+  (multiple-value-list (lis::rendezvous-aim sim target (lis::rendezvous-stop sim target) 100d0 t-arr)))
+
+(defun aim-segment-distance (sim target number key t-arr)
+  "m from KEY's CoM to TARGET's terminal segment from aim point NUMBER at T-ARR."
+  (let ((fixture (lis::rendezvous-stop sim target)))
+    (multiple-value-bind (stop) (stop-point sim target fixture t-arr)
+      (lis::segment-distance (object-com sim key t-arr)
+                             (lis::aim-point sim target fixture 100d0 number t-arr) stop))))
+
+(define-test rendezvous-aim-point-1
+  ;; (1): the target's own rails state 1 km / |v_T| earlier.
+  (let* ((sim (lis::new-game-sim))
+         (t-arr (+ (lis::start-t) 7200d0))
+         (fixture (lis::rendezvous-stop sim :tern-station)))
+    (multiple-value-bind (rt vt) (object-com sim :tern-station t-arr)
+      (multiple-value-bind (r v) (lis::aim-point sim :tern-station fixture 100d0 1 t-arr)
+        (multiple-value-bind (r1 v1) (rails-point (lis::object-def-rails (object-def* :tern-station))
+                                                  (- t-arr (/ 1000d0 (lis::vec3-norm vt))))
+          (true (< (lis::vec3-norm (lis::vec3-sub r r1)) 1d-6))
+          (is equalp v1 v))
+        ;; 1 km at the Kepler speed; the rails move ~0.1 % slower under J2.
+        (true (< (abs (- (lis::vec3-norm (lis::vec3-sub r rt)) 1000d0)) 2d0))))))
+
+(define-test rendezvous-aim-skua-yard-5
+  ;; At its first apogee the stop point is 102.6 m behind Skua Yard 5 in
+  ;; the line: (1) runs through Skua Yard 1, (2) comes down from 1 km above.
+  ;; The yard's 665.6 m gap (decision 133: The places' data: rock radii,
+  ;; the yard's attitude, display names and the target state) puts Skua
+  ;; Yard 1 563.0 m from it, not the plan's 565.
+  (let* ((sim (lis::new-game-sim))
+         (apogee (first-apsis :skua-yard-5 :apoapsis))
+         (perigee (first-apsis :skua-yard-5 :periapsis))
+         (fixture (lis::rendezvous-stop sim :skua-yard-5)))
+    (true (< (aim-segment-distance sim :skua-yard-5 1 :skua-yard-1 apogee) 1d0))
+    (destructuring-bind (number r &rest more) (rendezvous-aim sim :skua-yard-5 apogee)
+      (declare (ignore more))
+      (is = 2 number)
+      (multiple-value-bind (r2) (lis::aim-point sim :skua-yard-5 fixture 100d0 2 apogee)
+        (is equalp r2 r))
+      (let ((d1 (aim-segment-distance sim :skua-yard-5 2 :skua-yard-1 apogee))
+            (d14 (aim-segment-distance sim :skua-yard-5 2 :pod-14 apogee)))
+        (true (>= d1 562d0) "Skua Yard 1 ~,1F m" d1)
+        (true (>= d14 765d0) "POD 14 ~,1F m" d14))
+      (let ((nearest (loop for object across (lis::sim-objects sim)
+                           unless (eq (lis::object-key object) :skua-yard-5)
+                             minimize (lis::vec3-norm (lis::vec3-sub (object-com sim (lis::object-key object) apogee)
+                                                                     r)))))
+        (true (>= nearest 1140d0) "aim point ~,1F m" nearest))
+      ;; Above the stop point: away from Earth.
+      (multiple-value-bind (stop) (stop-point sim :skua-yard-5 fixture apogee)
+        (true (> (lis::vec3-dot (lis::vec3-sub r stop) (lis::vec3-normalize stop)) 999d0))))
+    ;; At perigee the stop point is ahead: (1) runs through the target.
+    (true (< (aim-segment-distance sim :skua-yard-5 1 :skua-yard-5 perigee) 1d0))
+    (is = 2 (first (rendezvous-aim sim :skua-yard-5 perigee)))))
+
+(define-test rendezvous-aim-keeps-1
+  ;; Tern Station and K-17 keep (1) along their orbits; Fulmar Depot's fixture
+  ;; A turns with the Sun, so (1) passes it clear over part of each orbit
+  ;; only, (2) elsewhere.
+  (let ((sim (lis::new-game-sim)))
+    (dolist (target '(:tern-station :k-17))
+      (loop for hours from 0 to 48 by 7
+            do (is = 1 (first (rendezvous-aim sim target (+ (lis::start-t) (* hours 3600d0)))))))
+    (is = 1 (first (rendezvous-aim sim :fulmar-depot (+ (lis::start-t) (* 12 3600d0)))))
+    (is = 2 (first (rendezvous-aim sim :fulmar-depot (lis::start-t))))))
+
+(define-test rendezvous-aim-skua-yard-front
+  ;; The front: (1), back on the drop point's rails, ends on Skua Yard 3.
+  (let* ((sim (lis::new-game-sim))
+         (apogee (first-apsis :skua-yard-3 :apoapsis)))
+    (is eq :front (lis::rendezvous-stop sim :skua-yard))
+    (is = 2 (first (rendezvous-aim sim :skua-yard apogee)))))
+
+(defun crafted-object (key r v time)
+  "A 1 m towable object on the Kepler rails of R, V at TIME."
+  (lis::new-object
+   (lis::make-object-def key (string key) :towable 1000d0 (lis::mat3 1 0 0 0 1 0 0 0 1) '() '()
+                         (lis::make-attitude :inertial) 1d0
+                         (lis::make-rails (lis::state->orbit r v lis::+mu-earth+ time) time))))
+
+(define-test rendezvous-aim-refusals
+  ;; Four crafted objects, one in the middle of each segment ((3) has two
+  ;; sides): "NO CLEAR APPROACH".
+  (let* ((sim (lis::new-game-sim))
+         (t-arr (+ (lis::start-t) 7200d0))
+         (fixture (lis::rendezvous-stop sim :tern-station))
+         (stop (stop-point sim :tern-station fixture t-arr))
+         (crafted (loop for (number side) in '((1 1) (2 1) (3 1) (3 -1))
+                        for i from 0
+                        collect (multiple-value-bind (r v)
+                                    (lis::aim-point sim :tern-station fixture 100d0 number t-arr side)
+                                  (crafted-object (intern (format nil "CRAFTED-~D" i) :keyword)
+                                                  (lis::vec3-lerp r stop 0.5d0) v t-arr)))))
+    (loop for object in crafted
+          for count from 1
+          do (setf (lis::sim-objects sim) (concatenate 'simple-vector (lis::sim-objects sim) (list object)))
+             (is equal (if (= count 4) '(nil "NO CLEAR APPROACH") (list (min 3 (1+ count))))
+                 (subseq (rendezvous-aim sim :tern-station t-arr) 0 (if (= count 4) 2 1))))
+    (is equal '(nil "NO FREE FIXTURE")
+        (multiple-value-list (lis::rendezvous-stop sim :fulmar-depot :fixture "B")))
+    (is equal '(nil "RANGE TOO SHORT")
+        (multiple-value-list (lis::rendezvous-stop sim :tern-station :range 50)))
+    (setf (lis::object-status (lis::sim-object sim :k-17)) :removed)
+    (is equal '(nil "NO TARGET") (multiple-value-list (lis::rendezvous-stop sim :k-17)))))

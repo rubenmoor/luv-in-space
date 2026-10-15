@@ -6274,7 +6274,7 @@ Markdown, for the human, who knows the project but not the last days. Lead with:
 Bullets, ids with subjects (`task 12: <subject>`), no padding. Store it: `pm summary add < summary.md`, delete
 summary.md, then close your task.', '2026-10-15T15:49:28Z', '2026-10-15T15:57:42Z', NULL, 0);
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (264, NULL, 'delete first attempt of an exec summary', 'exec', 'done', 10000, '2026-10-15, tasks.sql: deleted summary 1 (no pm command for it; done through pm''s Project.connect)', 'delete the only row in the summaries table from the database', '2026-10-15T16:14:10Z', '2026-10-15T17:00:13Z', NULL, 0);
-INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (265, NULL, 'write an executive summary', 'exec', 'open', 10000, NULL, 'Write an executive summary for the owner of this project: a busy person who doesn''t read code, tasks or plans. Write
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (265, NULL, 'write an executive summary', 'exec', 'done', 10000, '2026-10-15, executive summary 1 stored with pm summary add; no files', 'Write an executive summary for the owner of this project: a busy person who doesn''t read code, tasks or plans. Write
 it for an interested outsider who knows nothing about the project: plain, good English in full sentences, no jargon.
 Change nothing in the project; stage nothing.
 
@@ -6291,7 +6291,7 @@ Write, in this order:
 
 Leave out everything about how the work is managed: decisions, sign-offs, tasks, plans, runs, failures, cost, tests
 and pm itself; never ids, file names or counts of these. One screen at most, about 250 words, few headings.
-Store it: `pm summary add < summary.md`, delete summary.md, then close your task.', '2026-10-15T16:59:50Z', NULL, NULL, 0);
+Store it: `pm summary add < summary.md`, delete summary.md, then close your task.', '2026-10-15T16:59:50Z', '2026-10-15T17:00:39Z', NULL, 0);
 
 INSERT INTO decision (id, subject, status, options, body, answer, reason, created_at, closed_at, created_by_task, signoff, kind, decided_by_task, consequences) VALUES (1, 'How the game consumes luv', 'answered', '[]', 'Findings of `task 17: Build and run luv''s programs and test suite; record the runs` (docs/luv-capabilities.md, Packaging and Runs).
 - luv''s flake exports apps, devShells, packages and lib; lib has only environmentFor, which returns everything the packaging needs (pkgs, lisp, applicationEnvironment/Packages, developmentEnvironmentHook, slynkSource, swashPackage, …). No overlays.
@@ -6722,6 +6722,7 @@ INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, b
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (215, 208, '2026-10-15T15:57:49Z', '2026-10-15T16:08:40Z', 'done', NULL, 0, '523093e6616a48b8c66867f82f73268b9638425b', 'claude-opus-5-5[1m]', 'fa01d91f-dbad-4745-be25-918b8c04855f', 42, 78, 56015, 5829910, 202498, 3.906578, 3425383);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (216, 209, '2026-10-15T16:08:41Z', '2026-10-15T16:58:30Z', 'done', NULL, 0, '574223172a6fe853e14ee872fe3604d5bf2e3a77', 'claude-opus-5-5[1m]', '80c8d3ea-97b4-4ff2-a27b-0959f46bae25', 124, 230, 212565, 37386047, 434385, 15.2045094, 3425383);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (217, 264, '2026-10-15T16:59:40Z', '2026-10-15T17:00:16Z', 'done', NULL, 0, 'fc6c4361c76ef40a510e034ce19cf3fe724e622e', 'claude-opus-5-5[1m]', '9445df3d-cc16-494c-ab77-b44d91ae4658', 10, 20, 2537, 300356, 26135, 0.3199712, 3493797);
+INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (218, 265, '2026-10-15T17:00:16Z', '2026-10-15T17:00:45Z', 'done', NULL, 0, '3f533abb7d3fb7bf321f04929c43ed3aa7dbd11a', 'claude-opus-5-5[1m]', '491fc0cd-74b3-4df1-a5f8-0a7523f741ef', 7, 14, 2234, 211137, 26878, 0.3019874, 3493797);
 
 INSERT INTO task_decision (task_id, decision_id) VALUES (44, 28);
 INSERT INTO task_decision (task_id, decision_id) VALUES (44, 45);
@@ -6742,3 +6743,19 @@ INSERT INTO decision_supersedes (decision_id, superseded_id, note) VALUES (107, 
 INSERT INTO decision_supersedes (decision_id, superseded_id, note) VALUES (143, 114, 'only the instruments'' render-time extrapolation of a promoted target');
 INSERT INTO decision_supersedes (decision_id, superseded_id, note) VALUES (149, 116, 'the budget only: 4,096 work units, not ~1 ms');
 INSERT INTO decision_supersedes (decision_id, superseded_id, note) VALUES (149, 146, '');
+
+INSERT INTO summary (id, task_id, body, head_commit, created_at) VALUES (1, 265, '# Luv in Space: executive summary
+
+Luv in Space is a realistic spaceflight game set in 2040, in which the player flies a small, home-built tug through Earth orbit and later out into the solar system, with true-to-life physics. It is being built as a showcase for luv, Mikael Brockman''s toolkit for making graphics-heavy programs in the Lisp programming language.
+
+**Where it stands:** the current goal, a hand-made cockpit and an autopilot, is about halfway done and on track: the autopilot and the working life in orbit exist, while the cockpit itself is still to come.
+
+## What''s new
+
+The game''s design and story are written: a quiet working world of about twenty people living on water mined from small asteroids. The ship flies as a real spacecraft does: thrust changes the orbit, not the direction of travel, and the Earth, Moon and Sun all pull on it. The player can watch from outside, see the orbit on a map and speed up time.
+
+Earth orbit now has places to go: a crew station, two fuel depots, a dead rocket stage and a yard of captured rocks. The player can pick one as a target, catch it with a grapple arm, dock, refuel, and tow heavy loads to the water plant. An autopilot can raise, lower and reshape the orbit with burns the player can watch and interrupt, and it refuses plans that would hit the Earth.
+
+## What comes next
+
+The autopilot learns to meet each place on its own and stop nearby. Then the cockpit is built, with improvised-looking screens and switches, so the game can be flown from inside, and the stations and other ships get proper models. After that come the Moon and planets, the story''s missions, and a public release.', '3f533abb7d3fb7bf321f04929c43ed3aa7dbd11a', '2026-10-15T17:00:37Z');

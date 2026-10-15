@@ -4852,9 +4852,9 @@ tasks for what the plan asks beyond them. A task that writes a plan gets `--kind
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (171, 24, 'create tasks for plan 24: Grapple, contact, berthing, towing, deliveries and refuelling', 'split', 'done', 1000, '2026-10-15, tasks.sql: tasks 187-194; no new decisions (decision 112 and decision 113 cover the open points)', 'Split `plan 24: Grapple, contact, berthing, towing, deliveries and refuelling` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
 done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
 tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-15T06:14:24Z', '2026-10-15T07:39:46Z', 158, 0);
-INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (172, 25, 'create tasks for plan 25: Predicted trajectories, targets and target holds', 'split', 'open', 1000, NULL, 'Split `plan 25: Predicted trajectories, targets and target holds` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (172, 25, 'create tasks for plan 25: Predicted trajectories, targets and target holds', 'split', 'done', 1000, '2026-10-15, tasks 195-200', 'Split `plan 25: Predicted trajectories, targets and target holds` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
 done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
-tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-15T06:22:33Z', NULL, 159, 0);
+tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-15T06:22:33Z', '2026-10-15T07:41:10Z', 159, 0);
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (173, 26, 'create tasks for plan 26: Autopilot: planner, orbit manoeuvres, execution and safety', 'split', 'open', 1000, NULL, 'Split `plan 26: Autopilot: planner, orbit manoeuvres, execution and safety` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
 done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
 tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-15T06:31:14Z', NULL, 160, 0);
@@ -5093,6 +5093,116 @@ INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, crea
 
 ## Done when
 - The round passes within the plan''s budget (this plan''s tests together ≲ 1.5 s; `scripts/test` near ~15 s, measured and recorded in "Testing"); `nix build` and `scripts/test` pass; the docs above match what was built.', '2026-10-15T07:39:43Z', NULL, 171, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (195, 25, 'Targets and the relative values', 'work', 'open', NULL, NULL, 'Piece 1 of `plan 25: Predicted trajectories, targets and target holds` (read its "Targets" and "The target for instruments" sections). Needs `plan 23: Objects on rails and the Earth-orbit places` (`*places*`, `*objects*`, `place-target-state-into!`, `object-state-into!`, promotion and removal: `task 184: The places: the twelve object definitions and the five presets`, `task 185: The sim holds the objects: promotion, demotion and stepping`, `task 186: Removal and re-entry of objects`) and `plan 24: Grapple, contact, berthing, towing, deliveries and refuelling` (the sim''s notices and the `:latched` status: `task 188: The sim''s grapple fields, notices, the SHIP log, the latest checkpoint and G, B, Y`, `task 190: Capture, the stack and berthing`). Follows `decision 114: Targets and target holds in the sim` and `decision 81: Input in milestone 2: held keys per frame, taps, gating and the shared key map`. Files: `src/clock.lisp`, `src/controls.lisp`, `src/render.lisp`, `src/input.lisp`, their tests, `docs/design.md`, `docs/architecture.md`, `AGENTS.md`.
+
+## What
+- `sim-target` (nil or a key: a place of `*places*`, `:skua-yard` its drop point, or a towable object `:skua-yard-1` … `:skua-yard-6`, `:pod-14`), copied by `copy-sim` and `sim-assign!`.
+- `(target-candidates sim)`: the five places in `*places*` order, then the towable objects not already a place in `*objects*` order; removed and latched skipped; never the rock mover. `(sim-cycle-target! sim direction)` (+1 `]`, −1 `[`, wrapping; from none `]` the first, `[` the last), `(sim-set-target! sim key)` (nil clears), both returning the key.
+- `(target-state-into! r v sim)`: the target''s r, v at the sim''s t; nil without one.
+- The clearing rule after each step''s removals and captures: target removed or latched → cleared, notice "TARGET LOST: <NAME>" (once); an active target hold goes to rate damping (holds come in piece 2: leave the hook).
+- `(target-relative-into! out r v q r-t v-t)` in `controls.lisp`: range, closing speed −(r_rel · v_rel)/|r_rel|, v − v_T in body axes (F, R, D), the target''s direction in body axes; conses nothing.
+- The render state: the target''s key, r and v at t_r (rails exactly; a promoted target r + v τ + a τ²/2, τ = t_r − t ≤ 0) and the relative values; `render-state-update!` fills them.
+- `*key-map*`: `]` `[` `\` (clear) as taps, gated like the other taps (paused and at ×1,000 act; ignored while lost and while a flight runs); the window title gains "[ ] \ target".
+
+## Tests
+- Cycle order from the start state (Tern Station first, POD 14 last, the rock mover absent); wrapping both ways; a removed K-17 and a latched rock skipped.
+- `copy-sim` and `sim-assign!` carry the target.
+- K-17 removed while targeted: cleared once with "TARGET LOST: K-17".
+- Relative values for a crafted pair (100 m ahead, closing 0.5 m/s, a known attitude) within 1e-12.
+- Render state''s target at t_r equals Kepler within 1e-6 m on rails; a promoted target''s extrapolation within 1 mm over a 2 s coarse step.
+- ] [ \ through synthetic events: act while paused and at ×1,000, ignored while lost and while a flight runs.
+
+## Done when
+- Tests pass (cheap: `:point` or `:j2`, coarse steps); `nix build` and `scripts/test` pass.
+- `docs/design.md` "Controls" (the target keys, their gating, the candidates), `docs/architecture.md` "Checkpoints" (the sim''s target) and "Files in load order", `AGENTS.md` "Commands" ("Run": ] [ \) match what was built.', '2026-10-15T07:40:59Z', NULL, 172, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (196, 25, 'Target holds 7–0', 'work', 'open', NULL, NULL, 'Piece 2 of `plan 25: Predicted trajectories, targets and target holds` (read its "Target holds" section). Needs `task 195: Targets and the relative values` (`sim-target`, `target-state-into!`, the clearing rule). Follows `decision 114: Targets and target holds in the sim`, `decision 70: Flight computer: per-step control laws, holds and the RCS mixer`, `decision 85: Minimal readout: layout, formats, colours and alarms`. Files: `src/controls.lisp`, `src/clock.lisp`, `src/input.lisp`, `src/overlay.lisp`; `tests/controls.lisp`, `tests/input.lisp`, `tests/overlay.lisp`; `docs/design.md`, `docs/architecture.md`, `AGENTS.md`.
+
+## What
+- `hold-kind` gains `:target`, `:anti-target`, `:relative-prograde`, `:relative-retrograde`; `(controls-set-target-hold controls kind q)` engages (Q the start of the transport) or releases when that hold is active. Without a target the key is refused with "NO TARGET" (the caller''s message).
+- `controls` gains the target scratch: r_T, v_T, a_T (point-mass gravity at r_T), their time, the last target attitude; `controls-assign!` copies them. `sim-step-ticks!` writes them at the step''s start while a target hold is active (a rails target: one Kepler solve per step).
+- Direction d: 7 / 8 ± (r_T − r), 9 / 0 ± (v − v_T). Attitude: shortest-arc rotation from the last target attitude''s nose to d̂ applied to it, then the roll offset; frozen below `*target-hold-min-range*` 1 m (7, 8) and `*target-hold-min-speed*` 0.01 m/s (9, 0). Feed-forward frame rate d × ḋ / |d|² (ḋ = v_rel for 7, 8; the point-mass gravity difference for 9, 0). `hold-attitude-into!` takes the scratch and τ.
+- Kinematic (above ×4): `kinematic-hold-attitude` takes the target at τ as r_T + v_T τ + a_T τ²/2, v_T + a_T τ; the step''s end attitude stored as the last target attitude.
+- Settling, 80 % slew and settled flags as `decision 70`. Readout MODE: "HOLD TARGET", "HOLD ANTI-TARGET", "HOLD REL PROGRADE", "HOLD REL RETROGRADE".
+- Keys 7 8 9 0 in `*key-map*`; the title gains "7–0 target holds". The clearing rule of piece 1 now releases an active target hold to rate damping.
+
+## Tests ("Controls")
+- Start orbit (`:full`), Tern Station targeted 2,370 km ahead, nose yawed 90° from it: each of 7, 8, 9, 0 settles within 40 s wet, then < 0.1° from its direction and < 0.02°/s for 120 s.
+- Tern Station promoted 1 km ahead (`:j2`, fine step): hold 7 within 0.1° for a quarter orbit.
+- ×1,000 (kinematic, Tern Station on rails 2,370 km ahead): the nose at every step''s end along the true d̂ (Kepler) within 1e-6 rad.
+- Transported roll: engaging 7 keeps the cab''s angle about the nose within 1e-9 rad; a slew of the direction through radial gives no roll jump (cab change ≤ the direction''s change).
+- Below 1 m and 0.01 m/s the attitude stays frozen; the active hold''s key again releases to rate damping; a hold released when its target is cleared; "NO TARGET" without one.
+- 6,400 hold-7 steps cons < 1 KB. MODE names in `tests/overlay.lisp`; keys in `tests/input.lisp`.
+
+## Done when
+- Tests pass, this piece''s within the plan''s ~1.5 s share; `nix build` and `scripts/test` pass.
+- In `./sly play`, ] and 7–0 point the ship at Tern Station and along the relative velocity (check by hand, close the window).
+- `docs/design.md` "Control modes" (target and relative holds as built: transported roll, thresholds, citing `decision 114`), "Instruments" (MODE names), "Controls" (7–0); `docs/architecture.md` "Testing" → "Controls", "Checkpoints" (the controls'' target scratch); `AGENTS.md` "Commands" ("Run": 7–0) and "Layout" (`controls.lisp`''s target holds).', '2026-10-15T07:41:03Z', NULL, 172, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (197, 25, 'Planned burns in the sim', 'work', 'open', NULL, NULL, 'Piece 3 of `plan 25: Predicted trajectories, targets and target holds` (read its "Planned burns" section). Follows `decision 115: Planned burns as scheduled controls in the sim` and `decision 72: Simulation state and the one step function in clock.lisp` (the cut-off rule). Independent of the target pieces but runs after them. Files: `src/controls.lisp`, `src/clock.lisp`, `tests/clock.lisp`, `docs/architecture.md`, `AGENTS.md`.
+
+## What
+- `planned-burn` (read-only): label (keyword), `hold-at`, `start` (grid t), attitude (quat, body → inertial), throttle (0.1–1, or 0 for RCS), `rcs` (nil, +1, −1 along body x), Δv (m/s). `burn-plan` (read-only): burns (simple-vector), coast hold (`:prograde`).
+- `sim-plan` (nil or a `burn-plan`, shared by copies) and its cursor: `sim-plan-index`, `sim-plan-phase` (`:pending` / `:holding` / `:burning` / `:done`), `sim-plan-rcs-target` (odometer value); copied by `sim-assign!` consing nothing.
+- `plan-step-controls!` at the start of `sim-step-ticks!`, before the cut-off check: at `hold-at` the inertial hold at the burn''s attitude (roll offset 0); at `start` the throttle and `sim-cutoff` = odometer + Δv (engine), or the ±x translation key held (RCS); an RCS burn ends at the first step start where the odometer reaches its target, keys released; after a cut the coast hold, the next burn `:pending`, after the last `:done`.
+- `step-h` lands on the next `hold-at` and `start`.
+- Out: planning, aborts, input gating while engaged (`plan 26: Autopilot: planner, orbit manoeuvres, execution and safety`).
+
+## Tests (`tests/clock.lisp`)
+- Two-burn Hohmann 400 → 800 km (`:point`) at ×1 and ×1,000: throttle on at exactly each `start`, inertial hold at exactly `hold-at`, cut at the cut-off rule''s grid point, coast hold after each, `:done` after the last, apsides within 1 % of the impulsive Hohmann''s.
+- RCS burn of 0.3 m/s at ×1 delivers 0.3 m/s within one fine step''s Δv and releases the key.
+- The cursor through `copy-sim`, `sim-assign!` and a checkpoint restore gives the same burns bit for bit.
+- `sim-assign!` with a plan conses nothing; 10,000 coasting steps with a `:done` plan cons nothing.
+
+## Done when
+- Tests pass (cheap); `nix build` and `scripts/test` pass.
+- `docs/architecture.md` "The clock" (the executor in the step), "Checkpoints" (plan and cursor; plans are not saved, `docs/design.md` "Saving"), "Files in load order"; `AGENTS.md` "Layout" (`controls.lisp`''s burn plan).', '2026-10-15T07:41:03Z', NULL, 172, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (198, 25, 'The prediction of milestone 3: horizons, the plan, the target buffer and the budget', 'work', 'open', NULL, NULL, 'Piece 4 of `plan 25: Predicted trajectories, targets and target holds` (read its "The prediction" section). Needs `task 195: Targets and the relative values` and `task 197: Planned burns in the sim` (targets, `sim-plan`), `task 185: The sim holds the objects: promotion, demotion and stepping` and the `:contact` event of `task 193: The contact drop-out of time warp`. Follows `decision 116: Prediction in milestone 3: horizon, target nodes, closest approach, relative nodes, budget`, `decision 75: Prediction in milestone 2: the step function on a copy`, `decision 108: run-flight''s prediction during burns and the hook''s order in clock-step!`. Files: `src/prediction.lisp`, `src/clock.lisp`, `tests/prediction.lisp`, `docs/architecture.md`.
+
+## What
+- Horizon: two osculating periods while coasting, one while the throttle is on (`prediction-periods` the coasting horizon; the clock''s prediction made with 2).
+- The copy runs the plan: at ×4 while an RCS burn runs, else `*prediction-level*`; `:burn-start` events (value: burn index) beside `:cutoff`.
+- Target buffer: with `sim-target`, after each step the copy''s target r, v into a second node buffer (6 doubles per node, same capacity and head); not written without a target.
+- Events gain a double value (`prediction-event` returns it as a further value); capacity 128.
+- Restart also when `sim-target`, `sim-plan` (eq) or the plan cursor differs from the signature, and when the flown target is > 1 m from the stored target path at the flown t.
+- Budget: `*prediction-work-per-frame*` replaces `*prediction-steps-per-frame*`; per copy step 1 + promoted objects stepped + 1 for a rails target; `prediction-last-work` for tests. Readers for ribbons and shooting: `(prediction-node-count pred)`, `(prediction-target-position! out pred time)`.
+
+## Tests ("Prediction")
+- Tern Station targeted and promoted beside the ship, piece 3''s two-burn plan: nodes and target nodes equal a sim flown by `sim-step!` at ×1,000 bit for bit at every step; split over budgeted updates equals one run at once.
+- Coasting the horizon reaches two periods, under thrust one; a target or plan change restarts; a target moved 2 m by hand restarts.
+- After the first, a full two-period prediction with a target conses nothing; work per update never exceeds the budget with Skua Yard''s nine objects promoted.
+
+## Measure
+- Outside `scripts/test` (a benchmark form in a comment in `tests/prediction.lisp`): time per work unit at the start orbit and at Skua Yard; set `*prediction-work-per-frame*` to ~1 ms of work (initially 4,096); record the figures in `docs/architecture.md`.
+
+## Done when
+- Tests pass, within the plan''s ~1.5 s share; `nix build` and `scripts/test` pass.
+- `docs/architecture.md` "Trajectory prediction" (milestone 3''s form as built, the measured budget, citing `decision 116`), "Testing" → "Prediction", "Files in load order".', '2026-10-15T07:41:07Z', NULL, 172, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (199, 25, 'Closest approach and relative nodes', 'work', 'open', NULL, NULL, 'Piece 5 of `plan 25: Predicted trajectories, targets and target holds` (read its "The prediction" section: events and queries). Needs `task 198: The prediction of milestone 3: horizons, the plan, the target buffer and the budget` (target buffer, event values). Follows `decision 116: Prediction in milestone 3: horizon, target nodes, closest approach, relative nodes, budget`. Files: `src/prediction.lisp`, `tests/prediction.lisp`, `docs/architecture.md`, `docs/design.md`, `AGENTS.md`.
+
+## What
+- `:closest-approach` at each local minimum of the range (r_rel · v_rel from − to +), bisected on both Hermites to 1e-6 s, value the distance.
+- `:relative-ascending` / `:relative-descending` at sign changes of r · (r_T × v_T)^, bisected likewise, only where the planes are ≥ `*relative-node-min-inclination*` 0.01° apart.
+- Queries: `(prediction-closest-approach pred)` → (values time distance) of the least local minimum after the flown t, or nil; `(prediction-relative-node pred kind)`.
+
+## Tests
+- Closest approach against a brute-force scan (stored ship path and the target''s Kepler state every 1/16 s over two periods): Fulmar Depot from the start orbit (two-body), Tern Station after a 5 m/s radial burn; time within 0.05 s, distance within 1e-3 relative or 1 m.
+- Co-orbital target 1 km ahead on the same orbit: no local minimum, `prediction-closest-approach` nil.
+- Relative nodes: a target on the start orbit turned 1° in Ω (two-body): nodes at the planes'' line within 1e-3 s of Kepler, alternating; the coplanar start state with Tern Station: no node events.
+- Events stay ordered and are dropped once the flown t passes them.
+
+## Done when
+- Tests pass, within the plan''s ~1.5 s share; `nix build` and `scripts/test` pass.
+- `docs/architecture.md` "Trajectory prediction" lists the events and queries as built, "Testing" → "Prediction"; `docs/design.md` "Instruments and how each is drawn" (TARGET''s "CA" reads `prediction-closest-approach`); `AGENTS.md` "Layout" (`prediction.lisp`''s target, closest approach and nodes).', '2026-10-15T07:41:08Z', NULL, 172, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (200, 25, 'Plan 25''s Done when: targets, holds, burns and prediction live and headless', 'work', 'open', NULL, NULL, 'The "Done when" of `plan 25: Predicted trajectories, targets and target holds`, after its five pieces (`task 195` … `task 199`). Files: whatever the check finds; `docs/architecture.md`, `docs/design.md`, `AGENTS.md`.
+
+## What
+- In the running game (`./sly play` or `nix run`): ] [ \ cycle and clear the targets, 7–0 point the ship at Tern Station and along the relative velocity; close the window, stop processes by PID.
+- Headless: confirm the tests show a burn plan set in the sim flown and predicted bit for bit, closest approach and relative nodes within the plan''s bounds, inside the per-frame budget.
+- Measure this plan''s tests together (≲ 1.5 s) and `scripts/test` (near ~15 s); record in `docs/architecture.md` "Testing".
+- Check the plan''s docs list: `docs/architecture.md` ("Files in load order", "The clock", "Trajectory prediction", "Checkpoints", "Testing" → "Controls", "Prediction"), `docs/design.md` ("Controls", "Control modes", "Instruments", citing `decision 114: Targets and target holds in the sim`, `decision 115: Planned burns as scheduled controls in the sim`, `decision 116: Prediction in milestone 3: horizon, target nodes, closest approach, relative nodes, budget`), `AGENTS.md` ("Run": ] [ \ and 7–0; "Layout").
+- Small gaps fixed here; larger ones a follow-up task in this plan.
+
+## Done when
+- `nix build` and `scripts/test` pass; the docs above match what was built.', '2026-10-15T07:41:08Z', NULL, 172, 0);
 
 INSERT INTO decision (id, subject, status, options, body, answer, reason, created_at, closed_at, created_by_task, signoff, kind, decided_by_task, consequences) VALUES (1, 'How the game consumes luv', 'answered', '[]', 'Findings of `task 17: Build and run luv''s programs and test suite; record the runs` (docs/luv-capabilities.md, Packaging and Runs).
 - luv''s flake exports apps, devShells, packages and lib; lib has only environmentFor, which returns everything the packaging needs (pkgs, lisp, applicationEnvironment/Packages, developmentEnvironmentHook, slynkSource, swashPackage, …). No overlays.
@@ -5432,6 +5542,7 @@ INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, b
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (168, 169, '2026-10-15T07:30:23Z', '2026-10-15T07:37:26Z', 'done', NULL, 0, '5603b1a1ca1f3575fa838dd6e01bc771fb859ac6', 'claude-opus-5-5[1m]', '71bcd4ce-94cc-4ce6-a921-79b0f250029e', 26, 52, 37151, 2427227, 133456, 2.2963214000000005, 2373073);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (169, 170, '2026-10-15T07:37:26Z', '2026-10-15T07:38:18Z', 'done', NULL, 0, '367bd2dee5c50663b9c121831def2a53df9137b5', 'claude-opus-5-5[1m]', 'ac8ce3bb-fec5-4743-bc85-a0c0b3cbe639', 5, 10, 5800, 176251, 36668, 0.4446342, 2373073);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (170, 171, '2026-10-15T07:38:18Z', '2026-10-15T07:39:52Z', 'done', NULL, 0, '22463ffb3bc5ffdfa18868694d2eb3a9b6af7eb7', 'claude-opus-5-5[1m]', '49053538-c4cf-44f1-ac82-270517344bde', 9, 18, 10268, 432561, 52316, 0.7104722, 2373073);
+INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (171, 172, '2026-10-15T07:39:52Z', '2026-10-15T07:41:17Z', 'done', NULL, 0, '7ad97fa0e2674b783ba63ca5c85cb0a64839c74b', 'claude-opus-5-5[1m]', 'ce42fafc-b0cf-4d5c-92c3-0c67a0347f1a', 9, 18, 9429, 420999, 49497, 0.6688278, 2373073);
 
 INSERT INTO task_decision (task_id, decision_id) VALUES (44, 28);
 INSERT INTO task_decision (task_id, decision_id) VALUES (44, 45);

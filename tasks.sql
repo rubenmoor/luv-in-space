@@ -4855,9 +4855,9 @@ tasks for what the plan asks beyond them. A task that writes a plan gets `--kind
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (172, 25, 'create tasks for plan 25: Predicted trajectories, targets and target holds', 'split', 'done', 1000, '2026-10-15, tasks 195-200', 'Split `plan 25: Predicted trajectories, targets and target holds` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
 done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
 tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-15T06:22:33Z', '2026-10-15T07:41:10Z', 159, 0);
-INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (173, 26, 'create tasks for plan 26: Autopilot: planner, orbit manoeuvres, execution and safety', 'split', 'open', 1000, NULL, 'Split `plan 26: Autopilot: planner, orbit manoeuvres, execution and safety` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (173, 26, 'create tasks for plan 26: Autopilot: planner, orbit manoeuvres, execution and safety', 'split', 'done', 1000, '2026-10-15, tasks.sql: tasks 201-206; no new decisions (decision 117, decision 118 cover the plan)', 'Split `plan 26: Autopilot: planner, orbit manoeuvres, execution and safety` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
 done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
-tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-15T06:31:14Z', NULL, 160, 0);
+tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-15T06:31:14Z', '2026-10-15T07:42:50Z', 160, 0);
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (174, 27, 'create tasks for plan 27: Autopilot: rendezvous, phasing, clear approaches and station-keeping', 'split', 'open', 1000, NULL, 'Split `plan 27: Autopilot: rendezvous, phasing, clear approaches and station-keeping` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
 done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
 tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-15T06:39:29Z', NULL, 161, 0);
@@ -5203,6 +5203,111 @@ INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, crea
 
 ## Done when
 - `nix build` and `scripts/test` pass; the docs above match what was built.', '2026-10-15T07:41:08Z', NULL, 172, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (201, 26, 'Autopilot burns and first guesses', 'work', 'open', NULL, NULL, 'Piece 1 of `plan 26: Autopilot: planner, orbit manoeuvres, execution and safety` (read its "Burns" and "First guesses" sections). Follows `decision 117: Autopilot in milestone 3: planning jobs, goal measures, burns, execution rules in the step, trims`, `decision 31: Warp choices within the time-warp rules` (lead time), `decision 70: Flight computer: per-step control laws, holds and the RCS mixer` (slew). Stands on `task 197: Planned burns in the sim` (`planned-burn`, `burn-plan`) and `task 199: Closest approach and relative nodes` (relative nodes). Files: `src/autopilot.lisp` (new, after `prediction.lisp`, before `flights.lisp`), `src/controls.lisp`, `luv-in-space.asd`, `tests/autopilot.lisp` (new, after `tests/prediction.lisp`), `docs/architecture.md`, `AGENTS.md`.
+
+## What
+- `burn-plan` gains: preset, goal, goal orbit (an `orbit` for the map), reserve (m/s and kg), per burn the shot''s post-cut state (t, r, v) and Isp; still read-only, shared by copies.
+- `(finite-burn node-t dv-vec mass &key isp thrust)`: t = m₀ (1 − e^(−Δv / v_e)) / ṁ (`docs/design.md` "Mass budget and Δv"); full throttle unless under 10 s at full, then the throttle that makes 10 s, floor 0.1; under 0.5 m/s the RCS along ±x (1,780 N, 360 s, `rcs-translation-capability`), the sign keeping the nose within 90° of the coast hold''s direction; start = node − t_burn / 2 on the 1/64 s grid.
+- Attitude: nose along Δv (against it for an RCS −1 burn), cab (−z) radial out at the node, towards the normal when Δv is within 10° of radial; body → inertial quaternion.
+- Slew estimate: bang-bang time at 80 % of the stack''s couple about the rotation axis, ≤ 5°/s, from the previous burn''s attitude or the coast hold''s at hold-at; hold-at = start − max(60 s, slew + 10 s).
+- Propellant per burn by the rocket equation at the mass after the earlier burns (engine 449.7 s, RCS 360 s); reserve max(2 % of the plan''s Δv, 20 m/s) in kg at the end mass.
+- The five first guesses from the snapshot''s osculating elements and its coast shot''s apsis/node times (nodes ≥ snapshot t + 120 s + half burn + lead, else the next): circularise (`:circularise`), set Ap / Pe (`:apsis` at the opposite apsis), Hohmann (`:departure`, `:circularise`; merged plane change at the larger radius), change plane (`:plane`, 2 v sin(Δi/2) at the cheaper node: equatorial nodes for an inclination, relative nodes for the target''s plane; "NO TARGET" without one).
+
+## Tests (`tests/autopilot.lisp`, cheap)
+- Hohmann 400 → 800 km Δv = vis-viva closed form within 1e-9 relative.
+- Durations 56 m/s wet ≈ 20 s, 100 m/s with 50 t ≈ 83 s, within 0.5 s; 2 m/s at the throttle making 10 s; 0.3 m/s retrograde on the RCS with the no-slew sign; start + duration/2 = node within one tick.
+- Attitude nose along Δv within 1e-12, cab radial out.
+- Slew 180° wet ~40 s and with 100 t ~59 s within 2 s; lead max(60 s, slew + 10 s).
+- Plane change 2 v sin(Δi/2) at the node at the larger radius on an e = 0.1 orbit; reserve floor 20 m/s below 1,000 m/s.
+
+## Done when
+- Tests pass; `nix build` and `scripts/test` pass.
+- `docs/architecture.md` "Files in load order" lists `autopilot.lisp` as built (and `controls.lisp`''s new fields); `AGENTS.md` "Layout" names it.', '2026-10-15T07:42:42Z', NULL, 173, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (202, 26, 'Autopilot planning job, shooting and the orbit manoeuvres', 'work', 'open', NULL, NULL, 'Piece 2 of `plan 26: Autopilot: planner, orbit manoeuvres, execution and safety` (read "Shooting and goal measures" and the refusals). Follows `decision 117: Autopilot in milestone 3: planning jobs, goal measures, burns, execution rules in the step, trims` and `decision 116: Prediction in milestone 3: horizon, target nodes, closest approach, relative nodes, budget` (work units). After the piece "Autopilot burns and first guesses". Files: `src/autopilot.lisp`, `src/prediction.lisp`, `tests/autopilot.lisp`, `tests/prediction.lisp`, `docs/design.md`, `docs/architecture.md`.
+
+## What
+- `prediction.lisp`: a time horizon `:until` for shots.
+- A shot: `sim-assign!` of a preallocated copy of the snapshot, `sim-plan` the candidate, run by the job''s own `prediction` until the last cut + one osculating period at `*prediction-level*` (×4 during an RCS burn); same step function as the flight.
+- Newton over each burn''s Δv in its node''s LVLH axes (T, N, R), finite-difference Jacobian (one shot per parameter), minimum-norm step, times re-centred each iteration, ≤ 8 iterations else "NOT CONVERGED".
+- Goal measures after the last cut: Ap/Pe the largest/smallest |r| over the period within max(0.1 % of goal radius, 1 km) (circularise: both at the burn apsis''s coast radius; set Ap/Pe: the other kept at its coast value; Hohmann: both at the goal); inclination the mean osculating value within 0.01°; target plane the angle of mean unit h vs the target''s h at the middle within 0.01°.
+- `autopilot-job` (snapshot, preset, goal, stage `:coast` `:guess` `:iterate` `:check` `:done` `:refused`, iteration, Jacobian column, best plan), preallocated; `(autopilot-job-work! job budget)` ≤ budget units, returns the stage; `(autopilot-plan-now sim preset goal)`. A plan conses only its result.
+- Refusals at `:check`: "BELOW 150 KM", "TOO NEAR THE MOON", "NEEDS <n> KG", "NOT IN EARTH ORBIT", "GOAL OUT OF RANGE".
+
+## Tests (this part ≲ 1.5 s total; `:point`, `:j2` for plane cases, one `:full`)
+- From the start state: circularise after a 50 m/s prograde kick; set Ap 1,000 km; set Pe 300 km from 400 × 1,000 km; Hohmann 400 → 800 km (once also at `:full`); Hohmann with INC 89.5°; plane 89°; the target''s plane (Tern Station''s turned 1° in Ω by a crafted object). Each plan flown by `sim-step!` at ×1,000 and ×100 meets its goal measure; Δv within 3 % of the impulsive figure.
+- The job split into 300-unit calls is `equalp` to `autopilot-plan-now`; work per call ≤ budget.
+- Refused: 120 km goal passed to the job ("BELOW 150 KM"), 300 kg for 400 → 2,000 km ("NEEDS <n> KG"), plane TARGET without a target, 400,000 km ("GOAL OUT OF RANGE").
+- A benchmark form in a comment of `tests/autopilot.lisp` (not in `scripts/test`) measures the time per plan; record it in `docs/architecture.md` "Testing".
+
+## Done when
+- Tests pass; `nix build` and `scripts/test` pass.
+- `docs/design.md` "The autopilot" (goal measures, labels, refusals as built); `docs/architecture.md` "Trajectory prediction" (shots with `:until`), "Waits and expectations" names the labels `:circularise`, `:apsis`, `:plane` (`decision 56: Flight-script actions, start states and the quest play-through`).', '2026-10-15T07:42:42Z', NULL, 173, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (203, 26, 'Autopilot execution and safety in the step', 'work', 'open', NULL, NULL, 'Piece 3 of `plan 26: Autopilot: planner, orbit manoeuvres, execution and safety` (read "Execution in the step"; the measurement and replans are piece 5). Follows `decision 117: Autopilot in milestone 3: planning jobs, goal measures, burns, execution rules in the step, trims`, `decision 112: Grapple, stack and berth in the sim: state, notices to the clock, the latest checkpoint`, `decision 73: Warp levels above x4: entry, holds and lowering`, `decision 85: Minimal readout: layout, formats, colours and alarms`. After the planning-job piece. Files: `src/clock.lisp`, `src/prediction.lisp`, `src/overlay.lisp`, `tests/clock.lisp`, `tests/overlay.lisp`, `docs/architecture.md`, `docs/design.md`.
+
+## What
+- In `sim-step-ticks!` right after `plan-step-controls!` (and after the contact responses): unsafe burn ("UNSAFE ORBIT": periapsis after cutting now ≥ R_crash + 25 km but after the remaining Δv impulsively along the thrust axis below it); propellant ("PROPELLANT LOW": m_p < remaining burns'' propellant + half the reserve); attitude (> 5° off: cut, `:holding`, resume with the remaining Δv once settled, cut-off re-armed; second time "ATTITUDE ERROR"); contact (capture/bounce → "CONTACT", latch "LATCHED", berth "BERTHED"). Nothing per frame.
+- `autopilot-engage!` (plan, cursor burn 0 `:pending`, prograde coast hold, retries and replans 0), `autopilot-disengage!` ("AUTOPILOT OFF" / "AUTOPILOT OFF: PILOT INPUT" via `clock-message!`), the abort (throttle 0, keys released, rate damping, `sim-plan` nil, notice "AUTOPILOT ABORT: <reason>"); the clock''s model keeps the plan for the map. The cursor''s added fields `sim-plan-retries`, `sim-plan-replans`.
+- Completion: after the last cut `:done`, coast hold, notice "AUTOPILOT: PLAN COMPLETE", `checkpoint-request`, disengaged.
+- Warp: RCS burn caps at ×4 ("WARP ×4: RCS BURN", refusal "WARP REFUSED: RCS BURN, LIMIT ×4") in `clock-check-level!`; engine burns keep ×100; the next hold-at is a `:burn` drop-out event from `sim-plan` ("WARP ×L: BURN IN <duration>", ×1 at hold-at). The autopilot never changes warp itself.
+- Readout MODE "AUTOPILOT" before the hold while engaged; the texts'' glyphs exist.
+- `clock-autopilot` slot (the model''s struct comes in piece 4; a minimal holder for the shown plan is fine here if needed).
+
+## Tests
+- Hohmann plan engaged and flown through `clock-frame!` from ×1,000,000: every step before hold-at Δ ≥ 3 s × level (less 0.05 s), ×1 at hold-at, ≤ ×100 while the engine burns, ≤ ×4 with its message during a 0.3 m/s RCS burn.
+- Completion: one checkpoint (throttle off, safe), "AUTOPILOT: PLAN COMPLETE" once.
+- Propellant drained mid-burn → "PROPELLANT LOW" at that step; yaw rate 0.1 rad/s at ×1 → cut, resume, second → "ATTITUDE ERROR"; a retrograde plan to a 110 km periapsis → "UNSAFE ORBIT" at the first failing step, periapsis then ≥ 125 km; a bounce notice → "CONTACT".
+- Every abort: throttle 0, keys released, rate damping, `sim-plan` nil, `t` on the grid.
+- Through `copy-sim` and a checkpoint restore bit for bit; 10,000 coasting steps engaged before hold-at cons nothing.
+
+## Done when
+- Tests pass; `nix build` and `scripts/test` pass.
+- `docs/architecture.md` "The clock", "Time warp" (drop-out, RCS cap, texts), "Checkpoints" (cursor fields, the completed plan''s checkpoint); `docs/design.md` "Time warp" (texts), "The autopilot" ("Interrupting", safety rules as built), "Instruments" (MODE "AUTOPILOT").', '2026-10-15T07:42:42Z', NULL, 173, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (204, 26, 'Autopilot menu, input and frame-spread planning', 'work', 'open', NULL, NULL, 'Piece 4 of `plan 26: Autopilot: planner, orbit manoeuvres, execution and safety` (read "The menu and input" and "Jobs, the barrier and the budget"). Follows `decision 118: Autopilot preset menu and input in milestone 3`, `decision 117: Autopilot in milestone 3: planning jobs, goal measures, burns, execution rules in the step, trims`, `decision 81: Input in milestone 2: held keys per frame, taps, gating and the shared key map`, `decision 29: Control scheme: key map, control modes, gamepad`. After the execution piece. Files: `src/autopilot.lisp`, `src/clock.lisp`, `src/prediction.lisp`, `src/input.lisp`, `tests/autopilot.lisp`, `tests/input.lisp`, `tests/clock.lisp`, `docs/design.md`, `AGENTS.md`.
+
+## What
+- `autopilot-model` in `clock-autopilot` (not in the sim or checkpoints): open flag, rows (a list of row definitions so `task 161` can append "RENDEZVOUS <PLACE>"), selection, values, job, shown plan, state (`:closed` `:menu` `:planning` `:shown` `:refused` `:engaged` `:off`) and its text. Rows, defaults and ranges per `decision 118`.
+- `autopilot-key!` (`:open` `:up` `:down` `:left` `:right` `:return` `:backspace`), `autopilot-held!` (real time: one step at the press, 8/s held, ×10 after 1 s); Return plans, a second Return engages; after a disengage or abort Return re-plans and engages when shown; Backspace per `decision 118`.
+- `(autopilot-menu-lines model sim)`; `(autopilot-plan-summary plan sim)` (burns, current index, total Δv, propellant needed and left, time to next burn, its Δv and duration, arrival), pure, consing only its result.
+- Clock: `*plan-barrier*` (sim stops at snapshot t + 60 s while a job runs, accumulator clamped, warp unchanged); `clock-frame!` gives the prediction ≤ half of `*prediction-work-per-frame*` while a job runs, the job the rest; staleness at engagement → "PLAN STALE: REPLANNING", new job, engaged when shown.
+- `input.lisp`: O, Up, Down, Left, Right, Return (keeps `:restart` while lost), Backspace in `*key-map*`; gating (acts paused and at any warp, not lost, not while a flight runs); while engaged no held keys, no ramp; a new flight-key press disengages ("AUTOPILOT OFF: PILOT INPUT") and acts that frame; the title gains "O autopilot".
+
+## Tests (synthetic events)
+- O, Down, Down, Right ×3 → "SET PE" +30 km; Right held 1.5 s at 60 Hz → the repeat rule''s step count, ×10 after 1 s.
+- Return → `:planning`, frames → `:shown`, plan `equalp` to `autopilot-plan-now` from the same snapshot; the sim never passes snapshot t + 60 s planning at ×1,000,000; second Return → engaged.
+- W pressed → disengaged with "AUTOPILOT OFF: PILOT INPUT", W acting that frame; held keys never reach the controls while engaged (the executor''s RCS key survives a held J); Backspace in each state.
+- Shown, then warped past hold-at − 10 s → "PLAN STALE: REPLANNING" and a new plan.
+- Gating: paused acts, lost ignored, flight running ignored.
+- The Hohmann plan''s summary (2 burns, total Δv, propellant, left, arrival) against its burns.
+
+## Done when
+- Tests pass; `nix build` and `scripts/test` pass.
+- `docs/design.md` "Controls" (keys, gating, title), "The autopilot" ("Picking a preset" as built); `docs/architecture.md` "The clock" (barrier, the job''s share), "Trajectory prediction" (split budget); `AGENTS.md` "Commands" → "Run" (O, Up/Down, Left/Right, Return, Backspace).', '2026-10-15T07:42:42Z', NULL, 173, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (205, 26, 'Autopilot measurement, replans and trims', 'work', 'open', NULL, NULL, 'Piece 5 of `plan 26: Autopilot: planner, orbit manoeuvres, execution and safety` (read the "Measurement at each cut" bullet). Follows `decision 117: Autopilot in milestone 3: planning jobs, goal measures, burns, execution rules in the step, trims`. After the menu piece (the clock''s job machinery). Files: `src/clock.lisp`, `src/autopilot.lisp`, `tests/clock.lisp`, `tests/autopilot.lisp`, `docs/design.md`, `docs/architecture.md`.
+
+## What
+- At each cut, in the step: |v − v_shot(t_cut)| (the burn''s stored post-cut state by Kepler to the actual cut time) over max(0.2 m/s, 1 % of the burn''s Δv) → phase `:replan` with the cut time.
+- The clock starts a job from that step''s sim re-shooting the remaining burns; after the last leg one `:trim` burn, only when the goal measure misses; the result installed at exactly the cut + 60 s in every mode (headless, frames, flights), via the barrier.
+- At most 2 replans, then "AUTOPILOT: GOAL MISSED" and disengaged.
+
+## Tests
+- Hohmann at ×1 with the first burn''s attitude turned 3° in a crafted plan → `:replan` at its cut, the new plan installed at exactly t_cut + 60 s headless and through `clock-frame!` with frames, `equalp` in both; goal met after the second burn.
+- A last burn crafted to miss its goal by 0.5 % → one `:trim` burn, goal met; an error under the threshold → no replan; a third error → "AUTOPILOT: GOAL MISSED".
+- Determinism: the run twice gives `equalp` sims.
+
+## Done when
+- Tests pass; `nix build` and `scripts/test` pass.
+- `docs/design.md` "The autopilot" (measurement and trims as built); `docs/architecture.md` "Testing" gains "Autopilot" with every test of this plan and its bound.', '2026-10-15T07:42:42Z', NULL, 173, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (206, 26, 'Plan 26''s Done when: orbit manoeuvres by autopilot headless and live', 'work', 'open', NULL, NULL, 'The "Done when" of `plan 26: Autopilot: planner, orbit manoeuvres, execution and safety`, after its five pieces (`task 201` … `task 205`). Files: whatever the check finds; `docs/architecture.md`, `docs/design.md`, `AGENTS.md`.
+
+## What
+- Headless: confirm the tests plan each `milestone 3` orbit manoeuvre (circularise, set Ap, set Pe, change orbit with and without a plane change, change plane by inclination and to the target''s plane) from the start orbit, fly it through the clock and meet the goal within `decision 117: Autopilot in milestone 3: planning jobs, goal measures, burns, execution rules in the step, trims`''s tolerances with Δv within 3 % of impulsive; refusals for the 150 km floor and the propellant; every abort rule firing at its step. Add a missing case.
+- In the running game (`./sly play` or `nix run`): O opens the presets, Return plans, a second Return engages; the ship slews, burns and cuts by itself while warping; Backspace and a flight key give control back. Take a `./sly screenshot` to check the MODE text and messages; close the window, stop processes by PID.
+- Measure this plan''s tests together (≲ 1.5 s) and `scripts/test` (near ~15 s); record in `docs/architecture.md` "Testing".
+- Check the plan''s docs list ("Docs and `AGENTS.md`" in the plan) matches what was built.
+- Small gaps fixed here; larger ones a follow-up task in this plan.
+
+## Done when
+- `nix build` and `scripts/test` pass; the docs above match what was built.', '2026-10-15T07:42:42Z', NULL, 173, 0);
 
 INSERT INTO decision (id, subject, status, options, body, answer, reason, created_at, closed_at, created_by_task, signoff, kind, decided_by_task, consequences) VALUES (1, 'How the game consumes luv', 'answered', '[]', 'Findings of `task 17: Build and run luv''s programs and test suite; record the runs` (docs/luv-capabilities.md, Packaging and Runs).
 - luv''s flake exports apps, devShells, packages and lib; lib has only environmentFor, which returns everything the packaging needs (pkgs, lisp, applicationEnvironment/Packages, developmentEnvironmentHook, slynkSource, swashPackage, …). No overlays.
@@ -5543,6 +5648,7 @@ INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, b
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (169, 170, '2026-10-15T07:37:26Z', '2026-10-15T07:38:18Z', 'done', NULL, 0, '367bd2dee5c50663b9c121831def2a53df9137b5', 'claude-opus-5-5[1m]', 'ac8ce3bb-fec5-4743-bc85-a0c0b3cbe639', 5, 10, 5800, 176251, 36668, 0.4446342, 2373073);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (170, 171, '2026-10-15T07:38:18Z', '2026-10-15T07:39:52Z', 'done', NULL, 0, '22463ffb3bc5ffdfa18868694d2eb3a9b6af7eb7', 'claude-opus-5-5[1m]', '49053538-c4cf-44f1-ac82-270517344bde', 9, 18, 10268, 432561, 52316, 0.7104722, 2373073);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (171, 172, '2026-10-15T07:39:52Z', '2026-10-15T07:41:17Z', 'done', NULL, 0, '7ad97fa0e2674b783ba63ca5c85cb0a64839c74b', 'claude-opus-5-5[1m]', 'ce42fafc-b0cf-4d5c-92c3-0c67a0347f1a', 9, 18, 9429, 420999, 49497, 0.6688278, 2373073);
+INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (172, 173, '2026-10-15T07:41:17Z', '2026-10-15T07:42:59Z', 'done', NULL, 0, '952afa9419f789c6074a5224fc79e792d00c0c01', 'claude-opus-5-5[1m]', '59d10ef9-53a2-4762-b622-d93c76b4f060', 8, 16, 9461, 376800, 51796, 0.679012, 2373073);
 
 INSERT INTO task_decision (task_id, decision_id) VALUES (44, 28);
 INSERT INTO task_decision (task_id, decision_id) VALUES (44, 45);

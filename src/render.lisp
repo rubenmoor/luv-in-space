@@ -107,6 +107,7 @@ not below t or the sim is lost. Conses nothing; OUT."
 (defconstant +frame-uniform-floats+ 116 "shaders.lisp's frame block: 29 vec4s.")
 (defconstant +impostor-uniform-index+ 48 "The Sun's block, the Moon's, Earth's, the halo's.")
 (defconstant +halo-dusk-index+ 112)
+(defparameter *marker-max-vertices* 12288 "Capacity of the map markers' overlay buffer.")
 
 (defclass frame-renderer (renderer)
   ((context :initarg :context :reader frame-renderer-context)
@@ -147,8 +148,6 @@ not below t or the sim is lost. Conses nothing; OUT."
                                                           :initial-element 0f0)
              :reader frame-renderer-uniforms)
    (eye :initform (make-vec3) :reader frame-renderer-eye)))
-
-(defparameter *marker-max-vertices* 12288 "Capacity of the map markers' overlay buffer.")
 
 (defmethod initialize-instance :after ((renderer frame-renderer) &key)
   (let ((floats (overlay-buffer-floats (frame-renderer-marker-overlay renderer))))

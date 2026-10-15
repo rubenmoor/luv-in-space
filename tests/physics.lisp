@@ -349,6 +349,26 @@ angular momentum compared in inertial axes."
       (true (< consed 1024) "~D bytes" consed))
     (is equalp a b)))
 
+(define-test rk4-shared-third-bodies
+  ;; The step's Moon and Sun read once and shared (decision 110: Objects in
+  ;; the simulation: places.lisp's load position, the object struct and
+  ;; promotion checks): bit for bit the same, integrated and kinematic.
+  (let ((force (lis::vec3 1000d0 0 0))
+        (torque (lis::vec3 10d0 -20d0 5d0))
+        (inverse (lis::mat3-inverse-symmetric *test-inertia*))
+        (buffer (lis::make-third-bodies)))
+    (dolist (attitude-fn (list nil #'prograde-attitude))
+      (let ((a (leo-state)) (b (leo-state)) (time (lis::start-t)))
+        (dotimes (i 200)
+          (let ((h (if (evenp i) lis::+fine-step+ 2d0)))
+            (lis::rk4-step! a h time :full force torque 0.3d0 8000d0 *test-inertia* inverse
+                            attitude-fn)
+            (lis::third-bodies-step-into! buffer time h)
+            (lis::rk4-step! b h time :full force torque 0.3d0 8000d0 *test-inertia* inverse
+                            attitude-fn buffer)
+            (incf time h)))
+        (is equalp a b)))))
+
 ;;; Objects and rails (docs/architecture.md "Rails", "Rails, orbits and
 ;;; frames", "Removal of objects").
 

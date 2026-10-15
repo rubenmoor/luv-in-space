@@ -161,3 +161,15 @@ mm; TENSOR (2/5) m r² of it; BOUND the pin + 0.8d0 m."
 (defun place (key)
   (or (find key *places* :key #'place-key)
       (error "No place ~S." key)))
+
+(defun place-target-state-into! (r v place sim)
+  "PLACE's state at SIM's t into R, V (m, m/s, Earth-centred): its object's
+(object-state-into!; nil when removed) or the drop point's rails. True or
+nil."
+  (let ((time (sim-t sim)))
+    (if (place-object place)
+        (let ((q (make-quat)) (w (make-vec3)))
+          (declare (dynamic-extent q w))
+          (and (object-state-into! r v q w (sim-object sim (place-object place)) time) t))
+        (progn (rails-state-into! r v (rails-segment-at (place-rails place) time) time)
+               t))))

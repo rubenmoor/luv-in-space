@@ -105,6 +105,31 @@ into a. MODEL: :none, :point (μ⊕), :j2 (with J2, pole along ICRF z),
          (third-bodies-into! moon sun time))
        (earth-gravity-into! a r model moon sun)))))
 
+;;; One step's third bodies, read once and shared by the ship's and the
+;;; promoted objects' rk4-step!s (decision 110): the Moon and the Sun at t
+;;; (0–5), t + h/2 (6–11) and t + h (12–17).
+
+(deftype third-bodies () '(simple-array double-float (18)))
+
+(defun make-third-bodies () (make-array 18 :element-type 'double-float :initial-element 0d0))
+
+(declaim (inline third-bodies-step-into!))
+
+(defun third-bodies-step-into! (buffer time h)
+  "The Moon and the Sun at TIME, TIME + h/2 and TIME + h into BUFFER; BUFFER."
+  (declare (type third-bodies buffer) (type double-float time h))
+  (let ((moon (make-vec3)) (sun (make-vec3)) (h/2 (* 0.5d0 h)))
+    (declare (dynamic-extent moon sun))
+    (flet ((at! (start time)
+             (third-bodies-into! moon sun time)
+             (replace buffer moon :start1 start)
+             (replace buffer sun :start1 (+ start 3))))
+      (declare (inline at!))
+      (at! 0 time)
+      (at! 6 (+ time h/2))
+      (at! 12 (+ time h)))
+    buffer))
+
 ;;; The coarse step rule (docs/architecture.md "Integrator"); the fine step
 ;;; is +fine-step+.
 
@@ -175,7 +200,7 @@ when THRUSTING."
 (declaim (sb-ext:maybe-inline rk4-step!))
 
 (defun rk4-step! (state h time model force-body torque-body mdot m-dry
-                  inertia inertia-inverse &optional attitude-fn)
+                  inertia inertia-inverse &optional attitude-fn third-bodies)
   "Advance STATE by h from TIME: classical RK4 on r, v, q, ω and m_p, the
 body force (N), torque (N m) and mass flow (kg/s) held over the step, the
 mass m-dry + m_p, the inertia tensor about the CoM and its inverse (body
@@ -184,10 +209,13 @@ scaled so the tanks empty exactly at the step's end. With ATTITUDE-FN,
 called as (attitude-fn q-out w-out time-cell r v) to write the attitude and
 the frame's rate (inertial axes) at the time in time-cell (a one-element
 double array, so nothing is boxed), attitude is kinematic: q comes from it
-at each stage, torque is ignored, q and ω are set from it at t + h."
+at each stage, torque is ignored, q and ω are set from it at t + h. With
+THIRD-BODIES (third-bodies-step-into! of this TIME and h) :full reads the
+Moon and the Sun from it, bit for bit the same as without."
   (declare (optimize speed) (type ship-state state) (type double-float h time mdot m-dry)
            (type vec3 force-body torque-body) (type mat3 inertia inertia-inverse)
-           (type keyword model) (type (or null function) attitude-fn))
+           (type keyword model) (type (or null function) attitude-fn)
+           (type (or null third-bodies) third-bodies))
   (let* ((m-p0 (ship-state-m-p state))
          (scale (cond ((<= m-p0 0d0) 0d0)
                       ((> (* mdot h) m-p0) (/ m-p0 (* mdot h)))
@@ -219,10 +247,18 @@ at each stage, torque is ignored, q and ω are set from it at t + h."
     (replace y (ship-state-w state) :start1 10)
     (setf (aref y 13) m-p0)
     (when (eq model :full)
-      (let ((h/2 (* 0.5d0 h)))
-        (third-bodies-into! moon0 sun0 time)
-        (third-bodies-into! moon1 sun1 (+ time h/2))
-        (third-bodies-into! moon2 sun2 (+ time h))))
+      (if third-bodies
+          (flet ((from! (moon sun start)
+                   (replace moon third-bodies :start2 start)
+                   (replace sun third-bodies :start2 (+ start 3))))
+            (declare (inline from!))
+            (from! moon0 sun0 0)
+            (from! moon1 sun1 6)
+            (from! moon2 sun2 12))
+          (let ((h/2 (* 0.5d0 h)))
+            (third-bodies-into! moon0 sun0 time)
+            (third-bodies-into! moon1 sun1 (+ time h/2))
+            (third-bodies-into! moon2 sun2 (+ time h)))))
     (flet ((derivative! (k y time moon sun)
              (declare (type state-vector k y) (type double-float time) (type vec3 moon sun))
              (vec3-set! r (aref y 0) (aref y 1) (aref y 2))
@@ -447,6 +483,8 @@ is nil."
   (+ (orbit-raan (rails-segment-orbit segment))
      (* (rails-segment-raan-rate segment) (- time (rails-segment-start segment)))))
 
+(declaim (sb-ext:maybe-inline rails-state-into!))
+
 (defun rails-state-into! (r v segment time)
   "Write the state on SEGMENT at TIME (m, m/s, around its body) into R and V;
 R. Conses nothing."
@@ -483,6 +521,8 @@ R. Conses nothing."
         (setf (aref r i) (+ (* x (aref pv i)) (* y (aref qv i)))
               (aref v i) (+ (* vx (aref pv i)) (* vy (aref qv i))))))))
 
+(declaim (inline rails-segment-at))
+
 (defun rails-segment-at (rails time)
   "The segment of RAILS containing TIME: the first ending at or after it,
 else the last."
@@ -492,6 +532,8 @@ else the last."
 
 ;;; Attitude modes (docs/design.md "Rigid bodies: attitude, mass, shapes and
 ;;; fixtures"), a pure function of the state and t, on rails and promoted.
+
+(declaim (sb-ext:maybe-inline object-attitude-into!))
 
 (defun object-attitude-into! (q w mode r v time)
   "Write the attitude of MODE at the state (R, V) and TIME into Q (body ->
@@ -572,3 +614,83 @@ one, valid only at the sim's t."
            (declare (dynamic-extent conjugate))
            (quat-rotate! w (quat-conjugate! conjugate q) w))
          t)))))
+
+;;; Promotion, demotion and the promoted step (docs/architecture.md "Rails";
+;;; decision 19: Time-warp rules, decision 110, decision 134: Objects in the
+;;; sim: the shared third-body reads, the principal-axis test and rechecks).
+;;; clock.lisp decides when.
+
+(defun object-promote! (object time)
+  "OBJECT, on rails, integrated from TIME on: its rails state and attitude
+at TIME, exact at that instant. True, or nil past its rails' crash end."
+  (declare (type object object) (type double-float time))
+  (let ((state (object-state object)))
+    (when (object-state-into! (ship-state-r state) (ship-state-v state)
+                              (ship-state-q state) (ship-state-w state) object time)
+      (setf (ship-state-m-p state) 0d0
+            (ship-state-dv state) 0d0
+            (object-status object) :promoted)
+      t)))
+
+(defparameter *spin-axis-tolerance* (deg->rad 1d0)
+  "rad: a demoted towable object's ω this close to I ω spins on rails.")
+
+(defun demotion-attitude (object time)
+  "The attitude mode OBJECT keeps on rails from TIME: a berth or fixed
+object's own; a towable object's :spin about ω (body axes) from its q at
+TIME when ω is a principal axis within *spin-axis-tolerance* (ω ∥ I ω, so
+a degenerate tensor's whole eigenspace counts), else :inertial at q."
+  (let* ((def (object-def-of object))
+         (state (object-state object))
+         (q (quat-copy (ship-state-q state)))
+         (w (ship-state-w state))
+         (rate (vec3-norm w)))
+    (if (not (eq (object-def-kind def) :towable))
+        (object-attitude object)
+        (let ((iw (mat3*vec3 (object-def-tensor def) w)))
+          (if (and (> rate 0d0)
+                   (<= (vec3-norm (vec3-cross w iw))
+                       (* (sin *spin-axis-tolerance*) rate (vec3-norm iw))))
+              (make-attitude :spin :q q :axis (vec3-scale w (/ rate)) :rate rate :epoch time)
+              (make-attitude :inertial :q q))))))
+
+(defun object-demote! (object time &optional (body :earth))
+  "OBJECT, promoted, back on rails from TIME: make-rails of its osculating
+elements around BODY (J2's rates for an Earth ellipse), its attitude mode
+by demotion-attitude."
+  (declare (type object object) (type double-float time))
+  (let ((state (object-state object)))
+    (setf (object-attitude object) (demotion-attitude object time)
+          (object-rails object) (make-rails (state->orbit (ship-state-r state) (ship-state-v state)
+                                                          (body-mu (body body)) time)
+                                            time :body body)
+          (object-status object) :rails)
+    object))
+
+(defvar *object-attitude*)
+
+(defun object-kinematic-attitude (q w time-cell r v)
+  "rk4-step!'s attitude function for a berth or fixed object: the mode
+*object-attitude*, without a closure per step."
+  (declare (optimize speed) (type quat q) (type vec3 w r v)
+           (type (simple-array double-float (1)) time-cell) (inline object-attitude-into!))
+  (object-attitude-into! q w *object-attitude* r v (aref time-cell 0)))
+
+;; Hot callers declare it inline: a full call boxes h and t.
+(declaim (sb-ext:maybe-inline object-step!))
+
+(defun object-step! (object h time model third-bodies)
+  "Advance promoted OBJECT by h from TIME under MODEL's gravity, with
+THIRD-BODIES as rk4-step! takes them: no force, torque or ṁ, its mass and
+tensor; a towable object's attitude integrated torque-free, a berth or
+fixed object's its mode's (kinematic). Conses nothing."
+  (declare (optimize speed) (type object object) (type double-float h time)
+           (type keyword model) (type (or null third-bodies) third-bodies)
+           (inline rk4-step!))
+  (let ((def (object-def-of object))
+        (zero (load-time-value (make-vec3) t))
+        (*object-attitude* (object-attitude object)))
+    (rk4-step! (object-state object) h time model zero zero 0d0 (object-def-mass def)
+               (object-def-tensor def) (object-def-tensor-inverse def)
+               (if (eq (object-def-kind def) :towable) nil #'object-kinematic-attitude)
+               third-bodies)))

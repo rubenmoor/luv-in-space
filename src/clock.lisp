@@ -8,7 +8,7 @@
 
 ;;; The simulation state
 
-(defstruct (sim (:constructor %make-sim (ship controls))
+(defstruct (sim (:constructor %make-sim (ship controls objects))
                 (:copier nil))
   (t 0d0 :type double-float)                    ; s, on the 1/64 s grid
   (body :earth :type keyword)                   ; the central body
@@ -17,18 +17,27 @@
   (model :full :type keyword)                   ; gravity-into!'s
   (cutoff nil :type (or null double-float))     ; odometer value that cuts the throttle
   (loss nil)                                    ; the loss record, immutable
-  (steps 0 :type fixnum))
+  (steps 0 :type fixnum)
+  (objects #() :type simple-vector))            ; objects, in *objects*' order
 
 (defun copy-sim (sim)
-  "A deep copy: equalp to SIM, sharing no array."
-  (sim-assign! (%make-sim (copy-ship-state (sim-ship sim)) (copy-controls (sim-controls sim)))
+  "A deep copy: equalp to SIM, sharing no array (the objects' definitions
+and immutable parts shared)."
+  (sim-assign! (%make-sim (copy-ship-state (sim-ship sim)) (copy-controls (sim-controls sim))
+                          (map 'simple-vector #'copy-object (sim-objects sim)))
                sim))
 
 (defun sim-assign! (out sim)
-  "Copy SIM into OUT, consing nothing; OUT."
+  "Copy SIM into OUT, a sim with the same objects' definitions, consing
+nothing; OUT."
   (declare (type sim out sim))
   (ship-state-assign! (sim-ship out) (sim-ship sim))
   (controls-assign! (sim-controls out) (sim-controls sim))
+  (let ((out-objects (sim-objects out)) (objects (sim-objects sim)))
+    (assert (= (length out-objects) (length objects)))
+    (loop for o across out-objects
+          for object across objects
+          do (object-assign! o object)))
   (setf (sim-t out) (sim-t sim)
         (sim-body out) (sim-body sim)
         (sim-model out) (sim-model sim)
@@ -56,9 +65,87 @@ attitude and frame rate, settled, full tanks, throttle off."
             (setf (controls-settled controls) t)
             (let ((sim (%make-sim (make-ship-state r v q (quat-rotate (quat-conjugate q) w-t)
                                                    *propellant-full*)
-                                  controls)))
+                                  controls
+                                  (map 'simple-vector #'new-object *objects*))))
               (setf (sim-t sim) time)
-              sim)))))))
+              (sim-recheck-objects! sim))))))))
+
+;;; The objects: promotion and demotion (docs/architecture.md "Rails";
+;;; decision 19: Time-warp rules, decision 110: Objects in the simulation:
+;;; places.lisp's load position, the object struct and promotion checks).
+
+(defparameter *promotion-distance* 100d3 "m; decision 19.")
+(defparameter *demotion-distance* 200d3 "m; decision 19.")
+(defparameter *promotion-closing-speed* 25d3
+  "m/s, the closing speed a rails object's next check allows; decision 110.")
+(defparameter *promotion-fast-ship* 12d3
+  "m/s: a faster ship checks every object every step; decision 110.")
+(declaim (type double-float *promotion-distance* *demotion-distance*
+               *promotion-closing-speed* *promotion-fast-ship*))
+
+(defun sim-object (sim key)
+  "SIM's object of KEY."
+  (or (find key (sim-objects sim) :key #'object-key)
+      (error "No object ~S." key)))
+
+(defun sim-update-objects! (sim)
+  "Promotion and demotion at SIM's t: a promoted object beyond
+*demotion-distance* of the ship goes back on rails; a rails object whose
+next check is due is promoted within *promotion-distance*, else its next
+check is t + (d − *promotion-distance*) / *promotion-closing-speed* rounded
+down to the grid, or t while the ship is faster than *promotion-fast-ship*.
+Conses nothing unless an object changes."
+  (declare (optimize speed) (type sim sim) (inline rails-state-into!))
+  (let* ((time (sim-t sim))
+         (ship (sim-ship sim))
+         (ship-r (ship-state-r ship))
+         (fast (> (vec3-norm (ship-state-v ship)) *promotion-fast-ship*))
+         (r (make-vec3)) (v (make-vec3)))
+    (declare (type double-float time) (dynamic-extent r v))
+    (flet ((distance (p)
+             (declare (type vec3 p))
+             (let ((dx (- (aref p 0) (aref ship-r 0)))
+                   (dy (- (aref p 1) (aref ship-r 1)))
+                   (dz (- (aref p 2) (aref ship-r 2))))
+               (sqrt (the (double-float 0d0) (+ (* dx dx) (* dy dy) (* dz dz))))))
+           (schedule! (object d)
+             (declare (type object object) (type double-float d))
+             (setf (object-next-check object)
+                   (if fast
+                       time
+                       (+ time (* +fine-step+
+                                  (the fixnum
+                                       (floor (min 1d12 (/ (max 0d0 (- d *promotion-distance*))
+                                                           (* *promotion-closing-speed*
+                                                              +fine-step+)))))))))))
+      (declare (inline distance schedule!))
+      (loop for object across (sim-objects sim)
+            do (case (object-status object)
+                 (:promoted
+                  (let ((d (distance (ship-state-r (object-state object)))))
+                    (when (> d *demotion-distance*)
+                      (object-demote! object time (sim-body sim))
+                      (schedule! object d))))
+                 (:rails
+                  (when (<= (object-next-check object) time)
+                    (let ((segment (rails-segment-at (object-rails object) time)))
+                      ;; Past a crash end: removal is hazards.lisp's.
+                      (unless (and (eq (rails-segment-end-kind segment) :crash)
+                                   (> time (rails-segment-end segment)))
+                        (rails-state-into! r v segment time)
+                        (let ((d (distance r)))
+                          (if (<= d *promotion-distance*)
+                              (object-promote! object time)
+                              (schedule! object d)))))))))))
+  sim)
+
+(defun sim-recheck-objects! (sim)
+  "Every rails object's check due now, then sim-update-objects!: the start
+state's first checks, or after the ship was placed; SIM."
+  (loop for object across (sim-objects sim)
+        when (eq (object-status object) :rails)
+          do (setf (object-next-check object) (sim-t sim)))
+  (sim-update-objects! sim))
 
 ;;; The step (decision 72)
 
@@ -122,15 +209,18 @@ ends it; changes nothing (a cut due before the step counts as made)."
 (defun sim-step-ticks! (sim level until)
   "sim-step!, returning h in 1/64 s ticks (a fixnum: nothing boxed) or nil."
   (declare (optimize speed) (type sim sim) (type fixnum level)
-           (type (or null double-float) until) (inline flight-step! step-h))
+           (type (or null double-float) until) (inline flight-step! step-h object-step!))
   (when (sim-loss sim)
     (return-from sim-step-ticks! nil))
   (let* ((ship (sim-ship sim))
          (controls (sim-controls sim))
          (time (sim-t sim))
          (coarse (> level *fine-levels-max*))
-         (r0 (make-vec3)) (v0 (make-vec3)) (q0 (make-quat)))
-    (declare (type double-float time) (dynamic-extent r0 v0 q0))
+         (model (sim-model sim))
+         (r0 (make-vec3)) (v0 (make-vec3)) (q0 (make-quat))
+         (third-bodies (make-array 18 :element-type 'double-float)))
+    (declare (type double-float time) (type keyword model)
+             (dynamic-extent r0 v0 q0 third-bodies))
     (flet ((cut! ()
              (controls-throttle-cut controls)
              (setf (sim-cutoff sim) nil)))
@@ -148,17 +238,23 @@ ends it; changes nothing (a cut due before the step counts as made)."
         (replace r0 (ship-state-r ship))
         (replace v0 (ship-state-v ship))
         (replace q0 (ship-state-q ship))
+        (when (eq model :full)
+          (third-bodies-step-into! third-bodies time h))
         (if coarse
             (let ((*hold-controls* controls))
-              (flight-step! ship controls h time (sim-model sim) #'kinematic-hold-attitude))
-            (flight-step! ship controls h time (sim-model sim)))
+              (flight-step! ship controls h time model #'kinematic-hold-attitude third-bodies))
+            (flight-step! ship controls h time model nil third-bodies))
+        (loop for object across (sim-objects sim)
+              when (eq (object-status object) :promoted)
+                do (object-step! object h time model third-bodies))
         (setf (sim-t sim) (+ time h))
         (incf (sim-steps sim))
         (let ((cutoff (sim-cutoff sim)))
           (when (or cut-after (and cutoff (>= (ship-state-dv ship) cutoff)))
             (cut!)))
         (let ((ticks (truncate (* h (/ +fine-step+)))))
-          (crash-test! sim r0 v0 q0 ticks)
+          (unless (crash-test! sim r0 v0 q0 ticks)
+            (sim-update-objects! sim))
           ticks)))))
 
 (declaim (inline sim-step!))
@@ -167,9 +263,11 @@ ends it; changes nothing (a cut due before the step counts as made)."
 72): the fine step to ×4, above it the coarse step with kinematic attitude
 (an inertial hold engaged first if no hold is), shortened to land on UNTIL
 (a grid time; one not ahead is ignored) and on the Δv cut-off, then
-flight-step! with SIM's model, then the crash test (a crash leaves SIM
-lost at the impact, hazards.lisp). Returns h, or nil for a lost sim. Hot
-callers declare it inline: a full call boxes h."
+flight-step! with SIM's model and each promoted object's object-step!
+(the Moon and the Sun read once for all), then the crash test (a crash
+leaves SIM lost at the impact, hazards.lisp), then promotion and demotion.
+Returns h, or nil for a lost sim. Hot callers declare it inline: a full
+call boxes h."
   (let ((ticks (sim-step-ticks! sim level until)))
     (and ticks (* ticks +fine-step+))))
 

@@ -248,3 +248,23 @@ decimals below 100."
     (false (lis::place-object drop))
     (is equalp (def-state (object-def* :skua-yard-3) time)
         (rails-point (lis::place-rails drop) time))))
+
+(define-test place-target-states
+  ;; An object place: its object's state at the sim's t; Skua Yard: the
+  ;; drop point's rails, Skua Yard 3's slot.
+  (let* ((sim (lis::new-game-sim))
+         (r (lis::make-vec3)) (v (lis::make-vec3))
+         (r2 (lis::make-vec3)) (v2 (lis::make-vec3)))
+    (step-sim sim 100 1000)
+    (true (lis::place-target-state-into! r v (lis::place :tern-station) sim))
+    (lis::object-state-into! r2 v2 (lis::make-quat) (lis::make-vec3)
+                             (lis::sim-object sim :tern-station) (lis::sim-t sim))
+    (is equalp r2 r)
+    (is equalp v2 v)
+    (true (lis::place-target-state-into! r v (lis::place :skua-yard) sim))
+    (lis::object-state-into! r2 v2 (lis::make-quat) (lis::make-vec3)
+                             (lis::sim-object sim :skua-yard-3) (lis::sim-t sim))
+    (is equalp r2 r)
+    (is equalp v2 v)
+    (setf (lis::object-status (lis::sim-object sim :tern-station)) :removed)
+    (false (lis::place-target-state-into! r v (lis::place :tern-station) sim))))

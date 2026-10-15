@@ -531,15 +531,16 @@ offset. Translation is always direct, the axis's torque-free force.
 ;; Hot callers declare it inline: a full call boxes h and t.
 (declaim (sb-ext:maybe-inline flight-step!))
 
-(defun flight-step! (state controls h time model &optional attitude-fn)
+(defun flight-step! (state controls h time model &optional attitude-fn third-bodies)
   "Advance STATE by h from TIME under CONTROLS: mass properties from m_p,
 flight computer (its state into CONTROLS), mixer (duties into CONTROLS),
 engine plus RCS force,
-torque and ṁ, then rk4-step!. With ATTITUDE-FN (kinematic, above ×4) the
-engine only. Conses nothing."
+torque and ṁ, then rk4-step! (with THIRD-BODIES, the step's shared Moon and
+Sun). With ATTITUDE-FN (kinematic, above ×4) the engine only. Conses
+nothing."
   (declare (optimize speed) (type ship-state state) (type controls controls)
            (type double-float h time) (type keyword model)
-           (type (or null function) attitude-fn)
+           (type (or null function) attitude-fn) (type (or null third-bodies) third-bodies)
            (inline ship-mass-properties rk4-step!))
   (let* ((com (make-vec3)) (inertia (make-mat3)) (inverse (make-mat3))
          (properties (make-mass-properties :com com :inertia inertia
@@ -576,4 +577,4 @@ engine only. Conses nothing."
             (incf (aref torque 2) (* ui (aref b 5 i)))
             (incf mdot (* ui rcs-mdot))))))
     (rk4-step! state h time model force torque mdot *ship-dry-mass* inertia inverse
-               attitude-fn)))
+               attitude-fn third-bodies)))

@@ -730,3 +730,74 @@ from START to END under :full, the Moon and the Sun read by the step."
     (let ((start (skua-yard-sim)))
       (is = 0 (least-bytes-consed (lambda () (lis::sim-assign! b start))))
       (true (equalp b start)))))
+
+;;; Targets (decision 114: Targets and target holds in the sim)
+
+(defparameter *target-order*
+  '(:tern-station :fulmar-depot :k-17 :highport :skua-yard
+    :skua-yard-1 :skua-yard-2 :skua-yard-3 :skua-yard-4 :skua-yard-5 :skua-yard-6 :pod-14))
+
+(define-test clock-target-cycle
+  (let ((sim (lis::new-game-sim)))
+    (is equal *target-order* (lis::target-candidates sim))
+    (false (lis::sim-target sim))
+    (is eq :tern-station (lis::sim-cycle-target! sim 1))
+    (is eq :pod-14 (lis::sim-cycle-target! sim -1))
+    (is eq :tern-station (lis::sim-cycle-target! sim 1))
+    (is eq :fulmar-depot (lis::sim-cycle-target! sim 1))
+    (false (lis::sim-set-target! sim nil))
+    (is eq :pod-14 (lis::sim-cycle-target! sim -1))
+    (is eq :tern-station (lis::sim-cycle-target! sim 1))
+    ;; A removed K-17 and a latched rock skipped.
+    (setf (lis::object-status (lis::sim-object sim :k-17)) :removed
+          (lis::object-status (lis::sim-object sim :skua-yard-2)) :latched)
+    (is equal (remove-if (lambda (key) (member key '(:k-17 :skua-yard-2))) *target-order*)
+        (lis::target-candidates sim))
+    (lis::sim-set-target! sim :fulmar-depot)
+    (is eq :highport (lis::sim-cycle-target! sim 1))
+    (lis::sim-set-target! sim :skua-yard-3)
+    (is eq :skua-yard-1 (lis::sim-cycle-target! sim -1))))
+
+(define-test clock-target-copied
+  (let* ((sim (lis::new-game-sim))
+         (copy (lis::copy-sim sim)))
+    (lis::sim-set-target! sim :highport)
+    (false (equalp sim copy))
+    (is eq :highport (lis::sim-target (lis::copy-sim sim)))
+    (is = 0 (least-bytes-consed (lambda () (lis::sim-assign! copy sim))))
+    (is eq :highport (lis::sim-target copy))
+    (true (equalp sim copy))))
+
+(define-test clock-target-state
+  (let ((sim (lis::new-game-sim))
+        (r (lis::make-vec3)) (v (lis::make-vec3)))
+    (false (lis::target-state-into! r v sim))
+    (dolist (key '(:tern-station :skua-yard :pod-14))
+      (lis::sim-set-target! sim key)
+      (true (lis::target-state-into! r v sim))
+      (multiple-value-bind (r1 v1)
+          (if (eq key :pod-14)
+              (object-rv (lis::sim-object sim :pod-14) (lis::sim-t sim))
+              (let ((r1 (lis::make-vec3)) (v1 (lis::make-vec3)))
+                (lis::place-target-state-into! r1 v1 (lis::place key) sim)
+                (values r1 v1)))
+        (is equalp r1 r "~A" key)
+        (is equalp v1 v "~A" key)))))
+
+(define-test clock-target-lost
+  ;; K-17 burns up on rails while targeted: cleared once, with the notice.
+  (let ((sim (k-17-sim 90d3)))
+    (lis::sim-set-target! sim :k-17)
+    (loop until (lis::object-removed-p (lis::sim-object sim :k-17))
+          do (step-sim sim 1 1000))
+    (false (lis::sim-target sim))
+    (is equal '("K-17 BURNED UP" "TARGET LOST: K-17") (mapcar #'second (lis::sim-notices sim)))
+    (step-sim sim 10 1000)
+    (is = 1 (count "TARGET LOST: K-17" (lis::sim-notices sim) :key #'second :test #'equal)))
+  ;; A latched rock: its name.
+  (let ((sim (lis::new-game-sim)))
+    (lis::sim-set-target! sim :skua-yard-4)
+    (setf (lis::object-status (lis::sim-object sim :skua-yard-4)) :latched)
+    (lis::target-check! sim)
+    (false (lis::sim-target sim))
+    (is equal '((:target "TARGET LOST: SKUA YARD 4")) (lis::sim-notices sim))))

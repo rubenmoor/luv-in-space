@@ -55,6 +55,7 @@
     (:c . :camera-frame) (:home . :camera-reset)
     (:m . :map) (:tab . :map-focus) (:page-up . :map-zoom-in) (:page-down . :map-zoom-out)
     (:g . :grapple) (:b . :transfer) (:y . :acknowledge)
+    (:] . :target-next) (:[ . :target-previous) (:\\ . :target-clear)
     (:return . :restart) (:n . :new-game))
   "(key . command): luv's physical key names; run-command's commands.")
 
@@ -63,6 +64,9 @@
 
 (defparameter *flying-commands* '(:acknowledge)
   "Act at any time but lost (decision 113).")
+
+(defparameter *target-commands* '(:target-next :target-previous :target-clear)
+  "Act paused and at every level, not while lost or a flight runs (decision 114).")
 
 (defparameter *flight-commands*
   '(:fine :throttle-full :throttle-cut :rate-damping :inertial-hold
@@ -113,6 +117,9 @@
       (:grapple (key-refusal! clock :grapple (grapple-key! sim)))
       (:transfer (key-refusal! clock :transfer (transfer-key! sim)))
       (:acknowledge (clock-acknowledge! clock))
+      (:target-next (sim-cycle-target! sim 1))
+      (:target-previous (sim-cycle-target! sim -1))
+      (:target-clear (sim-set-target! sim nil))
       (:restart (game-return! game))
       (:new-game (game-new-game! game))
       (:map-focus (when (map-p game) (map-view-cycle-focus! (game-map-view game))))
@@ -157,6 +164,9 @@ RCS-off message for a flight key above ×4."
       (return-from key-pressed!))
     (when (and (member command *script-commands*) (flight-running-p game))
       (return-from key-pressed!))
+    (when (and (member command *target-commands*)
+               (or (sim-lost-p (game-sim game)) (flight-running-p game)))
+      (return-from key-pressed!))
     (cond ((and (sim-berthed (game-sim game)) (engine-key-p key command))
            (unless (flight-keys-ignored-p game)
              (clock-message! (game-clock game) :engine-locked *engine-locked-message*)))
@@ -171,7 +181,7 @@ RCS-off message for a flight key above ×4."
 
 (defun window-title ()
   "The window's title: the main keys by QWERTY position (decision 81)."
-  "Luv in Space · WASD QE turn · HN IK JL move · Shift/Ctrl throttle · Z/X full/cut · T damp · R 1–6 hold · F fine · . , / warp · P pause · C/Home camera · M map · G grapple · B refuel · Y ack · Esc quit")
+  "Luv in Space · WASD QE turn · HN IK JL move · Shift/Ctrl throttle · Z/X full/cut · T damp · R 1–6 hold · F fine · . , / warp · P pause · C/Home camera · M map · G grapple · B refuel · Y ack · [ ] \\ target · Esc quit")
 
 ;; Runs on the canvas thread: only flag the quit; STOP runs on the caller's.
 (defun handle-event (game event)

@@ -77,12 +77,20 @@
         (is eq loss (lis::render-state-loss state))))))
 
 (define-test render-state-update-conses-nothing
-  (multiple-value-bind (sim clock h) (stepped-sim)
-    (setf (lis::clock-accumulator clock) (* 0.5d0 h))
-    (let* ((state (lis::make-render-state))
-           (consed (least-bytes-consed
-                    (lambda () (dotimes (i 1000) (lis::render-state-update! state clock sim))))))
-      (is = 0 consed))))
+  ;; Without a target, a target on rails, a promoted one.
+  (dolist (setup (list (lambda () (drift-sim))
+                       (lambda () (let ((sim (drift-sim)))
+                                    (lis::sim-set-target! sim :tern-station)
+                                    sim))
+                       (lambda () (let ((sim (ship-near :tern-station 1000d0)))
+                                    (lis::sim-set-target! sim :tern-station)
+                                    sim))))
+    (multiple-value-bind (sim clock h) (stepped-sim :sim (funcall setup))
+      (setf (lis::clock-accumulator clock) (* 0.5d0 h))
+      (let* ((state (lis::make-render-state))
+             (consed (least-bytes-consed
+                      (lambda () (dotimes (i 1000) (lis::render-state-update! state clock sim))))))
+        (is = 0 consed)))))
 
 ;;; The frame on the GPU: one hidden canvas, 320x200 (decision 2: Screenshots
 ;;; and GPU test: offscreen capture on a hidden canvas, headless on lavapipe).
@@ -1071,3 +1079,58 @@ after it."
            (readout-checks game png 1280 800)
            (lost-checks game png 1280 800)
            (fly-screenshot-checks game)))))))
+
+;;; The target at the render time (decision 114: Targets and target holds in
+;;; the sim; decision 143: The target at the render time: the sim's gravity
+;;; and the jerk).
+
+(define-test render-state-target
+  ;; On rails: Kepler at t_r, half a 2 s coarse step back.
+  (let ((t0 (lis::start-t)))
+    (dolist (key '(:tern-station :skua-yard))
+      (multiple-value-bind (sim clock)
+          (stepped-sim :sim (let ((sim (lis::new-game-sim)))
+                              (lis::sim-set-target! sim key)
+                              sim)
+                       :level 1000 :until (+ t0 2d0))
+        (setf (lis::clock-accumulator clock) 1d0)
+        (let ((state (lis::render-state-update! (lis::make-render-state) clock sim))
+              (r (lis::make-vec3)) (v (lis::make-vec3))
+              (relative (lis::make-target-relative)))
+          (is eq key (lis::render-state-target state))
+          (let ((rails (if (eq key :skua-yard)
+                           (lis::place-rails (lis::place key))
+                           (lis::object-rails (lis::sim-object sim key)))))
+            (lis::rails-state-into! r v (lis::rails-segment-at rails (+ t0 1d0)) (+ t0 1d0)))
+          (let ((dr (lis::vec3-norm (lis::vec3-sub (lis::render-state-target-r state) r))))
+            (true (< dr 1d-6) "~A ~,3E m" key dr))
+          (lis::target-relative-into! relative (lis::render-state-r state) (lis::render-state-v state)
+                                      (lis::render-state-q state) r v)
+          (true (every (lambda (a b) (< (abs (- a b)) 1d-6))
+                       relative (lis::render-state-target-relative state)))))))
+  ;; Promoted (:j2): the extrapolation from the step's end against the
+  ;; fine-stepped station at t_r, 1 s and 2 s back.
+  (let* ((sim (ship-near :tern-station 1000d0))
+         (t0 (lis::sim-t sim)))
+    (setf (lis::sim-model sim) :j2)
+    (lis::sim-set-target! sim :tern-station)
+    (dolist (back '(1d0 2d0))
+      (let ((reference (step-sim (lis::copy-sim sim) most-positive-fixnum 1 (- (+ t0 2d0) back))))
+        (multiple-value-bind (stepped clock) (stepped-sim :sim (lis::copy-sim sim) :level 1000
+                                                         :until (+ t0 2d0))
+          (is = (+ t0 2d0) (lis::sim-t stepped))
+          (setf (lis::clock-accumulator clock) (- 2d0 back))
+          (let* ((state (lis::render-state-update! (lis::make-render-state) clock stepped))
+                 (station (lis::object-state (lis::sim-object reference :tern-station)))
+                 (dr (lis::vec3-norm (lis::vec3-sub (lis::render-state-target-r state)
+                                                    (lis::ship-state-r station))))
+                 (dv (lis::vec3-norm (lis::vec3-sub (lis::render-state-target-v state)
+                                                    (lis::ship-state-v station)))))
+            (is = (- (+ t0 2d0) back) (lis::render-state-t state))
+            (true (< dr 1d-3) "~A s back: ~,3E m" back dr)
+            (true (< dv 1d-3) "~A s back: ~,3E m/s" back dv)))))
+    ;; No target: none.
+    (lis::sim-set-target! sim nil)
+    (multiple-value-bind (stepped clock) (stepped-sim :sim sim)
+      (let ((state (lis::render-state-update! (lis::make-render-state) clock stepped)))
+        (false (lis::render-state-target state))))))

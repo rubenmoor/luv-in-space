@@ -407,6 +407,37 @@ target of this moment."
         (declare (optimize speed) (ignore time-cell) (type quat q) (type vec3 w-t r v))
         (hold-attitude-into! q w-t kind r v roll-offset target)))))
 
+;;; The target for instruments (decision 114: Targets and target holds in
+;;; the sim): range, closing speed, relative velocity and direction.
+
+(deftype target-relative () '(simple-array double-float (8)))
+
+(defun make-target-relative ()
+  "Range (m), closing speed (m/s, positive closing), v − v_T in body axes
+(F R D, m/s), the target's direction in body axes (unit; zero at range 0)."
+  (make-array 8 :element-type 'double-float :initial-element 0d0))
+
+(defun target-relative-into! (out r v q r-t v-t)
+  "The ship at R, V with attitude Q (body -> inertial) and the target at R-T,
+V-T into OUT, a target-relative; OUT. Conses nothing."
+  (declare (optimize speed) (type target-relative out) (type vec3 r v r-t v-t) (type quat q))
+  (let ((d (make-vec3)) (dv (make-vec3)) (c (make-quat)) (b (make-vec3)))
+    (declare (dynamic-extent d dv c b))
+    (vec3-sub! d r-t r)
+    (vec3-sub! dv v v-t)
+    (quat-conjugate! c q)
+    (let ((range (vec3-norm d)))
+      (declare (type double-float range))
+      (setf (aref out 0) range
+            (aref out 1) (if (> range 0d0) (/ (vec3-dot d dv) range) 0d0))
+      (quat-rotate! b c dv)
+      (replace out b :start1 2)
+      (if (> range 0d0)
+          (quat-rotate! b c (vec3-scale! d d (/ range)))
+          (vec3-set! b 0d0 0d0 0d0))
+      (replace out b :start1 5))
+    out))
+
 ;;; The flight computer (decision 70): commanded body torque and force, once
 ;;; per step from the state at its start.
 

@@ -47,7 +47,8 @@
   (excluded nil :type (or null fixnum))         ; a released object's index, no contact
   (delivery nil :type list)                     ; nil or (load receiver fixture release-t), immutable
   (notices nil :type list)                      ; ((key text) …) of this step, oldest first
-  (checkpoint-request nil :type boolean))       ; the clock takes a checkpoint when safe
+  (checkpoint-request nil :type boolean)        ; the clock takes a checkpoint when safe
+  (target nil :type (or null keyword)))         ; a place's or a towable object's key       ; the clock takes a checkpoint when safe
 
 (defun copy-sim (sim)
   "A deep copy: equalp to SIM, sharing no array (the objects' definitions
@@ -80,7 +81,8 @@ nothing; OUT."
         (sim-excluded out) (sim-excluded sim)
         (sim-delivery out) (sim-delivery sim)
         (sim-notices out) (sim-notices sim)
-        (sim-checkpoint-request out) (sim-checkpoint-request sim))
+        (sim-checkpoint-request out) (sim-checkpoint-request sim)
+        (sim-target out) (sim-target sim))
   out)
 
 (defparameter *delivery-wait* 600d0 "s from a delivery's release to the removal; decision 53.")
@@ -197,6 +199,113 @@ state's first checks, or after the ship was placed; SIM."
         when (eq (object-status object) :rails)
           do (setf (object-next-check object) (sim-t sim)))
   (sim-update-objects! sim))
+
+;;; Targets (decision 114: Targets and target holds in the sim): a place of
+;;; *places* or a towable object, by key.
+
+(defun target-object-key (key)
+  "The object key of target KEY, or nil for a point on rails (Skua Yard's
+drop point)."
+  (let ((place (find key *places* :key #'place-key)))
+    (if place (place-object place) key)))
+
+(defun target-name (key)
+  "Target KEY's display name: its object's, else its place's."
+  (let ((object (target-object-key key)))
+    (if object
+        (object-def-name (object-definition object))
+        (place-name (place key)))))
+
+(defun target-available-p (sim key)
+  "KEY's object is neither removed nor latched (a drop point always is)."
+  (let ((object (target-object-key key)))
+    (or (null object)
+        (not (member (object-status (sim-object sim object)) '(:removed :latched))))))
+
+(defun target-candidates (sim)
+  "The targets ] and [ cycle through: the places in *places*' order, then the
+towable objects not already a place in *objects*' order; removed and latched
+objects skipped."
+  (remove-if-not (lambda (key) (target-available-p sim key))
+                 (append (mapcar #'place-key *places*)
+                         (loop for def in *objects*
+                               for key = (object-def-key def)
+                               when (and (eq (object-def-kind def) :towable)
+                                         (not (find key *places* :key #'place-object)))
+                                 collect key))))
+
+(defun sim-set-target! (sim key)
+  "SIM's target KEY, or none for nil; KEY."
+  (setf (sim-target sim) key))
+
+(defun sim-cycle-target! (sim direction)
+  "The next candidate (DIRECTION +1, ]) or the previous (−1, [), wrapping;
+from none or a target no longer a candidate the first or the last. The new
+target's key, nil without candidates."
+  (let* ((candidates (target-candidates sim))
+         (n (length candidates))
+         (i (position (sim-target sim) candidates)))
+    (sim-set-target! sim (and (> n 0)
+                              (nth (cond (i (mod (+ i direction) n))
+                                         ((> direction 0) 0)
+                                         (t (1- n)))
+                                   candidates)))))
+
+;; render-state-update! inlines it: a full call boxes TIME.
+(declaim (sb-ext:maybe-inline target-state-into!))
+
+(defun target-state-into! (r v sim &optional (time (sim-t sim)))
+  "SIM's target's state at TIME (≤ the sim's t) into R, V (m, m/s,
+Earth-centred): on rails exactly, a promoted object from its state at the
+sim's t as r + v τ + a τ²/2 + j τ³/6, τ = TIME − t, a the sim's gravity
+(J2 at most), j point-mass gravity's jerk (decision 143: The target at the
+render time: the sim's gravity and the jerk). True, or nil without a target
+or its state. Conses nothing."
+  (declare (type vec3 r v) (type sim sim) (type double-float time))
+  (let ((key (sim-target sim)))
+    (when key
+      (let ((object-key (target-object-key key)))
+        (if (null object-key)
+            (let ((rails (place-rails (place key))))
+              (rails-state-into! r v (rails-segment-at rails time) time)
+              t)
+            (let ((object (sim-object sim object-key))
+                  (q (make-quat)) (w (make-vec3)) (a (make-vec3)))
+              (declare (dynamic-extent q w a))
+              (case (object-status object)
+                (:rails (and (object-state-into! r v q w object time) t))
+                ((:promoted :latched)
+                 (let ((state (object-state object)))
+                   (replace r (ship-state-r state))
+                   (replace v (ship-state-v state)))
+                 (let ((tau (- time (sim-t sim))))
+                   (declare (type double-float tau))
+                   (unless (= tau 0d0)
+                     (gravity-into! a r (sim-t sim) (if (eq (sim-model sim) :full) :j2 (sim-model sim)))
+                     (let* ((rn (vec3-norm r))
+                            (k (/ (- +mu-earth+) (* rn rn rn)))
+                            (rv (/ (* 3 (vec3-dot r v)) (* rn rn))))
+                       (declare (type double-float rn k rv))
+                       (dotimes (i 3)
+                         (let ((ai (aref a i))
+                               (ji (* k (- (aref v i) (* rv (aref r i))))))
+                           (setf (aref r i) (+ (aref r i)
+                                               (* tau (+ (aref v i)
+                                                         (* tau (+ (* 0.5d0 ai)
+                                                                   (* (/ tau 6) ji))))))
+                                 (aref v i) (+ (aref v i) (* tau (+ ai (* 0.5d0 tau ji)))))))))
+                   t))
+                (t nil))))))))
+
+(defun target-check! (sim)
+  "After a step's removals and captures: a target whose object is removed
+or latched is cleared with the notice \"TARGET LOST: <NAME>\"."
+  (let ((key (sim-target sim)))
+    (when (and key (not (target-available-p sim key)))
+      (setf (sim-target sim) nil)
+      ;; PLACEHOLDER(196): an active target hold goes to rate damping.
+      (sim-notice! sim :target (format nil "TARGET LOST: ~A" (target-name key)))))
+  sim)
 
 ;;; The step (decision 72)
 
@@ -351,14 +460,16 @@ contact answered at the step's start) or nil."
         (let* ((ticks (truncate (* h (/ +fine-step+))))
                (lost (crash-test! sim r0 v0 q0 ticks)))
           (object-crash-tests! sim before ticks)
-          (or (and (not lost) (not *contact-redo*) (contact-test! sim level ticks))
-              (progn (unless lost
-                       (when (sim-excluded sim)
-                         (exclusion-update! sim))
-                       (when (sim-delivery sim)
-                         (delivery-update! sim))
-                       (sim-update-objects! sim))
-                     ticks)))))))
+          (prog1 (or (and (not lost) (not *contact-redo*) (contact-test! sim level ticks))
+                     (progn (unless lost
+                              (when (sim-excluded sim)
+                                (exclusion-update! sim))
+                              (when (sim-delivery sim)
+                                (delivery-update! sim))
+                              (sim-update-objects! sim))
+                            ticks))
+            (when (sim-target sim)
+              (target-check! sim))))))))
 
 (declaim (inline sim-step!))
 (defun sim-step! (sim level &key until)
@@ -378,8 +489,8 @@ rails removals (object-crash-tests!), contact with promoted objects
 (contact-test!: a bounce redoes the step to the grid point before it, a
 fast one kills), then, unless lost, the excluded object's check
 (exclusion-update!), a pending delivery's (delivery-update!: the step
-lands on its due time), promotion and demotion.
-Returns h (0 for a contact answered at the step's start), or nil for a
+lands on its due time), promotion and demotion, and last the target's
+check (target-check!). Returns h (0 for a contact answered at the step's start), or nil for a
 lost sim. Hot callers declare it inline: a full
 call boxes h."
   (let ((ticks (sim-step-ticks! sim level until)))

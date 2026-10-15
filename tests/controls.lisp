@@ -603,3 +603,23 @@ then on, the final time)."
     (flight-steps state c 640)
     (let ((consed (least-bytes-consed (lambda () (flight-steps state c 2134)))))
       (true (< consed 1024) "~D bytes" consed))))
+
+(define-test target-relative-values
+  ;; decision 114: 100 m ahead along v, closing 0.5 m/s; the nose yawed 90°
+  ;; (body x → inertial y), the cab (−z) along inertial −z.
+  (let* ((r (lis::vec3 7000d3 0 0))
+         (v (lis::vec3 0 7500d0 0))
+         (q (lis::quat (sqrt 0.5d0) 0 0 (sqrt 0.5d0)))
+         (r-t (lis::vec3 7000d3 100d0 0))
+         (v-t (lis::vec3 0 7499.5d0 0))
+         (out (lis::make-target-relative)))
+    (lis::target-relative-into! out r v q r-t v-t)
+    (loop for expected in '(100d0 0.5d0  0.5d0 0d0 0d0  1d0 0d0 0d0)
+          for i from 0
+          do (true (< (abs (- (aref out i) expected)) 1d-12) "~D: ~A" i (aref out i)))
+    ;; Opening, the target behind and below: the signs.
+    (lis::target-relative-into! out r v q (lis::vec3 7000d3 -100d0 100d0) v-t)
+    (true (< (aref out 1) 0d0))
+    (true (< (abs (- (aref out 5) (- (sqrt 0.5d0)))) 1d-12))
+    (true (< (abs (- (aref out 7) (sqrt 0.5d0))) 1d-12))
+    (is = 0 (least-bytes-consed (lambda () (lis::target-relative-into! out r v q r-t v-t))))))

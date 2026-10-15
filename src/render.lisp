@@ -14,7 +14,9 @@ relative to Earth, Earth's body-fixed matrix and the ship's SUN-FRACTION
 (sun-visible-fraction) at T; the hull's SHIP-EMISSIVE colour,
 SHIP-LIGHTS-ON (decision 80) and LIGHTS-T, the real seconds the clock has
 run, the strobe's clock (decision 100: The lights' clock and the glows'
-numbers), which render-state-update! leaves alone."
+numbers), which render-state-update! leaves alone; the TARGET's key (nil
+without one), its TARGET-R and TARGET-V at T and TARGET-RELATIVE
+(target-relative-into!; decision 114: Targets and target holds in the sim)."
   (t 0d0 :type double-float)
   (r (make-vec3) :type vec3)
   (v (make-vec3) :type vec3)
@@ -30,6 +32,10 @@ numbers), which render-state-update! leaves alone."
   (ship-emissive (make-vec3) :type vec3)
   (ship-lights-on t)
   (lights-t 0d0 :type double-float)
+  (target nil :type (or null keyword))
+  (target-r (make-vec3) :type vec3)
+  (target-v (make-vec3) :type vec3)
+  (target-relative (make-target-relative) :type target-relative)
   (scratch (make-vec3) :type vec3))     ; the bodies' velocities, unused
 
 (defun render-state-assign-ship! (out ship)
@@ -65,8 +71,10 @@ the attitude, ω blended linearly."
 (defun render-state-update! (out clock sim)
   "Fill OUT for the frame (decision 77): render time t_prev + s (t − t_prev),
 s = clamp(acc / (t − t_prev), 0, 1); the sim's state as it is when t_prev is
-not below t or the sim is lost. Conses nothing; OUT."
-  (declare (optimize speed) (type render-state out) (type clock clock) (type sim sim))
+not below t or the sim is lost; the target at the render time
+(target-state-into!) and its relative values. Conses nothing; OUT."
+  (declare (optimize speed) (type render-state out) (type clock clock) (type sim sim)
+           (inline target-state-into!))
   (let ((current (sim-ship sim))
         (time (sim-t sim)))
     (let ((previous (clock-previous clock))
@@ -92,7 +100,14 @@ not below t or the sim is lost. Conses nothing; OUT."
       (body-state-into (render-state-sun out) (render-state-scratch out) :sun tr :earth)
       (body-state-into (render-state-moon out) (render-state-scratch out) :moon tr :earth)
       (earth-fixed-matrix! (render-state-earth-matrix out) tr)
-      (setf (render-state-sun-fraction out) (sun-visible-fraction (render-state-r out) tr)))
+      (setf (render-state-sun-fraction out) (sun-visible-fraction (render-state-r out) tr))
+      (let ((target-r (render-state-target-r out)) (target-v (render-state-target-v out)))
+        (setf (render-state-target out)
+              (and (target-state-into! target-r target-v sim tr) (sim-target sim)))
+        (if (render-state-target out)
+            (target-relative-into! (render-state-target-relative out) (render-state-r out)
+                                   (render-state-v out) (render-state-q out) target-r target-v)
+            (fill (render-state-target-relative out) 0d0))))
     out))
 
 (defun single-floats (list)

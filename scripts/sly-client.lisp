@@ -89,7 +89,7 @@ outside it (luv and its dependencies) in build/sly-dependencies.core."
   (evaluate "(progn
                (when luv-in-space:*game*
                  (error \"luv-in-space is already playing; ./sly stop-playing first.\"))
-               (luv-in-space:start)
+               (luv-in-space:play)
                :playing)"
             "CL-USER"))
 

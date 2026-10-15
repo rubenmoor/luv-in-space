@@ -27,7 +27,8 @@
    (input :initform (make-input) :reader game-input
           :documentation "Held keys, taps and the pointer (input.lisp); not in the sim.")
    (view :initform :outside :accessor game-view :documentation "The view: :outside.")
-   (quit-requested-p :initform nil :accessor game-quit-requested-p)))
+   (quit-requested-p :initform nil :accessor game-quit-requested-p)
+   (stopped-p :initform nil :accessor game-stopped-p)))
 
 (defvar *game* nil)
 
@@ -156,19 +157,39 @@ it) and start drawing; PAUSED starts with the clock paused. Returns the game."
        (not (game-quit-requested-p game))
        (eq :open (luv:canvas-state (game-canvas game)))))
 
+(defvar *stop-lock* (sb-thread:make-mutex :name "luv-in-space stop"))
+
 (defun stop (&optional (game *game*))
-  "Close the window and release the GPU device."
-  (when game
+  "Close the window and release the GPU device; again does nothing.
+Not on the canvas thread."
+  (sb-thread:with-mutex (*stop-lock*)
+    (when game
+      (stop-game game))))
+
+(defun stop-game (game)
+  (unless (game-stopped-p game)
+    (setf (game-stopped-p game) t)
     (let ((canvas (game-canvas game)))
       (when (eq :open (luv:canvas-state canvas))
         (setf (luv:canvas-clock canvas) (luv:make-demand-clock)
               (luv:canvas-event-handler canvas) nil))
       (luv:close-canvas canvas)
       (destroy-frame-renderer (game-renderer game))
-      (luv:destroy (game-device game)))
-    (when (eq game *game*)
-      (setf *game* nil)))
+      (luv:destroy (game-device game))))
+  (when (eq game *game*)
+    (setf *game* nil))
   (values))
+
+(defun play (&rest start-arguments)
+  "START for the live image (./sly play): a watcher thread stops the game
+once a quit is requested or the window closes, as RUN's loop does."
+  (let ((game (apply #'start start-arguments)))
+    (sb-thread:make-thread
+     (lambda ()
+       (loop while (and (eq game *game*) (running-p game)) do (sleep 0.05))
+       (stop game))
+     :name "luv-in-space quit watcher")
+    game))
 
 (defun run ()
   (let ((game (start)))

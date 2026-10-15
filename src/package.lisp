@@ -1,6 +1,6 @@
 (defpackage #:luv-in-space
   (:use #:cl)
-  (:export #:main #:start #:stop #:running-p #:*game*
+  (:export #:main #:start #:play #:stop #:running-p #:*game*
            #:screenshot #:screenshot-main #:report-failed-live-artifacts))
 
 (defpackage #:luv-in-space.shaders

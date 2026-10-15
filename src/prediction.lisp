@@ -233,14 +233,29 @@ the target's state there."
 
 (defun push-event! (pred kind time &optional object (value 0d0))
   "KIND at TIME with VALUE (a :contact with its OBJECT's index), unless the
-flown t is there already."
-  (let ((n (prediction-event-count pred)))
+flown t is there already; inserted in time order (a step's events are found
+out of order), after those at the same time."
+  (let ((n (prediction-event-count pred))
+        (times (prediction-event-times pred))
+        (kinds (prediction-event-kinds pred))
+        (objects (prediction-event-objects pred))
+        (amounts (prediction-event-values pred)))
+    (declare (type fixnum n) (type double-float time)
+             (type (simple-array double-float (*)) times amounts))
     (when (and (< n *prediction-event-capacity*) (> time (prediction-now pred)))
-      (setf (aref (prediction-event-times pred) n) time
-            (svref (prediction-event-kinds pred) n) kind
-            (svref (prediction-event-objects pred) n) object
-            (aref (prediction-event-values pred) n) value
-            (prediction-event-count pred) (1+ n)))))
+      (let ((i n))
+        (declare (type fixnum i))
+        (loop while (and (> i 0) (> (aref times (1- i)) time))
+              do (setf (aref times i) (aref times (1- i))
+                       (svref kinds i) (svref kinds (1- i))
+                       (svref objects i) (svref objects (1- i))
+                       (aref amounts i) (aref amounts (1- i)))
+                 (decf i))
+        (setf (aref times i) time
+              (svref kinds i) kind
+              (svref objects i) object
+              (aref amounts i) value
+              (prediction-event-count pred) (1+ n))))))
 
 (defun drop-past-events! (pred)
   (let* ((times (prediction-event-times pred))
@@ -293,7 +308,103 @@ its time, bisected on the Hermite to *apsis-time-tolerance*."
           (push-event! pred (if rising :periapsis :apoapsis)
                        (+ (node-t nodes i) (* 0.5d0 (+ lo hi) h))))))))
 
-;;; Contact (decision 43: Warp drop-outs for contact and life support,
+;;; The target (decision 116): closest approach where r_rel · v_rel goes
+;;; from − to +, relative nodes where r · (r_T × v_T) changes sign, both
+;;; bisected on the ship's and the target's Hermites.
+
+(defparameter *relative-node-min-inclination* (deg->rad 0.01d0)
+  "rad: planes closer than this give no relative nodes; decision 116.")
+(defparameter *closest-approach-min-cosine* 1d-9
+  "A local minimum of the range counts only where, at one of its step's
+nodes, |r̂_rel · v_rel| / |v_rel| reaches this: a constant range (co-orbital,
+1 km) gives minima from rounding noise at ~1e-12; decision 147.")
+(declaim (type double-float *relative-node-min-inclination* *closest-approach-min-cosine*))
+
+(defun target-search! (pred i)
+  "Between nodes i and i + 1, both with the target's state: a
+:closest-approach (value the distance) at a local minimum of the range, a
+:relative-ascending or :relative-descending (value the planes' angle) where
+the ship crosses the target's plane, each bisected to
+*apsis-time-tolerance*. Conses nothing."
+  (declare (optimize speed) (type prediction pred) (type fixnum i))
+  (let* ((nodes (prediction-nodes pred))
+         (targets (prediction-target-nodes pred))
+         (k0 (* +node-size+ i)) (k1 (+ k0 +node-size+))
+         (j0 (* +target-node-size+ i)) (j1 (+ j0 +target-node-size+))
+         (t0 (node-t nodes i)))
+    (declare (type fixnum k0 k1 j0 j1))
+    (flet ((range-rate (k j)
+             ;; r_rel · v_rel at a node
+             (let ((sum 0d0))
+               (declare (type double-float sum))
+               (dotimes (a 3 sum)
+                 (incf sum (* (- (aref targets (+ j a)) (aref nodes (+ k 1 a)))
+                              (- (aref targets (+ j 3 a)) (aref nodes (+ k 4 a))))))))
+           (clear-p (f k j)
+             ;; |r_rel · v_rel| ≥ cos_min |r_rel| |v_rel|
+             (let ((rr 0d0) (vv 0d0))
+               (declare (type double-float rr vv))
+               (dotimes (a 3)
+                 (let ((dr (- (aref targets (+ j a)) (aref nodes (+ k 1 a))))
+                       (dv (- (aref targets (+ j 3 a)) (aref nodes (+ k 4 a)))))
+                   (incf rr (* dr dr))
+                   (incf vv (* dv dv))))
+               (>= (* f f) (* *closest-approach-min-cosine* *closest-approach-min-cosine* rr vv))))
+           (height (k j)
+             ;; r · (r_T × v_T) at a node
+             (let ((x (aref targets j)) (y (aref targets (+ j 1))) (z (aref targets (+ j 2)))
+                   (u (aref targets (+ j 3))) (v (aref targets (+ j 4))) (w (aref targets (+ j 5))))
+               (+ (* (aref nodes (+ k 1)) (- (* y w) (* z v)))
+                  (* (aref nodes (+ k 2)) (- (* z u) (* x w)))
+                  (* (aref nodes (+ k 3)) (- (* x v) (* y u)))))))
+      (let* ((f0 (range-rate k0 j0)) (f1 (range-rate k1 j1))
+             (g0 (height k0 j0)) (g1 (height k1 j1))
+             (approach (and (< f0 0d0) (>= f1 0d0)
+                            (or (clear-p f0 k0 j0) (clear-p f1 k1 j1))))
+             (node (or (and (< g0 0d0) (>= g1 0d0)) (and (> g0 0d0) (<= g1 0d0)))))
+        (declare (type double-float f0 f1 g0 g1))
+        (when (or approach node)
+          (let ((cs (make-array 12 :element-type 'double-float))
+                (ct (make-array 12 :element-type 'double-float))
+                (cr (make-array 12 :element-type 'double-float))
+                (p (make-vec3)) (dp (make-vec3)) (pt (make-vec3)) (dpt (make-vec3))
+                (n (make-vec3)) (nt (make-vec3)))
+            (declare (dynamic-extent cs ct cr p dp pt dpt n nt))
+            (let* ((h (interval-hermite! cs pred i))
+                   (tolerance (/ *apsis-time-tolerance* (* 4 h))))
+              (declare (type double-float h tolerance))
+              (interval-hermite! ct pred i t)
+              (dotimes (a 12) (setf (aref cr a) (- (aref ct a) (aref cs a))))
+              (macrolet ((bisect ((s rising) test)
+                           ;; the root of TEST's sign change on [0, 1], RISING from −
+                           `(let ((lo 0d0) (hi 1d0))
+                              (declare (type double-float lo hi))
+                              (loop while (> (- hi lo) tolerance)
+                                    do (let ((,s (* 0.5d0 (+ lo hi))))
+                                         (if (eq (< ,test 0d0) ,rising) (setf lo ,s) (setf hi ,s))))
+                              (* 0.5d0 (+ lo hi)))))
+                (when approach
+                  (let ((s (bisect (s t) (progn (hermite-point! p dp cr s) (vec3-dot p dp)))))
+                    (hermite-point! p dp cr s)
+                    (push-event! pred :closest-approach (+ t0 (* s h)) nil (vec3-norm p))))
+                (when node
+                  (let* ((rising (< g0 0d0))
+                         (s (bisect (s rising)
+                                    (progn (hermite-point! p dp cs s)
+                                           (hermite-point! pt dpt ct s)
+                                           (vec3-dot p (vec3-cross! n pt dpt))))))
+                    (hermite-point! p dp cs s)
+                    (hermite-point! pt dpt ct s)
+                    (vec3-cross! n p dp)
+                    (vec3-cross! nt pt dpt)
+                    (let* ((cosine (vec3-dot n nt))
+                           (sine (vec3-norm (vec3-cross! p n nt)))
+                           (angle (atan sine (abs cosine))))
+                      (when (>= angle *relative-node-min-inclination*)
+                        (push-event! pred (if rising :relative-ascending :relative-descending)
+                                     (+ t0 (* s h)) nil angle)))))))))))))
+
+;;; Contact (decision 43:Warp drop-outs for contact and life support,
 ;;; decision 113): the stack's and a candidate's bounding spheres coming to
 ;;; meet on a step's relative Hermite, as contact-find!'s broad phase.
 
@@ -539,6 +650,8 @@ copy's plan flies at *prediction-rcs-level* while an RCS burn runs, else at
         (incf work (the fixnum (push-target! pred sim)))
         (unless zero
           (apsis-search! pred (- (prediction-count pred) 2))
+          (when (= (prediction-target-count pred) (prediction-count pred))
+            (target-search! pred (- (prediction-count pred) 2)))
           (contact-crossing! pred sim))
         ;; A contact death is no :impact: its spheres' meeting came first.
         (cond ((and (sim-loss sim) (not (eq (loss-cause (sim-loss sim)) :contact)))
@@ -587,10 +700,12 @@ decision 116), else extend the tail; at most BUDGET work. PRED."
 
 (defun prediction-event (pred kind)
   "The first event of KIND (:apoapsis, :periapsis, :impact, :cutoff,
-:contact, :burn-start) after the flown t: (values time datum value), the
+:contact, :burn-start, :closest-approach, :relative-ascending,
+:relative-descending) after the flown t: (values time datum value), the
 datum the copy's loss record for :impact, the object's index in
 sim-objects for :contact, else the event's double value (:burn-start: the
-burn's index); nil without one."
+burn's index, :closest-approach: the distance, a relative node: the planes'
+angle); nil without one."
   (let ((times (prediction-event-times pred))
         (kinds (prediction-event-kinds pred))
         (amounts (prediction-event-values pred)))
@@ -625,7 +740,29 @@ impact state (decision 87); nil if neither is known."
                                 (orbit-apoapsis-radius orbit)
                                 (orbit-periapsis-radius orbit)))))))))
 
-(defparameter *dropout-events* '(:impact :contact)
+(defun prediction-closest-approach (pred)
+  "(values time distance) of the least :closest-approach after the flown t,
+or nil (decision 116)."
+  (let ((times (prediction-event-times pred))
+        (kinds (prediction-event-kinds pred))
+        (amounts (prediction-event-values pred))
+        (best nil) (distance nil))
+    (dotimes (i (prediction-event-count pred))
+      (when (and (eq (svref kinds i) :closest-approach)
+                 (> (aref times i) (prediction-now pred))
+                 (or (null distance) (< (aref amounts i) distance)))
+        (setf best (aref times i) distance (aref amounts i))))
+    (and best (values best distance))))
+
+(defun prediction-relative-node (pred kind)
+  "(values time angle) of the next relative node, KIND :ascending or
+:descending, the angle between the planes in rad; nil without one."
+  (check-type kind (member :ascending :descending))
+  (multiple-value-bind (time angle)
+      (prediction-event pred (if (eq kind :ascending) :relative-ascending :relative-descending))
+    (and time (values time angle))))
+
+(defparameter *dropout-events*'(:impact :contact)
   "The events that drop warp: decision 75's, decision 43's contact.")
 
 (defun prediction-dropout-event (pred)

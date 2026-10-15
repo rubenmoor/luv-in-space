@@ -515,3 +515,174 @@ rails through that state, and targeted; SIM."
       (let ((burn (member (+ t0 60) times)))
         (true burn)
         (true (every (lambda (a b) (= (- b a) 1/64)) burn (subseq burn 1 64)))))))
+
+;;; Closest approach and relative nodes (decision 116), against brute force
+;;; and Kepler.
+
+(defun rails-target! (sim key r v)
+  "Object KEY on J2-free rails through R, V at SIM's t, targeted; its orbit."
+  (let* ((t0 (lis::sim-t sim))
+         (orbit (lis::state->orbit r v lis::+mu-earth+ t0)))
+    (setf (lis::object-rails (lis::sim-object sim key)) (lis::make-rails orbit t0 :j2 nil))
+    (lis::sim-set-target! sim key)
+    orbit))
+
+(defun kepler-target! (sim key)
+  "Object KEY on J2-free rails through its state now, targeted; its orbit."
+  (multiple-value-bind (r v) (object-rv (lis::sim-object sim key) (lis::sim-t sim))
+    (rails-target! sim key r v)))
+
+(defun co-orbital-state (sim distance)
+  "(values r v) on the Kepler orbit of SIM's ship, DISTANCE m ahead of it."
+  (let* ((ship (lis::sim-ship sim))
+         (t0 (lis::sim-t sim)))
+    (lis::orbit-state (lis::state->orbit (lis::ship-state-r ship) (lis::ship-state-v ship)
+                                         lis::+mu-earth+ t0)
+                      (+ t0 (/ distance (lis::vec3-norm (lis::ship-state-v ship)))))))
+
+(defun fulmar-sim ()
+  "The start orbit, :point, raised by 30 m/s prograde to an apoapsis near
+Fulmar Depot's 500 km."
+  (let* ((sim (lis::new-game-sim))
+         (v (lis::ship-state-v (lis::sim-ship sim))))
+    (setf (lis::sim-model sim) :point)
+    (lis::vec3-add-scaled! v v (lis::vec3-normalize v) 30d0)
+    sim))
+
+(defun events-of (pred &rest kinds)
+  "(time value) of PRED's events of KINDS, in order."
+  (loop for (kind time value) in (prediction-event-list pred)
+        when (member kind kinds) collect (list time value)))
+
+(defun scanned-approaches (pred orbit)
+  "The interior local minima (time distance) of the range between PRED's
+stored ship path and ORBIT's Kepler state, sampled every 1/16 s."
+  (let* ((n (lis::prediction-node-count pred))
+         (t0 (lis::prediction-node pred 0))
+         (t1 (lis::prediction-node pred (1- n)))
+         (p (lis::make-vec3))
+         (minima '()))
+    (flet ((range (time)
+             (lis::prediction-position! p pred time)
+             (lis::vec3-norm (lis::vec3-sub! p p (lis::orbit-state orbit time)))))
+      (loop with a = (range t0) and b = (range (+ t0 1/16))
+            for k from 2 to (floor (* 16 (- t1 t0)))
+            for time = (+ t0 (/ k 16d0))
+            for c = (range time)
+            do (when (and (< b a) (<= b c))
+                 (push (list (- time 1/16) b) minima))
+               (setf a b b c)))
+    (nreverse minima)))
+
+(defun check-approaches (sim orbit label)
+  (let* ((pred (run-prediction sim :periods 2))
+         (found (events-of pred :closest-approach))
+         (scanned (scanned-approaches pred orbit)))
+    (true scanned "~A: a minimum to compare" label)
+    (is = (length scanned) (length found) "~A: ~S ~S" label scanned found)
+    (loop for (time distance) in scanned
+          for (found-time found-distance) in found
+          do (true (< (abs (- time found-time)) 0.05d0) "~A: ~,4F s off" label (- found-time time))
+             (true (< (abs (- distance found-distance)) (max 1d0 (* 1d-3 distance)))
+                   "~A: ~,3F m off at ~,1F m" label (- found-distance distance) distance))
+    (let ((least (reduce #'min found :key #'second :initial-value most-positive-double-float)))
+      (multiple-value-bind (time distance) (lis::prediction-closest-approach pred)
+        (is = least distance)
+        (is = (first (find least found :key #'second)) time)))
+    pred))
+
+(define-test prediction-closest-approach
+  ;; Fulmar Depot from the start orbit raised 30 m/s, two-body; Tern
+  ;; Station 10 km ahead on the start orbit after a 5 m/s radial burn. (From
+  ;; the start orbit itself neither range has a minimum in two periods.)
+  (let ((sim (fulmar-sim)))
+    (check-approaches sim (kepler-target! sim :fulmar-depot) "Fulmar Depot"))
+  (let* ((sim (lis::new-game-sim))
+         (ship (lis::sim-ship sim))
+         (v (lis::ship-state-v ship)))
+    (setf (lis::sim-model sim) :point)
+    (let ((orbit (multiple-value-call #'rails-target! sim :tern-station
+                   (co-orbital-state sim 10000d0))))
+      (lis::vec3-add-scaled! v v (lis::vec3-normalize (lis::ship-state-r ship)) 5d0)
+      (check-approaches sim orbit "Tern Station"))))
+
+(define-test prediction-co-orbital
+  ;; Tern Station 1 km ahead on the ship's orbit: no local minimum.
+  (let ((sim (lis::new-game-sim)))
+    (setf (lis::sim-model sim) :point)
+    (multiple-value-call #'rails-target! sim :tern-station (co-orbital-state sim 1000d0))
+    (let ((pred (run-prediction sim :periods 2)))
+      (true (lis::prediction-complete-p pred))
+      (false (events-of pred :closest-approach))
+      (false (lis::prediction-closest-approach pred)))))
+
+(define-test prediction-relative-nodes
+  ;; A target on the start orbit turned 1° in Ω, two-body: the nodes where
+  ;; Kepler crosses its plane, alternating.
+  (let* ((sim (lis::new-game-sim))
+         (ship (lis::sim-ship sim))
+         (t0 (lis::sim-t sim))
+         (orbit (lis::state->orbit (lis::ship-state-r ship) (lis::ship-state-v ship)
+                                   lis::+mu-earth+ t0))
+         (turn (lis::quat-from-axis-angle (lis::vec3 0 0 1) (lis::deg->rad 1d0))))
+    (setf (lis::sim-model sim) :point)
+    (let ((normal (multiple-value-bind (r v) (lis::orbit-state orbit (+ t0 2000))
+                    (let ((r (lis::quat-rotate turn r)) (v (lis::quat-rotate turn v)))
+                      (rails-target! sim :tern-station r v)
+                      (lis::vec3-cross r v)))))
+      (flet ((height (time) (lis::vec3-dot (lis::orbit-state orbit time) normal)))
+        (let* ((pred (run-prediction sim :periods 2))
+               (t1 (lis::prediction-node pred (1- (lis::prediction-node-count pred))))
+               (found (loop for (kind time value) in (prediction-event-list pred)
+                            when (member kind '(:relative-ascending :relative-descending))
+                              collect (list kind time value)))
+               (kepler (loop for start from t0 below t1
+                             for end = (min t1 (1+ start))
+                             when (/= (signum (height start)) (signum (height end)))
+                               collect (let ((rising (minusp (height start)))
+                                             (a start) (b end))
+                                         (loop while (> (- b a) 1d-6)
+                                               do (let ((m (* 0.5d0 (+ a b))))
+                                                    (if (eq (minusp (height m)) rising)
+                                                        (setf a m)
+                                                        (setf b m))))
+                                         (list (if rising :relative-ascending :relative-descending)
+                                               a)))))
+          (true (>= (length kepler) 3))
+          (is = (length kepler) (length found))
+          (loop for (kind time) in kepler
+                for (found-kind found-time angle) in found
+                do (is eq kind found-kind)
+                   (true (< (abs (- time found-time)) 1d-3) "~,6F s off" (- found-time time))
+                   (true (< (abs (- angle (lis::deg->rad 1d0))) 1d-4) "~F rad" angle))
+          (true (loop for (a b) on found while b never (eq (first a) (first b))))
+          (multiple-value-bind (time angle) (lis::prediction-relative-node pred :descending)
+            (is = (second (find :relative-descending found :key #'first)) time)
+            (true angle))))))
+  ;; The coplanar start with Tern Station: none.
+  (let ((sim (lis::new-game-sim)))
+    (setf (lis::sim-model sim) :j2)
+    (lis::sim-set-target! sim :tern-station)
+    (let ((pred (run-prediction sim :periods 2)))
+      (is = (lis::prediction-node-count pred) (lis::prediction-target-count pred))
+      (false (events-of pred :relative-ascending :relative-descending))
+      (false (lis::prediction-relative-node pred :ascending)))))
+
+(define-test prediction-events-ordered
+  ;; Fulmar Depot targeted: apsides and approaches in time order, dropped
+  ;; once the flown t passes them.
+  (let* ((sim (fulmar-sim))
+         (pred (lis::new-prediction :periods 2)))
+    (kepler-target! sim :fulmar-depot)
+    (lis::prediction-run! pred sim)
+    (let ((events (prediction-event-list pred)))
+      (true (>= (length events) 5))
+      (true (apply #'<= (mapcar #'second events)))
+      (let ((passed (second (third events))))
+        (step-sim sim 100000 1000 (+ passed 1))
+        (lis::prediction-update! pred sim)
+        (is = 1 (lis::prediction-restarts pred))
+        (let ((now (prediction-event-list pred)))
+          (true (every (lambda (e) (> (second e) (lis::sim-t sim))) now))
+          (true (apply #'<= (mapcar #'second now)))
+          (is equal (nthcdr 3 events) (subseq now 0 (- (length events) 3))))))))

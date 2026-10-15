@@ -593,9 +593,16 @@ lists: those seen and those behind Earth from the eye (double, CPU)."
           (when (and (plusp w) (<= 0 x (1- width)) (<= 0 y (1- height)))
             (if behind (push (list x y) hidden) (push (list x y) seen))))))))
 
-(defun near-any-p (x y points radius)
-  (some (lambda (p) (<= (+ (expt (- (first p) x) 2) (expt (- (second p) y) 2)) (* radius radius)))
-        points))
+(defun near-test (points radius width height)
+  "A test of pixel centres (x + 0.5, y + 0.5): within RADIUS of any of POINTS,
+from a mask marked once."
+  (let ((mask (make-array (list height width) :element-type 'bit :initial-element 0)))
+    (loop for (px py) in points
+          do (loop for y from (max 0 (floor (- py radius 1))) to (min (1- height) (ceiling (+ py radius)))
+                   do (loop for x from (max 0 (floor (- px radius 1))) to (min (1- width) (ceiling (+ px radius)))
+                            when (<= (+ (expt (- (+ x 0.5) px) 2) (expt (- (+ y 0.5) py) 2)) (* radius radius))
+                              do (setf (sbit mask y x) 1))))
+    (lambda (cx cy) (= 1 (sbit mask (floor cy) (floor cx))))))
 
 (defun ribbon-checks (game png width height)
   "The start orbit's ring on the map's opening frame; Earth hiding its far
@@ -618,26 +625,28 @@ check looks from el 10 deg, where the far half lies apart."
              (state (sim-render-state (lis::new-game-sim)))
              (camera (posed-camera camera-fn state))
              (seen (orbit-pixels state camera width height)))
-        (flet ((on-ring (x y) (near-any-p x y seen 2)))
+        (let ((on-ring (near-test seen 2 width height)))
           ;; Cyan pixels within 2 px of the ring: the first measured frame,
           ;; 631 (lavapipe), x 0.5; none with the ribbon's radiance at 0.
           (multiple-value-bind (pixels format) (capture camera-fn)
-            (let ((n (cyan pixels format #'on-ring)))
+            (let ((n (cyan pixels format on-ring)))
               (true (>= n 315) "ribbon: ~D cyan pixels on the ring" n)))
           (multiple-value-bind (pixels format)
               (with-canvas-values (game (lis::*ribbon-radiance* 0d0)
                                         (lis::*marker-colour* #x8A8A80))
                 (capture camera-fn))
-            (is = 0 (cyan pixels format #'on-ring)))))
+            (is = 0 (cyan pixels format on-ring)))))
       (let* ((camera-fn (map-camera-fn 10))
              (state (sim-render-state (lis::new-game-sim)))
              (camera (posed-camera camera-fn state)))
         (multiple-value-bind (seen hidden) (orbit-pixels state camera width height)
-          (flet ((far-side (x y) (and (near-any-p x y hidden 1) (not (near-any-p x y seen 3)))))
+          (let* ((near-hidden (near-test hidden 1 width height))
+                 (near-seen (near-test seen 3 width height))
+                 (far-side (lambda (x y) (and (funcall near-hidden x y) (not (funcall near-seen x y))))))
             (multiple-value-bind (pixels format) (capture camera-fn)
-              (true (> (count-pixels (lambda (x y cx cy) (declare (ignore x y)) (far-side cx cy))) 100))
-              (true (> (cyan pixels format (lambda (x y) (near-any-p x y seen 2))) 0))
-              (is = 0 (cyan pixels format #'far-side)))))))
+              (true (> (count-pixels (lambda (x y cx cy) (declare (ignore x y)) (funcall far-side cx cy))) 100))
+              (true (> (cyan pixels format (near-test seen 2 width height)) 0))
+              (is = 0 (cyan pixels format far-side)))))))
     (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))))
 
 ;; The map's markers (decision 84): exact colours after the tone map.

@@ -239,16 +239,16 @@
     (true (< 0 fraction 1))
     (true (< (abs (- fraction (- 1 (expt (/ moon-radius sun-radius) 2)))) 1d-9) "~F" fraction)))
 
-(defun monte-carlo-overlap (r1 r2 d n)
-  "The fraction of N points, uniform in the disc of radius R2 at (D, 0),
-inside the disc of radius R1 at the origin; a fixed seed."
-  (let ((state (sb-ext:seed-random-state 79)))
-    (/ (loop repeat n
-             count (let* ((rho (* r2 (sqrt (random 1d0 state))))
-                          (phi (random (* 2 pi) state))
-                          (x (+ d (* rho (cos phi)))) (y (* rho (sin phi))))
-                     (<= (+ (* x x) (* y y)) (* r1 r1))))
-       (float n 1d0))))
+(defun sliced-overlap (r1 r2 d n)
+  "The fraction of the disc of radius R2 at (D, 0) inside the disc of radius
+R1 at the origin, summed over N vertical slices (midpoint rule): each
+slice's overlap is the shorter of the two discs' chords."
+  (let ((h (/ (* 2 r2) n)))
+    (/ (loop for i below n
+             for x = (+ (- d r2) (* h (+ i 0.5d0)))
+             sum (* 2 h (sqrt (max 0d0 (min (- (* r1 r1) (* x x))
+                                            (- (* r2 r2) (expt (- x d) 2)))))))
+       (* pi r2 r2))))
 
 (define-test lens-area
   (is = 0d0 (lis::lens-area 1d0 0.5d0 1.6d0))
@@ -256,8 +256,8 @@ inside the disc of radius R1 at the origin; a fixed seed."
   (is = (* pi 0.01d0) (lis::lens-area 0.1d0 1d0 0.5d0))
   (loop for (r1 r2 d) in '((1d0 1d0 1d0) (1d0 0.5d0 1.2d0) (0.3d0 1d0 0.9d0))
         for exact = (/ (lis::lens-area r1 r2 d) (* pi r2 r2))
-        for sampled = (monte-carlo-overlap r1 r2 d 1000000)
-        do (true (< (abs (- exact sampled)) 2d-3) "~A ~A ~A: ~F, sampled ~F" r1 r2 d exact sampled)))
+        for sampled = (sliced-overlap r1 r2 d 100000)
+        do (true (< (abs (- exact sampled)) 1d-6) "~A ~A ~A: ~F, sampled ~F" r1 r2 d exact sampled)))
 
 (define-test sun-visible-fraction-conses-nothing
   (let ((p (lis::vec3 7d6 1d6 0d0))

@@ -22,9 +22,17 @@
   (let ((word (aref pixels row column)))
     (values (ldb (byte 8 0) word) (ldb (byte 8 8) word) (ldb (byte 8 16) word))))
 
+(defvar *blue-marble* nil
+  "The decoded Blue Marble, kept by blue-marble-decodes for the tests after it.")
+
+(defun blue-marble ()
+  (or *blue-marble*
+      (setf *blue-marble* (lis::load-image-pixels (lis::asset-path "earth/blue-marble-5400.jpg")))))
+
 (define-test blue-marble-decodes
   (let* ((start (get-internal-real-time))
-         (pixels (lis::load-image-pixels (lis::asset-path "earth/blue-marble-5400.jpg")))
+         (pixels (setf *blue-marble*
+                       (lis::load-image-pixels (lis::asset-path "earth/blue-marble-5400.jpg"))))
          (seconds (/ (- (get-internal-real-time) start) internal-time-units-per-second)))
     (true (< seconds 1) "decoding took ~,2F s" seconds)
     (is equal '(2700 5400) (array-dimensions pixels))
@@ -46,16 +54,20 @@
         (true (> mean 150) "row 2694 channel ~D mean ~,1F" channel mean)))))
 
 (defun channel-means (pixels)
-  (let ((sums (list 0 0 0)) (n (array-total-size pixels)))
+  (declare (type (array (unsigned-byte 32) (* *)) pixels))
+  (let ((r 0) (g 0) (b 0) (n (array-total-size pixels)))
+    (declare (type fixnum r g b n))
     (dotimes (i n)
       (let ((word (row-major-aref pixels i)))
-        (dotimes (k 3) (incf (nth k sums) (ldb (byte 8 (* 8 k)) word)))))
-    (mapcar (lambda (s) (/ s (float n 1d0))) sums)))
+        (incf r (ldb (byte 8 0) word))
+        (incf g (ldb (byte 8 8) word))
+        (incf b (ldb (byte 8 16) word))))
+    (mapcar (lambda (s) (/ s (float n 1d0))) (list r g b))))
 
 (define-test blue-marble-eighth
   ;; The far Earth's copy (decision 78: Sky in numbers: stars, Sun, Moon
   ;; and Earth's look): 2700 / 8 rounded up, its means the full map's.
-  (let* ((pixels (lis::load-image-pixels (lis::asset-path "earth/blue-marble-5400.jpg")))
+  (let* ((pixels (blue-marble))
          (coarse (lis::downsample-pixels pixels 8)))
     (is equal '(338 675) (array-dimensions coarse))
     (loop for full in (channel-means pixels)

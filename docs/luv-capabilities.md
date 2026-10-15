@@ -286,6 +286,7 @@ What a solar-system flight game needs that luv lacks, each gap with a workaround
 - Gap: orbital flight needs a fixed step decoupled from the frame rate and time warp up to ×10^5 or more; at warp, a fixed small step would need millions of steps per second.
 - Workaround here: the frame function adds `elapsed × warp` to a `double-float` accumulator and runs fixed steps, capped per frame (the sim slows rather than stalls); planets and moons are always on rails from ephemerides. Decided since in `docs/architecture.md` "Time and integration": the ship is never on rails but integrated at every warp level with a step that grows with distance from bodies (`decision 16: Integrator and simulation clock`, `decision 17: Gravity model`, `decision 19: Time-warp rules`); rendering interpolates between the last two steps; trajectory prediction runs on the frame thread within a budget, so `luv/production` is not a dependency (`decision 20: Trajectory prediction on the frame thread`).
 - Cost: ~200 lines for the clock, warp rules and Kepler propagation, excluding the integrator.
+- Built in `milestone 2`: `src/clock.lisp` (~490 lines with the sim, the warp rules, refusals and drop-outs; `clock-frame!` runs `clock-step!` from the accumulator, at most `*frame-step-limit*` 4,096 steps a frame), the interpolation in `src/render.lisp`'s `render-state-update!`.
 
 ### Gamepad and joystick
 

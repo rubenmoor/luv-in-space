@@ -229,7 +229,9 @@ drift; CONTROLS. Conses nothing."
 ;;; sim): immutable, shared by every copy of the sim; clock.lisp flies them.
 
 (defstruct (planned-burn (:constructor make-planned-burn
-                             (label hold-at start attitude throttle rcs dv))
+                             (label hold-at start attitude throttle rcs dv
+                              &key (cut-t 0d0) cut-r cut-v
+                                (isp (if rcs *rcs-isp* *engine-isp*))))
                          (:copier nil))
   (label nil :type keyword :read-only t)
   (hold-at 0d0 :type double-float :read-only t) ; s, grid: the inertial hold engaged
@@ -237,14 +239,28 @@ drift; CONTROLS. Conses nothing."
   (attitude nil :type quat :read-only t)        ; body -> inertial
   (throttle 0d0 :type double-float :read-only t) ; 0.1–1, 0 for an RCS burn
   (rcs nil :type (member nil -1 1) :read-only t) ; the sign along body x
-  (dv 0d0 :type double-float :read-only t))     ; m/s on the odometer
+  (dv 0d0 :type double-float :read-only t)      ; m/s on the odometer
+  ;; The shot's state after the cut (a first guess: the node's, impulsive).
+  (cut-t 0d0 :type double-float :read-only t)
+  (cut-r nil :type (or null vec3) :read-only t)
+  (cut-v nil :type (or null vec3) :read-only t)
+  (isp 0d0 :type double-float :read-only t))    ; s: the engine's or the RCS's
 
-(defstruct (burn-plan (:constructor make-burn-plan (burns &optional (coast-hold :prograde)))
+(defstruct (burn-plan (:constructor make-burn-plan
+                          (burns &key (coast-hold :prograde) preset goal goal-orbit
+                                   (reserve-dv 0d0) (reserve-mass 0d0)))
                       (:copier nil))
   (burns #() :type simple-vector :read-only t)
   (coast-hold :prograde :type (member :prograde :retrograde :normal :anti-normal
                                       :radial-out :radial-in)
-              :read-only t))
+              :read-only t)
+  ;; The autopilot's (decision 117): its preset and goal, the impulsive
+  ;; goal orbit for the map, the reserve in m/s and in kg at the end mass.
+  (preset nil :type (or null keyword) :read-only t)
+  (goal nil :read-only t)
+  (goal-orbit nil :type (or null orbit) :read-only t)
+  (reserve-dv 0d0 :type double-float :read-only t)
+  (reserve-mass 0d0 :type double-float :read-only t))
 
 ;;; The RCS mixer (decision 70): duty cycles u in [0, 1] minimising
 ;;; |w (B_τ u − τ_c)|² + |B_F u − F_c|² + e² |u|² by Stark–Parker BVLS,

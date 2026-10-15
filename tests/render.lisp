@@ -616,6 +616,59 @@ toe."
     (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))
     (lis::game-load-state! game (lis::new-game-sim))))
 
+;; The lights and the engine glow (decision 100: The lights' clock and the
+;; glows' numbers), in Earth's shadow at u = 180 deg.
+(defun light-checks (game png width height)
+  (flet ((capture (sim camera-fn)
+           "(fn (x y)): the red, green and blue bytes there."
+           (multiple-value-bind (path w h pixels format)
+               (lis::capture-game-state game png :sim sim :frames 1 :camera-fn camera-fn)
+             (declare (ignore path w h))
+             (lambda (xy) (pixel-rgb pixels format width (first xy) (second xy)))))
+         (at (camera state p)
+           (multiple-value-bind (x y) (project camera (ship-point state camera p) width height)
+             (list (floor x) (floor y))))
+         (luminance (rgb) (/ (reduce #'+ rgb) 3)))
+    (let* ((night (start-sim-at 180))
+           (state (sim-render-state night))
+           (lights (lis::model-lights (lis::mule)))
+           (camera-fn (ship-view *cab-view* 40 '(12.75d0 0 -3.5d0)))
+           (camera (posed-camera camera-fn state)))
+      ;; Red and green, the strobe off.
+      (let ((pixels (with-canvas-values (game (lis::*strobe-on* 0d0)) (capture night camera-fn))))
+        (destructuring-bind (red green blue) (funcall pixels (at camera state (getf lights :red)))
+          (declare (ignore blue))
+          (true (and (> red 150) (> red (+ green 50))) "red light: ~D ~D" red green))
+        (destructuring-bind (red green blue) (funcall pixels (at camera state (getf lights :green)))
+          (declare (ignore blue))
+          (true (and (> green 150) (> green (+ red 50))) "green light: ~D ~D" red green)))
+      ;; The strobe lit against unlit.
+      (let* ((xy (at camera state (getf lights :strobe)))
+             (on (with-canvas-values (game (lis::*strobe-on* lis::*strobe-period*))
+                   (capture night camera-fn)))
+             (off (with-canvas-values (game (lis::*strobe-on* 0d0)) (capture night camera-fn)))
+             (lit (luminance (funcall on xy)))
+             (dark (luminance (funcall off xy))))
+        (true (> (- lit dark) 50) "strobe: ~,1F lit, ~,1F unlit" lit dark)))
+    ;; The engine from 30 m behind on -x: full throttle against off.
+    (let* ((night (start-sim-at 180))
+           (state (sim-render-state night))
+           (exit (lis::engine-exit-position (lis::mule) (lis::render-state-m-p state)))
+           (camera-fn (ship-view '(-1 0 0) 30 exit))
+           (camera (posed-camera camera-fn state))
+           (xy (at camera state exit))
+           (off (capture night camera-fn))
+           (on (progn (lis::controls-set-throttle (lis::sim-controls night) 1d0)
+                      (capture night camera-fn))))
+      (destructuring-bind (red green blue) (funcall on xy)
+        (declare (ignore green))
+        (true (> blue red) "engine glow: red ~D, blue ~D" red blue))
+      (let ((lit (luminance (funcall on xy)))
+            (dark (luminance (funcall off xy))))
+        (true (> (- lit dark) 20) "engine glow: ~,1F firing, ~,1F off" lit dark)))
+    (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))
+    (lis::game-load-state! game (lis::new-game-sim))))
+
 (define-test render-frames
   (let ((width 320) (height 200))
     (luv:call-with-sdl-main-thread
@@ -765,6 +818,7 @@ toe."
            (sun-and-moon-checks game png width height)
            (earth-checks game png width height)
            (ship-checks game png width height)
+           (light-checks game png width height)
            (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))
            ;; Resizes replace the swapchain's textures; what the renderer kept
            ;; for the old ones goes, so its per-target state stays bounded.

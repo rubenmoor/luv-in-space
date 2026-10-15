@@ -478,7 +478,9 @@ and v along z from and to UV, by default metres from the centre."
                                       do (replace out inst :start1 (* i +instance-floats+)))
                                 out)))
        :parts (reverse parts)
-       :lights (list :red (vec3 15.0d0 -1.8d0 -1.8d0) :green (vec3 15.0d0 1.8d0 -1.8d0)
+       ;; The navigation lights on brackets 0.15 m out from the truss's top
+       ;; front corners, so its tubes don't cut them (decision 100).
+       :lights (list :red (vec3 15.0d0 -1.95d0 -1.95d0) :green (vec3 15.0d0 1.95d0 -1.95d0)
                      :strobe (vec3 12.75d0 0 -5.05d0) :engine-exit (vec3 -2.2d0 0 -0.5d0))))))
 
 ;;; The engine's trim (docs/design.md "Propulsion"): its axis through the
@@ -490,6 +492,83 @@ ship-trim-angle: body x goes to (cos a, 0, sin a). A mat3; the engine's
 points go to g + R (p − g)."
   (let* ((a (ship-trim-angle m-p)) (c (cos a)) (s (sin a)))
     (mat3 c 0 (- s) 0 1 0 s 0 c)))
+
+(defun engine-exit-position (model m-p)
+  "The nozzle exit's centre in body axes, the engine at its trim at M-P."
+  (let ((g *engine-gimbal*))
+    (vec3-add g (mat3*vec3 (engine-rotation m-p)
+                           (vec3-sub (getf (model-lights model) :engine-exit) g)))))
+
+;;; Lights and engine glow (decision 80; decision 100: The lights' clock and
+;;; the glows' numbers): camera-facing Gaussian billboards. A glow is its
+;;; centre relative to the eye, its radius (the Gaussian's sigma), its RGB
+;;; radiance and how far it is pulled towards the eye, clear of the joint it
+;;; sits on. Every number live.
+
+(defparameter *strobe-on* 0.1d0 "Seconds the strobe is lit in each period.")
+(defparameter *strobe-period* 1.2d0 "Seconds.")
+(defparameter *nav-light-radius* 0.05d0 "m.")
+(defparameter *nav-light-radiance* 5d0)
+(defparameter *nav-red* '(1d0 0d0 0d0)
+  "Linear primaries, so the tone map keeps their hue when they saturate.")
+(defparameter *nav-green* '(0d0 1d0 0d0))
+(defparameter *strobe-radius* 0.05d0 "m.")
+(defparameter *strobe-radiance* 20d0)
+(defparameter *engine-glow-radius* 0.8d0 "m.")
+(defparameter *engine-glow-colour* '(0.45d0 0.6d0 1.0d0))
+(defparameter *engine-glow-radiance* 0.1d0
+  "At full throttle; faint in sunlight, unsaturated at the deep exposure.")
+(defparameter *glow-min-pixels* 1.5d0 "Least size across (2 sigma), pixels.")
+(defparameter *light-pull* 1d0 "A navigation light's or the strobe's pull, in radii.")
+
+(defconstant +glow-floats+ 8 "Centre relative to the eye, radius; radiance, pull.")
+(defconstant +glow-count+ 4 "Red, green, the strobe, the engine.")
+
+(defun strobe-on-p (time)
+  "Whether the strobe is lit at TIME s of the lights' clock: its phase,
+TIME mod *strobe-period*, reduced in double on the CPU (docs/architecture.md
+\"Floating-origin pitfalls\")."
+  (< (mod (float time 1d0) *strobe-period*) *strobe-on*))
+
+(defun engine-glow-radiance (state)
+  "*engine-glow-radiance* x throttle while the engine fires (throttle > 0,
+propellant > 0, not lost), else 0."
+  (let ((throttle (controls-throttle (render-state-controls state))))
+    (if (and (> throttle 0d0) (> (render-state-m-p state) 0d0) (not (render-state-loss state)))
+        (* *engine-glow-radiance* throttle)
+        0d0)))
+
+(defun ship-glows! (out model state eye com)
+  "The glows of the render STATE seen from EYE into OUT, +glow-floats+
+each, the CoM COM in body axes; returns their count. The navigation lights
+and the strobe only while the lights are on; the engine glow at the nozzle
+exit's centre while it fires."
+  (let ((reference (ship-reference-position state com))
+        (q (render-state-q state))
+        (lights (model-lights model))
+        (n 0))
+    (flet ((glow (p radius radiance colour pull)
+             ;; q p + (r − q c) − eye, in double.
+             (let ((centre (vec3-sub (vec3-add (quat-rotate q p) reference) eye))
+                   (o (* n +glow-floats+)))
+               (loop for i below 3 for c in colour
+                     do (setf (aref out (+ o i)) (coerce (aref centre i) 'single-float)
+                              (aref out (+ o 4 i)) (coerce (* radiance c) 'single-float)))
+               (setf (aref out (+ o 3)) (coerce radius 'single-float)
+                     (aref out (+ o 7)) (coerce pull 'single-float))
+               (incf n))))
+      (when (render-state-ship-lights-on state)
+        (let ((pull (* *light-pull* *nav-light-radius*)))
+          (glow (getf lights :red) *nav-light-radius* *nav-light-radiance* *nav-red* pull)
+          (glow (getf lights :green) *nav-light-radius* *nav-light-radiance* *nav-green* pull))
+        (when (strobe-on-p (render-state-lights-t state))
+          (glow (getf lights :strobe) *strobe-radius* *strobe-radiance* '(1d0 1d0 1d0)
+                (* *light-pull* *strobe-radius*))))
+      (let ((radiance (engine-glow-radiance state)))
+        (when (plusp radiance)
+          (glow (engine-exit-position model (render-state-m-p state)) *engine-glow-radius*
+                radiance *engine-glow-colour* 0d0)))
+      n)))
 
 ;;; The stack's bounding radius (decision 80)
 
@@ -624,8 +703,10 @@ alpha 0 off the cairn and the letters."
   "The static resources of the Mule's draws and the bind group layout."
   model layout hull hull-count engine engine-count
   groups                                ; (primitive count instances count) per group
-  decal-view decal-sampler
+  decal-view decal-sampler corners
   (scratch (make-mass-properties) :type mass-properties)
+  (glows (make-array (* +glow-floats+ +glow-count+) :element-type 'single-float
+                                                    :initial-element 0f0))
   (uniforms (make-array +ship-uniform-floats+ :element-type 'single-float :initial-element 0f0))
   (materials (make-array (* 8 (array-dimension *ship-materials* 0))
                          :element-type 'single-float :initial-element 0f0)))
@@ -643,10 +724,16 @@ alpha 0 off the cairn and the letters."
                         (:shader-location 6 :offset 36 :format :float32x3)
                         (:shader-location 7 :offset 48 :format :float32x4)))))))
 
+(defun glow-vertex-buffers ()
+  `((:array-stride 8 :attributes ((:shader-location 0 :offset 0 :format :float32x2)))
+    (:array-stride ,(* 4 +glow-floats+) :step-mode :instance
+     :attributes ((:shader-location 1 :offset 0 :format :float32x4)
+                  (:shader-location 2 :offset 16 :format :float32x4)))))
+
 (defun make-ship-gpu (renderer format)
   "The Mule's buffers, decal and layout, owned by RENDERER, and its
 :ship-mesh and :ship-instanced live pipelines into FORMAT: opaque, depth
-written, compare :greater."
+written, compare :greater; and :ship-glow: additive, depth tested, not written."
   (let* ((model (mule))
          (layout (gpu-create renderer (luv:make-bind-group-layout-descriptor
                                        :entries '((:binding 0 :type :uniform-buffer)
@@ -663,6 +750,10 @@ written, compare :greater."
                                                                          :depth-stencil depth)
         (live-pipeline renderer :ship-instanced layout (ship-vertex-buffers t) :format format
                                                                                 :depth-stencil depth)
+        (live-pipeline renderer :ship-glow layout (glow-vertex-buffers)
+                       :format format :blend :premultiplied-alpha
+                       :depth-stencil '(:format :depth32-float :depth-write-enabled nil
+                                        :depth-compare :greater))
         (%make-ship-gpu
          :model model :layout layout
          :hull (vertex-buffer renderer (model-vertices model) "hull")
@@ -676,11 +767,12 @@ written, compare :greater."
                                      (vertex-buffer renderer (instance-group-instances g)
                                                     (format nil "~A instances" kind))
                                      (count-of (instance-group-instances g) +instance-floats+)))
-         :decal-view view :decal-sampler sampler)))))
+         :decal-view view :decal-sampler sampler
+         :corners (vertex-buffer renderer (star-corners) "glow corners"))))))
 
 (defstruct ship-slot
-  "A target's ship block, material table and bind group."
-  buffer materials bind-group)
+  "A target's ship block, material table, bind group and glow instances."
+  buffer materials bind-group glows)
 
 (defun make-ship-target-slot (renderer ship frame-buffer)
   "The per-target resources of SHIP's draws; FRAME-BUFFER the target's frame block."
@@ -694,6 +786,10 @@ written, compare :greater."
                                         :usage '(:storage :copy-dst)))))
     (make-ship-slot
      :buffer buffer :materials materials
+     :glows (luv:create device (luv:make-buffer-descriptor
+                                :label "ship glows"
+                                :size (* 4 (length (ship-gpu-glows ship)))
+                                :usage '(:vertex :copy-dst)))
      :bind-group (luv:create device (luv:make-bind-group-descriptor
                                      :layout (ship-gpu-layout ship)
                                      :entries `((:binding 0 :resource ,frame-buffer)
@@ -703,6 +799,7 @@ written, compare :greater."
                                                 (:binding 4 :resource ,materials)))))))
 
 (defun release-ship-slot (slot)
+  (luv:destroy (ship-slot-glows slot))
   (luv:destroy (ship-slot-bind-group slot))
   (luv:destroy (ship-slot-materials slot))
   (luv:destroy (ship-slot-buffer slot)))
@@ -739,7 +836,7 @@ whole cap is past the terminator."
 (defun ship-uniforms! (out state eye com)
   "The ship block (shaders.lisp) into OUT for the render STATE seen from EYE,
 the CoM COM in body axes: the rows of q, R relative to the eye (decision 5:
-Precision of positions), the gimbal and the trim rotation at m_p, then in
+Precision of positions) with the glows' least sigma in pixels, the gimbal and the trim rotation at m_p, then in
 body axes the Sun's direction with (1 AU / d)^2 x sun-fraction, the
 direction to Earth with the earthshine, the tint and ambient, the eye with
 the lights-on flag, the emissive colour."
@@ -765,7 +862,7 @@ the lights-on flag, the emissive colour."
       (dotimes (i 3)
         (put (* 4 i) (aref rows (* 3 i)) (aref rows (+ (* 3 i) 1)) (aref rows (+ (* 3 i) 2)) 0))
       (relative-single reference eye out 12)
-      (setf (aref out 15) 0f0)
+      (setf (aref out 15) (coerce (* 0.5d0 *glow-min-pixels*) 'single-float))
       (put 16 (aref *engine-gimbal* 0) (aref *engine-gimbal* 1) (aref *engine-gimbal* 2) 0)
       (dotimes (i 3)
         (put (+ 20 (* 4 i)) (aref trim (* 3 i)) (aref trim (+ (* 3 i) 1)) (aref trim (+ (* 3 i) 2)) 0))
@@ -784,7 +881,7 @@ the lights-on flag, the emissive colour."
 (defun encode-ship (pass renderer ship slot state eye)
   "The Mule into the open scene PASS (after the impostors, before the
 ribbons): the hull, the instance groups, then the engine as instance 1 of
-:ship-mesh, so its vertex stage turns it by its trim."
+:ship-mesh, so its vertex stage turns it by its trim; then its glows."
   (let ((com (mass-properties-com (ship-mass-properties (render-state-m-p state) nil
                                                         (ship-gpu-scratch ship))))
         (bind-group (ship-slot-bind-group slot)))
@@ -801,4 +898,12 @@ ribbons): the hull, the instance groups, then the engine as instance 1 of
     (loop for (primitive vertices instances count) in (ship-gpu-groups ship)
           do (luv:set-vertex-buffer pass 0 primitive)
              (luv:set-vertex-buffer pass 1 instances)
-             (luv:draw pass vertices count))))
+             (luv:draw pass vertices count))
+    (let ((glows (ship-glows! (ship-gpu-glows ship) (ship-gpu-model ship) state eye com)))
+      (when (plusp glows)
+        (luv:write-buffer (ship-slot-glows slot) (ship-gpu-glows ship))
+        (luv:set-pipeline pass (renderer-pipeline renderer :ship-glow))
+        (luv:set-bind-group pass 0 bind-group)
+        (luv:set-vertex-buffer pass 0 (ship-gpu-corners ship))
+        (luv:set-vertex-buffer pass 1 (ship-slot-glows slot))
+        (luv:draw pass 6 glows)))))

@@ -266,9 +266,10 @@
 
 ;;; The Mule (src/meshes.lisp; decision 80: The Mule's meshes in numbers:
 ;;; geometry, draws, materials and lights). Vertices in ship body axes from
-;;; R; the SHIP block: the rows of q (body -> ICRF), R relative to the eye,
-;;; the gimbal point and the rows of the engine's trim rotation, then the
-;;; light in body axes: the Sun's direction (w: (1 AU / d)^2 x sun-fraction),
+;;; R; the SHIP block: the rows of q (body -> ICRF), R relative to the eye
+;;; (w: the glows' least sigma in pixels), the gimbal point and the rows of
+;;; the engine's trim rotation, then the light in body axes: the Sun's
+;;; direction (w: (1 AU / d)^2 x sun-fraction),
 ;;; the direction to Earth (w: earthshine), the earthshine tint (w: ambient),
 ;;; the eye (w: lights on), the emissive colour. MATERIALS: two vec4s per
 ;;; row of *ship-materials* (r g b specular weight; exponent emission).
@@ -424,6 +425,47 @@
     (set-output color (vec4 (+ (* albedo light) (* (vec3 1.0 1.0 1.0) (+ specular glow))
                                (swizzle ship-emissive :xyz))
                             1.0))))
+
+;; The Mule's glows (src/meshes.lisp ship-glows!): a camera-facing quad of
+;; 4 sigma around CENTRE.xyz (relative to the eye) pulled towards the eye by
+;; SHADE.w m, sigma CENTRE.w m but at least SHIP-ORIGIN.w pixels, the
+;; radiance then scaled down by the area ratio.
+(define-ship-shader ship-glow-vertex
+    (:stage :vertex
+     :inputs ((corner :vec2 :location 0)
+              (centre :vec4 :location 1)
+              (shade :vec4 :location 2))
+     :outputs ((clip-position :vec4 :built-in :position)
+               (offset :vec2 :location 0)
+               (radiance :vec3 :location 1)
+               (sigma :float :location 2)))
+  (let* ((c (swizzle centre :xyz))
+         (d (max (sqrt (dot c c)) 0.001))
+         (point (vec4 (* c (- 1.0 (/ (min (swizzle shade :w) (* d 0.5)) d))) 1.0))
+         (w (dot clip-w point))
+         (focal (sqrt (dot (swizzle clip-y :xyz) (swizzle clip-y :xyz))))
+         (natural (/ (* (swizzle centre :w) focal) (* (max w 1e-6) (swizzle screen :y))))
+         (size (max natural (swizzle ship-origin :w)))
+         (pixels (* corner (* 4.0 size))))
+    (set-output clip-position
+                (vec4 (+ (dot clip-x point) (* (swizzle pixels :x) (swizzle screen :x) w))
+                      (+ (dot clip-y point) (* (swizzle pixels :y) (swizzle screen :y) w))
+                      (dot clip-z point) w))
+    (set-output offset pixels)
+    (set-output radiance (* (swizzle shade :xyz) (/ (* natural natural) (* size size))))
+    (set-output sigma size)))
+
+;; Additive through premultiplied alpha: alpha 0. The Gaussian less its
+;; value at 4 sigma, so a bright glow ends round and smooth inside the quad.
+(define-ship-shader ship-glow-fragment
+    (:stage :fragment
+     :inputs ((offset :vec2 :location 0)
+              (radiance :vec3 :location 1)
+              (sigma :float :location 2))
+     :outputs ((color :vec4 :location 0)))
+  (let* ((g (exp (/ (* -0.5 (dot offset offset)) (* sigma sigma))))
+         (edge 0.00033546262))
+    (set-output color (vec4 (* radiance (/ (max (- g edge) 0.0) (- 1.0 edge))) 0.0))))
 
 ;; ANCHOR is a point in clip space, OFFSET a displacement in pixels.
 (define-frame-shader overlay-vertex
@@ -582,6 +624,10 @@ angle in degrees), weighted by a Gaussian of SIGMA texels, normalised."
   (ship-instanced-vertex))
 (defmethod shader-specification-for ((role (eql :ship-instanced)) (stage (eql :fragment)))
   (ship-fragment))
+(defmethod shader-specification-for ((role (eql :ship-glow)) (stage (eql :vertex)))
+  (ship-glow-vertex))
+(defmethod shader-specification-for ((role (eql :ship-glow)) (stage (eql :fragment)))
+  (ship-glow-fragment))
 (defmethod shader-specification-for ((role (eql :quads)) (stage (eql :vertex)))
   (overlay-vertex))
 (defmethod shader-specification-for ((role (eql :quads)) (stage (eql :fragment)))

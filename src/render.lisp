@@ -11,8 +11,10 @@
   "What a frame draws, at the render time T: the ship (R, V, Q, W as in
 ship-state), M-P, CONTROLS and LOSS from the sim, the Sun and the Moon
 relative to Earth, Earth's body-fixed matrix and the ship's SUN-FRACTION
-(sun-visible-fraction) at T; the hull's SHIP-EMISSIVE colour and
-SHIP-LIGHTS-ON (decision 80), which render-state-update! leaves alone."
+(sun-visible-fraction) at T; the hull's SHIP-EMISSIVE colour,
+SHIP-LIGHTS-ON (decision 80) and LIGHTS-T, the real seconds the clock has
+run, the strobe's clock (decision 100: The lights' clock and the glows'
+numbers), which render-state-update! leaves alone."
   (t 0d0 :type double-float)
   (r (make-vec3) :type vec3)
   (v (make-vec3) :type vec3)
@@ -27,6 +29,7 @@ SHIP-LIGHTS-ON (decision 80), which render-state-update! leaves alone."
   (sun-fraction 1d0 :type double-float)
   (ship-emissive (make-vec3) :type vec3)
   (ship-lights-on t)
+  (lights-t 0d0 :type double-float)
   (scratch (make-vec3) :type vec3))     ; the bodies' velocities, unused
 
 (defun render-state-assign-ship! (out ship)

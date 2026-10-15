@@ -230,3 +230,57 @@
     (true (< 0 (lis::earth-lit-cap r (lis::vec3 0 1 0)) 0.2d0))
     (true (< (abs (- (lis::earth-lit-cap (lis::vec3 lis::+radius-earth+ 0 0) (lis::vec3 0.6d0 0.8d0 0)) 0.6d0))
              1d-12))))
+
+(define-test strobe-on-p
+  ;; 2^30 s is no multiple of the 1.2 s period: K periods just above it.
+  (let ((late (* lis::*strobe-period* (ceiling (expt 2d0 30) lis::*strobe-period*))))
+    (true (lis::strobe-on-p 0.05d0))
+    (false (lis::strobe-on-p 0.5d0))
+    (true (< (expt 2d0 30) late (+ (expt 2d0 30) lis::*strobe-period*)))
+    (true (lis::strobe-on-p (+ late 0.05d0)))
+    (false (lis::strobe-on-p (+ late 0.5d0)))))
+
+(defun glow-state (&key (throttle 0d0) (m-p 28000d0) loss)
+  (let ((state (sim-render-state (lis::new-game-sim))))
+    (lis::controls-set-throttle (lis::render-state-controls state) throttle)
+    (setf (lis::render-state-m-p state) m-p
+          (lis::render-state-loss state)
+          (and loss (lis::make-loss :crash :earth 0d0 100d0 0d0 0d0)))
+    state))
+
+(define-test engine-glow-radiance
+  (is = 0d0 (lis::engine-glow-radiance (glow-state)))
+  (is = 0d0 (lis::engine-glow-radiance (glow-state :throttle 1d0 :m-p 0d0)))
+  (is = 0d0 (lis::engine-glow-radiance (glow-state :throttle 1d0 :loss t)))
+  (loop for throttle from 0.1d0 to 1.0d0 by 0.1d0
+        do (true (< (abs (- (lis::engine-glow-radiance (glow-state :throttle throttle))
+                            (* throttle lis::*engine-glow-radiance*)))
+                    1d-12))))
+
+(define-test ship-glows
+  (let* ((model (mule))
+         (out (make-array (* lis::+glow-floats+ lis::+glow-count+) :element-type 'single-float)))
+    (flet ((glows (state)
+             (let* ((com (lis::mass-properties-com (lis::ship-mass-properties (lis::render-state-m-p state))))
+                    (eye (lis::vec3-add (lis::render-state-r state) (lis::vec3 30 0 0))))
+               (values (lis::ship-glows! out model state eye com) state com eye))))
+      ;; At lights-t 0 the strobe is lit: red, green, strobe.
+      (multiple-value-bind (n state com eye) (glows (glow-state))
+        (is = 3 n)
+        ;; The red light at q (p − c) + r − eye; red radiance.
+        (let ((red (lis::vec3-sub (lis::vec3-add (lis::render-state-r state)
+                                                 (lis::quat-rotate (lis::render-state-q state)
+                                                                   (lis::vec3-sub (lis::vec3 15 -1.95d0 -1.95d0) com)))
+                                  eye)))
+          (dotimes (i 3)
+            (true (< (abs (- (aref out i) (aref red i))) 1e-4)))
+          (is = (float lis::*nav-light-radiance* 1f0) (aref out 4))
+          (is = 0f0 (aref out 5))))
+      (let ((state (glow-state :throttle 1d0)))
+        (setf (lis::render-state-lights-t state) 0.5d0)
+        (is = 3 (glows state))
+        ;; The engine glow last, at the exit after the trim, blue.
+        (true (> (aref out 22) (aref out 20)))
+        (is = 0f0 (aref out 23))
+        (setf (lis::render-state-ship-lights-on state) nil)
+        (is = 1 (glows state))))))

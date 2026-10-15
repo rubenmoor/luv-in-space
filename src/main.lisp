@@ -89,6 +89,8 @@ snap on the first frame and when ELAPSED is nil (decision 76)."
              (extent (luv:canvas-extent context)))
          (note-swapchain-target (game-renderer game) texture extent)
          (clock-frame! (game-clock game) (game-sim game) elapsed)
+         (unless (clock-paused (game-clock game))
+           (incf (render-state-lights-t (game-render-state game)) elapsed))
          (encode-game-frame game encoder texture extent elapsed))))))
 
 (defmethod luv:capture-canvas ((game game)) (game-canvas game))

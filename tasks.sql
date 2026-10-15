@@ -4879,9 +4879,9 @@ tasks for what the plan asks beyond them. A task that writes a plan gets `--kind
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (180, 33, 'create tasks for plan 33: The outside and map views'' overlay of milestone 3', 'split', 'done', 1000, '2026-10-15, tasks.sql: tasks 245–247 for plan 33''s three pieces; no new decisions (decision 129 covers them)', 'Split `plan 33: The outside and map views'' overlay of milestone 3` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
 done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
 tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-15T07:27:15Z', '2026-10-15T07:52:23Z', 167, 0);
-INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (181, 34, 'create tasks for plan 34: Earth''s night lights and clouds', 'split', 'open', 1000, NULL, 'Split `plan 34: Earth''s night lights and clouds` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (181, 34, 'create tasks for plan 34: Earth''s night lights and clouds', 'split', 'done', 1000, '2026-10-15, tasks.sql: tasks 248 (convert and commit the textures, --web), 249 (night lights), 250 (clouds and shadow); no new decisions, decision 130 covers the open numbers', 'Split `plan 34: Earth''s night lights and clouds` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
 done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
-tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-15T07:30:09Z', NULL, 168, 0);
+tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-15T07:30:09Z', '2026-10-15T07:53:25Z', 168, 0);
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (182, 35, 'create tasks for plan 35: Flight screenshots, the live runs and the Done when', 'split', 'open', 1000, NULL, 'Split `plan 35: Flight screenshots, the live runs and the Done when` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
 done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
 tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-15T07:37:10Z', NULL, 169, 0);
@@ -5964,6 +5964,73 @@ INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, crea
 - Docs: `docs/design.md` "Interaction" ("What the outside view adds", as built); `docs/architecture.md` "Files in load order", "Frame passes", "GPU tests" and "Testing" (the new checks and their measured time). In `AGENTS.md` "Layout", `overlay.lisp` gains the message line and the autopilot panel; in "Commands" → "Run", O shows the autopilot panel in the outside and map views.
 
 Done when: plan 33''s "Done when" holds; the tests pass; `nix build` and `scripts/test` pass, with `scripts/test` still near ~15 s.', '2026-10-15T07:52:20Z', NULL, 180, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (248, 34, 'Convert and commit Earth''s night-lights and cloud textures (scripts/convert-earth)', 'work', 'open', NULL, NULL, 'Piece 1 of `plan 34: Earth''s night lights and clouds`. Numbers and method: `decision 130: Earth''s night lights and clouds in numbers: conversion, packing, radiance, fade, cloud albedo and shadow`; size and attribution rules: `decision 13: Asset storage and attribution`; sources and URLs: `docs/design.md` "Sources" (Earth, night; Earth, clouds) and `decision 40: Earth''s look and drag`.
+
+## What
+- `flake.nix`: ImageMagick from the pinned nixpkgs in the dev shell (not in the package''s runtime closure).
+- `scripts/convert-earth [out-dir]` (+ helper if needed), modelled on `scripts/convert-stars`: enters the dev shell, downloads `BlackMarble_2016_3km.jpg` and `cloud_combined_8192.tif` into a `mktemp -d` directory (deleted on exit, trap), checks pinned SHA-256s (fail loudly on mismatch), then:
+  - night: `-strip`, linear light (`-colorspace RGB`), background removed as max(0, x − F)/(1 − F), Lanczos to `5400x2700!`, back to sRGB, JPEG quality 92 → `black-marble-5400.jpg` (~1 MB);
+  - clouds: greyscale in the file''s own values, `-strip`, Lanczos `5400x2700!`, quality 90 → `clouds-5400.jpg` (≤ 5 MB, ~3.5 MB);
+  - default out-dir `assets/earth/`.
+- F: measure once from the 3 km image (unlit Sahara ~23° N 10° E, open Pacific ~0° 150° W must read 0 after it, with margin for JPEG noise); fix it in the script with a comment saying how it was measured.
+- Determinism: two runs give byte-identical files (check: run into `/tmp/x` twice and compare SHA-256s with the committed files). If ImageMagick threading breaks this, pin `-limit thread 1` or equivalent.
+- `assets/earth/SOURCE.md`: per file URL, fetch date, byte size, SHA-256 of source and result, layout (equirectangular, 0° longitude at the centre as the day map — verify), the derivation (command, F, filters, quality), credits "NASA Earth Observatory images by Joshua Stevens, using Suomi NPP VIIRS data from Miguel Román, NASA GSFC" (night) and "NASA Goddard Space Flight Center Image by Reto Stöckli" (clouds), NASA''s media guidelines as for the day map. `CREDITS.md` gains both credits.
+- `src/assets.lisp`: `merge-alpha-pixels` (night RGB + the cloud image''s R byte as A, consing one result array, inputs as `load-image-pixels` returns them); `downsample-pixels` already averages A. Not yet called by the renderer (pieces 2 and 3).
+
+## Tests (`tests/assets.lisp`, one shared decode of each file, as the Blue Marble''s)
+- Each file exists, ≤ 5 MB, decodes to 5400 × 2700; `assets/` ≤ 25 MB in total.
+- Night: the Nile delta (30.0° N, 31.2° E) and the Po valley (~45.2° N, 9.5° E) bright: R+G+B above 200 at the texel or the max of its 3 × 3 block; the Sahara (23° N 10° E) and the open Pacific (0°, 150° W) texels 0 per byte within 2.
+- Clouds: the 1/8 copy''s (`downsample-pixels`) mean over the Southern Ocean (50–60° S) above the Sahara''s (15–30° N, 0–30° E) by at least 50 of 255.
+- `merge-alpha-pixels` keeps RGB and puts the cloud byte in A (small synthetic arrays).
+- `scripts/test` stays near its budget (~13 s); if the extra decodes cost much, say so in the note.
+
+## Docs
+- `docs/architecture.md` "Assets" (files, sizes, the script) and "Files in load order" (`assets.lisp`: `merge-alpha-pixels`).
+- `AGENTS.md` "Commands" (`scripts/convert-earth [out-dir]`, needs network, its measured time) and "Layout" (`assets/earth/`, `scripts/`).
+
+## Done when
+- A second run of `scripts/convert-earth /tmp/x` gives the same SHA-256s as the committed files.
+- `nix build` installs both under `result/share/luv-in-space/assets/earth/`; `scripts/test` passes.
+- If a source URL is gone or its hash differs from `docs/design.md` "Sources", record the replacement (`pm decision record`) and update "Sources".', '2026-10-15T07:53:07Z', NULL, 181, 1);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (249, 34, 'Night lights in the Earth shader', 'work', 'open', NULL, NULL, 'Piece 2 of `plan 34: Earth''s night lights and clouds`; needs the textures and `merge-alpha-pixels` of piece 1 (`task 248: Convert and commit Earth''s night-lights and cloud textures (scripts/convert-earth)`). Numbers: `decision 130: Earth''s night lights and clouds in numbers: conversion, packing, radiance, fade, cloud albedo and shadow`. Rendering files only (`decision 12: Module layout and package split`); the shader stays live (`decision 11: Render pipelines are luv live shader pipelines`).
+
+## What
+- `src/render.lisp`: `*earth-night-texture*` ("earth/black-marble-5400.jpg") and `*earth-clouds-texture*` ("earth/clouds-5400.jpg", loaded in piece 3); at renderer start decode the night map, A = 255 for now (piece 3 merges the clouds into A), upload with its 1/8 copy beside the day map (`texture-from-pixels`, `:rgba8-unorm-srgb`), the bind group gains the two views (the day map''s sampler serves). One extra 58 MB texture, not two (piece 3 reuses it).
+- `src/impostors.lisp`: tunables `*night-lights-radiance*` 0.08 and, now or in piece 3 (choose one layout and keep it), `*cloud-albedo*` 0.9, `*cloud-shadow*` 0.5, `*cloud-height*` 5 km, `*cloud-shadow-cap*` 40 km into the frame uniforms: `earth-shade`''s free component and/or one more vec4 (the worker picks; the shader comment names each slot); live-redefinable like `*rim-strength*`.
+- `src/shaders.lisp` `earth-fragment`: sample the night texture and its 1/8 copy mixed by the same footprint as the day map; add lights × `*night-lights-radiance*` × smoothstep from n·s = +0.05 (off) to −0.10 (full); rim and halo unchanged.
+
+## Tests (`tests/render.lisp`, in `render-frames`'' canvas, one frame each, comparisons against the same frame with the tunable at 0)
+- A nadir camera at night over Europe or the Nile (start epoch 2040-01-01 00:00 UTC is night there; set by state, not flown): bright pixel count above zero and mean above the lights-off frame by at least 5.
+- The existing "night side at the nadir < 8" stays; if its nadir now shows lights, move it over open ocean and say so in its comment.
+- A sunlit nadir frame differs from the same with lights off by at most 1 per pixel.
+
+## Docs
+- `docs/design.md` "Earth" night bullet: "As built" with the numbers.
+- `docs/architecture.md` "Files in load order" (`impostors.lisp`, `render.lisp`, the tunables) and "GPU tests".
+
+## Done when
+- `scripts/screenshot` or `./sly screenshot` over a night pass shows lit cities (look at it).
+- Startup decode measured, under 0.5 s more than before (state the number in the note); `scripts/test` within its ~15 s; `nix build` passes.', '2026-10-15T07:53:07Z', NULL, 181, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (250, 34, 'Clouds and their shadow in the Earth shader', 'work', 'open', NULL, NULL, 'Piece 3 of `plan 34: Earth''s night lights and clouds`; needs `task 249: Night lights in the Earth shader` and its night texture binding. Numbers: `decision 130: Earth''s night lights and clouds in numbers: conversion, packing, radiance, fade, cloud albedo and shadow`. Rendering files only (`decision 12: Module layout and package split`); the shader stays live (`decision 11: Render pipelines are luv live shader pipelines`).
+
+## What
+- `src/render.lisp`: at renderer start decode `*earth-clouds-texture*` too and merge it into the night texture''s A with `merge-alpha-pixels` before the upload and its 1/8 copy (A linear: `:rgba8-unorm-srgb` decodes RGB only). Re-measure the startup decode.
+- `src/impostors.lisp`: `*cloud-albedo*` 0.9, `*cloud-shadow*` 0.5, `*cloud-height*` 5 km, `*cloud-shadow-cap*` 40 km in the frame uniforms if piece 2 didn''t add them; `cloud-shadow-offset`: a pure CPU function of the Sun''s zenith angle (or n·s) giving min(h·tan z, cap), the shader''s twin in step (same formula, a comment pointing at each other).
+- `src/shaders.lisp` `earth-fragment`: clouds white × `*cloud-albedo*` mixed over the ground by α, lit by max(n·s, 0) as the ground; the ground darkened by (1 − `*cloud-shadow*` α′), α′ sampled at the ground point moved toward the Sun by `cloud-shadow-offset`; lights dimmed by (1 − 0.6 α); rim and halo unchanged.
+
+## Tests (`tests/render.lisp`, `tests/impostors.lisp`)
+- A sunlit nadir frame over a cloudy region (Southern Ocean or ITCZ, picked from the texture) reads its mean at least 10 above the same frame with `*cloud-albedo*` 0 and `*cloud-shadow*` 0.
+- Earth from 40,000 km still round within 2 px and lit (extend the existing check if there is one).
+- `cloud-shadow-offset` against closed form: 0 at the subsolar point, h·tan z below the cap, the cap at grazing light.
+
+## Docs
+- `docs/design.md` "Earth" clouds bullet: "As built" with the numbers.
+- `docs/architecture.md` "Files in load order" and "GPU tests".
+- `docs/luv-capabilities.md` "Spheres and planet surfaces" (or its clouds line): from "assumed" to "ran", with the run.
+
+## Done when
+- A screenshot from the start state (`scripts/screenshot`) shows clouds over the day side and their shadows near the terminator (look at it).
+- `scripts/test` passes within its budget; `nix build` passes.', '2026-10-15T07:53:07Z', NULL, 181, 0);
 
 INSERT INTO decision (id, subject, status, options, body, answer, reason, created_at, closed_at, created_by_task, signoff, kind, decided_by_task, consequences) VALUES (1, 'How the game consumes luv', 'answered', '[]', 'Findings of `task 17: Build and run luv''s programs and test suite; record the runs` (docs/luv-capabilities.md, Packaging and Runs).
 - luv''s flake exports apps, devShells, packages and lib; lib has only environmentFor, which returns everything the packaging needs (pkgs, lisp, applicationEnvironment/Packages, developmentEnvironmentHook, slynkSource, swashPackage, …). No overlays.
@@ -6312,6 +6379,7 @@ INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, b
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (177, 178, '2026-10-15T07:48:28Z', '2026-10-15T07:49:52Z', 'done', NULL, 0, '8246117ad16904a3e7151ffeb2fd1493fbdcf329', 'claude-opus-5-5[1m]', '97cda4a9-3515-4491-ae9b-fdd22470d976', 7, 14, 7440, 299663, 44757, 0.56684459999999992, 2373073);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (178, 179, '2026-10-15T07:49:52Z', '2026-10-15T07:51:35Z', 'done', NULL, 0, '2a676f38d456a6df915e9f43734df00f3c5012d3', 'claude-opus-5-5[1m]', 'fbed1ea6-f835-4dfc-bcbf-0a747a2e3cd3', 8, 16, 9195, 363221, 56027, 0.7048242, 2373073);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (179, 180, '2026-10-15T07:51:35Z', '2026-10-15T07:52:28Z', 'done', NULL, 0, '2f23ba66460587e06a9d10ff978c6887ee3e80d2', 'claude-opus-5-5[1m]', '4bd1331c-a634-4fce-97ab-e13b2e99234a', 8, 16, 4988, 339894, 45506, 0.53185080000000018, 2373073);
+INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (180, 181, '2026-10-15T07:52:28Z', '2026-10-15T07:53:31Z', 'done', NULL, 0, '2b32fa0a352c57ead2f94a9586b2c3d4e7666090', 'claude-opus-5-5[1m]', '80863ead-6937-45ac-a00e-36b9e5bf8d1c', 9, 18, 6255, 385476, 41858, 0.5371312, 2373073);
 
 INSERT INTO task_decision (task_id, decision_id) VALUES (44, 28);
 INSERT INTO task_decision (task_id, decision_id) VALUES (44, 45);

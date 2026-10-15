@@ -45,7 +45,7 @@ Luv in Space is a showcase for [luv](https://github.com/mbrock/luv), Mikael Broc
 ## Layout
 - `flake.nix`: luv as a pinned input, the package (`nix build`), `apps.default` (`nix run`), the dev shell, the check (`nix flake check`).
 - `luv-in-space.asd`: systems `luv-in-space` (`src/`), `luv-in-space/program` (the executable) and `luv-in-space/tests` (`tests/`).
-- `src/`: the walking skeleton, `PLACEHOLDER(23)` (a lit Earth placeholder, stars, a label), plus the simulation files built so far: `math.lisp`, `units.lisp`, `bodies.lisp`, `orbits.lisp`, `physics.lisp`, `ship.lisp`, `controls.lisp`, `clock.lisp`; `docs/architecture.md` "Files in load order" lists every file, milestone by milestone, and what each holds.
+- `src/`: the walking skeleton, `PLACEHOLDER(23)` (a lit Earth placeholder, stars, a label), plus the simulation files built so far: `math.lisp`, `units.lisp`, `bodies.lisp`, `orbits.lisp`, `physics.lisp`, `ship.lisp`, `controls.lisp`, `clock.lisp`, `hazards.lisp`; `docs/architecture.md` "Files in load order" lists every file, milestone by milestone, and what each holds.
 - `scripts/`: `test`, `screenshot`, the build entry (`build.lisp`) and the `./sly` client; `./sly` and `sly-server.lisp` at the root.
 - `docs/`: the source of truth for features after `milestone 1`; cite their sections when implementing.
   - `luv-capabilities.md`: what luv offers, measured, and the gaps with their workarounds here.

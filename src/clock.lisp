@@ -93,8 +93,9 @@ controls-attitude-fn's, without a closure per step."
          (controls (sim-controls sim))
          (time (sim-t sim))
          (coarse (> level *fine-levels-max*))
-         (cut-after nil))
-    (declare (type double-float time))
+         (cut-after nil)
+         (r0 (make-vec3)) (v0 (make-vec3)) (q0 (make-quat)))
+    (declare (type double-float time) (dynamic-extent r0 v0 q0))
     (flet ((engine-on-p ()
              (and (> (ship-engine-force (controls-throttle controls)) 0d0)
                   (> (ship-state-m-p ship) 0d0)))
@@ -126,17 +127,21 @@ controls-attitude-fn's, without a closure per step."
               (setf h h-cut cut-after t))))
         (when (and until (> until time) (< (- until time) h))
           (setf h (- until time) cut-after nil))
+        (replace r0 (ship-state-r ship))
+        (replace v0 (ship-state-v ship))
+        (replace q0 (ship-state-q ship))
         (if coarse
             (let ((*hold-controls* controls))
               (flight-step! ship controls h time (sim-model sim) #'kinematic-hold-attitude))
             (flight-step! ship controls h time (sim-model sim)))
-        ;; PLACEHOLDER(104): the crash test of hazards.lisp, from the step's start state.
         (setf (sim-t sim) (+ time h))
         (incf (sim-steps sim))
         (let ((cutoff (sim-cutoff sim)))
           (when (or cut-after (and cutoff (>= (ship-state-dv ship) cutoff)))
             (cut!)))
-        (values (truncate (* h (/ +fine-step+))))))))
+        (let ((ticks (truncate (* h (/ +fine-step+)))))
+          (crash-test! sim r0 v0 q0 ticks)
+          ticks)))))
 
 (declaim (inline sim-step!))
 (defun sim-step! (sim level &key until)
@@ -144,7 +149,8 @@ controls-attitude-fn's, without a closure per step."
 72): the fine step to ×4, above it the coarse step with kinematic attitude
 (an inertial hold engaged first if no hold is), shortened to land on UNTIL
 (a grid time; one not ahead is ignored) and on the Δv cut-off, then
-flight-step! with SIM's model. Returns h, or nil for a lost sim. Hot
+flight-step! with SIM's model, then the crash test (a crash leaves SIM
+lost at the impact, hazards.lisp). Returns h, or nil for a lost sim. Hot
 callers declare it inline: a full call boxes h."
   (let ((ticks (sim-step-ticks! sim level until)))
     (and ticks (* ticks +fine-step+))))

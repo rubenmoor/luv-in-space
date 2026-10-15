@@ -431,6 +431,10 @@ SHOT: SIM's coast shot (autopilot-coast-shot) if already run."
 (defparameter *plan-iterations* 8 "Newton steps at most, then \"NOT CONVERGED\"; decision 117.")
 (defparameter *rendezvous-halvings* 4
   "A rendezvous's Newton step that worsens the largest residual is halved back at most this often.")
+(defparameter *rendezvous-stall-tolerance* 3d0
+  "Tolerances a stalled rendezvous Newton accepts its best shot within: the
+:departure's cut lands on a 1/64 s tick (0.044 m/s at full throttle), which
+moves the arrival 100–300 m on an hour's transfer; decision 164.")
 (defparameter *shot-perturbation* 1d0
   "m/s: the Jacobian's finite difference; well above the cut's grain (a
 1/64 s tick at full throttle, 0.044 m/s wet).")
@@ -441,7 +445,7 @@ SHOT: SIM's coast shot (autopilot-coast-shot) if already run."
   "s: a shot whose plan never ends (no propellant) stops this after its last burn's planned end.")
 (declaim (type double-float *plan-floor-margin* *plan-moon-margin* *goal-altitude-max*
                *apsis-tolerance-fraction* *apsis-tolerance-min* *plane-tolerance*
-               *shot-perturbation* *shot-cap-margin*)
+               *shot-perturbation* *shot-cap-margin* *rendezvous-stall-tolerance*)
          (type fixnum *plan-iterations* *rendezvous-halvings* *plan-max-burns* *plan-max-residuals*
                *retime-pool*))
 
@@ -647,6 +651,9 @@ pivoting; a singular J J ᵀ is regularised. OUT."
   (retime-chosen nil :type boolean)
   (retime-own 0d0 :type double-float)           ; m/s the candidate's own times cost in the model
   (last-largest 0d0 :type double-float)         ; a rendezvous: the accepted shot's largest residual
+  (base-params (make-array (* 3 *plan-max-burns*) :element-type 'double-float :initial-element 0d0)
+   :type (simple-array double-float (*)))       ; … and its parameters
+  (tolerance 1d0 :type double-float)            ; the largest residual accepted, more once stalled
   (fraction 1d0 :type double-float)             ; of the last step applied
   (halvings 0 :type fixnum)
   (iteration 0 :type fixnum)                    ; Newton steps taken
@@ -963,6 +970,7 @@ without a plan."
              (params (autopilot-job-params job)))
         (assert (<= n *plan-max-burns*))
         (setf (autopilot-job-burn-count job) n
+              (autopilot-job-tolerance job) 1d0
               ;; a rendezvous's Newton: the :departure's and :arrival's Δv
               (autopilot-job-fixed job)
               (if rendezvous
@@ -1014,17 +1022,21 @@ without a plan."
   "JOB's shot finished: a base shot converged goes to :check, else the
 Jacobian's columns one shot each, then the minimum-norm step and the next
 base shot; past *plan-iterations* steps \"NOT CONVERGED\" (a rendezvous:
-the next candidate, job-next-candidate!). The parameters are the burns'
-after the fixed ones (autopilot-job-fixed)."
+the next candidate, job-next-candidate!). A rendezvous's Newton stalled
+(its step halved *rendezvous-halvings* times without gain, or past
+*plan-iterations*) takes its best shot within *rendezvous-stall-tolerance*
+(shot again if it was not the last). The parameters are the burns' after
+the fixed ones (autopilot-job-fixed)."
   (let* ((column (autopilot-job-column job))
          (n-params (* 3 (autopilot-job-burn-count job)))
          (first (* 3 (autopilot-job-fixed job)))
-         (free (- n-params first)))
+         (free (- n-params first))
+         (rendezvous (eq (autopilot-job-preset job) :rendezvous)))
     (if (< column 0)
         (multiple-value-bind (m largest) (job-shot-residuals! job (autopilot-job-residuals job))
           (setf (autopilot-job-residual-count job) m)
           (cond ((job-retime-due-p job) (job-retime-start! job))
-                ((and (eq (autopilot-job-preset job) :rendezvous)
+                ((and rendezvous
                       (> (autopilot-job-iteration job) 0)
                       (> largest (autopilot-job-last-largest job))
                       (< (autopilot-job-halvings job) *rendezvous-halvings*))
@@ -1037,17 +1049,23 @@ after the fixed ones (autopilot-job-fixed)."
                    (setf (autopilot-job-fraction job) half)
                    (incf (autopilot-job-halvings job))
                    (job-shoot! job)))
-                ((or (<= largest 1d0)
+                ((or (<= largest (autopilot-job-tolerance job))
                      ;; A crash or an abort: :check refuses it.
                      (sim-loss (prediction-sim (autopilot-job-shot job)))
                      (prediction-abort (autopilot-job-shot job)))
                  (setf (autopilot-job-stage job) :check))
+                ((and rendezvous
+                      (or (>= (autopilot-job-iteration job) *plan-iterations*)
+                          (and (> (autopilot-job-iteration job) 0)
+                               (> largest (autopilot-job-last-largest job)))))
+                 (job-stalled! job largest))
                 ((or (>= (autopilot-job-iteration job) *plan-iterations*)
                      (null (shot-last-cut job)))
-                 (if (eq (autopilot-job-preset job) :rendezvous)
+                 (if rendezvous
                      (job-next-candidate! job "NOT CONVERGED")
                      (job-refuse! job "NOT CONVERGED")))
                 (t (setf (autopilot-job-last-largest job) largest)
+                   (replace (autopilot-job-base-params job) (autopilot-job-params job))
                    (job-shoot! job first))))
         (let ((out (autopilot-job-column-residuals job))
               (base (autopilot-job-residuals job))
@@ -1068,6 +1086,22 @@ after the fixed ones (autopilot-job-fixed)."
                       (autopilot-job-halvings job) 0)
                 (incf (autopilot-job-iteration job))
                 (job-shoot! job)))))))
+
+(defun job-stalled! (job largest)
+  "JOB's rendezvous Newton stalled, its last shot's largest residual
+LARGEST: its best shot (the last, or the last step's base shot again)
+accepted within *rendezvous-stall-tolerance*, else the next candidate
+\"NOT CONVERGED\"."
+  (let* ((last (or (= (autopilot-job-iteration job) 0)
+                   (<= largest (autopilot-job-last-largest job))))
+         (best (if last largest (autopilot-job-last-largest job))))
+    (cond ((or (> (autopilot-job-tolerance job) 1d0) (> best *rendezvous-stall-tolerance*))
+           (job-next-candidate! job "NOT CONVERGED"))
+          (t (setf (autopilot-job-tolerance job) *rendezvous-stall-tolerance*)
+             (if last
+                 (setf (autopilot-job-stage job) :check)
+                 (progn (replace (autopilot-job-params job) (autopilot-job-base-params job))
+                        (job-shoot! job)))))))
 
 (defun shot-refusal (job)
   "The refusal of JOB's final shot and candidate, or nil: a node below

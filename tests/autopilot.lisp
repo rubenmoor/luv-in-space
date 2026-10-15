@@ -848,10 +848,10 @@ Skua Yard 5 on its rails, at its velocity."
   (let ((pass (cdr (assoc key (lis::rendezvous-part-passes (lis::burn-plan-rendezvous plan))))))
     (true (or (null pass) (>= pass least)) "~A ~,1F m" key pass)))
 
-(defun check-arrival (job)
-  "JOB's final shot meets the aim point within 100 m and 0.1 m/s at the :arrival cut."
+(defun check-arrival (job &optional (tolerances 1d0))
+  "JOB's final shot meets the aim point within TOLERANCES × 100 m and 0.1 m/s at the :arrival cut."
   (let ((largest (nth-value 1 (lis::rendezvous-residuals! job (make-array 6 :element-type 'double-float)))))
-    (true (<= largest 1d0) "~,3F of the tolerance" largest)))
+    (true (<= largest tolerances) "~,3F of the tolerance" largest)))
 
 (define-test rendezvous-plan-tern
   ;; From the start state, 18 h (the same plan as 48 h at a third of the
@@ -879,11 +879,19 @@ Skua Yard 5 on its rails, at its velocity."
             (is = 100d0 (lis::rendezvous-part-range part))))))))
 
 (define-test rendezvous-plan-k-17
-  ;; :point, 18 h: ≥ 208.5 m from K-17's CoM, within 3 % of 219.5 m/s.
-  (multiple-value-bind (plan job) (rendezvous-now (model-sim :point) '(:k-17 :limit 64800d0))
+  ;; :point, 24 h: ≥ 208.5 m from K-17's CoM, within 3 % of 219.5 m/s. The
+  ;; search's first candidate (B, 218.55 m/s) is planned (218.14): its
+  ;; Newton stalls at 1.45 tolerances, the :departure's cut grain, and takes
+  ;; its best shot (decision 164; before, five candidates failed and A's
+  ;; 219.70 was planned in 1.3 s).
+  (multiple-value-bind (plan job) (rendezvous-now (model-sim :point) '(:k-17 :limit 86400d0))
     (when plan
-      (check-arrival job)
+      (is = 0 (lis::autopilot-job-index job))
+      (is equal '(:phasing :departure :arrival) (plan-labels plan))
+      (check-arrival job lis::*rendezvous-stall-tolerance*)
       (check-pass plan :k-17 208.5d0)
+      (true (< (relative-error (plan-dv plan) (job-search-total job)) 0.01)
+            "~,2F m/s, search ~,2F" (plan-dv plan) (job-search-total job))
       (true (< (relative-error (plan-dv plan) 219.5d0) 0.03) "~,2F m/s" (plan-dv plan)))))
 
 (define-test rendezvous-plan-plane

@@ -389,7 +389,9 @@ with no hold, the next step engages an inertial hold (sim-step!)."
 (declaim (inline clock-step!))
 (defun clock-step! (clock sim &optional budget)
   "One step of SIM under CLOCK (decision 72, decision 73): the lowering
-rules, the hook's until, sim-step! at the level, the previous state and
+rules, the hook's until, sim-step! at the level after the hook (a hook
+that changes the controls or the level applies clock-check-level! again
+itself), the previous state and
 the held flag kept. With BUDGET (game s, the frame's accumulator) no step
 when the next h exceeds it. The step's 1/64 s ticks, or nil when none was
 taken (lost, or over BUDGET)."
@@ -398,9 +400,9 @@ taken (lost, or over BUDGET)."
   (when (sim-loss sim)
     (return-from clock-step! nil))
   (clock-check-level! clock sim)
-  (let* ((level (clock-level clock))
-         (hook (clock-hook clock))
-         (until (and hook (funcall hook clock sim))))
+  (let* ((hook (clock-hook clock))
+         (until (and hook (funcall hook clock sim)))
+         (level (clock-level clock)))           ; after the hook: its warp acts now
     (declare (type (or null double-float) until))
     (unless (and budget (< budget (the double-float (step-h sim level until))))
       (ship-state-assign! (clock-previous clock) (sim-ship sim))

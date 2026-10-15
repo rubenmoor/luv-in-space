@@ -109,3 +109,110 @@
         (true (> time impact))
         (true (< (abs (- radius (- *earth-crash-radius* 50d3))) 1d0)
               "periapsis ~,3F m off" (- radius (- *earth-crash-radius* 50d3)))))))
+
+;;; run-flight (headless): actions, waits, expectations, failures, the record
+
+(defun shot (record label)
+  "The :screenshot entry LABEL of RECORD."
+  (find-if (lambda (e) (and (eq (lis::flight-entry-kind e) :screenshot)
+                            (equal (lis::flight-entry-label e) label)))
+           record))
+
+(defun shot-t (record label) (lis::flight-entry-t (shot record label)))
+
+(defun failure-text (record)
+  (let ((e (lis::flight-record-failure record)))
+    (and e (lis::flight-entry-label e))))
+
+(define-test flights-run-timing
+  (let ((record (lis::run-flight "((:at 0.01 :screenshot \"a\") (:after 300) (:screenshot \"b\"))")))
+    (true (lis::flight-record-passed-p record))
+    (is = (+ (lis::start-t) 1/64) (shot-t record "a"))
+    (is = 300 (- (shot-t record "b") (shot-t record "a")))
+    (is equal '(:screenshot :screenshot :end) (mapcar #'lis::flight-entry-kind record))
+    (is = 3 (length (lis::flight-record-lines record)))))
+
+(define-test flights-run-cutoff
+  (let ((burn-dv (/ (* lis::*engine-thrust* lis::+fine-step+)
+                    (+ lis::*ship-dry-mass* lis::*propellant-full*)))
+        (apoapsides '()))
+    (dolist (script '("((:throttle 1.0) (:after-dv 25.0 :throttle 0) (:screenshot \"cut\"))"
+                      "((:warp :coast) (:throttle 1.0) (:after-dv 25.0 :throttle 0) (:screenshot \"cut\"))"))
+      (multiple-value-bind (record sim) (lis::run-flight script)
+        (true (lis::flight-record-passed-p record) "~{~A~%~}" (lis::flight-record-lines record))
+        (let* ((ship (lis::sim-ship sim))
+               (burn (find :burn record :key #'lis::flight-entry-kind)))
+          (is = 0 (lis::controls-throttle (lis::sim-controls sim)))
+          (true (<= 25d0 (lis::ship-state-dv ship) (+ 25d0 burn-dv))
+                "odometer ~,6F" (lis::ship-state-dv ship))
+          (true (on-grid-p (lis::sim-t sim)))
+          (true burn)
+          (when burn
+            (true (<= 25d0 (lis::flight-entry-dv burn) (+ 25d0 burn-dv))))
+          (push (nth-value 1 (lis::prediction-apsis (run-prediction sim) :apoapsis))
+                apoapsides))))
+    (true (< (abs (- (first apoapsides) (second apoapsides))) 1d0)
+          "apoapsides ~,3F m apart" (- (first apoapsides) (second apoapsides)))))
+
+(define-test flights-run-waits
+  ;; An event wait ends at the grid point at or after the predicted time, less :before.
+  (let* ((burn "(:warp :coast) (:throttle 1.0) (:after 2 :throttle 0)")
+         (cut (nth-value 1 (lis::run-flight (format nil "(~A)" burn))))
+         (apoapsis (lis::prediction-event (run-prediction cut) :apoapsis)))
+    (true apoapsis)
+    (when apoapsis
+      (is = (lis::grid-ceiling apoapsis)
+          (shot-t (lis::run-flight (format nil "(~A (:wait :apoapsis) (:screenshot \"ap\"))" burn))
+                  "ap"))
+      (is = (lis::grid-ceiling (- apoapsis 10))
+          (shot-t (lis::run-flight
+                   (format nil "(~A (:wait :apoapsis :before 10) (:screenshot \"ap\"))" burn))
+                  "ap"))))
+  (multiple-value-bind (record sim)
+      (lis::run-flight "((:warp :coast) (:wait :date \"2040-01-01T01:00:00\"))")
+    (true (lis::flight-record-passed-p record))
+    (is = (lis::utc->grid-t 2040 1 1 1 0 0) (lis::sim-t sim)))
+  (multiple-value-bind (record sim)
+      (lis::run-flight "((:wait :altitude-below 100e3 :within 10) (:screenshot \"never\"))")
+    (false (lis::flight-record-passed-p record))
+    (true (search "ALTITUDE-BELOW 100.000 KM" (failure-text record)) "~A" (failure-text record))
+    (false (shot record "never"))
+    (is = (+ (lis::start-t) 10) (lis::sim-t sim))))
+
+(define-test flights-run-refusal
+  (let ((record (lis::run-flight "((:throttle 1.0) (:warp 1000) (:screenshot \"never\"))")))
+    (is equal "WARP REFUSED: ENGINE ON, LIMIT ×10" (failure-text record))
+    (false (shot record "never"))
+    (is eq :end (lis::flight-entry-kind (first (last record))))))
+
+(define-test flights-run-keys
+  (let* ((record (lis::run-flight "((:keys (:w) :for 2) (:screenshot \"turned\")
+ (:after 30) (:expect :rate-below 0.01))"))
+         (turned (lis::flight-entry-sim (shot record "turned"))))
+    (true (lis::flight-record-passed-p record) "~{~A~%~}" (lis::flight-record-lines record))
+    (is eq :rate-damping (lis::controls-attitude-mode (lis::sim-controls turned)))
+    (true (> (abs (aref (lis::ship-state-w (lis::sim-ship turned)) 1)) 1d-3))
+    (is equalp #(0 0 0) (lis::controls-rotation-keys (lis::sim-controls turned)))))
+
+(define-test flights-run-death
+  ;; Radial but for 1 m/s across: the osculating elements stay defined.
+  (let ((fall (crash-sim (lis::vec3 0 (- (+ lis::+radius-earth+ 1000d3)) 0) (lis::vec3 1 0 0))))
+    (let ((record (lis::run-flight "((:warp :coast) (:wait :impact))" :sim fall)))
+      (false (lis::flight-record-passed-p record))
+      (let ((failure (lis::flight-record-failure record)))
+        (true failure)
+        (when failure
+          (is eq :crash (lis::loss-cause (lis::flight-entry-loss failure))))))
+    (multiple-value-bind (record sim)
+        (lis::run-flight "((:warp :coast) (:wait :impact) (:expect :lost :crash)
+ (:expect :impact-as-predicted 0.1) (:screenshot \"lost\"))" :sim fall)
+      (true (lis::flight-record-passed-p record) "~{~A~%~}" (lis::flight-record-lines record))
+      (true (lis::sim-lost-p sim))
+      (true (lis::sim-lost-p (lis::flight-entry-sim (shot record "lost")))))
+    (multiple-value-bind (record sim)
+        (lis::run-flight "((:warp :coast) (:wait :impact) (:expect :lost :crash)
+ (:restart) (:expect :start-state))" :sim fall)
+      (true (lis::flight-record-passed-p record) "~{~A~%~}" (lis::flight-record-lines record))
+      (true (equalp sim fall)))
+    ;; Not lost: the restart is refused.
+    (true (search "NOT LOST" (failure-text (lis::run-flight "((:restart))"))))))

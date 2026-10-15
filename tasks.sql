@@ -5324,7 +5324,7 @@ INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, crea
 
 ## Done when
 - `nix build` and `scripts/test` pass; the docs above match what was built.', '2026-10-15T07:42:42Z', '2026-10-15T15:18:42Z', 173, 0);
-INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (207, 27, 'The Lambert solver', 'work', 'open', NULL, NULL, 'Piece 1 of `plan 27: Autopilot: rendezvous, phasing, clear approaches and station-keeping` (read its "The Lambert solver" and "Pieces" sections). Follows `decision 119: Rendezvous planning in milestone 3: Lambert, search, aim and stop points, checks, shooting, burns`. Files: `src/orbits.lisp`, `tests/orbits.lisp`, `docs/architecture.md`.
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (207, 27, 'The Lambert solver', 'work', 'done', NULL, '2026-10-15, src/orbits.lisp (lambert-into!, stumpff-cs), tests/orbits.lisp (lambert-textbook, lambert-cases with 64 committed cases, lambert-near-180, lambert-conses-nothing), docs/architecture.md (Files in load order, Testing: ~0.45 µs a solve)', 'Piece 1 of `plan 27: Autopilot: rendezvous, phasing, clear approaches and station-keeping` (read its "The Lambert solver" and "Pieces" sections). Follows `decision 119: Rendezvous planning in milestone 3: Lambert, search, aim and stop points, checks, shooting, burns`. Files: `src/orbits.lisp`, `tests/orbits.lisp`, `docs/architecture.md`.
 
 ## What
 - `(lambert-into! v1 v2 r1 r2 tof mu normal)`: single-revolution universal-variable solver (Vallado, "Lambert''s problem, universal variables"); writes v1, v2, returns t or nil.
@@ -5341,7 +5341,7 @@ INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, crea
 
 ## Done when
 - Tests pass; `nix build` and `scripts/test` pass.
-- `docs/architecture.md` "Files in load order" names `lambert-into!` in `orbits.lisp`.', '2026-10-15T07:43:28Z', NULL, 174, 0);
+- `docs/architecture.md` "Files in load order" names `lambert-into!` in `orbits.lisp`.', '2026-10-15T07:43:28Z', '2026-10-15T15:56:35Z', 174, 0);
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (208, 27, 'Rendezvous stop points, aim points and the terminal check', 'work', 'open', NULL, NULL, 'Piece 2 of `plan 27: Autopilot: rendezvous, phasing, clear approaches and station-keeping` (read "Stop points, the terminal frame and aim points"). Follows `decision 119: Rendezvous planning in milestone 3: Lambert, search, aim and stop points, checks, shooting, burns`, `decision 121: Skua Yard''s stop point while the drop point is occupied`, `decision 59: Rendezvous transfers pass the target clear`, `decision 111: Fixture axes of Derelict K-17 and Skua Yard''s rocks`, `decision 63: POD 14 and Skua Yard''s layout from milestone 3`. Stands on `task 183: Rails and attitude modes of the objects`, `task 184: The places: the twelve object definitions and the five presets`, `task 186: Removal and re-entry of objects`, `task 190: Capture, the stack and berthing` (fixtures'' free/occupied flags), `task 187: The stack and the ship''s collision shapes` (`*grapple-tip*`). Files: `src/places.lisp`, `src/autopilot.lisp`, `tests/places.lisp`, `tests/autopilot.lisp`, `docs/design.md`.
 
 ## What
@@ -6236,6 +6236,21 @@ INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, crea
 
 ## Done when
 - `scripts/test` near ~15 s wall at load average ~2; `nix build` and `scripts/test` pass; "Testing" updated.', '2026-10-15T15:18:07Z', '2026-10-15T15:30:50Z', 206, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (263, NULL, 'write an executive summary', 'exec', 'open', 10000, NULL, 'Write an executive summary of the project for the human: where it stands, in a few minutes of reading. Look, don''t
+change: no code, files, tasks, plans or decisions; stage nothing.
+* the previous summary: `pm summary show` (none: this is the first, cover the project so far)
+* what happened since it: `git log --stat <its commit>..HEAD` (pm''s commits name the tasks and decisions), `pm status`,
+  `pm milestone list`, `pm runs`, `pm decision list`, `pm decision list --answered`, `pm show <id>` where it matters
+
+Markdown, for the human, who knows the project but not the last days. Lead with:
+* **Needs you**: pending decisions and sign-offs, what each blocks; failures, stalls
+* **Since the last summary**: the delta: what got done, what changed course (new plans, revisions, dropped tasks,
+  decisions answered or recorded by workers), runs, failures and cost
+* **Where it stands**: each open milestone: progress, what comes next
+* **Risks**: what may go wrong, take longer or need a decision soon
+
+Bullets, ids with subjects (`task 12: <subject>`), no padding. Store it: `pm summary add < summary.md`, delete
+summary.md, then close your task.', '2026-10-15T15:49:28Z', NULL, NULL, 0);
 
 INSERT INTO decision (id, subject, status, options, body, answer, reason, created_at, closed_at, created_by_task, signoff, kind, decided_by_task, consequences) VALUES (1, 'How the game consumes luv', 'answered', '[]', 'Findings of `task 17: Build and run luv''s programs and test suite; record the runs` (docs/luv-capabilities.md, Packaging and Runs).
 - luv''s flake exports apps, devShells, packages and lib; lib has only environmentFor, which returns everything the packaging needs (pkgs, lisp, applicationEnvironment/Packages, developmentEnvironmentHook, slynkSource, swashPackage, …). No overlays.
@@ -6657,6 +6672,7 @@ INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, b
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (210, 205, '2026-10-15T14:52:26Z', '2026-10-15T15:07:26Z', 'done', NULL, 0, 'c38e80c6923c71dee1144e207d92872495eb2011', 'claude-opus-5-5[1m]', 'a9e9099a-7056-4732-b979-73f2c79ddb35', 57, 108, 72516, 9273824, 227476, 5.1253247999999987, 2373073);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (211, 206, '2026-10-15T15:07:26Z', '2026-10-15T15:18:51Z', 'done', NULL, 0, '5e577060477cd5a81959b30175febd77fdf179e4', 'claude-opus-5-5[1m]', '0fbe4356-d61b-4eaf-a0f7-92ea4efe1602', 68, 130, 23293, 5811324, 111393, 2.5197888, 2373073);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (212, 262, '2026-10-15T15:18:51Z', '2026-10-15T15:31:03Z', 'done', NULL, 0, '925f47fb6885fb4bede42c48a4699d03d6859825', 'claude-opus-5-5[1m]', 'e56fc129-b4ad-4bdf-8021-03b256afc1b5', 59, 108, 29436, 5492677, 140536, 2.8119754, 2373073);
+INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (213, 207, '2026-10-15T15:48:57Z', '2026-10-15T15:56:43Z', 'done', NULL, 0, '56073cc2ca6eade033db1979c57c09ab88a4d072', 'claude-opus-5-5[1m]', 'eb3edef0-aadf-4515-b0b5-304bcc531198', 31, 58, 26817, 2420809, 101221, 1.8305018, 3425383);
 
 INSERT INTO task_decision (task_id, decision_id) VALUES (44, 28);
 INSERT INTO task_decision (task_id, decision_id) VALUES (44, 45);

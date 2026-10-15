@@ -178,8 +178,9 @@
 
 (defun label-colour-bytes (format)
   "The overlay label's colour as the target stores it, in red, green, blue."
-  (mapcar (lambda (x) (if (search "SRGB" (string format)) (srgb-byte x) (round (* 255 x))))
-          '(1.0 0.75 0.2)))
+  (declare (ignore format))
+  (let ((rgb lis::*label-colour*))
+    (list (ldb (byte 8 16) rgb) (ldb (byte 8 8) rgb) (ldb (byte 8 0) rgb))))
 
 (defun pixel-rgb (pixels format width x y)
   (multiple-value-bind (red blue) (pixel-red-blue pixels format width x y)

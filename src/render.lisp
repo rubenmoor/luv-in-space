@@ -152,7 +152,7 @@ not below t or the sim is lost. Conses nothing; OUT."
                                                   (:binding 2 :type :sampler)
                                                   (:binding 3 :type :texture)))))
          (stars (star-instances (load-star-table)))
-         (label (single-floats (label-vertices *label*))))
+         (label (label-vertices *label*)))
     (let ((pixels (load-image-pixels (asset-path *earth-texture*))))
       (multiple-value-bind (texture view sampler) (texture-from-pixels renderer pixels "earth")
         (declare (ignore texture))

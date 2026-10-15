@@ -61,6 +61,7 @@
                (:file "meshes")
                (:file "ribbons")
                (:file "post")
+               (:file "overlay")
                (:file "render")
                (:file "input")
                (:file "capture"))

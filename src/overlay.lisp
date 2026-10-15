@@ -16,6 +16,27 @@
     (#\O ".###." "#...#" "#...#" "#...#" "#...#" "#...#" ".###.")
     (#\D "####." "#...#" "#...#" "#...#" "#...#" "#...#" "####.")
     (#\R "####." "#...#" "#...#" "####." "#.#.." "#..#." "#...#")
+    (#\B "####." "#...#" "#...#" "####." "#...#" "#...#" "####.")
+    (#\F "#####" "#...." "#...." "####." "#...." "#...." "#....")
+    (#\G ".###." "#...#" "#...." "#.###" "#...#" "#...#" ".####")
+    (#\I ".###." "..#.." "..#.." "..#.." "..#.." "..#.." ".###.")
+    (#\J "..###" "...#." "...#." "...#." "...#." "#..#." ".##..")
+    (#\K "#...#" "#..#." "#.#.." "##..." "#.#.." "#..#." "#...#")
+    (#\M "#...#" "##.##" "#.#.#" "#.#.#" "#...#" "#...#" "#...#")
+    (#\N "#...#" "#...#" "##..#" "#.#.#" "#..##" "#...#" "#...#")
+    (#\Q ".###." "#...#" "#...#" "#...#" "#.#.#" "#..#." ".##.#")
+    (#\S ".####" "#...." "#...." ".###." "....#" "....#" "####.")
+    (#\T "#####" "..#.." "..#.." "..#.." "..#.." "..#.." "..#..")
+    (#\U "#...#" "#...#" "#...#" "#...#" "#...#" "#...#" ".###.")
+    (#\V "#...#" "#...#" "#...#" "#...#" "#...#" ".#.#." "..#..")
+    (#\W "#...#" "#...#" "#...#" "#.#.#" "#.#.#" "#.#.#" ".#.#.")
+    (#\X "#...#" "#...#" ".#.#." "..#.." ".#.#." "#...#" "#...#")
+    (#\Y "#...#" "#...#" ".#.#." "..#.." "..#.." "..#.." "..#..")
+    (#\Z "#####" "....#" "...#." "..#.." ".#..." "#...." "#####")
+    (#\Space "....." "....." "....." "....." "....." "....." ".....")
+    (#\- "....." "....." "....." "#####" "....." "....." ".....")
+    (#\. "....." "....." "....." "....." "....." ".##.." ".##..")
+    (#\: "....." ".##.." ".##.." "....." ".##.." ".##.." ".....")
     (#\( "..#.." ".#..." "#...." "#...." "#...." ".#..." "..#..")
     (#\) "..#.." "...#." "....#" "....#" "....#" "...#." "..#..")
     (#\0 ".###." "#...#" "#..##" "#.#.#" "##..#" "#...#" ".###.")
@@ -28,7 +49,137 @@
     (#\7 "#####" "....#" "...#." "..#.." ".#..." ".#..." ".#...")
     (#\8 ".###." "#...#" "#...#" ".###." "#...#" "#...#" ".###.")
     (#\9 ".###." "#...#" "#...#" ".####" "....#" "....#" ".###."))
-  "5x7 dot-matrix glyphs for placeholder labels; other characters are blank.")
+  "5x7 dot-matrix glyphs: A-Z, 0-9, space, - . : ( ); a character missing
+here draws blank (decision 85: the tests require every one used).")
+
+(defparameter *label-colour* #xFFBF33 "The placeholder label, amber, sRGB.")
+(defparameter *label-dot-px* 2 "Dot pitch of labels, cap 14 px; decision 85.")
+(defparameter *marker-line-px* 2 "Ring and cross line width; decision 84.")
+(defparameter *marker-ring-px* 12 "The ship's ring; decision 84.")
+(defparameter *marker-diamond-px* 9 "Apsis diamonds; decision 84.")
+(defparameter *marker-cross-px* 12 "The impact X; decision 84.")
+(defparameter *marker-dot-px* 7 "Bodies below 6 px; decision 84.")
+(defparameter *overlay-max-vertices* 24576 "Capacity of an overlay buffer.")
+
+(defun glyph (char)
+  "CHAR's seven rows, upcased, or nil."
+  (rest (assoc (char-upcase char) *glyphs*)))
+
+(defconstant +overlay-vertex-floats+ 7 "Anchor xy, pixel offset xy, colour rgb.")
+
+(defstruct (overlay-buffer (:constructor %make-overlay-buffer))
+  "Preallocated overlay vertices: COUNT of them in FLOATS. Vertices past
+the capacity are dropped."
+  (floats nil :type (simple-array single-float (*)))
+  (count 0 :type fixnum))
+
+(defun make-overlay-buffer (&optional (vertices *overlay-max-vertices*))
+  (%make-overlay-buffer :floats (make-array (* +overlay-vertex-floats+ vertices)
+                                            :element-type 'single-float
+                                            :initial-element 0f0)))
+
+(defun overlay-clear! (out)
+  (setf (overlay-buffer-count out) 0)
+  out)
+
+(declaim (inline overlay-vertex! overlay-triangle! overlay-quad!))
+(defun overlay-vertex! (out x y r g b)
+  "One vertex at pixel X, Y from the top left, linear colour R G B."
+  (declare (type overlay-buffer out) (type single-float x y r g b))
+  (let* ((floats (overlay-buffer-floats out))
+         (o (* +overlay-vertex-floats+ (overlay-buffer-count out))))
+    (when (<= (+ o +overlay-vertex-floats+) (length floats))
+      (setf (aref floats o) -1f0 (aref floats (+ o 1)) -1f0
+            (aref floats (+ o 2)) x (aref floats (+ o 3)) y
+            (aref floats (+ o 4)) r (aref floats (+ o 5)) g (aref floats (+ o 6)) b)
+      (incf (overlay-buffer-count out)))))
+
+(defun overlay-triangle! (out x1 y1 x2 y2 x3 y3 r g b)
+  (overlay-vertex! out x1 y1 r g b)
+  (overlay-vertex! out x2 y2 r g b)
+  (overlay-vertex! out x3 y3 r g b))
+
+(defun overlay-quad! (out x1 y1 x2 y2 x3 y3 x4 y4 r g b)
+  "The quad 1 2 3 4, corners in order, as two triangles."
+  (overlay-triangle! out x1 y1 x2 y2 x3 y3 r g b)
+  (overlay-triangle! out x1 y1 x3 y3 x4 y4 r g b))
+
+(defmacro with-linear-colour ((r g b) rgb &body body)
+  "R G B: the single-float linear channels of the sRGB integer RGB."
+  (let ((c (gensym)))
+    `(let* ((,c ,rgb)
+            (,r (coerce (srgb-channel-linear ,c 16) 'single-float))
+            (,g (coerce (srgb-channel-linear ,c 8) 'single-float))
+            (,b (coerce (srgb-channel-linear ,c 0) 'single-float)))
+       ,@body)))
+
+(defun marker-size (kind)
+  (ecase kind
+    (:ring *marker-ring-px*) (:diamond *marker-diamond-px*)
+    (:cross *marker-cross-px*) (:dot *marker-dot-px*)))
+
+(defun marker-vertices! (out kind x y colour &optional size)
+  "Triangles of marker KIND centred on pixel X, Y within a SIZE box (default
+the kind's, decision 84: Map ribbons and markers: osculating orbit, adaptive
+segments, overlay markers and visibility) in the sRGB integer COLOUR:
+:ring a 16-segment outline, :diamond, :cross two bars, :dot a 12-gon. Conses
+nothing for real X, Y that are not boxed doubles."
+  (declare (optimize speed) (type overlay-buffer out) (type real x y)
+           (type (unsigned-byte 24) colour))
+  (let* ((x (coerce x 'single-float)) (y (coerce y 'single-float))
+         (h (* 0.5f0 (coerce (the real (or size (marker-size kind))) 'single-float)))
+         (line (coerce (the real *marker-line-px*) 'single-float)))
+    (declare (type single-float x y h line))
+    (with-linear-colour (r g b) colour
+      (ecase kind
+        (:ring
+         (let ((inner (max 0f0 (- h line))) (step (/ (* 2 (coerce pi 'single-float)) 16)))
+           (dotimes (k 16)
+             (let ((c0 (cos (* k step))) (s0 (sin (* k step)))
+                   (c1 (cos (* (1+ k) step))) (s1 (sin (* (1+ k) step))))
+               (overlay-quad! out (+ x (* h c0)) (+ y (* h s0)) (+ x (* h c1)) (+ y (* h s1))
+                              (+ x (* inner c1)) (+ y (* inner s1))
+                              (+ x (* inner c0)) (+ y (* inner s0)) r g b)))))
+        (:diamond
+         (overlay-quad! out (- x h) y x (- y h) (+ x h) y x (+ y h) r g b))
+        (:cross
+         ;; Corners at ±(a ± w) with w = line / (2 √2) keep the bars in the box.
+         (let* ((w (/ line (* 2 (sqrt 2f0)))) (a (- h w)))
+           (overlay-quad! out (- x a w) (- y a (- w)) (- x a (- w)) (- y a w)
+                          (+ x a w) (+ y a (- w)) (+ x a (- w)) (+ y a w) r g b)
+           (overlay-quad! out (- x a w) (+ y a (- w)) (- x a (- w)) (+ y a w)
+                          (+ x a w) (- y a (- w)) (+ x a (- w)) (- y a w) r g b)))
+        (:dot
+         (let ((step (/ (* 2 (coerce pi 'single-float)) 12)))
+           (dotimes (k 12)
+             (overlay-triangle! out x y
+                                (+ x (* h (cos (* k step)))) (+ y (* h (sin (* k step))))
+                                (+ x (* h (cos (* (1+ k) step))))
+                                (+ y (* h (sin (* (1+ k) step))))
+                                r g b))))))
+    out))
+
+(defun label-at! (out string x y colour &optional (dot *label-dot-px*))
+  "STRING, upcased, in dot-matrix glyphs of DOT px dots, 6 dots a cell: the
+first glyph's left edge at pixel X, the rows centred on Y, in the sRGB
+integer COLOUR. Conses nothing for real X, Y that are not boxed doubles."
+  (declare (optimize speed) (type overlay-buffer out) (type string string)
+           (type real x y dot) (type (unsigned-byte 24) colour))
+  (let* ((dot (coerce dot 'single-float))
+         (left (coerce x 'single-float))
+         (top (- (coerce y 'single-float) (* 3.5f0 dot))))
+    (declare (type single-float dot left top))
+    (with-linear-colour (r g b) colour
+      (dotimes (column (length string))
+        (let ((x0 (+ left (* dot 6 column))))
+          (loop for row in (glyph (char string column))
+                for j of-type fixnum from 0
+                do (dotimes (i 5)
+                     (when (char= (char (the simple-string row) i) #\#)
+                       (let ((px (+ x0 (* dot i))) (py (+ top (* dot j))))
+                         (overlay-quad! out px py (+ px dot) py (+ px dot) (+ py dot)
+                                        px (+ py dot) r g b))))))))
+    out))
 
 (defun quad (anchor-x anchor-y left top size color)
   "Two triangles of overlay vertices: a SIZE-pixel square at pixel offset
@@ -36,21 +187,16 @@ LEFT, TOP from the clip-space anchor."
   (loop for (dx dy) in '((0 0) (1 0) (1 1) (0 0) (1 1) (0 1))
         append (list* anchor-x anchor-y (+ left (* dx size)) (+ top (* dy size)) color)))
 
-(defun label-vertices (string &key (dot 3) (margin 16) (color '(1.0 0.75 0.2)))
-  "Overlay vertices drawing STRING in dot-matrix glyphs at the top left."
-  (loop for char across string
-        for column from 0
-        append (loop for row in (rest (assoc char *glyphs*))
-                     for y from 0
-                     append (loop for cell across row
-                                  for x from 0
-                                  when (char= cell #\#)
-                                    append (quad -1.0 -1.0
-                                                 (+ margin (* dot (+ x (* 6 column))))
-                                                 (+ margin (* dot y))
-                                                 dot color)))))
+(defun overlay-floats (out)
+  "OUT's vertices as a fresh single-float vector."
+  (subseq (overlay-buffer-floats out) 0 (* +overlay-vertex-floats+ (overlay-buffer-count out))))
 
-(defconstant +overlay-vertex-floats+ 7 "Anchor xy, pixel offset xy, colour rgb.")
+(defun label-vertices (string &key (dot 3) (margin 16) (colour *label-colour*))
+  "Overlay vertices drawing STRING in dot-matrix glyphs at the top left."
+  (let ((out (make-overlay-buffer (* 6 35 (length string)))))
+    (label-at! out string margin (+ margin (* 3.5 dot)) colour dot)
+    (overlay-floats out)))
+
 
 (defun overlay-vertex-buffers ()
   `((:array-stride ,(* 4 +overlay-vertex-floats+)

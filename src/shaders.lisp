@@ -525,11 +525,26 @@
     (set-output clip-position (vec4 point 0.0 1.0))
     (set-output shade tint)))
 
-(define-frame-shader overlay-fragment
+(define-frame-shader quads-fragment
     (:stage :fragment
      :inputs ((shade :vec3 :location 0))
      :outputs ((color :vec4 :location 0)))
   (set-output color (vec4 shade 1.0)))
+
+(define-shader-function srgb-encode (x)
+  (if (<= x 0.0031308) (* x 12.92) (- (* 1.055 (expt x 0.41666666)) 0.055)))
+
+;; SHADE is linear, sRGB-encoded unless the target's format does it, so a
+;; colour given in sRGB lands exactly.
+(define-frame-shader overlay-fragment
+    (:stage :fragment
+     :inputs ((shade :vec3 :location 0))
+     :outputs ((color :vec4 :location 0)))
+  (set-output color
+              (if (> (swizzle post :z) 0.5)
+                  (vec4 (srgb-encode (swizzle shade :x)) (srgb-encode (swizzle shade :y))
+                        (srgb-encode (swizzle shade :z)) 1.0)
+                  (vec4 shade 1.0))))
 
 ;;; Post (src/post.lisp). A fullscreen triangle whose third coordinate is
 ;;; the source level's scale 2^k, so its texel is 1 / floor(size / 2^k).
@@ -609,9 +624,6 @@ angle in degrees), weighted by a Gaussian of SIGMA texels, normalised."
             (+ (* x (+ (* x 2.43) (vec3 0.59 0.59 0.59))) (vec3 0.14 0.14 0.14)))
          (vec3 0.0 0.0 0.0) (vec3 1.0 1.0 1.0)))
 
-(define-shader-function srgb-encode (x)
-  (if (<= x 0.0031308) (* x 12.92) (- (* 1.055 (expt x 0.41666666)) 0.055)))
-
 ;; The bloom levels: SOURCE the level above or below, BASE the level of this
 ;; size where one is added. The way up uses the round kernel: the tent's
 ;; square footprint showed in the Sun's saturated glare (task 145).
@@ -681,7 +693,7 @@ angle in degrees), weighted by a Gaussian of SIGMA texels, normalised."
 (defmethod shader-specification-for ((role (eql :quads)) (stage (eql :vertex)))
   (overlay-vertex))
 (defmethod shader-specification-for ((role (eql :quads)) (stage (eql :fragment)))
-  (overlay-fragment))
+  (quads-fragment))
 (macrolet ((post-roles (&rest pairs)
              `(progn
                 ,@(loop for (role fragment) on pairs by #'cddr

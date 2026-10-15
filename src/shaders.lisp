@@ -1,14 +1,15 @@
 (in-package #:luv-in-space.shaders)
 
 ;;; PLACEHOLDER(76): the placeholder Earth sphere sampling the Blue Marble;
-;;; screen-space quads for the placeholder stars and the overlay's labels;
-;;; the post passes (decision 76: Frame passes, radiance scale and exposure).
+;;; the stars at infinity (src/stars.lisp); screen-space quads for the
+;;; overlay's labels and the tests' quads; the post passes (decision 76: Frame passes, radiance scale and exposure).
 
 ;; One uniform block for every pipeline: clip rows for camera-relative
 ;; points, the body relative to the eye (w: radius), the sun direction,
 ;; screen (xy: clip units per pixel), the rows of Earth's body-fixed
-;; matrix (ICRF -> body-fixed), and post (exposure, bloom strength, sRGB
-;; encoding 0 or 1). RESOURCES in OPTIONS come after the block.
+;; matrix (ICRF -> body-fixed), post (exposure, bloom strength, sRGB
+;; encoding 0 or 1) and stars (radiance limit, sigma, sigma per magnitude,
+;; sigma max; src/stars.lisp). RESOURCES in OPTIONS come after the block.
 (defmacro define-frame-shader (name (&rest options &key resources &allow-other-keys)
                                &body body)
   `(define-shader ,name
@@ -19,7 +20,7 @@
                                (clip-z :vec4) (clip-w :vec4)
                                (body :vec4) (sun :vec4) (screen :vec4)
                                (fixed-x :vec4) (fixed-y :vec4) (fixed-z :vec4)
-                               (post :vec4)))
+                               (post :vec4) (stars :vec4)))
                     ,@resources))
      ,@body))
 
@@ -68,6 +69,41 @@
          (albedo (swizzle (sample earth earth-sampler uv) :rgb))
          (diffuse (clamp (dot lit (swizzle sun :xyz)) 0.0 1.0)))
     (set-output color (vec4 (+ (* albedo diffuse) (* albedo 0.02)) 1.0))))
+
+;; A star at infinity (decision 78: Sky in numbers): its direction through
+;; the clip rows with w 0, so clip z is 0; a quad of 4 sigma pixels. STAR:
+;; direction, magnitudes brighter than 3.0.
+(define-frame-shader star-vertex
+    (:stage :vertex
+     :inputs ((corner :vec2 :location 0)
+              (star :vec4 :location 1)
+              (light :vec3 :location 2))
+     :outputs ((clip-position :vec4 :built-in :position)
+               (offset :vec2 :location 0)
+               (shade :vec3 :location 1)
+               (sigma :float :location 2)))
+  (let* ((point (vec4 (swizzle star :xyz) 0.0))
+         (w (dot clip-w point))
+         (size (min (+ (swizzle stars :y) (* (swizzle stars :z) (swizzle star :w)))
+                    (swizzle stars :w)))
+         (pixels (* corner (* 4.0 size))))
+    (set-output clip-position
+                (vec4 (+ (dot clip-x point) (* (swizzle pixels :x) (swizzle screen :x) w))
+                      (+ (dot clip-y point) (* (swizzle pixels :y) (swizzle screen :y) w))
+                      (dot clip-z point) w))
+    (set-output offset pixels)
+    (set-output shade (* light (swizzle stars :x)))
+    (set-output sigma size)))
+
+;; Additive through premultiplied alpha: alpha 0.
+(define-frame-shader star-fragment
+    (:stage :fragment
+     :inputs ((offset :vec2 :location 0)
+              (shade :vec3 :location 1)
+              (sigma :float :location 2))
+     :outputs ((color :vec4 :location 0)))
+  (set-output color (vec4 (* shade (exp (/ (* -0.5 (dot offset offset)) (* sigma sigma))))
+                          0.0)))
 
 ;; ANCHOR is a point in clip space, OFFSET a displacement in pixels.
 (define-frame-shader overlay-vertex
@@ -186,8 +222,12 @@
 (defmethod shader-specification-for ((role (eql :overlay)) (stage (eql :fragment)))
   (overlay-fragment))
 (defmethod shader-specification-for ((role (eql :stars)) (stage (eql :vertex)))
-  (overlay-vertex))
+  (star-vertex))
 (defmethod shader-specification-for ((role (eql :stars)) (stage (eql :fragment)))
+  (star-fragment))
+(defmethod shader-specification-for ((role (eql :quads)) (stage (eql :vertex)))
+  (overlay-vertex))
+(defmethod shader-specification-for ((role (eql :quads)) (stage (eql :fragment)))
   (overlay-fragment))
 (macrolet ((post-roles (&rest pairs)
              `(progn

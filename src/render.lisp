@@ -108,17 +108,6 @@ is also its normal."
                 do (corner (+ i a) (+ j b))))))
     data))
 
-;; PLACEHOLDER(76): screen-space stars until part 5's catalogue.
-(defun star-vertices (&key (count 300) (seed 23))
-  "Overlay vertices of COUNT faint stars at fixed random screen positions;
-radiances seen at *exposure-deep*, gone at *exposure-sunlit* (decision 76)."
-  (let ((state (sb-ext:seed-random-state seed)))
-    (loop repeat count
-          for brightness = (+ 0.001 (random 0.004 state))
-          append (quad (- (random 2.0 state) 1.0) (- (random 2.0 state) 1.0)
-                       -1 -1 (if (< (random 1.0 state) 0.1) 3 2)
-                       (list brightness brightness (* 1.1 brightness))))))
-
 ;;; The renderer
 
 (defparameter *background* '(0.0 0.0 0.0002) "Radiance the HDR target is cleared to.")
@@ -127,7 +116,7 @@ radiances seen at *exposure-deep*, gone at *exposure-sunlit* (decision 76)."
 (defparameter *earth-texture* "earth/blue-marble-5400.jpg"
   "decision 40: Earth's look and drag.")
 
-(defconstant +frame-uniform-floats+ 44 "shaders.lisp's frame block: eleven vec4s.")
+(defconstant +frame-uniform-floats+ 48 "shaders.lisp's frame block: twelve vec4s.")
 
 (defclass frame-renderer (renderer)
   ((context :initarg :context :reader frame-renderer-context)
@@ -136,7 +125,9 @@ radiances seen at *exposure-deep*, gone at *exposure-sunlit* (decision 76)."
    (earth-count :initarg :earth-count :reader frame-renderer-earth-count)
    (earth-view :initarg :earth-view :reader frame-renderer-earth-view)
    (earth-sampler :initarg :earth-sampler :reader frame-renderer-earth-sampler)
-   (stars :initarg :stars :reader frame-renderer-stars)
+   (stars :initarg :stars :reader frame-renderer-stars
+          :documentation "The star instances (src/stars.lisp).")
+   (star-corners :initarg :star-corners :reader frame-renderer-star-corners)
    (star-count :initarg :star-count :reader frame-renderer-star-count)
    (label :initarg :label :reader frame-renderer-label)
    (label-count :initarg :label-count :reader frame-renderer-label-count)
@@ -165,7 +156,7 @@ radiances seen at *exposure-deep*, gone at *exposure-sunlit* (decision 76)."
                                                   (:binding 2 :type :sampler)
                                                   (:binding 3 :type :texture)))))
          (earth (uv-sphere :stacks *earth-stacks* :slices *earth-slices*))
-         (stars (single-floats (star-vertices)))
+         (stars (star-instances (load-star-table)))
          (label (single-floats (label-vertices *label*))))
     (multiple-value-bind (texture view sampler)
         (texture-from-pixels renderer (load-image-pixels (asset-path *earth-texture*)) "earth")
@@ -176,7 +167,8 @@ radiances seen at *exposure-deep*, gone at *exposure-sunlit* (decision 76)."
      :layout layout
      :earth (vertex-buffer renderer earth "earth") :earth-count (/ (length earth) 3)
      :stars (vertex-buffer renderer stars "stars")
-     :star-count (/ (length stars) +overlay-vertex-floats+)
+     :star-corners (vertex-buffer renderer (star-corners) "star corners")
+     :star-count (/ (length stars) +star-instance-floats+)
      :label (vertex-buffer renderer label "label")
      :label-count (/ (length label) +overlay-vertex-floats+)
      :post (vertex-buffer renderer (post-vertices) "post")
@@ -192,7 +184,8 @@ radiances seen at *exposure-deep*, gone at *exposure-sunlit* (decision 76)."
                    ;; decision 4: Depth strategy
                    :depth-stencil '(:format :depth32-float :depth-write-enabled t
                                     :depth-compare :greater))
-    (live-pipeline renderer :stars layout (overlay-vertex-buffers) :format +hdr-format+
+    (stars-pipeline renderer layout +hdr-format+)
+    (live-pipeline renderer :quads layout (overlay-vertex-buffers) :format +hdr-format+
                    :depth-stencil '(:format :depth32-float :depth-write-enabled nil
                                     :depth-compare :always))
     (post-pipelines renderer layout)
@@ -247,8 +240,8 @@ again once it is acquired (luv's canvas-frame-resource-cache)."
   (frame-slot-post-bind-groups slot))
 
 (defun set-test-quads (renderer vertices)
-  "Tests only: overlay VERTICES (a list of floats) drawn through the stars'
-pipeline into the HDR target; nil removes them."
+  "Tests only: overlay VERTICES (a list of floats) drawn opaque through the
+:quads pipeline into the HDR target; nil removes them."
   (setf (frame-renderer-test-quads renderer)
         (and vertices
              (let ((data (single-floats vertices)))
@@ -283,7 +276,7 @@ means luv rebuilt the swapchain: forget its old textures first."
 (defun frame-uniforms! (renderer extent state camera exposure)
   "The frame block: clip rows, Earth relative to the eye (decision 5:
 Precision of positions), the Sun's direction, clip units per pixel, Earth's
-body-fixed matrix, the post vec4."
+body-fixed matrix, the post and stars vec4s."
   (destructuring-bind (width height) extent
     (let ((data (frame-renderer-uniforms renderer))
           (eye (camera-eye camera (render-state-r state) (frame-renderer-eye renderer)))
@@ -307,13 +300,13 @@ body-fixed matrix, the post vec4."
             (aref data 41) (coerce *bloom-strength* 'single-float)
             (aref data 42) (if (srgb-target-p renderer) 0f0 1f0)
             (aref data 43) 0f0)
-      data)))
+      (star-uniforms! data 44))))
 
 (defun encode-frame (renderer encoder target extent state camera exposure)
   "The frame into TARGET of EXTENT (width height) from the render STATE seen
 by CAMERA, in three stages (decision 76: Frame passes, radiance scale and
-exposure): the scene pass into the HDR target (the placeholder stars, the
-placeholder Earth, PLACEHOLDER(76)); the bloom chain; one pass on TARGET,
+exposure): the scene pass into the HDR target (the stars, the placeholder
+Earth, PLACEHOLDER(76)); the bloom chain; one pass on TARGET,
 the tone map at EXPOSURE and then the overlay."
   (let* ((slot (frame-resources renderer target))
          (views (post-views renderer extent))
@@ -336,10 +329,14 @@ the tone map at EXPOSURE and then the overlay."
                     `(:view ,(depth-view renderer extent)
                       :depth-load-op :clear :depth-store-op :store
                       :depth-clear-value 0.0)))))
-        (draw pass :stars (frame-renderer-stars renderer) (frame-renderer-star-count renderer))
+        (luv:set-pipeline pass (renderer-pipeline renderer :stars))
+        (luv:set-bind-group pass 0 bind-group)
+        (luv:set-vertex-buffer pass 0 (frame-renderer-star-corners renderer))
+        (luv:set-vertex-buffer pass 1 (frame-renderer-stars renderer))
+        (luv:draw pass 6 (frame-renderer-star-count renderer))
         (draw pass :earth (frame-renderer-earth renderer) (frame-renderer-earth-count renderer))
         (let ((quads (frame-renderer-test-quads renderer)))
-          (when quads (draw pass :stars (car quads) (cdr quads))))
+          (when quads (draw pass :quads (car quads) (cdr quads))))
         (luv:end-pass pass))
       (encode-bloom renderer encoder views bind-groups (frame-renderer-post renderer))
       (let ((pass (luv:begin-render-pass

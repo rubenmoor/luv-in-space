@@ -228,6 +228,8 @@ What a solar-system flight game needs that luv lacks, each gap with a workaround
 - Catalogues: HYG (Hipparcos, Yale BSC, Gliese; ~120,000 stars) is under Creative Commons Attribution-ShareAlike 4.0 ("This work is licensed under a Creative Commons Attribution-ShareAlike 4.0 International License", `LICENSE` of `github.com/astronexus/HYG-Database`, which now points to `codeberg.org/astronexus/hyg`; read 2026-10-14). ShareAlike applies to the derived star table we ship, not to the game's code (assumed; `docs/architecture.md` "Assets" ships it so). The Yale Bright Star Catalogue (~9,100 stars to magnitude 6.5) would suffice for naked-eye stars; its licence was not checked here.
 - Recommendation: HYG filtered to magnitude ≤ 6.5 (~8,900 stars), with attribution and the derived table under CC BY-SA 4.0 in its own directory; the Yale BSC is the fallback if ShareAlike is unwanted.
 - Cost: a converter script, one buffer, two small shaders (~80 lines).
+- Built (`task 113: stars.lisp: the stars at infinity, their colours and the :stars pipeline`): `src/stars.lisp` (~140 lines) and two shaders (~40 lines): 8,920 stars in one static instance buffer, one instanced draw of 6 corners each, first in the scene pass, additive through premultiplied alpha 0; Sirius lands on the pixel `camera-clip-rows!` predicts, Orion reads at 50° from Earth's shadow (ran: `scripts/test` on lavapipe, `./sly play`).
+- Found: luv's vertex formats are `:float32x2` to `:float32x4` only; a scalar attribute rides in a vector's spare lane (the star's magnitude excess in the direction's w) (ran: `:float32` rejected as `:invalid-vertex-buffer`).
 
 ### Sun glare and brightness
 

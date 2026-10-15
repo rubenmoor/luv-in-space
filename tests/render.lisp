@@ -204,6 +204,51 @@
   (multiple-value-bind (red blue) (pixel-red-blue pixels format width x y)
     (list red (aref pixels (+ 1 (* 4 (+ (* y width) x)))) blue)))
 
+;;; The stars (decision 78: Sky in numbers: stars, Sun, Moon and Earth's
+;;; look), seen from Earth's shadow at u = 180 deg so the exposure is deep.
+
+(defun sky-direction (ra dec)
+  "The ICRF unit vector of RA, DEC in degrees."
+  (let ((a (deg ra)) (d (deg dec)))
+    (lis::vec3 (* (cos d) (cos a)) (* (cos d) (sin a)) (sin d))))
+
+(defun sky-camera (ra dec field-of-view)
+  "A camera-fn: from the ship towards RA, DEC, celestial north up, a vertical
+FIELD-OF-VIEW in degrees."
+  (lambda (camera state)
+    (declare (ignore state))
+    (let* ((x (sky-direction ra dec))
+           (up (lis::vec3-normalize (lis::vec3-sub (lis::vec3 0 0 1)
+                                                   (lis::vec3-scale x (aref x 2)))))
+           (z (lis::vec3-scale up -1d0)))
+      (lis::quat-from-basis! (lis::camera-orientation camera) x (lis::vec3-cross z x) z)
+      (fill (lis::camera-offset camera) 0d0)
+      (setf (lis::camera-field-of-view camera) (deg field-of-view)))))
+
+(defun sky-pixel (camera-fn ra dec width height)
+  "Where the projection puts the star at RA, DEC, in pixels (x right, y down)."
+  (let ((camera (lis::make-camera))
+        (rows (make-array 16 :element-type 'single-float))
+        (d (sky-direction ra dec)))
+    (funcall camera-fn camera nil)
+    (lis::camera-clip-rows! rows camera (/ width height))
+    (flet ((row (i) (loop for k below 3 sum (* (aref rows (+ i k)) (aref d k)))))
+      (let ((w (row 12)))
+        (values (* 0.5 width (+ 1 (/ (row 0) w))) (* 0.5 height (+ 1 (/ (row 4) w))))))))
+
+(defun brightest-pixel (pixels width height &key (from-row 40) (x0 0) (x1 width) (y1 height))
+  "The brightest pixel's centre below the label's rows, in the box given."
+  (loop with best = -1 and bx and by
+        for y from from-row below y1
+        do (loop for x from x0 below x1
+                 for l = (pixel-luminance pixels width x y)
+                 when (> l best) do (setf best l bx x by y))
+        finally (return (values (+ bx 0.5) (+ by 0.5) best))))
+
+(defun count-above (pixels width height threshold &key (from-row 40))
+  (loop for y from from-row below height
+        sum (loop for x below width count (> (pixel-luminance pixels width x y) threshold))))
+
 (define-test render-frames
   (let ((width 320) (height 200))
     (luv:call-with-sdl-main-thread
@@ -294,6 +339,62 @@
                                  (pixel-luminance baseline width x cy)))
                          1)
                      "invalid radiance at ~D: ~,1F" x (pixel-luminance invalid width x cy))))
+           (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))
+           ;; The shader's tone map against tone-map-srgb: grey quads of known
+           ;; radiance at the deep exposure, the stars off.
+           (let ((saved lis::*star-radiance-limit*))
+             (setf lis::*star-radiance-limit* 0.0)
+             (unwind-protect
+                  (let ((pixels (capture-with-quads
+                                 game png (loop for radiance in '(0.002 0.01 0.03 0.1)
+                                                for dx from -60 by 40
+                                                append (centre-quad radiance :dx dx :size 8))
+                                 :strength 0.0)))
+                    (loop for radiance in '(0.002 0.01 0.03 0.1)
+                          for x from (- (floor width 2) 60) by 40
+                          for expected = (lis::tone-map-srgb radiance lis::*exposure-deep*)
+                          do (dolist (byte (pixel-colour pixels width x (floor height 2)))
+                               (true (<= (abs (- byte expected)) 2)
+                                     "radiance ~F: ~D, tone-map-srgb ~D" radiance byte expected))))
+               (setf lis::*star-radiance-limit* saved)))
+           ;; Sirius at the centre of a 20 deg view; Procyon in a 60 deg one
+           ;; between them, up and to the left (east) of Sirius, where the
+           ;; projection puts it.
+           (let ((night (start-sim-at 180))
+                 (sirius (sky-camera 101.287 -16.716 20))
+                 (wide (sky-camera 108 -6 60)))
+             (let ((pixels (nth-value 3 (lis::capture-game-state game png :sim night :frames 1
+                                                                          :camera-fn sirius))))
+               (multiple-value-bind (x y) (brightest-pixel pixels width height)
+                 (true (<= (sqrt (+ (expt (- x (/ width 2)) 2) (expt (- y (/ height 2)) 2))) 1)
+                       "Sirius's brightest pixel at ~F, ~F" x y))
+               ;; Live: the radiance limit takes on the next frame.
+               (let ((saved lis::*star-radiance-limit*))
+                 (setf lis::*star-radiance-limit* 0.0)
+                 (unwind-protect
+                      (let ((dark (nth-value 3 (lis::capture-game-state game png :frames 1
+                                                                                 :camera-fn sirius))))
+                        (true (< (nth-value 2 (brightest-pixel dark width height)) 5)
+                              "stars at radiance limit 0"))
+                   (setf lis::*star-radiance-limit* saved))))
+             (let ((pixels (nth-value 3 (lis::capture-game-state game png :frames 1 :camera-fn wide))))
+               (multiple-value-bind (px py) (sky-pixel wide 114.825 5.225 width height)
+                 (multiple-value-bind (sx sy) (sky-pixel wide 101.287 -16.716 width height)
+                   (true (and (< px sx) (< 40 py sy)) "Procyon at ~F, ~F, Sirius at ~F, ~F"
+                         px py sx sy))
+                 (multiple-value-bind (x y) (brightest-pixel pixels width height
+                                                             :x0 (floor (- px 8)) :x1 (ceiling (+ px 8))
+                                                             :from-row (floor (- py 8))
+                                                             :y1 (ceiling (+ py 8)))
+                   (true (<= (sqrt (+ (expt (- x px) 2) (expt (- y py) 2))) 2)
+                         "Procyon's brightest pixel at ~F, ~F, predicted ~F, ~F" x y px py))))
+             ;; Orion at 50 deg: pixels above 30 of 255. Bounds: the first
+             ;; measured frame, 985 px (lavapipe), x 0.5 and x 2.
+             (let* ((pixels (nth-value 3 (lis::capture-game-state game png :frames 1
+                                                                           :camera-fn (sky-camera 84 -1 50))))
+                    (n (count-above pixels width height 30)))
+               (true (<= 490 n 1970) "Orion: ~D pixels above 30" n))
+             (lis::game-load-state! game (lis::new-game-sim)))
            (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))
            ;; Resizes replace the swapchain's textures; what the renderer kept
            ;; for the old ones goes, so its per-target state stays bounded.

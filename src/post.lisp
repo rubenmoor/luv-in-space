@@ -85,6 +85,16 @@ log2 with *exposure-time-constant*."
   (let ((k (exp (- (/ elapsed *exposure-time-constant*)))))
     (expt 2d0 (+ (log target 2d0) (* k (- (log current 2d0) (log target 2d0)))))))
 
+(defun tone-map-srgb (x exposure)
+  "The tone-map pass's byte for radiance X at EXPOSURE, bloom aside: ACES
+(Narkowicz) clamped to [0, 1], sRGB-encoded; shaders.lisp's tone-map-fragment."
+  (let* ((x (* (max 0d0 (float x 1d0)) exposure))
+         (c (max 0d0 (min 1d0 (/ (* x (+ (* x 2.51d0) 0.03d0))
+                                 (+ (* x (+ (* x 2.43d0) 0.59d0)) 0.14d0))))))
+    (round (* 255 (if (<= c 0.0031308d0)
+                      (* c 12.92d0)
+                      (- (* 1.055d0 (expt c (/ 2.4d0))) 0.055d0))))))
+
 ;;; The GPU side
 
 (defun post-vertices ()

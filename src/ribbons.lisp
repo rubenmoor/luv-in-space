@@ -27,7 +27,7 @@
 segments, their COUNT + 1 POINTS (x y z, double, relative to the body) with
 each point's RADIUS and ANOMALY (E or H), each segment's MID-RADII at its
 mid-anomaly, and its INSTANCES; per base segment its split k, eye distance
-and an index order for the budget."
+and an index order for the budget; ORBIT, the frame's osculating orbit."
   (capacity 0 :type fixnum)
   (count 0 :type fixnum)
   (points nil :type doubles)
@@ -40,7 +40,8 @@ and an index order for the budget."
   (order nil :type (simple-array fixnum (*)))
   (p-axis (make-vec3) :type vec3)
   (q-axis (make-vec3) :type vec3)
-  (scratch (make-vec3) :type vec3))
+  (scratch (make-vec3) :type vec3)
+  (orbit (make-orbit 0d0 0d0 0d0 0d0 0d0 0d0 0d0) :type orbit))
 
 (defun make-ribbon (&key (capacity *ribbon-max-segments*) (base *ribbon-base-segments*))
   (flet ((doubles (n) (make-array n :element-type 'double-float :initial-element 0d0))
@@ -245,10 +246,11 @@ not written (decision 4: Depth strategy)."
   "The ship's osculating orbit about Earth into the open scene PASS: points
 and instances for the eye EYE (relative to Earth's centre) and a frame
 HEIGHT px tall, written to BUFFER. Nothing for a state without an orbit
-plane (r × v = 0). state->orbit conses its struct."
-  (let ((r (render-state-r state)) (v (render-state-v state)))
-    (when (> (vec3-norm (vec3-cross r v)) (* 1d-9 (vec3-norm r) (vec3-norm v)))
-      (orbit-ribbon-points! ribbon (state->orbit r v +mu-earth+ (render-state-t state))
+plane (r × v = 0)."
+  (let ((r (render-state-r state)) (v (render-state-v state)) (h (ribbon-scratch ribbon)))
+    (when (> (vec3-norm (vec3-cross! h r v)) (* 1d-9 (vec3-norm r) (vec3-norm v)))
+      (orbit-ribbon-points! ribbon (state->orbit-into! (ribbon-orbit ribbon) r v +mu-earth+
+                                                       (render-state-t state))
                             eye (camera-focal-px camera height))
       (let ((count (orbit-ribbon-instances! ribbon eye)))
         (when (plusp count)

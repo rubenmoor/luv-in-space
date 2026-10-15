@@ -231,6 +231,37 @@
       (true outbound))
     (false (lis::orbit-radius-crossings orbit 7d6 -1d6))))
 
+;;; The non-consing variant (task 147)
+
+(defun state->orbit-test-states ()
+  "(r v) of the test ellipses (circular, equatorial, polar among them) and
+hyperbolas at their anomalies."
+  (let ((time (lis::start-t)))
+    (append
+     (loop for elements in *test-orbits*
+           append (loop for m in (anomalies)
+                        collect (multiple-value-list
+                                 (lis::orbit-state (test-orbit elements m time) time))))
+     (loop for elements in *test-hyperbolas*
+           append (loop for h in (hyperbolic-anomalies)
+                        collect (multiple-value-list
+                                 (lis::orbit-state (test-hyperbola elements h time) time)))))))
+
+;; One orbit reused across all states: each equals a fresh state->orbit bit for bit.
+(define-test state->orbit-into
+  (let ((out (lis::state->orbit (lis::vec3 7d6 0 0) (lis::vec3 0 7.5d3 0) *mu* 0d0))
+        (time (lis::start-t)))
+    (loop for (r v) in (state->orbit-test-states)
+          do (true (equalp (lis::state->orbit-into! out r v *mu* time)
+                           (lis::state->orbit r v *mu* time)))
+             (true (eq out (lis::state->orbit-into! out r v *mu* time))))))
+
+(define-test state->orbit-into-conses-nothing
+  (destructuring-bind (r v) (first (state->orbit-test-states))
+    (let ((out (lis::state->orbit r v *mu* 0d0)) (time (lis::start-t)))
+      (is = 0 (least-bytes-consed
+               (lambda () (dotimes (i 1000) (lis::state->orbit-into! out r v *mu* time))))))))
+
 ;; |e − 1| < 1e-6 shows as 1 ± 1e-6 on its side.
 (define-test near-parabolic-display
   (let* ((r (lis::vec3 7d6 0 0))

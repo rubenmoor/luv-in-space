@@ -6,20 +6,24 @@
 ;;; hyperbolas ("Hyperbolic rails"); near-parabolic forms are milestone 4's.
 
 (defstruct (orbit (:constructor make-orbit (mu q e i raan argp tp)))
-  (mu 0d0 :type double-float :read-only t)
-  (q 0d0 :type double-float :read-only t)     ; periapsis radius
-  (e 0d0 :type double-float :read-only t)
-  (i 0d0 :type double-float :read-only t)
-  (raan 0d0 :type double-float :read-only t)  ; Ω
-  (argp 0d0 :type double-float :read-only t)  ; ω
-  (tp 0d0 :type double-float :read-only t))   ; a periapsis passage
+  (mu 0d0 :type double-float)
+  (q 0d0 :type double-float)     ; periapsis radius
+  (e 0d0 :type double-float)
+  (i 0d0 :type double-float)
+  (raan 0d0 :type double-float)  ; Ω
+  (argp 0d0 :type double-float)  ; ω
+  (tp 0d0 :type double-float))   ; a periapsis passage
 
 (defparameter *circular-e* 1d-11 "Below this e, ω = 0 (decision 68).")
 (defparameter *equatorial-i* 1d-11 "Within this of 0 or π, Ω = 0 (decision 68).")
 (defparameter *parabolic-e* 1d-6
   "|e − 1| below this shows as e = 1 ± this, for display only (decision 46).")
 
+(declaim (type double-float *circular-e* *equatorial-i* *parabolic-e*))
+
 (defconstant +two-pi+ (* 2 pi))
+
+(declaim (inline wrap-angle wrap-signed))
 
 (defun wrap-angle (x)
   "x in [0, 2π)."
@@ -30,7 +34,9 @@
 (defun wrap-signed (x)
   "x in (−π, π]."
   (declare (type double-float x))
-  (- x (* +two-pi+ (fround x +two-pi+))))
+  ;; fround's ties-to-even inline: SBCL's fround boxes (task 147)
+  (let* ((q (/ x +two-pi+)) (m (abs q)) (big 4503599627370496d0))
+    (- x (* +two-pi+ (float-sign q (if (< m big) (- (+ m big) big) m))))))
 
 (defun elliptic-p (orbit) (< (orbit-e orbit) 1d0))
 
@@ -79,6 +85,7 @@
              (setf ea next))
     ea))
 
+(declaim (inline true->eccentric true->hyperbolic))
 (defun true->eccentric (theta e)
   (declare (type double-float theta e))
   (* 2 (atan (* (sqrt (- 1 e)) (sin (/ theta 2))) (* (sqrt (+ 1 e)) (cos (/ theta 2))))))
@@ -147,37 +154,50 @@
   "The unit vectors P (to periapsis) and Q (90° ahead of it) in ICRF."
   (perifocal-axes! (make-vec3) (make-vec3) i raan argp))
 
-(defun state->orbit (r v mu time)
-  "The osculating orbit of the state (r, v) at time about a body of μ."
-  (declare (type vec3 r v) (type double-float mu time))
-  (let* ((h (vec3-cross r v))
-         (hn (vec3-norm h))
-         (rn (vec3-norm r))
-         (evec (vec3-scale (vec3-sub (vec3-cross v h) (vec3-scale r (/ mu rn))) (/ mu)))
-         (e (let ((e (vec3-norm evec)))
-              (if (< (abs (- e 1)) *parabolic-e*)
-                  (if (< e 1) (- 1 *parabolic-e*) (+ 1 *parabolic-e*))
-                  e)))
-         (p (/ (* hn hn) mu))
-         (q (/ p (+ 1 e)))
-         (i (atan (sqrt (+ (expt (aref h 0) 2) (expt (aref h 1) 2))) (aref h 2)))
-         (raan (if (or (< i *equatorial-i*) (> i (- pi *equatorial-i*)))
-                   0d0
-                   (wrap-angle (atan (aref h 0) (- (aref h 1))))))
-         (node (vec3 (cos raan) (sin raan) 0))
-         (normal (vec3-scale h (/ hn)))
-         (ahead (vec3-cross normal node))
-         (argp (if (< e *circular-e*)
-                   0d0
-                   (wrap-angle (atan (vec3-dot evec ahead) (vec3-dot evec node)))))
-         (theta (- (atan (vec3-dot r ahead) (vec3-dot r node)) argp)))
-    (let* ((theta (wrap-signed theta))
+(defun state->orbit-into! (out r v mu time)
+  "Write the osculating orbit of the state (r, v) at time about a body of μ
+into OUT and return it. Conses nothing."
+  (declare (optimize speed) (type orbit out) (type vec3 r v) (type double-float mu time))
+  (let ((h (make-vec3)) (evec (make-vec3)) (node (make-vec3)) (ahead (make-vec3)))
+    (declare (dynamic-extent h evec node ahead))
+    (vec3-cross! h r v)
+    (let* ((hn (vec3-norm h))
+           (rn (vec3-norm r))
+           (e (let ((s (/ mu rn)))
+                (vec3-cross! evec v h)
+                (dotimes (k 3) (setf (aref evec k) (- (aref evec k) (* s (aref r k)))))
+                (vec3-scale! evec evec (/ mu))
+                (let ((e (vec3-norm evec)))
+                  (if (< (abs (- e 1)) *parabolic-e*)
+                      (if (< e 1) (- 1 *parabolic-e*) (+ 1 *parabolic-e*))
+                      e))))
+           (p (/ (* hn hn) mu))
+           (q (/ p (+ 1 e)))
+           (i (atan (sqrt (+ (expt (aref h 0) 2) (expt (aref h 1) 2))) (aref h 2)))
+           (raan (if (or (< i *equatorial-i*) (> i (- pi *equatorial-i*)))
+                     0d0
+                     (wrap-angle (atan (aref h 0) (- (aref h 1))))))
+           (argp (progn
+                   (vec3-set! node (cos raan) (sin raan) 0d0)
+                   ;; ahead = (h / hn) × node, h scaled in place
+                   (vec3-cross! ahead (vec3-scale! h h (/ hn)) node)
+                   (if (< e *circular-e*)
+                       0d0
+                       (wrap-angle (atan (vec3-dot evec ahead) (vec3-dot evec node))))))
+           (theta (wrap-signed (- (atan (vec3-dot r ahead) (vec3-dot r node)) argp)))
            (m (if (< e 1)
                   (let ((ea (true->eccentric theta e))) (- ea (* e (sin ea))))
-                  (let ((h (true->hyperbolic theta e))) (- (* e (sinh h)) h))))
+                  (let ((x (true->hyperbolic theta e))) (- (* e (sinh x)) x))))
            (a (abs (/ q (- 1 e))))
            (n (sqrt (/ mu (* a a a)))))
-      (make-orbit mu q e i raan argp (- time (/ m n))))))
+      (declare (type double-float hn rn e p q i raan argp theta m a n))
+      (setf (orbit-mu out) mu (orbit-q out) q (orbit-e out) e (orbit-i out) i
+            (orbit-raan out) raan (orbit-argp out) argp (orbit-tp out) (- time (/ m n)))
+      out)))
+
+(defun state->orbit (r v mu time)
+  "The osculating orbit of the state (r, v) at time about a body of μ."
+  (state->orbit-into! (make-orbit 0d0 0d0 0d0 0d0 0d0 0d0 0d0) r v mu time))
 
 (defun make-elliptic-orbit (mu a e i raan argp mean-anomaly time)
   "The orbit with these classical elements and mean anomaly M at time."

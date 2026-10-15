@@ -42,6 +42,75 @@
     (when (and canvas (eq :open (luv:canvas-state canvas)))
       (luv:set-canvas-relative-pointer-mode canvas nil))))
 
+;;; The key map (decision 29: Control scheme: key map, control modes,
+;;; gamepad; decision 81): discrete commands, run at the press.
+
+(defparameter *key-map*
+  '((:f . :fine) (:z . :throttle-full) (:x . :throttle-cut)
+    (:t . :rate-damping) (:r . :inertial-hold)
+    (:|1| . :hold-prograde) (:|2| . :hold-retrograde)
+    (:|3| . :hold-normal) (:|4| . :hold-anti-normal)
+    (:|5| . :hold-radial-out) (:|6| . :hold-radial-in)
+    (:|.| . :warp-up) (:|,| . :warp-down) (:/ . :warp-reset) (:p . :pause)
+    (:m . :map) (:tab . :map-focus) (:page-up . :map-zoom-in) (:page-down . :map-zoom-out))
+  "(key . command): luv's physical key names; run-command's commands.")
+
+(defparameter *flight-commands*
+  '(:fine :throttle-full :throttle-cut :rate-damping :inertial-hold
+    :hold-prograde :hold-retrograde :hold-normal :hold-anti-normal
+    :hold-radial-out :hold-radial-in)
+  "Ignored while paused or lost (decision 81); the rest always act (decision 88: Warp keys while paused).")
+
+(defparameter *throttle-ramp-rate* 0.5d0 "Lever per real second, Shift-left / Control-left; decision 81.")
+(defparameter *throttle-ramp-elapsed-cap* 0.1d0 "s: a frame's elapsed time the ramp uses at most; decision 81.")
+(defparameter *throttle-up-key* :shift-left)
+(defparameter *throttle-down-key* :control-left)
+(defparameter *rcs-off-message* "RCS OFF ABOVE ×4" "decision 31: Warp choices within the time-warp rules.")
+
+(defun flight-keys-ignored-p (game)
+  "Paused or lost: flight keys do nothing (decision 81)."
+  (or (clock-paused (game-clock game)) (sim-lost-p (game-sim game))))
+
+(defun run-command (game command)
+  (let* ((sim (game-sim game))
+         (clock (game-clock game))
+         (controls (sim-controls sim)))
+    (ecase command
+      (:fine (controls-toggle-fine controls))
+      (:throttle-full (controls-throttle-full controls))
+      (:throttle-cut (controls-throttle-cut controls))
+      (:rate-damping (controls-toggle-rate-damping controls))
+      (:inertial-hold (controls-inertial-hold controls (ship-state-q (sim-ship sim))))
+      (:hold-prograde (controls-set-hold controls :prograde))
+      (:hold-retrograde (controls-set-hold controls :retrograde))
+      (:hold-normal (controls-set-hold controls :normal))
+      (:hold-anti-normal (controls-set-hold controls :anti-normal))
+      (:hold-radial-out (controls-set-hold controls :radial-out))
+      (:hold-radial-in (controls-set-hold controls :radial-in))
+      (:warp-up (clock-warp-up clock sim))
+      (:warp-down (clock-warp-down clock))
+      (:warp-reset (clock-warp-reset clock))
+      (:pause (clock-toggle-pause clock))
+      ;; PLACEHOLDER(79): the map's commands, plan 20: The basic map.
+      ((:map :map-focus :map-zoom-in :map-zoom-out) nil))))
+
+(defun key-pressed! (game key)
+  "A new press of KEY: its command, or the RCS-off message for a flight
+key above ×4."
+  (let ((command (cdr (assoc key *key-map*))))
+    (cond ((and command (member command *flight-commands*))
+           (unless (flight-keys-ignored-p game)
+             (run-command game command)))
+          (command (run-command game command))
+          ((and (assoc key *flight-keys*)
+                (not (flight-keys-ignored-p game))
+                (clock-kinematic-p (game-clock game)))
+           (clock-message! (game-clock game) :rcs-off *rcs-off-message*)))))
+
+(defun window-title ()
+  "The window's title: the main keys by QWERTY position (decision 81)."
+  "Luv in Space · WASD QE turn · HN IK JL move · Shift/Ctrl throttle · Z/X full/cut · T damp · R 1–6 hold · F fine · . , / warp · P pause · C camera · M map · Esc quit")
+
 ;; Runs on the canvas thread: only flag the quit; STOP runs on the caller's.
 (defun handle-event (game event)
   (let ((input (game-input game)))
@@ -51,7 +120,8 @@
          (cond ((quit-key-p event) (setf (game-quit-requested-p game) t))
                ((luv:canvas-key-event-repeat-p event))
                (t (pushnew key (input-held input))
-                  (pushnew key (input-pressed input))))))
+                  (pushnew key (input-pressed input))
+                  (key-pressed! game key)))))
       (luv:canvas-key-release-event
        (let ((key (luv:canvas-key-event-key-name event)))
          (when (member key (input-held input))
@@ -63,12 +133,31 @@
       (luv:canvas-window-close-request-event
        (setf (game-quit-requested-p game) t)))))
 
+(defun throttle-ramp! (controls keys elapsed)
+  "Shift-left raises the lever, from off to 0.1; Control-left lowers it,
+below 0.1 off (controls-set-throttle)."
+  (let ((sign (- (if (member *throttle-up-key* keys) 1 0)
+                 (if (member *throttle-down-key* keys) 1 0)))
+        (throttle (controls-throttle controls)))
+    (cond ((and (> sign 0) (= throttle 0d0))
+           (controls-set-throttle controls *throttle-min*))
+          ((/= sign 0)
+           (controls-set-throttle
+            controls (+ throttle (* sign *throttle-ramp-rate*
+                                    (min (float elapsed 1d0) *throttle-ramp-elapsed-cap*))))))))
+
 (defun input-frame! (game elapsed)
   "Once per frame, before clock-frame!: the held and tapped keys to the
-sim's controls; then the latches clear. ELAPSED: real seconds."
-  (declare (ignore elapsed))
-  (let ((input (game-input game)))
-    (controls-apply-held-keys! (sim-controls (game-sim game)) (input-frame-keys input))
+sim's controls (none while paused, lost or above ×4) and the throttle ramp
+(not while paused or lost); then the latches clear. ELAPSED: real seconds."
+  (let* ((input (game-input game))
+         (controls (sim-controls (game-sim game)))
+         (keys (input-frame-keys input))
+         (ignored (flight-keys-ignored-p game)))
+    (controls-apply-held-keys! controls
+                               (if (or ignored (clock-kinematic-p (game-clock game))) '() keys))
+    (unless ignored
+      (throttle-ramp! controls keys elapsed))
     (setf (input-pressed input) '()
           (input-released input) '()
           (input-pointer-dx input) 0d0

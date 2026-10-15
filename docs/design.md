@@ -205,7 +205,12 @@ Keyboard and mouse through luv's canvas events (`docs/luv-capabilities.md` "Wind
 - Keys are luv's physical key names (SDL scancodes: `:w`, `:shift-left`, `:|.|` …), so the map keeps its positions on any keyboard layout; help texts show the layout's character (`canvas-key-event-character`). Letters below are QWERTY positions.
 - Held keys act from press to release; key-repeat events are ignored; losing window focus releases all keys.
 - Held keys are sampled once per frame, before the frame's steps (`input-frame!`); a key pressed and released between two frames counts as held for exactly that one frame (the tap latch, the shortest tap), so no tap is lost (`decision 81: Input in milestone 2: held keys per frame, taps, gating and the shared key map`).
-- Rates of held keys (throttle ramp, head look by keys) run in real time, not game time, so they feel the same at every warp level.
+- Rates of held keys (throttle ramp, head look by keys) run in real time, not game time, so they feel the same at every warp level; the throttle ramp uses at most 0.1 s of a frame (`*throttle-ramp-rate*`, `input.lisp`).
+- What is ignored (`decision 81`, `decision 88: Warp keys while paused`):
+  - Paused: the flight keys (rotation, translation, F, Z, X, T, R, 1–6, Shift-left, Control-left; the ramp stops); P, the warp keys `.` `,` `/` (they set the level P's resume restores), C, Home, M, Tab, the Page keys, the mouse and quit act.
+  - Above ×4: rotation and translation keys; each press shows "RCS OFF ABOVE ×4"; holds, T, R, F and the throttle act.
+  - Lost: every flight key; the LOST panel's keys act ("Dying and what follows").
+- The window title until `milestone 6`'s F1 help: "Luv in Space · WASD QE turn · HN IK JL move · Shift/Ctrl throttle · Z/X full/cut · T damp · R 1–6 hold · F fine · . , / warp · P pause · C camera · M map · Esc quit" (QWERTY positions; luv has no key-name → character function, `docs/luv-wishlist.md`).
 
 | Function | Keys | From milestone |
 |---|---|---|

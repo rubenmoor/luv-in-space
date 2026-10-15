@@ -44,6 +44,7 @@ luv's HAL is a good base; these are the pieces every 3D program on it rewrites.
 Small gaps where luv's SDL3 wrapper stops short.
 
 - Gamepad and joystick events in the canvas protocol (Gamepad and joystick). Why: SDL3 and cl-sdl3 have them; luv initialises video only and drops the events.
+- A key-name → layout-character function exported by luv's canvas, e.g. `(canvas-key-name-character canvas :w)` over SDL's `SDL_GetKeyFromScancode` (Windowing and input). Why: a window title or help screen showing keys could show the layout's characters; events carry them, but only once the key is pressed. Workaround here: `window-title` names keys by QWERTY position.
 - A small mixer on top of `audio-sink` (several voices, stereo push) (Audio). Why: `audio-sink` takes one mono stream with a pan; every program that plays more than one sound writes a mixer.
 - A save-file helper: safe read of one form, atomic write, XDG data path (Save files). Why: Luvcraft's pattern is generic and this repo copies it.
 - A fixed-step simulation clock with an accumulator and a step cap (Fixed physics step and time warp). Why: Luvcraft has one inline in its frame function; games need the same thing.

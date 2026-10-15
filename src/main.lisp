@@ -24,6 +24,7 @@
    (frame-count :initform 0 :accessor game-frame-count)
    (input :initform (make-input) :reader game-input
           :documentation "Held keys, taps and the pointer (input.lisp); not in the sim.")
+   (view :initform :outside :accessor game-view :documentation "The view: :outside.")
    (quit-requested-p :initform nil :accessor game-quit-requested-p)))
 
 (defvar *game* nil)
@@ -121,7 +122,7 @@ snap on the first frame and when ELAPSED is nil (decision 76)."
 (defun start (&key (visible t) (width 1280) (height 800) (sim (new-game-sim)) paused)
   "Open the game window on SIM (used as is, the start checkpoint taken of
 it) and start drawing; PAUSED starts with the clock paused. Returns the game."
-  (let* ((canvas (luv:make-sdl-canvas :title "Luv in Space" :width width :height height
+  (let* ((canvas (luv:make-sdl-canvas :title (window-title) :width width :height height
                                       :visible-p visible))
          (_ (luv:open-canvas canvas))
          (device (luv:request-gpu-device luv:*gpu-provider*

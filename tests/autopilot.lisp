@@ -1010,16 +1010,56 @@ search's Kepler, decision 161)."
             until (member stage '(:done :refused)))
       (let ((plan (lis::autopilot-job-plan job)))
         (is eq :done (lis::autopilot-job-stage job) "~A: ~A" key (lis::autopilot-job-reason job))
+        ;; A re-timing's reference coast reaches the candidate's arrival (task 273).
+        (when (plusp (lis::autopilot-job-retimes job))
+          (true (< (lis::autopilot-job-retime-own job) most-positive-double-float) "~A" key))
         (when plan
           (true (equal '(:departure :arrival) (last (plan-labels plan) 2)) "~A ~A" key (plan-labels plan))
           (check-arrival job lis::*rendezvous-stall-tolerance*)
           (true (<= (plan-dv plan) (+ (* 1.04d0 (job-search-total job)) 10d0))
                 "~A ~,2F m/s, search ~,2F" key (plan-dv plan) (job-search-total job)))))))
 
+(define-test rendezvous-retime-coast
+  ;; A re-timing's reference coast thins its nodes past the buffer (task
+  ;; 273): the start state with Highport targeted (:j2), 30 h at stride 4
+  ;; against the 20,000 nodes (~11 h) of a plain shot: the ship within 1 mm
+  ;; and 1e-4 m/s (0.12 mm, 4.6e-5 m/s), the target within 10 m (0.7 m: its
+  ;; rails' velocity is not their position's derivative under J2, so the
+  ;; Hermite over 8 s misses; the coast's target nodes find its promotion,
+  ;; 100 km), the coast to its horizon. ~80 ms.
+  (let* ((sim (model-sim :j2))
+         (start (lis::sim-t sim))
+         (end (+ start 108000d0))
+         (r (lis::make-vec3)) (v (lis::make-vec3)) (r2 (lis::make-vec3)) (v2 (lis::make-vec3)))
+    (lis::sim-set-target! sim :highport)
+    (flet ((distance (a b) (lis::vec3-norm (lis::vec3-sub a b)))
+           (last-t (pred) (lis::node-t (lis::prediction-nodes pred) (1- (lis::prediction-count pred))))
+           (shot (&rest keys)
+             (lis::prediction-extend! (apply #'lis::prediction-shoot! (lis::new-prediction)
+                                             (lis::copy-sim sim) end keys)
+                                      most-positive-fixnum)))
+      (let ((plain (shot))
+            (thin (shot :thin t)))
+        (is = lis::*prediction-capacity* (lis::prediction-count plain))
+        (true (< (last-t plain) (+ start 43200d0)))
+        (is = 4 (lis::prediction-stride thin))
+        (is = (lis::prediction-count thin) (lis::prediction-target-count thin))
+        (true (<= end (last-t thin)))
+        (loop for time from (+ start 13.3d0) below (last-t plain) by 977.7d0
+              do (lis::prediction-state! r v plain time)
+                 (lis::prediction-state! r2 v2 thin time)
+                 (true (and (< (distance r r2) 1d-3) (< (distance v v2) 1d-4))
+                       "~,1F s: ~,6F m ~,9F m/s" (- time start) (distance r r2) (distance v v2))
+                 (lis::prediction-target-position! r plain time)
+                 (lis::prediction-target-position! r2 thin time)
+                 (true (< (distance r r2) 10d0)))))))
+
 (define-test rendezvous-plan-highport
   ;; From the start state (:j2, 48 h) through the job: 2,850.62 m/s against
   ;; the search's 2,766.25 (its second candidate; the first fails the path
-  ;; check), 359 ms. Before decision 165 the :departure's 718 s burn missed
+  ;; check), 359 ms; ~10 % more since task 273's reference coast reaches its
+  ;; 15.4 h transfer's arrival (430 ms against 390 at the same load), the
+  ;; plan unchanged. Before decision 165 the :departure's 718 s burn missed
   ;; the aim point by 24,000 km and its cut's tick 7-13 km: "NEEDS 35774
   ;; KG". All five places for task 162's slow command, measured (ms): Tern
   ;; Station 160 (19.35 m/s), Fulmar Depot 198 (62.63), Highport 359, K-17

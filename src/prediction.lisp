@@ -40,6 +40,11 @@ decision 149).")
   (head 0 :type fixnum)                         ; the node at or before the flown t
   (count 0 :type fixnum)                        ; nodes stored
   (target-count 0 :type fixnum)                 ; nodes from 0 with the target's state
+  ;; A thinning shot (a re-timing's reference coast, decision 161): full,
+  ;; it keeps every other node and stores every stride-th step after.
+  (thin nil :type boolean)
+  (stride 1 :type fixnum)
+  (skipped 0 :type fixnum)                      ; steps not stored since the last node
   (periods 1 :type (integer 1 2))               ; the coasting horizon in osculating periods
   (until nil :type (or null double-float))      ; a shot's horizon, instead of the periods
   (until-plan nil :type boolean)                ; the horizon: the copy's plan done + a period
@@ -107,11 +112,33 @@ ends (decision 75)."
   (declare (type (simple-array double-float (*)) nodes) (type fixnum i))
   (aref nodes (* +node-size+ i)))
 
+(defun thin-nodes! (pred)
+  "PRED's nodes (and target nodes) at even indices kept, the stride doubled."
+  (declare (optimize speed) (type prediction pred))
+  (let ((nodes (prediction-nodes pred))
+        (targets (prediction-target-nodes pred))
+        (count (prediction-count pred))
+        (target-count (prediction-target-count pred)))
+    (loop for i of-type fixnum from 2 below count by 2
+          for j of-type fixnum from 1
+          do (replace nodes nodes :start1 (* +node-size+ j) :start2 (* +node-size+ i)
+                                  :end2 (* +node-size+ (1+ i)))
+             (when (< i target-count)
+               (replace targets targets :start1 (* +target-node-size+ j)
+                                        :start2 (* +target-node-size+ i)
+                                        :end2 (* +target-node-size+ (1+ i)))))
+    (setf (prediction-count pred) (ceiling count 2)
+          (prediction-target-count pred) (ceiling target-count 2)
+          (prediction-stride pred) (* 2 (prediction-stride pred)))
+    pred))
+
 (defun push-node! (pred sim)
   "Append SIM's t, r, v; nil when the buffer is full."
   (declare (optimize speed) (type prediction pred) (type sim sim))
   (let ((nodes (prediction-nodes pred))
         (head (prediction-head pred)))
+    (when (and (>= (prediction-count pred) *prediction-capacity*) (= head 0) (prediction-thin pred))
+      (thin-nodes! pred))
     (when (and (>= (prediction-count pred) *prediction-capacity*) (> head 0))
       (replace nodes nodes :start2 (* +node-size+ head))
       (let ((targets (prediction-target-nodes pred)))
@@ -633,6 +660,9 @@ those PRED was made with (decision 75, decision 116)."
         (prediction-head pred) 0
         (prediction-count pred) 0
         (prediction-target-count pred) 0
+        (prediction-thin pred) nil
+        (prediction-stride pred) 1
+        (prediction-skipped pred) 0
         (prediction-event-count pred) 0
         (prediction-cut-count pred) 0
         (prediction-impact pred) nil
@@ -713,7 +743,8 @@ copy's plan flies at *prediction-rcs-level* while an RCS burn runs, else at
       (when (or (sim-loss sim)
                 (>= (sim-t sim) (prediction-end pred))
                 (and (>= (prediction-count pred) *prediction-capacity*)
-                     (= (prediction-head pred) 0)))
+                     (= (prediction-head pred) 0)
+                     (not (prediction-thin pred))))
         (setf (prediction-state pred) :complete)
         (return))
       (when (> (+ work (prediction-step-work sim)) budget)
@@ -757,19 +788,25 @@ copy's plan flies at *prediction-rcs-level* while an RCS burn runs, else at
         (setf (sim-notices sim) nil
               (sim-checkpoint-request sim) nil)
         (incf steps)
-        ;; A contact answered at the step's start: its node replaced.
-        (when (and zero (> (prediction-count pred) (prediction-head pred)))
-          (decf (prediction-count pred))
-          (setf (prediction-target-count pred)
-                (min (prediction-target-count pred) (prediction-count pred))))
-        (unless (push-node! pred sim)
-          (setf (prediction-state pred) :complete)
-          (return))
-        (incf work (the fixnum (push-target! pred sim)))
+        (cond ((or zero (sim-loss sim) (>= (sim-t sim) (prediction-end pred))
+                   (>= (1+ (prediction-skipped pred)) (prediction-stride pred)))
+               ;; A contact answered at the step's start: its node replaced.
+               (when (and zero (= (prediction-skipped pred) 0)
+                          (> (prediction-count pred) (prediction-head pred)))
+                 (decf (prediction-count pred))
+                 (setf (prediction-target-count pred)
+                       (min (prediction-target-count pred) (prediction-count pred))))
+               (setf (prediction-skipped pred) 0)
+               (unless (push-node! pred sim)
+                 (setf (prediction-state pred) :complete)
+                 (return))
+               (incf work (the fixnum (push-target! pred sim)))
+               (unless zero
+                 (apsis-search! pred (- (prediction-count pred) 2))
+                 (when (= (prediction-target-count pred) (prediction-count pred))
+                   (target-search! pred (- (prediction-count pred) 2)))))
+              (t (incf (prediction-skipped pred))))
         (unless zero
-          (apsis-search! pred (- (prediction-count pred) 2))
-          (when (= (prediction-target-count pred) (prediction-count pred))
-            (target-search! pred (- (prediction-count pred) 2)))
           (contact-crossing! pred sim)
           (when (<= (prediction-clearance-from pred) (prediction-clearance-until pred))
             (clearance-step! pred sim)))
@@ -809,13 +846,15 @@ decision 116), else extend the tail; at most BUDGET work. PRED."
   (prediction-refresh! pred sim)
   (prediction-extend! pred budget))
 
-(defun prediction-shoot! (pred sim until &key after-plan)
+(defun prediction-shoot! (pred sim until &key after-plan thin)
   "Restart PRED from SIM as a shot (decision 117): its horizon the fixed
 time UNTIL; AFTER-PLAN: once the copy's plan is done, that t plus one
-osculating period instead (UNTIL then a cap). Run it by prediction-extend!;
+osculating period instead (UNTIL then a cap); THIN: past the buffer it thins
+its nodes (thin-nodes!) rather than ending. Run it by prediction-extend!;
 PRED."
   (prediction-restart! pred sim)
-  (setf (prediction-now pred) (sim-t sim)
+  (setf (prediction-thin pred) thin
+        (prediction-now pred) (sim-t sim)
         (prediction-end pred) (float until 1d0)
         (prediction-until-plan pred) (and after-plan (sim-plan sim) t))
   pred)

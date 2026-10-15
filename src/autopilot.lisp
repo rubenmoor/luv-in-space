@@ -2987,7 +2987,8 @@ times."
 
 (defun job-retime-start! (job)
   "Stage :retime: first the reference coast, the lead's ship coasting on
-JOB's shot (no plan) past the latest arrival scanned; then the transfer's
+JOB's shot (no plan) past the latest arrival scanned, thinning its nodes
+past the buffer (task 273); then the transfer's
 departure and transfer time scanned about the candidate's,
 *retime-departures* each side over half the ship's period,
 *retime-transfers* each side; the cheapest *retime-pool* refined by golden
@@ -3014,7 +3015,8 @@ section and checked in order (job-retime-advance!)."
                        (shot-sim-assign! (autopilot-job-scratch job) lead nil)
                        (+ (aref times d) (* 0.5d0 period)
                           (* tof (+ 1d0 (* *retime-transfers* *retime-transfer-step*)))
-                          *shot-cap-margin*))
+                          *shot-cap-margin*)
+                       :thin t)
     (incf (autopilot-job-retimes job))
     job))
 

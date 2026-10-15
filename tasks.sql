@@ -1,5 +1,5 @@
 -- pm database. Change it with pm; after a hand edit run `pm validate`.
-PRAGMA user_version = 16;
+PRAGMA user_version = 20;
 
 CREATE TABLE milestone (
     id             INTEGER PRIMARY KEY,
@@ -24,9 +24,9 @@ CREATE TABLE plan (
 
 CREATE TABLE task (
     id              INTEGER PRIMARY KEY,
-    plan_id         INTEGER NOT NULL REFERENCES plan (id),
+    plan_id         INTEGER REFERENCES plan (id),          -- NULL: exec, and only exec
     subject         TEXT NOT NULL CHECK (trim(subject) <> ''),
-    kind            TEXT NOT NULL DEFAULT 'work' CHECK (kind IN ('work', 'plan', 'masterplan', 'split', 'cleanup', 'revise')),
+    kind            TEXT NOT NULL DEFAULT 'work' CHECK (kind IN ('work', 'plan', 'masterplan', 'split', 'cleanup', 'revise', 'investigate', 'exec')),
     status          TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'done', 'dropped')),
     priority        INTEGER,                               -- NULL: the plan's
     note            TEXT,                                  -- done: date, files; dropped: reason
@@ -36,7 +36,8 @@ CREATE TABLE task (
     created_by_task INTEGER REFERENCES task (id),
     web             INTEGER NOT NULL DEFAULT 0 CHECK (web IN (0, 1)),  -- 1: its worker gets WebSearch and WebFetch
     CONSTRAINT "an open task needs a body" CHECK (status <> 'open' OR trim(body) <> ''),
-    CONSTRAINT "retired_at is set exactly when done or dropped" CHECK ((status = 'open') = (retired_at IS NULL))
+    CONSTRAINT "retired_at is set exactly when done or dropped" CHECK ((status = 'open') = (retired_at IS NULL)),
+    CONSTRAINT "an exec task has no plan, every other task has one" CHECK ((kind = 'exec') = (plan_id IS NULL))
 ) STRICT;
 
 CREATE TABLE decision (
@@ -99,6 +100,14 @@ CREATE TABLE decision_supersedes (                         -- decision_id's answ
     CHECK (decision_id <> superseded_id)
 ) STRICT;
 
+CREATE TABLE summary (                                     -- an executive summary, written by a summary task
+    id          INTEGER PRIMARY KEY,
+    task_id     INTEGER NOT NULL REFERENCES task (id),
+    body        TEXT NOT NULL CHECK (trim(body) <> ''),     -- Markdown
+    head_commit TEXT,                                      -- git HEAD when written: the next summary's delta starts here
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+) STRICT;
+
 CREATE INDEX plan_milestone ON plan (milestone_id);
 
 CREATE INDEX task_plan ON task (plan_id);
@@ -114,12 +123,12 @@ CREATE UNIQUE INDEX run_running ON run (result) WHERE result = 'running';
 CREATE VIEW queue AS
 SELECT coalesce(t.priority, p.priority, 0) AS priority, t.id AS task_id, t.subject, t.kind
 FROM task t
-JOIN plan p ON p.id = t.plan_id
-JOIN milestone m ON m.id = p.milestone_id
-WHERE m.status = 'open' AND t.status = 'open'
+LEFT JOIN plan p ON p.id = t.plan_id
+LEFT JOIN milestone m ON m.id = p.milestone_id
+WHERE (m.status = 'open' OR t.kind = 'exec') AND t.status = 'open'
   AND NOT EXISTS (SELECT 1 FROM task_decision td JOIN decision d ON d.id = td.decision_id
                   WHERE td.task_id = t.id AND d.status = 'pending')
-ORDER BY m.queue_index, priority DESC, m.id, p.id, t.id;
+ORDER BY coalesce(m.queue_index, 0), priority DESC, m.id, p.id, t.id;
 
 INSERT INTO milestone (id, subject, status, body, created_at, implemented_at, queue_index) VALUES (1, 'Scope and design: what luv can carry, what the game is', 'implemented', 'The first milestone finds out what luv can carry and turns the developer''s ideas into a concrete, scoped game design. Every later milestone builds what these documents specify, so they must be specific enough to implement from, and honest about luv''s limits.
 

@@ -37,10 +37,10 @@
     (or (eq key :escape)
         (and (eq key :q) (member :control (luv:canvas-key-event-modifiers event))))))
 
-(defun leave-relative-pointer-mode (game)
+(defun set-relative-pointer-mode (game enabled)
   (let ((canvas (game-canvas game)))
     (when (and canvas (eq :open (luv:canvas-state canvas)))
-      (luv:set-canvas-relative-pointer-mode canvas nil))))
+      (luv:set-canvas-relative-pointer-mode canvas enabled))))
 
 ;;; The key map (decision 29: Control scheme: key map, control modes,
 ;;; gamepad; decision 81): discrete commands, run at the press.
@@ -52,6 +52,7 @@
     (:|3| . :hold-normal) (:|4| . :hold-anti-normal)
     (:|5| . :hold-radial-out) (:|6| . :hold-radial-in)
     (:|.| . :warp-up) (:|,| . :warp-down) (:/ . :warp-reset) (:p . :pause)
+    (:c . :camera-frame) (:home . :camera-reset)
     (:m . :map) (:tab . :map-focus) (:page-up . :map-zoom-in) (:page-down . :map-zoom-out))
   "(key . command): luv's physical key names; run-command's commands.")
 
@@ -91,6 +92,8 @@
       (:warp-down (clock-warp-down clock))
       (:warp-reset (clock-warp-reset clock))
       (:pause (clock-toggle-pause clock))
+      (:camera-frame (outside-view-toggle-frame! (game-outside-view game) (game-render-state game)))
+      (:camera-reset (outside-view-reset! (game-outside-view game)))
       ;; PLACEHOLDER(79): the map's commands, plan 20: The basic map.
       ((:map :map-focus :map-zoom-in :map-zoom-out) nil))))
 
@@ -109,7 +112,7 @@ key above ×4."
 
 (defun window-title ()
   "The window's title: the main keys by QWERTY position (decision 81)."
-  "Luv in Space · WASD QE turn · HN IK JL move · Shift/Ctrl throttle · Z/X full/cut · T damp · R 1–6 hold · F fine · . , / warp · P pause · C camera · M map · Esc quit")
+  "Luv in Space · WASD QE turn · HN IK JL move · Shift/Ctrl throttle · Z/X full/cut · T damp · R 1–6 hold · F fine · . , / warp · P pause · C/Home camera · M map · Esc quit")
 
 ;; Runs on the canvas thread: only flag the quit; STOP runs on the caller's.
 (defun handle-event (game event)
@@ -127,9 +130,23 @@ key above ×4."
          (when (member key (input-held input))
            (setf (input-held input) (remove key (input-held input)))
            (pushnew key (input-released input)))))
+      (luv:canvas-pointer-button-press-event
+       (when (eq :right (luv:canvas-pointer-event-button event))
+         (setf (input-drag input) t)
+         (set-relative-pointer-mode game t)))
+      (luv:canvas-pointer-button-release-event
+       (when (and (eq :right (luv:canvas-pointer-event-button event)) (input-drag input))
+         (setf (input-drag input) nil)
+         (set-relative-pointer-mode game nil)))
+      (luv:canvas-pointer-motion-event
+       (when (input-drag input)
+         (incf (input-pointer-dx input) (float (luv:canvas-pointer-event-delta-x event) 1d0))
+         (incf (input-pointer-dy input) (float (luv:canvas-pointer-event-delta-y event) 1d0))))
+      (luv:canvas-pointer-wheel-event
+       (incf (input-wheel input) (float (luv:canvas-pointer-event-scroll-y event) 1d0)))
       (luv:canvas-window-focus-lost-event
        (input-clear! input)
-       (leave-relative-pointer-mode game))
+       (set-relative-pointer-mode game nil))
       (luv:canvas-window-close-request-event
        (setf (game-quit-requested-p game) t)))))
 
@@ -146,10 +163,21 @@ below 0.1 off (controls-set-throttle)."
             controls (+ throttle (* sign *throttle-ramp-rate*
                                     (min (float elapsed 1d0) *throttle-ramp-elapsed-cap*))))))))
 
+(defun pointer-frame! (game input)
+  "The drag and wheel summed since the last frame to the view (decision 82)."
+  (when (eq (game-view game) :outside)
+    (let ((view (game-outside-view game)))
+      (unless (and (= (input-pointer-dx input) 0d0) (= (input-pointer-dy input) 0d0))
+        (outside-view-drag! view (input-pointer-dx input) (input-pointer-dy input)))
+      (unless (= (input-wheel input) 0d0)
+        (outside-view-zoom! view (input-wheel input)
+                            (ship-state-m-p (sim-ship (game-sim game))))))))
+
 (defun input-frame! (game elapsed)
   "Once per frame, before clock-frame!: the held and tapped keys to the
 sim's controls (none while paused, lost or above ×4) and the throttle ramp
-(not while paused or lost); then the latches clear. ELAPSED: real seconds."
+(not while paused or lost), the pointer to the view (always); then the
+latches clear. ELAPSED: real seconds."
   (let* ((input (game-input game))
          (controls (sim-controls (game-sim game)))
          (keys (input-frame-keys input))
@@ -158,6 +186,7 @@ sim's controls (none while paused, lost or above ×4) and the throttle ramp
                                (if (or ignored (clock-kinematic-p (game-clock game))) '() keys))
     (unless ignored
       (throttle-ramp! controls keys elapsed))
+    (pointer-frame! game input)
     (setf (input-pressed input) '()
           (input-released input) '()
           (input-pointer-dx input) 0d0

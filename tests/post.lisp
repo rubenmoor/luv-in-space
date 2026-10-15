@@ -23,8 +23,7 @@
     camera))
 
 (defun default-camera (state)
-  (lis::outside-camera-default! (lis::make-camera) (lis::render-state-r state)
-                                (lis::render-state-v state)))
+  (lis::outside-camera-update! (lis::make-camera) (lis::new-outside-view) state nil))
 
 (defun exposure (camera state &optional (view :outside))
   (lis::exposure-target camera state view))
@@ -91,8 +90,7 @@
          (state (lis::game-render-state game))
          (extent '(1280 800)))
     (lis::render-state-update! state (lis::new-clock (start-sim-at 180)) (start-sim-at 180))
-    (lis::outside-camera-default! (lis::game-camera game) (lis::render-state-r state)
-                                  (lis::render-state-v state))
+    (lis::outside-camera-update! (lis::game-camera game) (lis::game-outside-view game) state nil)
     (is = lis::*exposure-deep* (lis::update-exposure! game extent 0.016d0))
     (setf (lis::game-exposure game) lis::*exposure-sunlit*)
     (let ((eased (lis::update-exposure! game extent 0.5d0)))

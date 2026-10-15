@@ -263,6 +263,7 @@ digits inside the 1–6 range, the rest by name."
         (:shift-left (token-p "Shift"))
         (:control-left (token-p "Ctrl"))
         (:escape (token-p "Esc"))
+        (:home (token-p "Home"))
         (t (let ((name (string key)))
              (if (and (= 1 (length name)) (alpha-char-p (char name 0)))
                  (some (lambda (token) (and (every #'upper-case-p token)
@@ -279,3 +280,52 @@ digits inside the 1–6 range, the rest by name."
       ;; Tab and the Page keys are the map's, not main keys (decision 81).
       (unless (member key '(:tab :page-up :page-down))
         (true (title-names-key-p title key) "~A" key)))))
+
+;;; The pointer and the camera keys (decision 82: Outside view camera:
+;;; angles in a frame, toggles that keep the picture, distance and easing).
+
+(defun pointer-event (game class &rest initargs)
+  (lis::handle-event game (apply #'make-instance class :timestamp 0 :x 0.0 :y 0.0 initargs)))
+
+(defun outside-view (game) (lis::game-outside-view game))
+
+(define-test input-right-drag
+  (let ((game (input-game)))
+    (pointer-event game 'luv:canvas-pointer-button-press-event :button :right)
+    (pointer-event game 'luv:canvas-pointer-motion-event :delta-x 8.0 :delta-y 0.0)
+    (pointer-event game 'luv:canvas-pointer-motion-event :delta-x -4.0 :delta-y 0.0)
+    (pointer-event game 'luv:canvas-pointer-button-release-event :button :right)
+    (input-frame game)
+    (true (< (abs (- (lis::outside-view-azimuth (outside-view game)) (* 179 (/ pi 180)))) 1d-12))
+    (pointer-event game 'luv:canvas-pointer-motion-event :delta-x 8.0 :delta-y 8.0)
+    (input-frame game)
+    (true (< (abs (- (lis::outside-view-azimuth (outside-view game)) (* 179 (/ pi 180)))) 1d-12))
+    (is = (* 20 (/ pi 180)) (lis::outside-view-elevation (outside-view game)))
+    ;; Focus loss ends a drag.
+    (pointer-event game 'luv:canvas-pointer-button-press-event :button :right)
+    (window-event game 'luv:canvas-window-focus-lost-event)
+    (pointer-event game 'luv:canvas-pointer-motion-event :delta-x 8.0 :delta-y 0.0)
+    (input-frame game)
+    (true (< (abs (- (lis::outside-view-azimuth (outside-view game)) (* 179 (/ pi 180)))) 1d-12))))
+
+(define-test input-wheel
+  (let ((game (input-game)))
+    (pointer-event game 'luv:canvas-pointer-wheel-event :scroll-y 1.0)
+    (pointer-event game 'luv:canvas-pointer-wheel-event :scroll-y 1.0)
+    (input-frame game)
+    (true (< (abs (- (lis::outside-view-target (outside-view game)) (/ 40d0 1.44d0))) 1d-12))))
+
+(define-test input-camera-keys-while-paused
+  (let* ((game (input-game))
+         (view (outside-view game)))
+    (lis::render-state-update! (lis::game-render-state game) (lis::game-clock game) (lis::game-sim game))
+    (setf (lis::clock-paused (lis::game-clock game)) t)
+    (key-event game :press :c)
+    (is eq :locked (lis::outside-view-frame view))
+    (pointer-event game 'luv:canvas-pointer-wheel-event :scroll-y -3.0)
+    (input-frame game)
+    (true (> (lis::outside-view-target view) 40d0))
+    (key-event game :press :home)
+    (is eq :orbital (lis::outside-view-frame view))
+    (is = 40d0 (lis::outside-view-target view))
+    (is = pi (lis::outside-view-azimuth view))))

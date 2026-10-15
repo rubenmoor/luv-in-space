@@ -210,7 +210,7 @@ Keyboard and mouse through luv's canvas events (`docs/luv-capabilities.md` "Wind
   - Paused: the flight keys (rotation, translation, F, Z, X, T, R, 1–6, Shift-left, Control-left; the ramp stops); P, the warp keys `.` `,` `/` (they set the level P's resume restores), C, Home, M, Tab, the Page keys, the mouse and quit act.
   - Above ×4: rotation and translation keys; each press shows "RCS OFF ABOVE ×4"; holds, T, R, F and the throttle act.
   - Lost: every flight key; the LOST panel's keys act ("Dying and what follows").
-- The window title until `milestone 6`'s F1 help: "Luv in Space · WASD QE turn · HN IK JL move · Shift/Ctrl throttle · Z/X full/cut · T damp · R 1–6 hold · F fine · . , / warp · P pause · C camera · M map · Esc quit" (QWERTY positions; luv has no key-name → character function, `docs/luv-wishlist.md`).
+- The window title until `milestone 6`'s F1 help: "Luv in Space · WASD QE turn · HN IK JL move · Shift/Ctrl throttle · Z/X full/cut · T damp · R 1–6 hold · F fine · . , / warp · P pause · C/Home camera · M map · Esc quit" (QWERTY positions; luv has no key-name → character function, `docs/luv-wishlist.md`).
 
 | Function | Keys | From milestone |
 |---|---|---|
@@ -281,8 +281,12 @@ The flight computer in `controls.lisp` turns keys, holds and autopilot commands 
 Three views of one scene, drawn by one renderer (reversed-Z, `decision 4: Depth strategy`; camera-relative doubles, `decision 5: Precision of positions`); the lasting choice is `decision 30: Views and cameras`. Code: `camera.lisp`; the camera position is kept relative to the ship or the focus body, so re-centring (`decision 15: Coordinate frames`) never moves the picture. All views are available at every warp level, paused and during the autopilot; switching changes nothing in the simulation.
 
 - Outside (`milestone 2`): the default view until the cockpit exists.
-  - An orbit camera around the stack's CoM: distance from 1.2 × the stack's bounding radius (12 m for the empty Mule, more with a load) to 5 km, wheel ×1.2 per notch, default 40 m; vertical field of view 50° (73° horizontal at 1280×800).
-  - Its axes in the orbital frame, so Earth stays below as the ship goes round (default), or locked to the ship's body axes (a chase camera; C toggles).
+  - An orbit camera around the stack's CoM: distance from 1.2 × the largest distance from the CoM to a corner of a part's box (`outside-min-distance`; measured 14.64 m wet, 13.58 m half, 13.62 m dry; more with a load) to 5 km, default 40 m; vertical field of view 50° (73° horizontal at 1280×800). As built (`decision 82: Outside view camera: angles in a frame, toggles that keep the picture, distance and easing`, `src/camera.lisp`):
+  - The eye at azimuth and elevation in its frame: default (and Home) az 180°, el 20° (behind and above), 40 m.
+  - Its axes in the orbital frame (x prograde, z radial in), so Earth stays below as the ship goes round (default), or locked to the ship's body axes (a chase camera); C toggles and keeps the eye where it is, re-expressing it in the other frame's angles.
+  - Right-drag: 0.25° per pixel; mouse right moves the eye to the viewer's right around the ship, mouse up raises it; elevation within ±85°.
+  - Wheel: the target distance ×1.2 per notch (up nearer); the distance eases to it in log over τ 0.15 s of real time, snapping in captures.
+  - C, Home, drag and wheel act while paused and at every warp level; the camera is game state, not in the sim or its checkpoints, and stays across a restart.
   - Shows the ship, its engine glow and lights, the target and other objects in range, Earth, Moon, Sun and stars, and the minimal readout ("Instruments").
   - Exposure: besides the Sun and lit bodies (`decision 76`, `decision 93`), the sunlit ship counts as a body: a sphere of the stack's computed bounding radius (`ship-bounding-radius` at the current propellant: 12.57 m wet, 11.70 m dry; `decision 80`) at the camera's distance, its coverage of the frame × its `sun-visible-fraction` at least 0.005 gives the sunlit exposure, out to about 300 m; in Earth's shadow, or with the eye inside that sphere, it does not count (`decision 79: Sunlight at a point and the sunlit ship in the exposure rule`, `src/post.lisp`).
 - Cockpit (`milestone 3`): the pilot's seat in the cab.

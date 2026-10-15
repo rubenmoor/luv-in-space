@@ -15,7 +15,9 @@
    (start-checkpoint :initarg :start-checkpoint :reader game-start-checkpoint)
    (camera :initform (make-camera) :reader game-camera)
    (camera-fn :initform nil :accessor game-camera-fn
-              :documentation "nil or (fn camera render-state), after the default pose.")
+              :documentation "nil or (fn camera render-state), after the outside view's pose.")
+   (outside-view :initform (new-outside-view) :reader game-outside-view
+                 :documentation "The outside view's frame, angles and distance (camera.lisp); not in the sim.")
    (render-state :initform (make-render-state) :reader game-render-state)
    (exposure :initform nil :accessor game-exposure
              :documentation "The current exposure, nil before the first frame.")
@@ -54,13 +56,14 @@ A failed artifact keeps drawing its last good build."
     (setf (game-frame-time game) time)
     (if previous (max 0d0 (- time previous)) 0d0)))
 
-(defun update-view! (game)
-  "The render state from the clock and the sim, the default outside camera
-on it, then the game's camera-fn."
+(defun update-view! (game elapsed)
+  "The render state from the clock and the sim, the outside view on it
+(its distance eased over ELAPSED real seconds, snapped when nil), then the
+game's camera-fn."
   (let ((state (game-render-state game))
         (camera (game-camera game)))
     (render-state-update! state (game-clock game) (game-sim game))
-    (outside-camera-default! camera (render-state-r state) (render-state-v state))
+    (outside-camera-update! camera (game-outside-view game) state elapsed)
     (when (game-camera-fn game)
       (funcall (game-camera-fn game) camera state))))
 
@@ -74,8 +77,9 @@ snap on the first frame and when ELAPSED is nil (decision 76)."
           (if (and current elapsed) (exposure-ease current target elapsed) target))))
 
 (defun encode-game-frame (game encoder target extent elapsed)
-  "ELAPSED: real seconds since the last frame, nil to snap the exposure."
-  (update-view! game)
+  "ELAPSED: real seconds since the last frame, nil to snap the exposure and
+the outside view's distance."
+  (update-view! game elapsed)
   (encode-frame (game-renderer game) encoder target extent
                 (game-render-state game) (game-camera game)
                 (update-exposure! game extent elapsed)))

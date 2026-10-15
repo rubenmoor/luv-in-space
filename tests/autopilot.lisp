@@ -190,3 +190,175 @@
     (multiple-value-bind (plan reason) (lis::autopilot-first-guess sim :change-plane :target)
       (false plan)
       (is string= "NO TARGET" reason))))
+
+;;; The planning job, shooting and the orbit manoeuvres (decision 117):
+;;; each plan flown by sim-step! meets its goal measure; Δv near the
+;;; impulsive figure.
+;;;
+;;; Time per plan (outside scripts/test; record in docs/architecture.md
+;;; "Testing"):
+;;; (dolist (case '((:point :change-orbit (800d3)) (:j2 :change-orbit (800d3))
+;;;                 (:full :change-orbit (800d3)) (:j2 :change-plane 1.5533430342749532d0)
+;;;                 (:full :set-apoapsis 1000d3)))
+;;;   (destructuring-bind (model preset goal) case
+;;;     (let* ((sim (let ((s (lis::new-game-sim))) (setf (lis::sim-model s) model) s))
+;;;            (job (lis::new-autopilot-job sim))
+;;;            (start (get-internal-real-time)))
+;;;       (dotimes (i 10) (lis::autopilot-plan-now sim preset goal job))
+;;;       (format t "~&~A ~A ~,1F ms, ~D steps~%" model preset
+;;;               (/ (- (get-internal-real-time) start) (/ internal-time-units-per-second 100))
+;;;               (lis::autopilot-job-iteration job)))))
+
+(defun model-sim (model)
+  (let ((sim (lis::new-game-sim)))
+    (setf (lis::sim-model sim) model)
+    sim))
+
+(defun plan-now (sim preset goal &optional job)
+  (multiple-value-bind (plan reason)
+      (apply #'lis::autopilot-plan-now sim preset goal (and job (list job)))
+    (true plan "~A ~A: ~A" preset goal reason)
+    plan))
+
+(defun plan-dv (plan)
+  (reduce #'+ (lis::burn-plan-burns plan) :key #'lis::planned-burn-dv))
+
+(defun flown-score (sim plan level measure)
+  "MEASURE's largest residual (1: the tolerance) on SIM flown with PLAN by
+sim-step! at LEVEL to its last cut, then a period on a shot from there."
+  (let* ((copy (lis::shot-sim-assign! (lis::copy-sim sim) sim plan))
+         (burns (lis::burn-plan-burns plan))
+         (cut (lis::planned-burn-cut-t (svref burns (1- (length burns))))))
+    (step-sim copy 1000000 level cut)
+    (is = cut (lis::sim-t copy))
+    (is = 0d0 (lis::controls-throttle (lis::sim-controls copy)))
+    ;; The shot's cut state, bit for bit.
+    (let ((last (svref burns (1- (length burns)))))
+      (true (and (equalp (lis::planned-burn-cut-r last) (lis::ship-state-r (lis::sim-ship copy)))
+                 (equalp (lis::planned-burn-cut-v last) (lis::ship-state-v (lis::sim-ship copy))))
+            "×~D: the cut state differs from the shot's" level))
+    (let ((pred (lis::prediction-shoot! (lis::new-prediction) copy
+                                        (+ cut (lis::osculating-period copy)))))
+      (lis::prediction-extend! pred most-positive-fixnum)
+      (nth-value 1 (lis::goal-residuals! (make-array 4 :element-type 'double-float)
+                                         measure pred cut)))))
+
+(defun check-plan (sim preset goal impulsive &optional job)
+  "PRESET with GOAL planned from SIM: its Δv within 3 % of IMPULSIVE, flown
+at ×1,000 and ×100 within its goal's tolerances; the plan."
+  (let* ((job (or job (lis::new-autopilot-job sim)))
+         (plan (plan-now sim preset goal job))
+         (measure (lis::autopilot-job-measure job)))
+    (when plan
+      (true (< (relative-error (plan-dv plan) impulsive) 0.03)
+            "~A: ~,2F m/s, impulsive ~,2F" preset (plan-dv plan) impulsive)
+      (dolist (level '(1000 100))
+        (let ((score (flown-score sim plan level measure)))
+          (true (<= score 1d0) "~A at ×~D: ~,3F of the tolerance" preset level score)))
+      (loop for burn across (lis::burn-plan-burns plan)
+            do (true (on-grid-p (lis::planned-burn-cut-t burn)))))
+    plan))
+
+(defun circular-speed (altitude)
+  (sqrt (/ lis::+mu-earth+ (+ lis::+radius-earth+ altitude))))
+
+(defun transfer-speeds (r1 r2)
+  "(values at r1 at r2) on the ellipse between radii R1 and R2."
+  (let ((a (/ (+ r1 r2) 2)) (mu lis::+mu-earth+))
+    (values (sqrt (* mu (- (/ 2 r1) (/ a)))) (sqrt (* mu (- (/ 2 r2) (/ a)))))))
+
+(define-test autopilot-plan-apsides
+  ;; :point. Circularise at apoapsis after a 50 m/s prograde kick.
+  (let* ((sim (model-sim :point))
+         (ship (lis::sim-ship sim))
+         (v (lis::ship-state-v ship)))
+    (lis::vec3-add-scaled! v v (lis::vec3-normalize v) 50d0)
+    (let* ((orbit (lis::state->orbit (lis::ship-state-r ship) v lis::+mu-earth+ (lis::sim-t sim)))
+           (ra (lis::orbit-apoapsis-radius orbit))
+           (va (nth-value 1 (transfer-speeds (lis::orbit-periapsis-radius orbit) ra))))
+      (check-plan sim :circularise :apoapsis (- (sqrt (/ lis::+mu-earth+ ra)) va))))
+  ;; Set Ap 1,000 km from the start.
+  (let ((r1 (+ lis::+radius-earth+ 400d3)) (r2 (+ lis::+radius-earth+ 1000d3)))
+    (check-plan (model-sim :point) :set-apoapsis 1000d3
+                (- (transfer-speeds r1 r2) (circular-speed 400d3))))
+  ;; Set Pe 300 km from 400 × 1,000 km, at apoapsis.
+  (let* ((rp (+ lis::+radius-earth+ 400d3))
+         (ra (+ lis::+radius-earth+ 1000d3))
+         (sim (elements-sim (/ (+ rp ra) 2) (/ (- ra rp) (+ ra rp)) (/ pi 2) (* 3/2 pi) 0d0 0.3d0)))
+    (check-plan sim :set-periapsis 300d3
+                (- (nth-value 1 (transfer-speeds rp ra))
+                   (nth-value 1 (transfer-speeds (+ lis::+radius-earth+ 300d3) ra))))))
+
+(define-test autopilot-plan-hohmann
+  ;; 400 → 800 km, :point and once :full; with INC 89.5° under :j2, merged
+  ;; into the burn at 800 km.
+  (let* ((r1 (+ lis::+radius-earth+ 400d3))
+         (r2 (+ lis::+radius-earth+ 800d3))
+         (v1 (circular-speed 400d3))
+         (v2 (circular-speed 800d3)))
+    (multiple-value-bind (p a) (transfer-speeds r1 r2)
+      (let ((impulsive (+ (- p v1) (- v2 a))))
+        (dolist (model '(:point :full))
+          (let ((plan (check-plan (model-sim model) :change-orbit '(800d3) impulsive)))
+            (is equal '(:departure :circularise)
+                (map 'list #'lis::planned-burn-label (lis::burn-plan-burns plan)))
+            (is eq :change-orbit (lis::burn-plan-preset plan)))))
+      (let* ((di (lis::deg->rad 0.5d0))
+             (impulsive (+ (- p v1) (sqrt (+ (* a a) (* v2 v2) (* -2 a v2 (cos di))))))
+             (plan (check-plan (model-sim :j2) :change-orbit (list 800d3 (lis::deg->rad 89.5d0))
+                               impulsive)))
+        (true (< (abs (- (lis::orbit-i (lis::burn-plan-goal-orbit plan)) (lis::deg->rad 89.5d0)))
+                 (lis::deg->rad 0.05d0)))))))
+
+(define-test autopilot-plan-planes
+  ;; :j2. To 89° at an equatorial node; to Tern Station's plane turned 1°
+  ;; in Ω (a crafted rails orbit) at a relative node: 2 v sin(Δi/2).
+  (let ((impulsive (* 2 (circular-speed 400d3) (sin (lis::deg->rad 0.5d0)))))
+    (check-plan (model-sim :j2) :change-plane (lis::deg->rad 89d0) impulsive)
+    (let* ((sim (model-sim :j2))
+           (turn (lis::quat-from-axis-angle (lis::vec3 0 0 1) (lis::deg->rad 1d0))))
+      (multiple-value-bind (r v) (object-rv (lis::sim-object sim :tern-station) (lis::sim-t sim))
+        (rails-target! sim :tern-station (lis::quat-rotate turn r) (lis::quat-rotate turn v)))
+      (let ((plan (check-plan sim :change-plane :target impulsive)))
+        (is eq :plane (lis::planned-burn-label (plan-burn plan 0)))))))
+
+(define-test autopilot-plan-job
+  ;; The job in 300-unit calls: each within its budget, the plan equalp to
+  ;; one planned at once (:j2, a Newton step).
+  (let* ((sim (model-sim :j2))
+         (goal '(800d3))
+         (whole (plan-now sim :change-orbit goal))
+         (job (lis::new-autopilot-job sim))
+         (calls 0))
+    (lis::autopilot-job-start! job sim :change-orbit goal)
+    (loop for stage = (lis::autopilot-job-work! job 300)
+          do (incf calls)
+             (true (<= (lis::autopilot-job-work job) 300))
+          until (member stage '(:done :refused)))
+    (is eq :done (lis::autopilot-job-stage job))
+    (true (>= (lis::autopilot-job-iteration job) 1))
+    (true (> calls 20))
+    (true (equalp whole (lis::autopilot-job-plan job))))
+  ;; The minimum-norm step of x + y = 2: (−1, −1).
+  (let ((out (make-array 2 :element-type 'double-float)))
+    (lis::minimum-norm-step! out (make-array 2 :element-type 'double-float :initial-element 1d0)
+                             (make-array 1 :element-type 'double-float :initial-element 2d0) 1 2)
+    (true (< (abs (+ (aref out 0) 1)) 1d-9))
+    (true (< (abs (+ (aref out 1) 1)) 1d-9))))
+
+(define-test autopilot-plan-refusals
+  (flet ((refused (sim preset goal)
+           (multiple-value-bind (plan reason) (lis::autopilot-plan-now sim preset goal)
+             (false plan)
+             reason)))
+    ;; Past the menu's range, the shot finds the floor.
+    (is string= "BELOW 150 KM" (refused (model-sim :point) :set-periapsis 120d3))
+    (let ((sim (model-sim :point)))
+      (setf (lis::ship-state-m-p (lis::sim-ship sim)) 300d0)
+      (let ((reason (refused sim :change-orbit '(2000d3))))
+        (true (and (stringp reason) (eql 0 (search "NEEDS " reason))
+                   (string= " KG" (subseq reason (- (length reason) 3)))
+                   (> (parse-integer reason :start 6 :junk-allowed t) 300))
+              "~A" reason)))
+    (is string= "NO TARGET" (refused (model-sim :point) :change-plane :target))
+    (is string= "GOAL OUT OF RANGE" (refused (model-sim :point) :change-orbit '(400000d3)))))

@@ -136,14 +136,32 @@ propellant)."
 ;;; The coast shot (decision 117): the snapshot coasting two osculating
 ;;; periods, for the apsis and node times.
 
+(defun shot-sim-assign! (out snapshot plan)
+  "OUT: SNAPSHOT as the autopilot engages PLAN (decision 117): throttle off,
+no cut-off, PLAN from its first burn and its coast hold at once; without a
+plan the controls as they were, the throttle off. OUT."
+  (sim-assign! out snapshot)
+  (controls-throttle-cut (sim-controls out))
+  (setf (sim-cutoff out) nil)
+  (sim-set-plan! out plan)
+  (when plan
+    (controls-engage-hold! (sim-controls out) (burn-plan-coast-hold plan)))
+  out)
+
+(defun coast-shot-start! (pred scratch sim)
+  "PRED restarted as SIM's coast shot through the sim SCRATCH: no plan, no
+throttle, two osculating periods (one unbound: to its capacity)."
+  (shot-sim-assign! scratch sim nil)
+  (let ((period (osculating-period scratch)))
+    (prediction-shoot! pred scratch (if period
+                                        (+ (sim-t scratch) (* 2 period))
+                                        most-positive-double-float))))
+
 (defun autopilot-coast-shot (sim)
   "SIM's coasting path: a copy without its plan, throttle or cut-off, run
 two osculating periods by the prediction."
-  (let ((copy (copy-sim sim)))
-    (sim-set-plan! copy nil)
-    (controls-throttle-cut (sim-controls copy))
-    (setf (sim-cutoff copy) nil)
-    (prediction-run! (new-prediction :periods 2) copy)))
+  (prediction-extend! (coast-shot-start! (new-prediction) (copy-sim sim) sim)
+                      most-positive-fixnum))
 
 (defun shot-event-times (shot kind)
   "The times of SHOT's events of KIND, in order."
@@ -227,6 +245,21 @@ plane at TIME from SHOT)."
         (if h-goal (plane-angle-to-normal r v h-goal) 0d0))
       (plane-angle-to-inclination r v (float goal 1d0))))
 
+(defun assemble-burn-plan (burns preset goal m-p-end load)
+  "The burn-plan of BURNS (a simple-vector): PRESET, GOAL, the goal orbit
+from the last burn's cut state, the reserve (decision 32) in m/s and in kg
+at the end mass, M-P-END kg of propellant left with LOAD."
+  (let* ((last (svref burns (1- (length burns))))
+         (total (reduce #'+ burns :key #'planned-burn-dv))
+         (reserve (plan-reserve-dv total))
+         (end-mass (+ *ship-dry-mass* m-p-end (stack-load-mass load))))
+    (make-burn-plan burns
+                    :preset preset :goal goal
+                    :goal-orbit (state->orbit (planned-burn-cut-r last) (planned-burn-cut-v last)
+                                              +mu-earth+ (planned-burn-cut-t last))
+                    :reserve-dv reserve
+                    :reserve-mass (propellant-for end-mass reserve *engine-isp*))))
+
 ;;; First guesses (decision 117): from the snapshot's osculating elements,
 ;;; the apsis and node times from its coast shot.
 
@@ -297,20 +330,9 @@ SHOT: SIM's coast shot (autopilot-coast-shot) if already run."
                (apsis-times (kind)
                  (shot-event-times shot kind))
                (finish ()
-                 (let* ((burns (coerce (reverse burns) 'simple-vector))
-                        (last (svref burns (1- (length burns))))
-                        (total (reduce #'+ burns :key #'planned-burn-dv))
-                        (reserve (plan-reserve-dv total))
-                        (end-mass (+ *ship-dry-mass* m-p (stack-load-mass load))))
-                   (values (make-burn-plan burns
-                                           :preset preset :goal goal
-                                           :goal-orbit (state->orbit (planned-burn-cut-r last)
-                                                                     (planned-burn-cut-v last)
-                                                                     mu (planned-burn-cut-t last))
-                                           :reserve-dv reserve
-                                           :reserve-mass (propellant-for end-mass reserve
-                                                                         *engine-isp*))
-                           nil))))
+                 (values (assemble-burn-plan (coerce (reverse burns) 'simple-vector)
+                                             preset goal m-p load)
+                         nil)))
         (ecase preset
           (:circularise
            (check-type goal (member :apoapsis :periapsis))
@@ -394,3 +416,522 @@ SHOT: SIM's coast shot (autopilot-coast-shot) if already run."
                                a)))
                  (keep! (second pick) (third pick))
                  (finish))))))))))
+
+;;; Shooting (decision 117): each burn's Δv in its node's LVLH axes (T, N,
+;;; R) refined by Newton on shots, sim-step! runs of a snapshot copy with
+;;; the candidate plan, the goal measured over one period after the last cut.
+
+(defparameter *plan-floor-margin* 50d3
+  "m above Earth's crash radius: no node of a plan below it; decision 32.")
+(defparameter *plan-moon-margin* 10d3 "m above the Moon's radius; decision 32.")
+(defparameter *goal-altitude-max* 300000d3
+  "m: a higher goal is refused; milestone 3 keeps apoapses below the Moon's sphere, decision 117.")
+(defparameter *apsis-tolerance-fraction* 1d-3 "Of the goal radius; decision 117.")
+(defparameter *apsis-tolerance-min* 1d3 "m; decision 117.")
+(defparameter *plane-tolerance* (deg->rad 0.01d0) "rad; decision 117.")
+(defparameter *plan-iterations* 8 "Newton steps at most, then \"NOT CONVERGED\"; decision 117.")
+(defparameter *shot-perturbation* 1d0
+  "m/s: the Jacobian's finite difference; well above the cut's grain (a
+1/64 s tick at full throttle, 0.044 m/s wet).")
+(defparameter *plan-max-burns* 4 "Burns a job refines.")
+(defparameter *plan-max-residuals* 4 "Goal residuals a job measures.")
+(defparameter *shot-cap-margin* 600d0
+  "s: a shot whose plan never ends (no propellant) stops this after its last burn's planned end.")
+(declaim (type double-float *plan-floor-margin* *plan-moon-margin* *goal-altitude-max*
+               *apsis-tolerance-fraction* *apsis-tolerance-min* *plane-tolerance*
+               *shot-perturbation* *shot-cap-margin*)
+         (type fixnum *plan-iterations* *plan-max-burns* *plan-max-residuals*))
+
+(defun apsis-tolerance (radius)
+  "m: max(0.1 % of RADIUS, 1 km); decision 117."
+  (max (* *apsis-tolerance-fraction* radius) *apsis-tolerance-min*))
+
+(defun lvlh-axes (r v)
+  "(values t n r) unit vectors at R, V: in-plane horizontal, orbit normal, radial out."
+  (let* ((n (vec3-normalize (vec3-cross r v)))
+         (out (vec3-normalize r)))
+    (values (vec3-cross n out) n out)))
+
+(defun burn-dv-vector (burn)
+  "BURN's Δv vector: its nose's direction (against it for RCS −1) times its Δv."
+  (vec3-scale (quat-rotate (planned-burn-attitude burn) (vec3 1 0 0))
+              (if (eql (planned-burn-rcs burn) -1)
+                  (- (planned-burn-dv burn))
+                  (planned-burn-dv burn))))
+
+;;; Goal measures over a shot (decision 117)
+
+(defun shot-measure (shot start)
+  "Over SHOT's nodes from the one at START to its end: (values r-max r-min
+mean-i mean-h end r0 ex ey), the largest and smallest |r| (nodes and apsis
+events), the time-weighted means of the osculating inclination, the unit
+angular momentum (normalised), |r| and the eccentricity vector, this along
+r̂ at START and ĥ × r̂ there; nil without two nodes from START."
+  (let ((i0 (node-interval shot start))
+        (count (prediction-count shot))
+        (nodes (prediction-nodes shot)))
+    (when (and i0 (< (1+ i0) count))
+      (let ((r-max 0d0) (r-min most-positive-double-float)
+            (sum-i 0d0) (sum-r 0d0) (sum-h (make-vec3)) (sum-e (make-vec3)) (span 0d0)
+            (h (make-vec3)) (r (make-vec3)) (v (make-vec3)) (e (make-vec3))
+            (x (make-vec3)) (y (make-vec3))
+            (last-i 0d0) (last-r 0d0) (last-h (make-vec3)) (last-e (make-vec3))
+            (end (node-t nodes (1- count))))
+        (loop for i from i0 below count
+              for k = (* +node-size+ i)
+              do (replace r nodes :start2 (+ k 1) :end2 (+ k 4))
+                 (replace v nodes :start2 (+ k 4) :end2 (+ k 7))
+                 (vec3-normalize! h (vec3-cross! h r v))
+                 (when (= i i0)
+                   (vec3-normalize! x r)
+                   (vec3-cross! y h x))
+                 (let* ((rn (vec3-norm r))
+                        (inclination (acos (max -1d0 (min 1d0 (aref h 2))))))
+                   ;; e = ((v² − μ/r) r − (r · v) v) / μ
+                   (vec3-scale! e r (- (vec3-dot v v) (/ +mu-earth+ rn)))
+                   (vec3-add-scaled! e e v (- (vec3-dot r v)))
+                   (vec3-scale! e e (/ +mu-earth+))
+                   (setf r-max (max r-max rn) r-min (min r-min rn))
+                   (when (> i i0)
+                     (let ((dt (* 0.5d0 (- (node-t nodes i) (node-t nodes (1- i))))))
+                       (incf span (* 2 dt))
+                       (incf sum-i (* dt (+ inclination last-i)))
+                       (incf sum-r (* dt (+ rn last-r)))
+                       (dotimes (j 3)
+                         (incf (aref sum-h j) (* dt (+ (aref h j) (aref last-h j))))
+                         (incf (aref sum-e j) (* dt (+ (aref e j) (aref last-e j)))))))
+                   (setf last-i inclination last-r rn)
+                   (replace last-h h)
+                   (replace last-e e)))
+        (dotimes (n (prediction-event-count shot))
+          (let ((time (aref (prediction-event-times shot) n)))
+            (when (and (member (svref (prediction-event-kinds shot) n) '(:apoapsis :periapsis))
+                       (<= start time end)
+                       (prediction-position! r shot time))
+              (let ((rn (vec3-norm r)))
+                (setf r-max (max r-max rn) r-min (min r-min rn))))))
+        (values r-max r-min (/ sum-i span) (vec3-normalize! sum-h sum-h) end
+                (/ sum-r span) (/ (vec3-dot sum-e x) span) (/ (vec3-dot sum-e y) span))))))
+
+(defstruct (goal-measure (:constructor make-goal-measure (r-max r-min plane &optional steer))
+                         (:copier nil))
+  (r-max nil :type (or null double-float) :read-only t) ; m: the largest |r| asked
+  (r-min nil :type (or null double-float) :read-only t) ; m: the smallest
+  (plane nil :type (or null double-float (eql :target)) :read-only t) ; an inclination or the target's
+  ;; What Newton steers the radii by: :apsides (the largest and smallest
+  ;; |r|), :circle (the mean |r| and eccentricity vector, two burns or
+  ;; more), :shape (the eccentricity vector: one burn keeps its point).
+  (steer :apsides :type (member :apsides :circle :shape) :read-only t))
+
+(defun goal-residuals! (out measure shot start &optional newton)
+  "OUT: MEASURE's residuals on SHOT from START, each over its tolerance (|x|
+≤ 1 within it); (values count largest), a large one without a measure.
+NEWTON: the residuals Newton steers by (goal-measure-steer): for a
+circular goal the mean eccentricity vector times the radius, with two burns
+the mean |r| too (smooth, and blind to where the window starts, where under
+J2 the largest and smallest |r| jump between near-equal extrema), instead of
+the largest and smallest |r|."
+  (multiple-value-bind (r-max r-min mean-i mean-h end r0 ex ey) (shot-measure shot start)
+    (let ((n 0)
+          (high (goal-measure-r-max measure))
+          (low (goal-measure-r-min measure))
+          (plane (goal-measure-plane measure)))
+      (flet ((put (x) (setf (aref out n) (if r-max x 1d3)) (incf n)))
+        (cond ((and newton (not (eq (goal-measure-steer measure) :apsides)))
+               (let ((tolerance (apsis-tolerance high)))
+                 (when (eq (goal-measure-steer measure) :circle)
+                   (put (and r0 (/ (- r0 high) tolerance))))
+                 (put (and ex (/ (* ex high) tolerance)))
+                 (put (and ey (/ (* ey high) tolerance)))))
+              (t (when high (put (and r-max (/ (- r-max high) (apsis-tolerance high)))))
+                 (when low (put (and r-min (/ (- r-min low) (apsis-tolerance low)))))))
+        (cond ((null plane))
+              ((null mean-i) (put nil))
+              ((eq plane :target)
+               (let ((h-goal (shot-target-normal shot (* 0.5d0 (+ start end)))))
+                 (put (if h-goal
+                          (/ (atan (vec3-norm (vec3-cross mean-h h-goal)) (vec3-dot mean-h h-goal))
+                             *plane-tolerance*)
+                          1d3))))
+              (t (put (/ (- mean-i plane) *plane-tolerance*)))))
+      (values n (loop for i below n maximize (abs (aref out i)))))))
+
+;;; Newton's minimum-norm step
+
+(defun minimum-norm-step! (out jacobian residuals m n)
+  "OUT (N): the least-norm δ with J δ = −RESIDUALS, J the M × N JACOBIAN
+(row-major, M ≤ N): δ = −Jᵀ (J Jᵀ)⁻¹ r, Gaussian elimination with partial
+pivoting; a singular J J ᵀ is regularised. OUT."
+  (let ((a (make-array (list m (1+ m)) :element-type 'double-float :initial-element 0d0))
+        (y (make-array m :element-type 'double-float :initial-element 0d0)))
+    (dotimes (i m)
+      (dotimes (j m)
+        (setf (aref a i j) (loop for k below n
+                                 sum (* (aref jacobian (+ (* i n) k)) (aref jacobian (+ (* j n) k))))))
+      (setf (aref a i m) (- (aref residuals i))))
+    (let ((scale (loop for i below m maximize (aref a i i))))
+      (dotimes (i m)
+        (incf (aref a i i) (* 1d-12 (max scale 1d-300)))))
+    (dotimes (col m)
+      (let ((pivot (loop with best = col
+                         for row from col below m
+                         when (> (abs (aref a row col)) (abs (aref a best col))) do (setf best row)
+                         finally (return best))))
+        (dotimes (j (1+ m))
+          (rotatef (aref a col j) (aref a pivot j)))
+        (loop for row from (1+ col) below m
+              do (let ((f (/ (aref a row col) (aref a col col))))
+                   (loop for j from col to m
+                         do (decf (aref a row j) (* f (aref a col j))))))))
+    (loop for i from (1- m) downto 0
+          do (setf (aref y i) (/ (- (aref a i m)
+                                    (loop for j from (1+ i) below m sum (* (aref a i j) (aref y j))))
+                                 (aref a i i))))
+    (dotimes (k n out)
+      (setf (aref out k) (loop for i below m sum (* (aref jacobian (+ (* i n) k)) (aref y i)))))))
+
+;;; The planning job (decision 117): resumable, on a snapshot, in the
+;;; prediction's work units.
+
+(defstruct (autopilot-job (:constructor %make-autopilot-job (snapshot scratch coast shot))
+                          (:copier nil))
+  (snapshot nil :type sim)                      ; the flown sim at the request
+  (scratch nil :type sim)                       ; the snapshot with the candidate, for a shot
+  (coast nil :type prediction)                  ; the snapshot coasting: nodes, coast radii
+  (shot nil :type prediction)                   ; the last shot, the final plan's at the end
+  (preset nil :type (or null keyword))
+  (goal nil)
+  (stage :done :type (member :coast :guess :iterate :check :done :refused))
+  (iteration 0 :type fixnum)                    ; Newton steps taken
+  (column -1 :type fixnum)                      ; the parameter being perturbed, −1 the base shot
+  (plan nil :type (or null burn-plan))          ; the result, :done
+  (reason nil :type (or null string))           ; the refusal, :refused
+  (candidate nil :type (or null burn-plan))     ; the plan being shot
+  (propellant 0d0 :type double-float)           ; kg the candidate's burns need
+  (measure nil :type (or null goal-measure))
+  (burn-count 0 :type fixnum)
+  (burn-labels (make-array *plan-max-burns* :initial-element :trim) :type simple-vector)
+  ;; Per burn its node's t and the state there before it (r, v).
+  (node-times (make-array *plan-max-burns* :element-type 'double-float :initial-element 0d0)
+   :type (simple-array double-float (*)))
+  (node-states (make-array (* 6 *plan-max-burns*) :element-type 'double-float :initial-element 0d0)
+   :type (simple-array double-float (*)))
+  (params (make-array (* 3 *plan-max-burns*) :element-type 'double-float :initial-element 0d0)
+   :type (simple-array double-float (*)))       ; per burn Δv along T, N, R
+  (delta (make-array (* 3 *plan-max-burns*) :element-type 'double-float :initial-element 0d0)
+   :type (simple-array double-float (*)))
+  (residual-count 0 :type fixnum)
+  (residuals (make-array *plan-max-residuals* :element-type 'double-float :initial-element 0d0)
+   :type (simple-array double-float (*)))       ; the base shot's
+  (column-residuals (make-array *plan-max-residuals* :element-type 'double-float
+                                                     :initial-element 0d0)
+   :type (simple-array double-float (*)))
+  (jacobian (make-array (* *plan-max-residuals* 3 *plan-max-burns*) :element-type 'double-float
+                                                                    :initial-element 0d0)
+   :type (simple-array double-float (*)))       ; row-major, residuals × parameters
+  (work 0 :type fixnum))                        ; units done in the last call
+
+(defun new-autopilot-job (sim)
+  "A job for sims with SIM's objects: its snapshot, scratch and two predictions."
+  (%make-autopilot-job (copy-sim sim) (copy-sim sim) (new-prediction) (new-prediction)))
+
+(defun goal-altitude (preset goal)
+  "The goal altitude (m) of PRESET and GOAL, or nil."
+  (case preset
+    ((:set-apoapsis :set-periapsis) (float goal 1d0))
+    (:change-orbit (float (first goal) 1d0))))
+
+(defun goal-plane (preset goal)
+  "The plane PRESET and GOAL ask for: an inclination (rad), :target or nil."
+  (let ((plane (case preset
+                 (:change-orbit (second goal))
+                 (:change-plane goal))))
+    (if (realp plane) (float plane 1d0) plane)))
+
+(defun job-refuse! (job reason)
+  (setf (autopilot-job-stage job) :refused
+        (autopilot-job-reason job) reason
+        (autopilot-job-candidate job) nil)
+  job)
+
+(defun autopilot-job-start! (job sim preset goal)
+  "JOB planning PRESET with GOAL (autopilot-first-guess's) from a snapshot
+of SIM; refused at once outside Earth orbit, for a goal above
+*goal-altitude-max* or a target's plane without a target. JOB."
+  (let ((snapshot (autopilot-job-snapshot job)))
+    (sim-assign! snapshot sim)
+    (setf (autopilot-job-preset job) preset
+          (autopilot-job-goal job) goal
+          (autopilot-job-iteration job) 0
+          (autopilot-job-column job) -1
+          (autopilot-job-plan job) nil
+          (autopilot-job-reason job) nil
+          (autopilot-job-candidate job) nil
+          (autopilot-job-measure job) nil
+          (autopilot-job-burn-count job) 0
+          (autopilot-job-work job) 0
+          (autopilot-job-stage job) :coast)
+    (let* ((ship (sim-ship snapshot))
+           (orbit (state->orbit (ship-state-r ship) (ship-state-v ship) +mu-earth+ (sim-t snapshot)))
+           (altitude (goal-altitude preset goal)))
+      (cond ((not (and (eq (sim-body snapshot) :earth) (elliptic-p orbit)))
+             (job-refuse! job "NOT IN EARTH ORBIT"))
+            ((and altitude (> altitude *goal-altitude-max*))
+             (job-refuse! job "GOAL OUT OF RANGE"))
+            ((and (eq (goal-plane preset goal) :target) (null (sim-target snapshot)))
+             (job-refuse! job "NO TARGET"))
+            (t (coast-shot-start! (autopilot-job-coast job) (autopilot-job-scratch job) snapshot))))
+    job))
+
+(defun job-candidate! (job)
+  "JOB's candidate plan from its parameters: each burn built (build-burn)
+on its node with Δv = T t̂ + N n̂ + R r̂ there, the propellant after the
+earlier burns, re-centred; the propellant needed. JOB."
+  (let* ((snapshot (autopilot-job-snapshot job))
+         (ship (sim-ship snapshot))
+         (orbit (state->orbit (ship-state-r ship) (ship-state-v ship) +mu-earth+ (sim-t snapshot)))
+         (load (sim-stack-load snapshot))
+         (m-p (ship-state-m-p ship))
+         (n (autopilot-job-burn-count job))
+         (burns (make-array n))
+         (states (autopilot-job-node-states job))
+         (params (autopilot-job-params job))
+         (propellant 0d0)
+         (previous nil))
+    (dotimes (i n)
+      (let ((r (subseq states (* 6 i) (+ (* 6 i) 3)))
+            (v (subseq states (+ (* 6 i) 3) (+ (* 6 i) 6))))
+        (multiple-value-bind (ta na ra) (lvlh-axes r v)
+          (let ((dv (vec3-add (vec3-add (vec3-scale ta (aref params (* 3 i)))
+                                        (vec3-scale na (aref params (+ (* 3 i) 1))))
+                              (vec3-scale ra (aref params (+ (* 3 i) 2))))))
+            (multiple-value-bind (burn needed)
+                (build-burn (svref (autopilot-job-burn-labels job) i) (aref (autopilot-job-node-times job) i)
+                            r v dv m-p load previous orbit)
+              (setf (svref burns i) burn
+                    previous (planned-burn-attitude burn))
+              (decf m-p needed)
+              (incf propellant needed))))))
+    (setf (autopilot-job-candidate job)
+          (assemble-burn-plan burns (autopilot-job-preset job) (autopilot-job-goal job) m-p load)
+          (autopilot-job-propellant job) propellant)
+    job))
+
+(defun job-shoot! (job &optional column)
+  "Start JOB's shot of its candidate, COLUMN's parameter perturbed by
+*shot-perturbation* (the candidate rebuilt either way); horizon the last
+cut plus a period, capped *shot-cap-margin* past the last burn's planned end."
+  (let ((params (autopilot-job-params job)))
+    (when column (incf (aref params column) *shot-perturbation*))
+    (job-candidate! job)
+    (when column (decf (aref params column) *shot-perturbation*)))
+  (let* ((plan (autopilot-job-candidate job))
+         (burns (burn-plan-burns plan))
+         (last (svref burns (1- (length burns))))
+         (cap (+ (planned-burn-cut-t last)
+                 (* 3 (- (planned-burn-cut-t last) (planned-burn-start last)))
+                 *shot-cap-margin*)))
+    (prediction-shoot! (autopilot-job-shot job)
+                       (shot-sim-assign! (autopilot-job-scratch job) (autopilot-job-snapshot job) plan)
+                       cap :after-plan t)
+    (setf (autopilot-job-column job) (or column -1))
+    job))
+
+(defun shot-last-cut (job)
+  "The t of the last burn's cut in JOB's shot, or nil if the shot ended first."
+  (prediction-cut-time (autopilot-job-shot job) (1- (autopilot-job-burn-count job))))
+
+(defun job-shot-residuals! (job out)
+  "OUT: the Newton residuals of JOB's finished shot (goal-residuals!);
+(values count largest), LARGEST the goal measure's, large for a shot lost
+or cut short."
+  (let* ((cut (shot-last-cut job))
+         (shot (autopilot-job-shot job))
+         (start (if (and cut (null (sim-loss (prediction-sim shot)))) cut most-positive-double-float))
+         (measure (autopilot-job-measure job))
+         (largest (nth-value 1 (goal-residuals! out measure shot start))))
+    (values (goal-residuals! out measure shot start t) largest)))
+
+(defun job-guess! (job)
+  "From the coast shot: the first guess, its burns' nodes and LVLH Δv, the
+goal measure, the propellant check; then the base shot."
+  (let ((snapshot (autopilot-job-snapshot job))
+        (coast (autopilot-job-coast job))
+        (preset (autopilot-job-preset job))
+        (goal (autopilot-job-goal job)))
+    (multiple-value-bind (guess reason) (autopilot-first-guess snapshot preset goal coast)
+      (unless guess
+        (return-from job-guess! (job-refuse! job reason)))
+      (let* ((burns (burn-plan-burns guess))
+             (n (length burns))
+             (states (autopilot-job-node-states job))
+             (params (autopilot-job-params job)))
+        (assert (<= n *plan-max-burns*))
+        (setf (autopilot-job-burn-count job) n)
+        (dotimes (i n)
+          (let* ((burn (svref burns i))
+                 (dv (burn-dv-vector burn))
+                 (r (planned-burn-cut-r burn))
+                 (v (vec3-sub (planned-burn-cut-v burn) dv)))
+            (setf (svref (autopilot-job-burn-labels job) i) (planned-burn-label burn)
+                  (aref (autopilot-job-node-times job) i) (planned-burn-cut-t burn))
+            (replace states r :start1 (* 6 i))
+            (replace states v :start1 (+ (* 6 i) 3))
+            (multiple-value-bind (ta na ra) (lvlh-axes r v)
+              (setf (aref params (* 3 i)) (vec3-dot dv ta)
+                    (aref params (+ (* 3 i) 1)) (vec3-dot dv na)
+                    (aref params (+ (* 3 i) 2)) (vec3-dot dv ra)))))
+        ;; The radius at the first node on the coast shot: circularise's goal,
+        ;; the apsis a set Ap / Pe keeps.
+        (let* ((node-t (aref (autopilot-job-node-times job) 0))
+               (p (make-vec3))
+               (here (if (prediction-position! p coast node-t)
+                         (vec3-norm p)
+                         (vec3-norm (planned-burn-cut-r (svref burns 0)))))
+               (altitude (goal-altitude preset goal))
+               (radius (and altitude (+ +radius-earth+ altitude)))
+               (plane (goal-plane preset goal)))
+          (setf (autopilot-job-measure job)
+                (ecase preset
+                  (:circularise (make-goal-measure here here nil :shape))
+                  ((:set-apoapsis :set-periapsis)
+                   (make-goal-measure (max here radius) (min here radius) nil))
+                  (:change-orbit (make-goal-measure radius radius plane :circle))
+                  (:change-plane (make-goal-measure nil nil plane)))))
+        (job-candidate! job)
+        (let ((needed (+ (autopilot-job-propellant job)
+                         (burn-plan-reserve-mass (autopilot-job-candidate job)))))
+          (when (> needed (ship-state-m-p (sim-ship snapshot)))
+            (return-from job-guess!
+              (job-refuse! job (format nil "NEEDS ~D KG" (ceiling needed))))))
+        (setf (autopilot-job-stage job) :iterate)
+        (job-shoot! job)))))
+
+(defun job-shot-done! (job)
+  "JOB's shot finished: a base shot converged goes to :check, else the
+Jacobian's columns one shot each, then the minimum-norm step and the next
+base shot; past *plan-iterations* steps \"NOT CONVERGED\"."
+  (let ((column (autopilot-job-column job))
+        (n-params (* 3 (autopilot-job-burn-count job))))
+    (if (< column 0)
+        (multiple-value-bind (m largest) (job-shot-residuals! job (autopilot-job-residuals job))
+          (setf (autopilot-job-residual-count job) m)
+          (cond ((or (<= largest 1d0)
+                     ;; A crash: :check refuses it.
+                     (sim-loss (prediction-sim (autopilot-job-shot job))))
+                 (setf (autopilot-job-stage job) :check))
+                ((or (>= (autopilot-job-iteration job) *plan-iterations*)
+                     (null (shot-last-cut job)))
+                 (job-refuse! job "NOT CONVERGED"))
+                (t (job-shoot! job 0))))
+        (let ((out (autopilot-job-column-residuals job))
+              (base (autopilot-job-residuals job))
+              (jacobian (autopilot-job-jacobian job))
+              (m (autopilot-job-residual-count job)))
+          (job-shot-residuals! job out)
+          (dotimes (i m)
+            (setf (aref jacobian (+ (* i n-params) column))
+                  (/ (- (aref out i) (aref base i)) *shot-perturbation*)))
+          (if (< (1+ column) n-params)
+              (job-shoot! job (1+ column))
+              (let ((step (autopilot-job-delta job))
+                    (params (autopilot-job-params job)))
+                (minimum-norm-step! step jacobian base m n-params)
+                (dotimes (k n-params)
+                  (incf (aref params k) (aref step k)))
+                (incf (autopilot-job-iteration job))
+                (job-shoot! job)))))))
+
+(defun shot-refusal (job)
+  "The refusal of JOB's final shot and candidate, or nil: a node below
+Earth's crash radius + *plan-floor-margin* (or a crash), within the Moon's
+radius + *plan-moon-margin*, the propellant and reserve over what is on board."
+  (let* ((shot (autopilot-job-shot job))
+         (nodes (prediction-nodes shot))
+         (floor (+ (body-crash-radius (body :earth)) *plan-floor-margin*))
+         (near (+ +radius-moon+ *plan-moon-margin*))
+         (far (- +moon-distance-min+ near))
+         (r (make-vec3)) (moon (make-vec3)) (moon-v (make-vec3)))
+    (cond ((or (sim-loss (prediction-sim shot))
+               (loop for i from (prediction-head shot) below (prediction-count shot)
+                     for k = (* +node-size+ i)
+                     do (replace r nodes :start2 (+ k 1) :end2 (+ k 4))
+                     thereis (< (vec3-norm r) floor)))
+           (format nil "BELOW ~D KM" (round (- floor +radius-earth+) 1000)))
+          ((loop for i from (prediction-head shot) below (prediction-count shot)
+                 for k = (* +node-size+ i)
+                 do (replace r nodes :start2 (+ k 1) :end2 (+ k 4))
+                 thereis (and (> (vec3-norm r) far)
+                              (progn (body-state-into moon moon-v :moon (node-t nodes i) :earth)
+                                     (< (vec3-norm (vec3-sub! moon moon r)) near))))
+           "TOO NEAR THE MOON")
+          (t (let ((needed (+ (autopilot-job-propellant job)
+                              (burn-plan-reserve-mass (autopilot-job-candidate job)))))
+               (when (> needed (ship-state-m-p (sim-ship (autopilot-job-snapshot job))))
+                 (format nil "NEEDS ~D KG" (ceiling needed))))))))
+
+(defun shot-cut-plan (plan shot)
+  "PLAN with each burn's cut state the SHOT's (the copy's t, r, v at its
+cut) and the goal orbit from the last."
+  (let* ((nodes (prediction-nodes shot))
+         (burns (map 'simple-vector
+                     (lambda (burn i)
+                       (let* ((time (prediction-cut-time shot i))
+                              (k (* +node-size+ (node-interval shot time))))
+                         (make-planned-burn (planned-burn-label burn) (planned-burn-hold-at burn)
+                                            (planned-burn-start burn) (planned-burn-attitude burn)
+                                            (planned-burn-throttle burn) (planned-burn-rcs burn)
+                                            (planned-burn-dv burn)
+                                            :cut-t time
+                                            :cut-r (subseq nodes (+ k 1) (+ k 4))
+                                            :cut-v (subseq nodes (+ k 4) (+ k 7))
+                                            :isp (planned-burn-isp burn))))
+                     (burn-plan-burns plan)
+                     (loop for i below (length (burn-plan-burns plan)) collect i)))
+         (last (svref burns (1- (length burns)))))
+    (make-burn-plan burns :coast-hold (burn-plan-coast-hold plan)
+                          :preset (burn-plan-preset plan) :goal (burn-plan-goal plan)
+                          :goal-orbit (state->orbit (planned-burn-cut-r last) (planned-burn-cut-v last)
+                                                    +mu-earth+ (planned-burn-cut-t last))
+                          :reserve-dv (burn-plan-reserve-dv plan)
+                          :reserve-mass (burn-plan-reserve-mass plan))))
+
+(defun job-check! (job)
+  "The refusals on JOB's final shot, else the plan with the shot's cut states: :done."
+  (let ((reason (shot-refusal job)))
+    (if reason
+        (job-refuse! job reason)
+        (setf (autopilot-job-plan job) (shot-cut-plan (autopilot-job-candidate job)
+                                                      (autopilot-job-shot job))
+              (autopilot-job-stage job) :done))
+    job))
+
+(defun autopilot-job-work! (job budget)
+  "At most BUDGET work units (the prediction's, decision 116) of JOB; its
+stage: :coast, :guess, :iterate, :check, then :done (autopilot-job-plan)
+or :refused (autopilot-job-reason)."
+  (let ((left budget))
+    (flet ((advance (pred)
+             (prediction-extend! pred left)
+             (decf left (prediction-last-work pred))
+             (prediction-complete-p pred)))
+      (loop
+        (ecase (autopilot-job-stage job)
+          ((:done :refused) (return))
+          (:coast (if (advance (autopilot-job-coast job))
+                      (setf (autopilot-job-stage job) :guess)
+                      (return)))
+          (:guess (job-guess! job))
+          (:iterate (if (advance (autopilot-job-shot job))
+                        (job-shot-done! job)
+                        (return)))
+          (:check (job-check! job)))))
+    (setf (autopilot-job-work job) (- budget left))
+    (autopilot-job-stage job)))
+
+(defun autopilot-plan-now (sim preset goal &optional (job (new-autopilot-job sim)))
+  "PRESET with GOAL planned from SIM at once (headless, tests, flight
+scripts): (values plan nil) or (values nil reason)."
+  (autopilot-job-start! job sim preset goal)
+  (autopilot-job-work! job most-positive-fixnum)
+  (values (autopilot-job-plan job) (autopilot-job-reason job)))

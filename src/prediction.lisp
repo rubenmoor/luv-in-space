@@ -41,6 +41,8 @@ decision 149).")
   (count 0 :type fixnum)                        ; nodes stored
   (target-count 0 :type fixnum)                 ; nodes from 0 with the target's state
   (periods 1 :type (integer 1 2))               ; the coasting horizon in osculating periods
+  (until nil :type (or null double-float))      ; a shot's horizon, instead of the periods
+  (until-plan nil :type boolean)                ; the horizon: the copy's plan done + a period
   (end 0d0 :type double-float)                  ; the horizon's t
   (state :empty :type (member :empty :running :complete))
   (now 0d0 :type double-float)                  ; the flown t at the last update
@@ -49,6 +51,9 @@ decision 149).")
   (event-count 0 :type fixnum)
   (event-objects nil :type simple-vector)       ; :contact: the object's index
   (event-values nil :type (simple-array double-float (*)))
+  (cut-times (make-array 16 :element-type 'double-float :initial-element 0d0)
+   :type (simple-array double-float (16)))      ; the copy's burns' cuts, in order
+  (cut-count 0 :type fixnum)
   (contact-starts (make-array 0 :element-type 'double-float) ; a step's start: ship, candidates
    :type (simple-array double-float (*)))
   (impact nil)                                  ; the copy's loss record
@@ -65,8 +70,9 @@ decision 149).")
   (last-steps 0 :type fixnum)                   ; sim-step!s in the last call
   (last-work 0 :type fixnum))                   ; their work, *prediction-work-per-frame*'s unit
 
-(defun new-prediction (&key (periods 1))
-  "An empty prediction; PERIODS its coasting horizon (2 for the clock's: the map)."
+(defun new-prediction (&key (periods 1) until)
+  "An empty prediction; PERIODS its coasting horizon (2 for the clock's: the
+map), or UNTIL a fixed t (a shot's)."
   (let ((p (%make-prediction
             (make-array (* +node-size+ *prediction-capacity*) :element-type 'double-float
                                                                :initial-element 0d0)
@@ -78,7 +84,8 @@ decision 149).")
             (make-array *prediction-event-capacity* :initial-element nil)
             (make-array *prediction-event-capacity* :element-type 'double-float
                                                     :initial-element 0d0))))
-    (setf (prediction-periods p) periods)
+    (setf (prediction-periods p) periods
+          (prediction-until p) (and until (float until 1d0)))
     p))
 
 (defun grid-ceiling (time)
@@ -537,6 +544,7 @@ those PRED was made with (decision 75, decision 116)."
         (prediction-count pred) 0
         (prediction-target-count pred) 0
         (prediction-event-count pred) 0
+        (prediction-cut-count pred) 0
         (prediction-impact pred) nil
         (prediction-state pred) :running)
   (incf (prediction-restarts pred))
@@ -625,10 +633,21 @@ copy's plan flies at *prediction-rcs-level* while an RCS burn runs, else at
         (let ((index (sim-plan-index sim))
               (burning (eq (sim-plan-phase sim) :burning)))
           (plan-step-controls! sim)
-          (when (and (eq (sim-plan-phase sim) :burning)
-                     (or (not burning) (/= index (sim-plan-index sim))))
-            (push-event! pred :burn-start (sim-t sim) nil
-                         (float (sim-plan-index sim) 1d0)))))
+          (let ((moved (/= index (sim-plan-index sim))))
+            (when (and burning (or moved (not (eq (sim-plan-phase sim) :burning)))
+                       (< (prediction-cut-count pred) 16))
+              (setf (aref (prediction-cut-times pred) (prediction-cut-count pred)) (sim-t sim))
+              (incf (prediction-cut-count pred)))
+            (when (and (eq (sim-plan-phase sim) :burning) (or (not burning) moved))
+              (push-event! pred :burn-start (sim-t sim) nil
+                           (float (sim-plan-index sim) 1d0)))))
+        ;; A shot's horizon: the last cut plus one osculating period.
+        (when (and (prediction-until-plan pred) (eq (sim-plan-phase sim) :done))
+          (let ((period (osculating-period sim)))
+            (setf (prediction-until-plan pred) nil
+                  (prediction-end pred) (if period
+                                            (+ (sim-t sim) (the double-float period))
+                                            most-positive-double-float)))))
       (contact-starts! pred sim)
       (let* ((cutoff (sim-cutoff sim))
              (zero (eql (sim-step-ticks! sim (if (plan-rcs-burning-p sim)
@@ -673,9 +692,9 @@ osculating periods coasting, one with the throttle on (decision 116)."
   (let ((period (osculating-period sim))
         (periods (if (> (controls-throttle (sim-controls sim)) 0d0) 1 (prediction-periods pred))))
     (setf (prediction-now pred) (sim-t sim)
-          (prediction-end pred) (if period
-                                    (+ (sim-t sim) (* periods period))
-                                    most-positive-double-float))
+          (prediction-end pred) (cond ((prediction-until pred))
+                                      (period (+ (sim-t sim) (* periods period)))
+                                      (t most-positive-double-float)))
     (when (and (eq (prediction-state pred) :complete)
                (null (sim-loss (prediction-sim pred)))
                (< (sim-t (prediction-sim pred)) (prediction-end pred)))
@@ -688,6 +707,21 @@ osculating periods coasting, one with the throttle on (decision 116)."
 decision 116), else extend the tail; at most BUDGET work. PRED."
   (prediction-refresh! pred sim)
   (prediction-extend! pred budget))
+
+(defun prediction-shoot! (pred sim until &key after-plan)
+  "Restart PRED from SIM as a shot (decision 117): its horizon the fixed
+time UNTIL; AFTER-PLAN: once the copy's plan is done, that t plus one
+osculating period instead (UNTIL then a cap). Run it by prediction-extend!;
+PRED."
+  (prediction-restart! pred sim)
+  (setf (prediction-now pred) (sim-t sim)
+        (prediction-end pred) (float until 1d0)
+        (prediction-until-plan pred) (and after-plan (sim-plan sim) t))
+  pred)
+
+(defun prediction-cut-time (pred i)
+  "The t of the copy's I-th burn cut (from 0) since the restart, or nil."
+  (and (< i (prediction-cut-count pred)) (aref (prediction-cut-times pred) i)))
 
 (defun prediction-run! (pred sim)
   "PRED updated from SIM and run to its horizon (tests, scripts); PRED."

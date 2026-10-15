@@ -4861,9 +4861,9 @@ tasks for what the plan asks beyond them. A task that writes a plan gets `--kind
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (174, 27, 'create tasks for plan 27: Autopilot: rendezvous, phasing, clear approaches and station-keeping', 'split', 'done', 1000, '2026-10-15, tasks.sql: tasks 207-212; no new decisions (decision 119, decision 120, decision 121 cover the plan)', 'Split `plan 27: Autopilot: rendezvous, phasing, clear approaches and station-keeping` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
 done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
 tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-15T06:39:29Z', '2026-10-15T07:44:17Z', 161, 0);
-INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (175, 28, 'create tasks for plan 28: Flight scripts of milestone 3: vocabulary, start states and the headless preset runs', 'split', 'open', 1000, NULL, 'Split `plan 28: Flight scripts of milestone 3: vocabulary, start states and the headless preset runs` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (175, 28, 'create tasks for plan 28: Flight scripts of milestone 3: vocabulary, start states and the headless preset runs', 'split', 'done', 1000, '2026-10-15, tasks.sql: tasks 213-218; no new decisions (decision 122, decision 123 cover the plan)', 'Split `plan 28: Flight scripts of milestone 3: vocabulary, start states and the headless preset runs` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
 done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
-tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-15T06:48:59Z', NULL, 162, 0);
+tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-15T06:48:59Z', '2026-10-15T07:45:35Z', 162, 0);
 INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (176, 29, 'create tasks for plan 29: Meshes of the places, other ships and the grapple', 'split', 'open', 1000, NULL, 'Split `plan 29: Meshes of the places, other ships and the grapple` into tasks and identify all decisions that need to be made. If the plan already has tasks, its
 done and dropped ones stay as they are (pm refuses to change them): drop the open ones that no longer fit and add
 tasks for what the plan asks beyond them. A task that writes a plan gets `--kind plan`.', '2026-10-15T06:57:17Z', NULL, 163, 0);
@@ -5441,6 +5441,118 @@ INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, crea
 - Tests pass; `nix build` and `scripts/test` pass, `scripts/test` near its ~15 s.
 - `docs/architecture.md` "Testing" → "Autopilot" gains this plan''s tests with bounds and measured times.
 - `AGENTS.md` "Commands" ("Run": the `RDV` rows of O) and "Layout" (`orbits.lisp`''s `lambert-into!`, `places.lisp`''s stop points, `autopilot.lisp`''s rendezvous, `controls.lisp`''s terminal law) match what was built.', '2026-10-15T07:44:15Z', NULL, 174, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (213, 28, 'Flight scripts: start states and stated-sim', 'work', 'open', NULL, NULL, 'Piece 1 of `plan 28: Flight scripts of milestone 3: vocabulary, start states and the headless preset runs` (read its "Start states" and "Pieces" 1). Stands on `plan 23: Objects on rails and the Earth-orbit places` (`task 186: Removal and re-entry of objects` and before) and `plan 24: Grapple, contact, berthing, towing, deliveries and refuelling` (berth and capture poses, the stack''s mass properties; `task 194: Plan 24''s Done when: a headless round at every place`) and on `plan 25: Predicted trajectories, targets and target holds` for `sim-set-target!`. Follows `decision 122: Flight scripts in milestone 3: autopilot steps, the record, close work, start states`.
+
+## Code (`src/flights.lisp`)
+- `(:start :state …)` parsed and checked at read time: `:date` (UTC or `(:periapsis|:apoapsis <place> [:before s] [:after UTC])`, `grid-ceiling`), `:orbit` (`:circular` with `:u`/`:lead`, `:near` with `:behind`/`:above`/`:at-slot`, `:on-axis`, `:elements :earth`), `:berthed`, `:grappled`, `:propellant`, `:removed`, `:target`.
+- `stated-sim`: one deterministic function from `new-game-sim`; controls rate damping + prograde hold (none when berthed), throttle off, clock ×1; objects'' first checks due at t.
+- `run-flight` and `fly` start from it (`flight-start-sim`); `(:restart)` returns to it.
+- `*later-vocabulary*`: milestone 4 entries (`:consumables`, `:elements` around another body, `:tli`, `:capture`, `:return`, `:soi`, …) "NOT BEFORE MILESTONE 4"; milestone 5 (`:quest`, `:ack`, `:offer`, `(:start :after|:file …)`, …) "NOT BEFORE MILESTONE 5".
+- Read errors: unknown keys, places, fixtures, causes; `:berthed` with `:orbit`.
+
+## Tests (`tests/flights.lisp`, as listed in piece 1)
+- `(:start :state ())` `equalp` `new-game-sim`; every form twice `equalp`.
+- `:circular 500e3 :u 30`; `:lead (:fulmar-depot 297.96)` at 2040-01-01; `(:near :skua-yard-5 :behind 1000)`; `(:on-axis :k-17 100)`; `(:periapsis :highport :before 3600)`; `:berthed (:tern-station :berth)`; `:grappled :pod-14` with `(:near :pod-14 :at-slot)` (mass + 12,000 kg); `:removed`, `:propellant`, `:target`; the read errors. Bounds as in the plan. Together well under ~1 s.
+
+## Done when
+- Tests pass; `nix build` and `scripts/test` pass.
+- `docs/architecture.md` "Scripted runs" → "Start states" as built, citing `decision 122`.', '2026-10-15T07:45:31Z', NULL, 175, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (214, 28, 'Flight scripts: pilot actions, conditions, close-work warp and prediction', 'work', 'open', NULL, NULL, 'Piece 2 of `plan 28: Flight scripts of milestone 3: vocabulary, start states and the headless preset runs` (read "Actions", "Waits and expectations", "Close work: warp and the prediction" and "Pieces" 2). Stands on `task 213: Flight scripts: start states and stated-sim`, on `plan 24: Grapple, contact, berthing, towing, deliveries and refuelling` (`grapple-key!`, `transfer-key!`, `task 193: The contact drop-out of time warp`) and `plan 25: Predicted trajectories, targets and target holds` (`controls-set-target-hold`, `task 200: Plan 25''s Done when: targets, holds, burns and prediction live and headless`). Follows `decision 122: Flight scripts in milestone 3: autopilot steps, the record, close work, start states` and `decision 108: run-flight''s prediction during burns and the hook''s order in clock-step!`.
+
+## Code
+- `src/clock.lisp`: `clock-log` entries keep their notice key, `(t key text)`; nothing else.
+- `src/flights.lisp`:
+  - Actions through the same functions as `input.lisp`: `(:target <id>)`, `(:hold :target|:anti-target|:rel-prograde|:rel-retrograde)`, `(:grapple :arm|:stow)`, `(:release)`, `(:transfer :on|:off)`, `(:translate <axis> :dv <m/s>)` (×1, key held until the odometer grew by the value, 600 s limit "(:TRANSLATE): NO ΔV"); refusals fail with the game''s text.
+  - Conditions: `:latched [<id>]`, `:berthed <fixture>`, `:on-station <fixture>` (story.md''s "On station at F"; Skua Yard by `stop-point-into!`''s rule, `decision 121: Skua Yard''s stop point while the drop point is occupied`), `:removed <id> [<cause>]`, `:drop-out :burn|:contact` (`flight-dropout-check!` keeps the kind), `:lost :contact`; expectation `:date-between`.
+  - `(:warp :coast)`''s caps: ×1 during `:approach`/`:translate`; ×4 while the plan cursor is `:terminal`/`:station` or a promoted object (not the load) is within 1 km + its bound and not berthed; else `*flight-coast-limit*`.
+  - The prediction rule in `run-flight`: before every step unless it would restart; then once per 1 s above ×4, once per `*flight-close-prediction-interval*` (10 s) at ×1 and ×4.
+  - The record''s state text adds "TGT <NAME> RNG <km>" with a target set.
+  - `(:screenshot … :view :cockpit)` accepted.
+- `src/capture.lisp`: `fly-screenshots` takes `:cockpit`, draws the outside view (`PLACEHOLDER(165)` in the code) until `task 165`''s cockpit view exists.
+
+## Tests (`tests/flights.lisp`, as listed in piece 2)
+- Fulmar `:berthed (:fulmar-depot :a)` at 27,000 kg: transfer, `:propellant-full` 100 s later exact; release, `(:translate :aft :dv 0.2)`; `:berthed` before, not after.
+- `:target` set/refused when removed; `:removed` expectation; `(:grapple :arm)` twice presses G once; `:on-station` at 100 m true, 151 m and 0.11 m/s false; coast caps; the contact drop-out and `:lost :contact` from `(:on-axis :skua-yard-1 5000)` + 2 m/s inward; the prediction rule (≤ 7 restarts over 60 s RCS; bit-for-bit vs. refresh-every-step over 2 s); the reader''s new forms and malformed ones.
+
+## Done when
+- Tests pass; `nix build` and `scripts/test` pass.
+- `docs/architecture.md` "Scripted runs" → "Actions" and "Waits and expectations" as built, citing `decision 122`.', '2026-10-15T07:45:31Z', NULL, 175, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (215, 28, 'Flight scripts: autopilot steps, labelled burns and the record''s expectations', 'work', 'open', NULL, NULL, 'Piece 3 of `plan 28: Flight scripts of milestone 3: vocabulary, start states and the headless preset runs` (read "Actions" → `:autopilot`, "Waits and expectations" and "Pieces" 3). Stands on `task 214: Flight scripts: pilot actions, conditions, close-work warp and prediction`, on `plan 26: Autopilot: planner, orbit manoeuvres, execution and safety` (`task 206: Plan 26''s Done when: orbit manoeuvres by autopilot headless and live`) and `plan 27: Autopilot: rendezvous, phasing, clear approaches and station-keeping` (`rendezvous-plan-aim-point`, the shot path''s relative-Hermite distance, the cursor''s `:terminal` and `:station`). Follows `decision 122: Flight scripts in milestone 3: autopilot steps, the record, close work, start states` and `decision 117: Autopilot in milestone 3: planning jobs, goal measures, burns, execution rules in the step, trims`.
+
+## Code
+- `src/autopilot.lisp`: `(autopilot-request! model sim preset goal &key range limit)` (the menu''s Return: the job on a snapshot) and `(autopilot-confirm! model sim)` (the second Return), unless plan 26 already gives them under other names (then use those and say so in the docs).
+- `src/flights.lisp`:
+  - `(:autopilot <preset> <goal> … [:range] [:limit])` with the presets of the plan; read errors for `:range` outside 100–1,000 m and `:limit` not 12 h steps in 43,200–864,000 s. Headless the job runs to completion at once; live over frames; engaged at snapshot t + `*plan-barrier*`; a refusal fails with its text. The flight keeps the engage''s t, odometer, plan and SHIP-log mark.
+  - `(:autopilot :off)`: Backspace.
+  - `:autopilot-done` from the SHIP log''s keys since the mark; fails at once on abort, "AUTOPILOT: GOAL MISSED" or disengage.
+  - The record: while a plan is engaged, one `:burn` entry per planned burn with its label, one `:terminal` entry from the `:arrival` cut to ON STATION; lines "BURN <LABEL> FROM …".
+  - Expectations since the engage: `:dv-below`, `:elapsed-below`, `:burn <label> :between`, `:since-burn`, `:clearance-above` (`:except`, `:only`, `:until :aim-point`; minima kept by the hook per object), `:aim-point <n>`; failed when nothing was engaged.
+
+## Tests (`tests/flights.lisp`, `:point`, as listed in piece 3)
+- `(:autopilot :set-ap 500e3)`: engaged at step + 60 s, `:autopilot-done`, one `:apsis` entry whose Δv equals the odometer''s growth; `:dv-below` ± 1 m/s; `:burn :apsis :between` and `:since-burn`.
+- `(:autopilot :set-pe 120e3)` refused with the planner''s text; `:off` before the burn then `:autopilot-done` fails with "AUTOPILOT OFF".
+- Clearance on a crafted straight pass of a promoted sphere within 1e-3 m of the closed form; `:only`/`:except`.
+- Live: the same script through `clock-frame!` at 1/60 s and an irregular frame list, the job spread over frames: end sim and record equal to `run-flight`''s.
+
+## Done when
+- Tests pass; `nix build` and `scripts/test` pass.
+- `docs/architecture.md` "Scripted runs" → "Waits and expectations" and "Running scripts" (planning, the engage at the barrier, the record) as built; `docs/design.md` "The autopilot" if the scripts'' engage differs.', '2026-10-15T07:45:32Z', NULL, 175, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (216, 28, 'Flight scripts: the :approach pilot for the last 100 m', 'work', 'open', NULL, NULL, 'Piece 4 of `plan 28: Flight scripts of milestone 3: vocabulary, start states and the headless preset runs` (read "The terminal approach" and "Pieces" 4). Stands on `task 215: Flight scripts: autopilot steps, labelled burns and the record''s expectations` (Backspace at the start) and `task 214: Flight scripts: pilot actions, conditions, close-work warp and prediction`, on `plan 24: Grapple, contact, berthing, towing, deliveries and refuelling` (`grapple-range-into!`, "NO CAPTURE: …" notices) and `plan 25: Predicted trajectories, targets and target holds` (`target-relative-into!`). A pilot, not the autopilot: `decision 32: Autopilot scope and safety rules`; tolerances `decision 33: Grapple tolerances, contact and berthing`, `decision 113: Grapple and contact details the design leaves open`; `decision 122: Flight scripts in milestone 3: autopilot steps, the record, close work, start states`.
+
+## Code
+- `src/ship.lisp`: the `grapple-reading` gains, if missing, the fixture''s inward axis in body y and z and the relative velocity at the pin in body axes; still a pure function of the sim.
+- `src/flights.lisp`: `(:approach <fixture> [:speed 0.1] [:tries 3])`, `:speed` 0.02–0.25 else a read error:
+  - Start: the fixture within 500 m ahead and its axis within 30° of +x, else "NO FIXTURE"; Backspace if engaged, ×1, F on, rate damping, target the object, G to arm.
+  - Every 4 fine steps: attitude by fine pitch/yaw keys (press above 1°, release inside 0.5°, no roll); lateral −offset/60 s capped 0.05 m/s, key held while off by > 5 mm/s; closing at `:speed`, H or N held while off by > 0.01 m/s; the 20 m hold until offset < 0.15 m, angle < 3°, lateral < 0.01 m/s.
+  - End: latched or berthed → rate damping, F off; "NO CAPTURE: …" → back to 20 m, up to `:tries`, then fail with the last reason; 2 h or a death: fail.
+  - Reads only the reading and `target-relative-into!`; writes only keys, F, T, G through the input functions.
+
+## Tests (`tests/flights.lisp`, `tests/ship.lisp`; short starts in `scripts/test`)
+- `(:on-axis :k-17 25)`: latched, contact speed 0.1 ± 0.01 m/s, one try.
+- 25 m off Tern''s berth, 2 m lateral and 5° off: berthed.
+- Skua Yard 6 (150 t): three bounces, then failed with its "NO CAPTURE" reason.
+- 600 m out: "NO FIXTURE".
+- Each run twice `equalp`; the pilot changes the sim only through the controls and key functions (flown against a copy with the same step).
+- The reading''s new fields in `tests/ship.lisp`.
+
+## Done when
+- Tests pass; `nix build` and `scripts/test` pass, this plan''s tests in `scripts/test` under ~1 s together.
+- `docs/architecture.md` "Scripted runs" → "The terminal approach" as built.', '2026-10-15T07:45:32Z', NULL, 175, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (217, 28, 'Approach and rendezvous scripts and scripts/test-slow', 'work', 'open', NULL, NULL, 'Piece 5 of `plan 28: Flight scripts of milestone 3: vocabulary, start states and the headless preset runs` (read "The scripts", "The slow command" and "Pieces" 5). Stands on `task 213: Flight scripts: start states and stated-sim` to `task 216: Flight scripts: the :approach pilot for the last 100 m` and on `task 212: Plan 27''s Done when: rendezvous end to end headless and live`. Follows `decision 123: Milestone 3''s flight scripts run in scripts/test-slow, not scripts/test` and `decision 64: Scripts always re-enter the dev shell`.
+
+## Code and scripts
+- `flights/approach-tern.sexp`, `approach-k-17.sexp`, `rendezvous-fulmar-phasing.sexp`, `rendezvous-skua-yard.sexp`, `skua-yard-apogee-approach.sexp`: start states, actions and expectations exactly as `docs/architecture.md` "Scripts by milestone"; each opens with its closed-form numbers in comments, as `raise-orbit.sexp` does; no `:screenshot` steps (`task 169`).
+- System `luv-in-space/slow-tests` in `luv-in-space.asd`: `tests/slow-flights.lisp`, package `luv-in-space.slow-tests`, depending on `luv-in-space/tests` for `record-equal` and `script-record-lines`, running only its own package.
+- `scripts/test-slow`: re-enters the dev shell, one line per script (game time, steps, wall time, PASSED or FAILED), exit 1 on a failure.
+- `flake.nix`: a second check running it in the sandbox.
+- Move here the tests `plan 27: Autopilot: rendezvous, phasing, clear approaches and station-keeping` marked for "task 162''s slow command" (look in `tests/autopilot.lisp` and its comments).
+
+## Tests
+- Each script passes, flown twice: end sims `equalp`, records `record-equal`.
+- `approach-k-17`: the stack''s mass = the ship''s + 2,500 kg exactly.
+- Measure each script''s game time, steps and wall time. Over 3 minutes in all: profile, and add a follow-up task.
+
+## Done when
+- `nix build`, `scripts/test` and `scripts/test-slow` pass; `nix flake check` runs both checks.
+- `AGENTS.md` "Commands": `scripts/test-slow` (what it runs, its time, run it before committing changes to the sim, the autopilot or `flights.lisp`); `scripts/fly` and `fly` with stated start states. "Layout": the five scripts, `tests/slow-flights.lisp` and the slow system, `flights.lisp`''s start states and approach. The intro paragraph stays for `task 169`.
+- `docs/architecture.md` "Rules for tests" (the slow command, `decision 123`), "Scripts by milestone" (measured times), "Files in load order" (`flights.lisp` after `autopilot.lisp`, what it holds).', '2026-10-15T07:45:32Z', NULL, 175, 0);
+INSERT INTO task (id, plan_id, subject, kind, status, priority, note, body, created_at, retired_at, created_by_task, web) VALUES (218, 28, 'Preset scripts: every Earth-orbit place by autopilot headless (plan 28''s Done when)', 'work', 'open', NULL, NULL, 'Piece 6 of `plan 28: Flight scripts of milestone 3: vocabulary, start states and the headless preset runs` (read "The scripts" with its table, "Pieces" 6 and "Done when"): the milestone''s headless Done when. Stands on `task 217: Approach and rendezvous scripts and scripts/test-slow`. No code beyond the scripts.
+
+## Scripts (`flights/`)
+- `preset-tern-station`, `preset-fulmar-depot`, `preset-k-17`, `preset-highport`, `preset-skua-yard`: from `(:start :new-game)`, `(:autopilot :rendezvous <goal>)`, `(:warp :coast)`, `(:wait :autopilot-done :within 259200)`; expect `:on-station`, `:elapsed-below`, `:dv-below`, `:clearance-above` with the plan''s table''s values (Skua Yard: the front, `decision 121: Skua Yard''s stop point while the drop point is occupied`, no `:only`). Closed-form numbers in comments; no `:screenshot` steps (`task 169`).
+
+## Tests (`tests/slow-flights.lisp`)
+- Each preset on station within its Δv, clearance and time bounds, flown twice bit for bit.
+- Measure each one''s game time and wall time.
+- A preset that misses its bound is not loosened silently: a bound wrong in the design gets a follow-up task against `docs/design.md`; a fault in plans 23–27''s code gets a follow-up task in that plan.
+
+## Live check
+- `./sly start`, `./sly play`, `./sly eval ''(fly "preset-tern-station")'' --package LUV-IN-SPACE`: flies from the same state; its record (`./sly log`) equals `scripts/fly preset-tern-station`''s. Stop everything started (`./sly stop-playing`, `./sly stop`).
+
+## Done when
+- `nix build`, `scripts/test` and `scripts/test-slow` pass with the five presets; `scripts/fly preset-<place> <dir>` exits 0 for each.
+- `docs/architecture.md` "Scripts by milestone": the presets'' bounds and measured times. `docs/design.md` "Rendezvous: search, phasing and the approach" → "Scripted runs": the preset scripts named. `AGENTS.md` "Commands": `scripts/test-slow`''s time; "Layout": every script in `flights/`.
+- Record in `decision 122`/`decision 123` consequences (`pm decision consequences`) what was built.', '2026-10-15T07:45:32Z', NULL, 175, 0);
 
 INSERT INTO decision (id, subject, status, options, body, answer, reason, created_at, closed_at, created_by_task, signoff, kind, decided_by_task, consequences) VALUES (1, 'How the game consumes luv', 'answered', '[]', 'Findings of `task 17: Build and run luv''s programs and test suite; record the runs` (docs/luv-capabilities.md, Packaging and Runs).
 - luv''s flake exports apps, devShells, packages and lib; lib has only environmentFor, which returns everything the packaging needs (pkgs, lisp, applicationEnvironment/Packages, developmentEnvironmentHook, slynkSource, swashPackage, …). No overlays.
@@ -5783,6 +5895,7 @@ INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, b
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (171, 172, '2026-10-15T07:39:52Z', '2026-10-15T07:41:17Z', 'done', NULL, 0, '7ad97fa0e2674b783ba63ca5c85cb0a64839c74b', 'claude-opus-5-5[1m]', 'ce42fafc-b0cf-4d5c-92c3-0c67a0347f1a', 9, 18, 9429, 420999, 49497, 0.6688278, 2373073);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (172, 173, '2026-10-15T07:41:17Z', '2026-10-15T07:42:59Z', 'done', NULL, 0, '952afa9419f789c6074a5224fc79e792d00c0c01', 'claude-opus-5-5[1m]', '59d10ef9-53a2-4762-b622-d93c76b4f060', 8, 16, 9461, 376800, 51796, 0.679012, 2373073);
 INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (173, 174, '2026-10-15T07:42:59Z', '2026-10-15T07:44:22Z', 'done', NULL, 0, '2e85061017979676a77e0f24662fa9d0d59b8508', 'claude-opus-5-5[1m]', '788557a6-c247-42cf-9c2b-546b1169d1a0', 8, 16, 10244, 361252, 48044, 0.6615464000000002, 2373073);
+INSERT INTO run (id, task_id, started_at, ended_at, result, reason, exit_code, base_commit, model, session_id, turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, pid) VALUES (174, 175, '2026-10-15T07:44:22Z', '2026-10-15T07:45:40Z', 'done', NULL, 0, 'a873cd010296591e0d3f03c44cd2ec56806322a9', 'claude-opus-5-5[1m]', '1de55748-2e9b-4a01-83ab-2fecb7f5d23d', 8, 14, 9038, 312783, 51004, 0.6514046, 2373073);
 
 INSERT INTO task_decision (task_id, decision_id) VALUES (44, 28);
 INSERT INTO task_decision (task_id, decision_id) VALUES (44, 45);

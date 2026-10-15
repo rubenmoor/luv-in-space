@@ -45,6 +45,28 @@
                      5400.0)))
         (true (> mean 150) "row 2694 channel ~D mean ~,1F" channel mean)))))
 
+(defun channel-means (pixels)
+  (let ((sums (list 0 0 0)) (n (array-total-size pixels)))
+    (dotimes (i n)
+      (let ((word (row-major-aref pixels i)))
+        (dotimes (k 3) (incf (nth k sums) (ldb (byte 8 (* 8 k)) word)))))
+    (mapcar (lambda (s) (/ s (float n 1d0))) sums)))
+
+(define-test blue-marble-eighth
+  ;; The far Earth's copy (decision 78: Sky in numbers: stars, Sun, Moon
+  ;; and Earth's look): 2700 / 8 rounded up, its means the full map's.
+  (let* ((pixels (lis::load-image-pixels (lis::asset-path "earth/blue-marble-5400.jpg")))
+         (coarse (lis::downsample-pixels pixels 8)))
+    (is equal '(338 675) (array-dimensions coarse))
+    (loop for full in (channel-means pixels)
+          for small in (channel-means coarse)
+          for channel from 0
+          do (true (< (abs (- full small)) 1) "channel ~D: ~,2F, the copy ~,2F" channel full small))
+    ;; A block's mean, by hand.
+    (let ((sum 0))
+      (dotimes (y 8) (dotimes (x 8) (incf sum (ldb (byte 8 16) (aref pixels (+ 800 y) (+ 1600 x))))))
+      (is = (round sum 64) (ldb (byte 8 16) (aref coarse 100 200))))))
+
 ;;; The star table (decision 13; plan 17 piece 1).
 
 (defun star-index (table hip)

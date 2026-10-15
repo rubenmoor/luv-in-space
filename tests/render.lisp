@@ -2,7 +2,7 @@
 
 ;;; render.lisp: the render state (decision 77: The frame in main.lisp:
 ;;; render state, capture of a given sim, part 4's placeholders and first
-;;; asset), the meshes, and the frame on the GPU ("GPU tests").
+;;; asset) and the frame on the GPU ("GPU tests").
 
 (defun stepped-sim (&key (sim (drift-sim)) (level 1) until)
   "SIM, a clock whose previous state is SIM's before one sim-step!, and that step's h."
@@ -83,32 +83,6 @@
            (consed (least-bytes-consed
                     (lambda () (dotimes (i 1000) (lis::render-state-update! state clock sim))))))
       (is = 0 consed))))
-
-;;; Meshes
-
-(defun vertex-norms (data)
-  (loop for i below (length data) by 3
-        collect (sqrt (+ (expt (aref data i) 2)
-                         (expt (aref data (+ i 1)) 2)
-                         (expt (aref data (+ i 2)) 2)))))
-
-(define-test uv-sphere-counts
-  ;; A triangle list: two triangles per stack and slice, three floats each.
-  (loop for (stacks slices) in '((1 3) (4 8) (32 64))
-        for data = (lis::uv-sphere :stacks stacks :slices slices)
-        do (is = (* stacks slices 6 3) (length data))
-           (is eq 'single-float (array-element-type data))))
-
-(define-test uv-sphere-unit-radius
-  ;; Each position is also its normal, so this checks both.
-  (let ((norms (vertex-norms (lis::uv-sphere :stacks 8 :slices 16))))
-    (true (every (lambda (r) (< (abs (- r 1)) 1e-5)) norms))))
-
-(define-test uv-sphere-poles
-  (let* ((data (lis::uv-sphere :stacks 8 :slices 16))
-         (ys (loop for i from 1 below (length data) by 3 collect (aref data i))))
-    (is = 1.0 (reduce #'max ys))
-    (is = -1.0 (reduce #'min ys))))
 
 ;;; The frame on the GPU: one hidden canvas, 320x200 (decision 2: Screenshots
 ;;; and GPU test: offscreen capture on a hidden canvas, headless on lavapipe).
@@ -297,6 +271,83 @@ GAME's canvas thread, restored after."
               (expected (* 0.5 (+ 1 (cos phase)))))
           (true (< (abs (- fraction expected)) 0.1)
                 "Moon lit ~,3F of its disc, phase ~,1F deg: ~,3F" fraction (lis::rad->deg phase) expected)))
+      (lis::game-load-state! game (lis::new-game-sim)))))
+
+;;; Earth and its halo (decision 78; src/impostors.lisp).
+
+(defun horizon-camera (camera state)
+  "From the ship towards the horizon on the Sun's side, down by the dip
+acos(R / r), so the limb crosses the centre row; radial out up."
+  (let* ((r (lis::render-state-r state))
+         (up (lis::vec3-normalize r))
+         (sun (lis::vec3-normalize (lis::render-state-sun state)))
+         (level (lis::vec3-normalize (lis::vec3-add-scaled sun up (- (lis::vec3-dot sun up)))))
+         (dip (acos (/ lis::+radius-earth+ (lis::vec3-norm r))))
+         (x (lis::vec3-add (lis::vec3-scale level (cos dip)) (lis::vec3-scale up (- (sin dip)))))
+         (z (lis::vec3-scale (lis::vec3-add (lis::vec3-scale level (sin dip))
+                                            (lis::vec3-scale up (cos dip)))
+                             -1d0)))
+    (lis::quat-from-basis! (lis::camera-orientation camera) x (lis::vec3-cross z x) z)
+    (fill (lis::camera-offset camera) 0d0)))
+
+(defun far-earth-camera (distance field-of-view)
+  "A camera-fn: DISTANCE m from Earth's centre towards the Sun, looking at
+Earth, a vertical FIELD-OF-VIEW in degrees."
+  (lambda (camera state)
+    (let ((sun (lis::vec3-normalize (lis::render-state-sun state))))
+      (look-along! camera (lis::vec3-scale sun -1d0))
+      (replace (lis::camera-offset camera)
+               (lis::vec3-sub (lis::vec3-scale sun distance) (lis::render-state-r state)))
+      (setf (lis::camera-field-of-view camera) (deg field-of-view)))))
+
+(defun lit-run (pixels width height threshold &key vertical)
+  "The length of the run of pixels above THRESHOLD through the centre, along
+the centre row or, VERTICAL, the centre column."
+  (let ((cx (floor width 2)) (cy (floor height 2)))
+    (flet ((lit (i) (> (if vertical
+                           (pixel-luminance pixels width cx i)
+                           (pixel-luminance pixels width i cy))
+                       threshold)))
+      (let ((centre (if vertical cy cx)) (end (if vertical height width)))
+        (+ 1 (loop for i downfrom (1- centre) to 0 while (lit i) count t)
+           (loop for i from (1+ centre) below end while (lit i) count t))))))
+
+(defun earth-checks (game png width height)
+  (let ((cx (floor width 2)) (cy (floor height 2)))
+    (flet ((capture (sim camera-fn)
+             (nth-value 3 (lis::capture-game-state game png :sim sim :frames 1 :camera-fn camera-fn)))
+           (at (pixels y) (pixel-luminance pixels width cx y)))
+      ;; The horizon on the Sun's side at the start: space, then the halo
+      ;; above the limb (the centre row), then the surface.
+      (multiple-value-bind (path w h pixels format)
+          (lis::capture-game-state game png :sim (lis::new-game-sim) :frames 1
+                                            :camera-fn #'horizon-camera)
+        (declare (ignore path w h))
+        (let ((space (at pixels (- cy 30))))
+          (loop for y from (- cy 6) to (- cy 2)
+                do (multiple-value-bind (red blue) (pixel-red-blue pixels format width cx y)
+                     (true (> blue red) "halo ~D px above the limb: red ~D, blue ~D" (- cy y) red blue))
+                   (true (> (at pixels y) (+ space 20))
+                         "halo ~D px above the limb ~,1F, space ~,1F" (- cy y) (at pixels y) space))
+          (loop for y from (+ cy 4) to (+ cy 30) by 2
+                do (true (> (at pixels y) (+ space 10))
+                         "surface ~D px below the limb ~,1F, space ~,1F" (- y cy) (at pixels y) space))))
+      ;; Night: straight down in Earth's shadow, dark.
+      (let ((pixels (capture (start-sim-at 180) #'nadir-camera)))
+        (true (< (at pixels cy) 8) "night side at the nadir ~,1F" (at pixels cy)))
+      ;; Round from 40,000 km on the Sun's side, halo and bloom off; at the
+      ;; exposure 1.0 the open Pacific falls to the background (lit runs of 83
+      ;; and 32 px above 2 of 255), at 8 it reads above 10.
+      (with-canvas-values (game (lis::*bloom-strength* 0.0) (lis::*halo-radiance* 0d0)
+                                (lis::*exposure-sunlit* 8d0))
+        (let* ((distance 4d7) (fov 30)
+               (pixels (capture (lis::new-game-sim) (far-earth-camera distance fov)))
+               (expected (/ (* height (tan (asin (/ lis::+radius-earth+ distance))))
+                            (tan (* 0.5d0 (deg fov))))))
+          (dolist (vertical '(nil t))
+            (let ((run (lit-run pixels width height 10 :vertical vertical)))
+              (true (<= (abs (- run expected)) 2) "Earth ~:[horizontally~;vertically~] ~D px, ~,1F expected"
+                    vertical run expected)))))
       (lis::game-load-state! game (lis::new-game-sim)))))
 
 ;;; The stars (decision 78: Sky in numbers: stars, Sun, Moon and Earth's
@@ -491,6 +542,7 @@ FIELD-OF-VIEW in degrees."
                (true (<= 490 n 1970) "Orion: ~D pixels above 30" n))
              (lis::game-load-state! game (lis::new-game-sim)))
            (sun-and-moon-checks game png width height)
+           (earth-checks game png width height)
            (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))
            ;; Resizes replace the swapchain's textures; what the renderer kept
            ;; for the old ones goes, so its per-target state stays bounded.

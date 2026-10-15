@@ -89,46 +89,27 @@ not below t or the sim is lost. Conses nothing; OUT."
       (setf (render-state-sun-fraction out) (sun-visible-fraction (render-state-r out) tr)))
     out))
 
-;;; Meshes: pure functions, no GPU.
-
 (defun single-floats (list)
   (map '(simple-array single-float (*)) (lambda (x) (coerce x 'single-float)) list))
-
-(defun uv-sphere (&key (stacks 32) (slices 64))
-  "Triangle-list vertices of a unit sphere, three floats each; each position
-is also its normal."
-  (let ((data (make-array (* stacks slices 6 3) :element-type 'single-float))
-        (index 0))
-    (flet ((corner (i j)
-             (let ((theta (* pi (/ i stacks))) (phi (* 2 pi (/ j slices))))
-               (dolist (x (list (* (sin theta) (cos phi)) (cos theta)
-                                (* (sin theta) (sin phi))))
-                 (setf (aref data index) (coerce x 'single-float))
-                 (incf index)))))
-      (dotimes (i stacks)
-        (dotimes (j slices)
-          (loop for (a b) in '((0 0) (1 0) (1 1) (0 0) (1 1) (0 1))
-                do (corner (+ i a) (+ j b))))))
-    data))
 
 ;;; The renderer
 
 (defparameter *background* '(0.0 0.0 0.0002) "Radiance the HDR target is cleared to.")
-(defparameter *earth-stacks* 64)
-(defparameter *earth-slices* 128)
 (defparameter *earth-texture* "earth/blue-marble-5400.jpg"
   "decision 40: Earth's look and drag.")
 
-(defconstant +frame-uniform-floats+ 80 "shaders.lisp's frame block: twenty vec4s.")
-(defconstant +impostor-uniform-index+ 48 "The Sun's block, then the Moon's.")
+(defconstant +frame-uniform-floats+ 116 "shaders.lisp's frame block: 29 vec4s.")
+(defconstant +impostor-uniform-index+ 48 "The Sun's block, the Moon's, Earth's, the halo's.")
+(defconstant +halo-dusk-index+ 112)
 
 (defclass frame-renderer (renderer)
   ((context :initarg :context :reader frame-renderer-context)
    (layout :initarg :layout :reader frame-renderer-layout)
-   (earth :initarg :earth :reader frame-renderer-earth)
-   (earth-count :initarg :earth-count :reader frame-renderer-earth-count)
    (earth-view :initarg :earth-view :reader frame-renderer-earth-view)
+   (earth-coarse-view :initarg :earth-coarse-view :reader frame-renderer-earth-coarse-view
+                      :documentation "The Blue Marble's 1/8 copy (downsample-pixels).")
    (earth-sampler :initarg :earth-sampler :reader frame-renderer-earth-sampler)
+   (earth-rows :initarg :earth-rows :reader frame-renderer-earth-rows)
    (stars :initarg :stars :reader frame-renderer-stars
           :documentation "The star instances (src/stars.lisp).")
    (star-corners :initarg :star-corners :reader frame-renderer-star-corners)
@@ -148,8 +129,7 @@ is also its normal."
    (uniforms :initform (make-array +frame-uniform-floats+ :element-type 'single-float
                                                           :initial-element 0f0)
              :reader frame-renderer-uniforms)
-   (eye :initform (make-vec3) :reader frame-renderer-eye)
-   (origin :initform (make-vec3) :reader frame-renderer-origin)))
+   (eye :initform (make-vec3) :reader frame-renderer-eye)))
 
 (defun make-frame-renderer (device context)
   "The renderer of the game's frame on DEVICE, drawing into CONTEXT's format."
@@ -160,17 +140,21 @@ is also its normal."
                                                   (:binding 1 :type :texture)
                                                   (:binding 2 :type :sampler)
                                                   (:binding 3 :type :texture)))))
-         (earth (uv-sphere :stacks *earth-stacks* :slices *earth-slices*))
          (stars (star-instances (load-star-table)))
          (label (single-floats (label-vertices *label*))))
-    (multiple-value-bind (texture view sampler)
-        (texture-from-pixels renderer (load-image-pixels (asset-path *earth-texture*)) "earth")
-      (declare (ignore texture))
-      (reinitialize-instance renderer :earth-view view :earth-sampler sampler))
+    (let ((pixels (load-image-pixels (asset-path *earth-texture*))))
+      (multiple-value-bind (texture view sampler) (texture-from-pixels renderer pixels "earth")
+        (declare (ignore texture))
+        (reinitialize-instance renderer :earth-view view :earth-sampler sampler
+                                        :earth-rows (array-dimension pixels 0)
+                                        :earth-coarse-view
+                                        (nth-value 1 (texture-from-pixels
+                                                      renderer
+                                                      (downsample-pixels pixels *earth-coarse-factor*)
+                                                      "earth 1/8")))))
     (reinitialize-instance
      renderer
      :layout layout
-     :earth (vertex-buffer renderer earth "earth") :earth-count (/ (length earth) 3)
      :stars (vertex-buffer renderer stars "stars")
      :star-corners (vertex-buffer renderer (star-corners) "star corners")
      :star-count (/ (length stars) +star-instance-floats+)
@@ -183,13 +167,6 @@ is also its normal."
                                          :address-mode-u :clamp-to-edge
                                          :address-mode-v :clamp-to-edge
                                          :mag-filter :linear :min-filter :linear)))
-    (live-pipeline renderer :earth layout
-                   '((:array-stride 12
-                      :attributes ((:shader-location 0 :offset 0 :format :float32x3))))
-                   :format +hdr-format+
-                   ;; decision 4: Depth strategy
-                   :depth-stencil '(:format :depth32-float :depth-write-enabled t
-                                    :depth-compare :greater))
     (stars-pipeline renderer layout +hdr-format+)
     (impostor-pipelines renderer layout +hdr-format+)
     (live-pipeline renderer :quads layout (overlay-vertex-buffers) :format +hdr-format+
@@ -233,7 +210,8 @@ again once it is acquired (luv's canvas-frame-resource-cache)."
                 :buffer buffer
                 :bind-group (frame-bind-group renderer buffer
                                               (frame-renderer-earth-view renderer)
-                                              (frame-renderer-earth-sampler renderer))))))))
+                                              (frame-renderer-earth-sampler renderer)
+                                              (frame-renderer-earth-coarse-view renderer))))))))
 
 (defun post-bind-groups (renderer slot views)
   "SLOT's bind groups sampling VIEWS, remade when the post targets were."
@@ -281,23 +259,23 @@ means luv rebuilt the swapchain: forget its old textures first."
   (search "SRGB" (symbol-name (renderer-format renderer))))
 
 (defun frame-uniforms! (renderer extent state camera exposure)
-  "The frame block: clip rows, Earth relative to the eye (decision 5:
-Precision of positions), the Sun's direction, clip units per pixel, Earth's
-body-fixed matrix, the post and stars vec4s, the Sun's and the Moon's
-impostors. Returns the block and the Sun's and the Moon's draw forms."
+  "The frame block: clip rows, the halo's colours, the Sun's direction and
+(1 AU / d)^2, clip units per pixel, Earth's body-fixed matrix, the post and
+stars vec4s, the impostors of the Sun, the Moon, Earth and its halo (centres
+relative to the eye, decision 5: Precision of positions). Returns the block
+and the four draw forms."
   (destructuring-bind (width height) extent
     (let ((data (frame-renderer-uniforms renderer))
           (eye (camera-eye camera (render-state-r state) (frame-renderer-eye renderer)))
           (sun (render-state-sun state))
           (matrix (render-state-earth-matrix state)))
       (camera-clip-rows! data camera (/ width height))
-      (eye-relative-single (frame-renderer-origin renderer) eye data 16)
-      (setf (aref data 19) (coerce +radius-earth+ 'single-float))
+      (halo-colours! data 16 +halo-dusk-index+)
       (let ((d (vec3-norm sun)))
         (dotimes (i 3)
-          (setf (aref data (+ 20 i)) (coerce (/ (aref sun i) d) 'single-float))))
-      (setf (aref data 23) 0f0
-            (aref data 24) (coerce (/ 2 width) 'single-float)
+          (setf (aref data (+ 20 i)) (coerce (/ (aref sun i) d) 'single-float)))
+        (setf (aref data 23) (coerce (expt (/ +au+ d) 2) 'single-float)))
+      (setf (aref data 24) (coerce (/ 2 width) 'single-float)
             (aref data 25) (coerce (/ 2 height) 'single-float)
             (aref data 26) 0f0 (aref data 27) 0f0)
       (dotimes (row 3)
@@ -309,21 +287,22 @@ impostors. Returns the block and the Sun's and the Moon's draw forms."
             (aref data 42) (if (srgb-target-p renderer) 0f0 1f0)
             (aref data 43) 0f0)
       (star-uniforms! data 44)
-      (multiple-value-bind (sun-form moon-form)
-          (impostor-uniforms! data +impostor-uniform-index+ state eye camera)
-        (values data sun-form moon-form)))))
+      (multiple-value-bind (sun-form moon-form earth-form halo-form)
+          (impostor-uniforms! data +impostor-uniform-index+ state eye camera
+                              (frame-renderer-earth-rows renderer))
+        (values data (list sun-form moon-form earth-form halo-form))))))
 
 (defun encode-frame (renderer encoder target extent state camera exposure)
   "The frame into TARGET of EXTENT (width height) from the render STATE seen
 by CAMERA, in three stages (decision 76: Frame passes, radiance scale and
 exposure): the scene pass into the HDR target (the stars, the Sun, the
-Moon, the placeholder Earth, PLACEHOLDER(76)); the bloom chain; one pass on
-TARGET, the tone map at EXPOSURE and then the overlay."
+Moon, Earth, Earth's halo); the bloom chain; one pass on TARGET, the tone
+map at EXPOSURE and then the overlay."
   (let* ((slot (frame-resources renderer target))
          (views (post-views renderer extent))
          (bind-groups (post-bind-groups renderer slot views))
          (bind-group (frame-slot-bind-group slot)))
-    (multiple-value-bind (data sun-form moon-form)
+    (multiple-value-bind (data forms)
         (frame-uniforms! renderer extent state camera exposure)
       (luv:write-buffer (frame-slot-buffer slot) data)
       (flet ((draw (pass role vertices count)
@@ -347,9 +326,9 @@ TARGET, the tone map at EXPOSURE and then the overlay."
           (luv:set-vertex-buffer pass 1 (frame-renderer-stars renderer))
           (luv:draw pass 6 (frame-renderer-star-count renderer))
           (let ((corners (frame-renderer-impostor-corners renderer)))
-            (draw-impostor pass renderer :sun sun-form bind-group corners)
-            (draw-impostor pass renderer :moon moon-form bind-group corners))
-          (draw pass :earth (frame-renderer-earth renderer) (frame-renderer-earth-count renderer))
+            (loop for role in '(:sun :moon :earth :earth-halo)
+                  for form in forms
+                  do (draw-impostor pass renderer role form bind-group corners)))
           (let ((quads (frame-renderer-test-quads renderer)))
             (when quads (draw pass :quads (car quads) (cdr quads))))
           (luv:end-pass pass))

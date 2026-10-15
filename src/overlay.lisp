@@ -3,7 +3,7 @@
 ;;; The screen-space overlay: dot-matrix labels (decision 7: Placeholder
 ;;; labels: dot-matrix overlay quads) and their pipeline.
 
-(defparameter *label* "PLACEHOLDER(76 77 80)"
+(defparameter *label* "PLACEHOLDER(77 80)"
   "Top left until the parts that replace the placeholders land.")
 
 (defparameter *glyphs*

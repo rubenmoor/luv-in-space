@@ -49,6 +49,35 @@ texture-from-pixels takes it."
                                 (cffi:mem-ref surface :int 16))
         (sdl3:destroy-surface surface)))))
 
+(defun downsample-pixels (pixels factor)
+  "PIXELS (as load-image-pixels returns them) box-filtered by FACTOR: each
+output pixel the mean of its FACTOR x FACTOR block per byte, the last row
+and column over what is left (decision 78: Sky in numbers: stars, Sun, Moon
+and Earth's look: the far Earth's copy, as Vulkan textures in luv have one
+mip level)."
+  (declare (optimize speed) (type (simple-array (unsigned-byte 32) (* *)) pixels)
+           (type (integer 1 64) factor))
+  (destructuring-bind (height width) (array-dimensions pixels)
+    (declare (type (integer 1 65535) height width))
+    (let* ((rows (ceiling height factor)) (columns (ceiling width factor))
+           (out (make-array (list rows columns) :element-type '(unsigned-byte 32)))
+           (sums (make-array (* 4 columns) :element-type '(unsigned-byte 32))))
+      (dotimes (row rows out)
+        (fill sums 0)
+        (let ((y0 (* row factor)) (y1 (min height (* (1+ row) factor))))
+          (loop for y from y0 below y1
+                do (dotimes (x width)
+                     (let ((word (aref pixels y x)) (base (* 4 (floor x factor))))
+                       (dotimes (k 4)
+                         (incf (aref sums (+ base k)) (ldb (byte 8 (* 8 k)) word))))))
+          (dotimes (column columns)
+            (let ((n (* (- y1 y0) (- (min width (* (1+ column) factor)) (* column factor))))
+                  (word 0))
+              (declare (type (unsigned-byte 32) word))
+              (dotimes (k 4)
+                (setf word (dpb (round (aref sums (+ (* 4 column) k)) n) (byte 8 (* 8 k)) word)))
+              (setf (aref out row column) word))))))))
+
 ;;; The star table (assets/stars/SOURCE.md; decision 78: Sky in numbers:
 ;;; stars, Sun, Moon and Earth's look).
 

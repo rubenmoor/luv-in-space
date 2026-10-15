@@ -1,18 +1,18 @@
 (in-package #:luv-in-space.shaders)
 
-;;; PLACEHOLDER(76): the placeholder Earth sphere sampling the Blue Marble;
-;;; the stars at infinity (src/stars.lisp); the Sun and the Moon as sphere
-;;; impostors (src/impostors.lisp); screen-space quads for the
-;;; overlay's labels and the tests' quads; the post passes (decision 76: Frame passes, radiance scale and exposure).
+;;; The stars at infinity (src/stars.lisp); the Sun, the Moon, Earth and
+;;; Earth's halo as sphere impostors (src/impostors.lisp); screen-space quads
+;;; for the overlay's labels and the tests' quads; the post passes (decision
+;;; 76: Frame passes, radiance scale and exposure).
 
 ;; One uniform block for every pipeline: clip rows for camera-relative
-;; points, the body relative to the eye (w: radius), the sun direction,
-;; screen (xy: clip units per pixel), the rows of Earth's body-fixed
-;; matrix (ICRF -> body-fixed), post (exposure, bloom strength, sRGB
-;; encoding 0 or 1), stars (radiance limit, sigma, sigma per magnitude,
-;; sigma max; src/stars.lisp), and per impostor four vec4s (centre and radius;
-;; quad axis u and c.c - r^2; quad axis v; shade; src/impostors.lisp).
-;; RESOURCES in OPTIONS come after the block.
+;; points, the halo's day colour (w: its radiance), the direction to the Sun
+;; (w: (1 AU / d)^2), screen (xy: clip units per pixel), the rows of Earth's
+;; body-fixed matrix (ICRF -> body-fixed), post (exposure, bloom strength,
+;; sRGB encoding 0 or 1), stars (radiance limit, sigma, sigma per magnitude,
+;; sigma max; src/stars.lisp), per impostor four vec4s (centre and radius;
+;; quad axis u and c.c - r^2; quad axis v; shade; src/impostors.lisp), and
+;; the halo's dusk colour. RESOURCES in OPTIONS come after the block.
 (defmacro define-frame-shader (name (&rest options &key resources &allow-other-keys)
                                &body body)
   `(define-shader ,name
@@ -21,11 +21,14 @@
         :resources ((frame :uniform-block :binding 0
                      :members ((clip-x :vec4) (clip-y :vec4)
                                (clip-z :vec4) (clip-w :vec4)
-                               (body :vec4) (sun :vec4) (screen :vec4)
+                               (halo-day :vec4) (sun :vec4) (screen :vec4)
                                (fixed-x :vec4) (fixed-y :vec4) (fixed-z :vec4)
                                (post :vec4) (stars :vec4)
                                (sun-c :vec4) (sun-u :vec4) (sun-v :vec4) (sun-shade :vec4)
-                               (moon-c :vec4) (moon-u :vec4) (moon-v :vec4) (moon-shade :vec4)))
+                               (moon-c :vec4) (moon-u :vec4) (moon-v :vec4) (moon-shade :vec4)
+                               (earth-c :vec4) (earth-u :vec4) (earth-v :vec4) (earth-shade :vec4)
+                               (halo-c :vec4) (halo-u :vec4) (halo-v :vec4) (halo-shade :vec4)
+                               (halo-dusk :vec4)))
                     ,@resources))
      ,@body))
 
@@ -46,34 +49,6 @@
 
 (define-shader-function arcsin (z)
   (atan2 z (sqrt (max (- 1.0 (* z z)) 0.0))))
-
-(define-frame-shader earth-vertex
-    (:stage :vertex
-     :inputs ((unit :vec3 :location 0))
-     :outputs ((clip-position :vec4 :built-in :position)
-               (normal :vec3 :location 0)))
-  (let* ((point (vec4 (+ (swizzle body :xyz) (* unit (swizzle body :w))) 1.0)))
-    (set-output clip-position
-                (vec4 (dot clip-x point) (dot clip-y point)
-                      (dot clip-z point) (dot clip-w point)))
-    (set-output normal unit)))
-
-;; The Blue Marble at the body-fixed normal (docs/architecture.md "Frames":
-;; u = 0.5 + atan2(y, x)/2π, v = 0.5 − asin(z)/π), lit by the Sun in ICRF.
-(define-frame-shader earth-fragment
-    (:stage :fragment
-     :inputs ((normal :vec3 :location 0))
-     :outputs ((color :vec4 :location 0))
-     :resources ((earth :texture-2d :binding 1)
-                 (earth-sampler :sampler :binding 2)))
-  (let* ((lit (normalize normal))
-         (n (vec3 (dot (swizzle fixed-x :xyz) lit) (dot (swizzle fixed-y :xyz) lit)
-                  (dot (swizzle fixed-z :xyz) lit)))
-         (uv (vec2 (+ 0.5 (/ (atan2 (swizzle n :y) (swizzle n :x)) 6.2831855))
-                   (- 0.5 (/ (arcsin (clamp (swizzle n :z) -1.0 1.0)) 3.1415927))))
-         (albedo (swizzle (sample earth earth-sampler uv) :rgb))
-         (diffuse (clamp (dot lit (swizzle sun :xyz)) 0.0 1.0)))
-    (set-output color (vec4 (+ (* albedo diffuse) (* albedo 0.02)) 1.0))))
 
 ;; A star at infinity (decision 78: Sky in numbers): its direction through
 ;; the clip rows with w 0, so clip z is 0; a quad of 4 sigma pixels. STAR:
@@ -164,6 +139,8 @@
 
 (define-impostor-vertex sun-vertex sun-c sun-u sun-v)
 (define-impostor-vertex moon-vertex moon-c moon-u moon-v)
+(define-impostor-vertex earth-vertex earth-c earth-u earth-v)
+(define-impostor-vertex halo-vertex halo-c halo-u halo-v)
 
 ;; The Sun's disc (decision 78): SUN-SHADE.xyz the centre radiance's colour,
 ;; .w the limb darkening u: I/I0 = 1 − u (1 − μ), μ = h / r.
@@ -205,6 +182,87 @@
       (discard))
     (set-output color (vec4 light light light 1.0))
     (set-output depth (impostor-depth tt ray clip-z clip-w))))
+
+(define-shader-function blue-marble-uv (n)
+  (vec2 (+ 0.5 (/ (atan2 (swizzle n :y) (swizzle n :x)) 6.2831855))
+        (- 0.5 (/ (arcsin (clamp (swizzle n :z) -1.0 1.0)) 3.1415927))))
+
+;; Earth (decision 78): the Blue Marble at the hit's body-fixed normal
+;; (docs/architecture.md "Frames"), level 0 of the full map and of its 1/8
+;; copy mixed by the pixel's footprint in full texels, log8 from 1 to 8;
+;; lit by the Sun, plus the rim on the lit limb. EARTH-SHADE: rim strength,
+;; a full texel in m, ln 8.
+(define-frame-shader earth-fragment
+    (:stage :fragment
+     :inputs ((pixel :vec4 :built-in :frag-coord))
+     :outputs ((color :vec4 :location 0)
+               (depth :float :built-in :frag-depth))
+     :resources ((earth :texture-2d :binding 1)
+                 (earth-sampler :sampler :binding 2)
+                 (earth-coarse :texture-2d :binding 3)))
+  (let* ((ray (view-ray pixel screen clip-x clip-y clip-w))
+         (centre (swizzle earth-c :xyz))
+         (radius (swizzle earth-c :w))
+         (b (dot ray centre))
+         (h2 (sphere-half-chord2 ray centre radius b))
+         (tt (ray-sphere-near b h2 (swizzle earth-u :w)))
+         (n (sphere-near-normal ray centre radius b h2))
+         (fixed (vec3 (dot (swizzle fixed-x :xyz) n) (dot (swizzle fixed-y :xyz) n)
+                      (dot (swizzle fixed-z :xyz) n)))
+         (uv (blue-marble-uv fixed))
+         (mu (clamp (- 0.0 (dot n ray)) 0.0 1.0))
+         (pixel-angle (/ (swizzle screen :y) (sqrt (dot (swizzle clip-y :xyz) (swizzle clip-y :xyz)))))
+         (footprint (/ (* tt pixel-angle) (* (max mu 0.02) (swizzle earth-shade :y))))
+         (coarse (clamp (/ (log (max footprint 1e-6)) (swizzle earth-shade :z)) 0.0 1.0))
+         (albedo (mix (swizzle (sample-level earth earth-sampler uv 0.0) :rgb)
+                      (swizzle (sample-level earth-coarse earth-sampler uv 0.0) :rgb)
+                      coarse))
+         (cos-sun (dot n (swizzle sun :xyz)))
+         (light (* (max cos-sun 0.0) (swizzle sun :w)))
+         (rim (* (swizzle earth-shade :x) (expt (- 1.0 mu) 4.0)
+                 (clamp (+ cos-sun 0.2) 0.0 1.0) (swizzle sun :w))))
+    (when (or (< h2 0.0) (<= tt 0.0))
+      (discard))
+    (set-output color (vec4 (+ (* albedo light) (* (swizzle halo-day :xyz) rim)) 1.0))
+    (set-output depth (impostor-depth tt ray clip-z clip-w))))
+
+;; Earth's halo, the shell up to the crash sphere (decision 78): the ray's
+;; chord through it, to the surface when it meets Earth, from the eye when
+;; the eye is inside, over the tangent chord, to HALO-SHADE.x; blue by day,
+;; dusk within HALO-SHADE.z (sin 6 deg) of the Sun's horizon at the chord's
+;; point nearest Earth's centre, nothing that far below. Depth at the
+;; chord's start, or its end with the eye inside, so nearer things hide it.
+;; HALO-SHADE: power, the tangent chord, sin 6 deg.
+(define-frame-shader halo-fragment
+    (:stage :fragment
+     :inputs ((pixel :vec4 :built-in :frag-coord))
+     :outputs ((color :vec4 :location 0)
+               (depth :float :built-in :frag-depth)))
+  (let* ((ray (view-ray pixel screen clip-x clip-y clip-w))
+         (centre (swizzle halo-c :xyz))
+         (k (swizzle halo-u :w))
+         (b (dot ray centre))
+         (h2 (sphere-half-chord2 ray centre (swizzle halo-c :w) b))
+         (h (sqrt (max h2 0.0)))
+         (inside (if (<= k 0.0) 1.0 0.0))
+         (near (if (> inside 0.5) 0.0 (ray-sphere-near b h2 k)))
+         (far (ray-sphere-far b h2 k))
+         (ground-h2 (sphere-half-chord2 ray centre (swizzle earth-c :w) b))
+         (ground (ray-sphere-near b ground-h2 (swizzle earth-u :w)))
+         (hits (if (< ground-h2 0.0) 0.0 (if (> ground 0.0) 1.0 0.0)))
+         (end (if (> hits 0.5) ground far))
+         (chord (if (> hits 0.5) (- ground near) (if (> inside 0.5) far (* 2.0 h))))
+         (closest (clamp b near end))
+         (sin-sun (dot (normalize (- (* ray closest) centre)) (swizzle sun :xyz)))
+         (band (/ sin-sun (swizzle halo-shade :z)))
+         (colour (mix (swizzle halo-dusk :xyz) (swizzle halo-day :xyz) (clamp band 0.0 1.0)))
+         (strength (* (swizzle halo-day :w) (clamp (+ 1.0 band) 0.0 1.0)
+                      (expt (clamp (/ chord (swizzle halo-shade :y)) 0.0 1.0)
+                            (swizzle halo-shade :x)))))
+    (when (or (< h2 0.0) (<= far 0.0))
+      (discard))
+    (set-output color (vec4 (* colour strength) 0.0))
+    (set-output depth (impostor-depth (if (> inside 0.5) end near) ray clip-z clip-w))))
 
 ;; ANCHOR is a point in clip space, OFFSET a displacement in pixels.
 (define-frame-shader overlay-vertex
@@ -318,6 +376,10 @@
   (earth-vertex))
 (defmethod shader-specification-for ((role (eql :earth)) (stage (eql :fragment)))
   (earth-fragment))
+(defmethod shader-specification-for ((role (eql :earth-halo)) (stage (eql :vertex)))
+  (halo-vertex))
+(defmethod shader-specification-for ((role (eql :earth-halo)) (stage (eql :fragment)))
+  (halo-fragment))
 (defmethod shader-specification-for ((role (eql :overlay)) (stage (eql :vertex)))
   (overlay-vertex))
 (defmethod shader-specification-for ((role (eql :overlay)) (stage (eql :fragment)))

@@ -255,7 +255,9 @@ ends it; changes nothing (a cut due before the step counts as made)."
 
 (declaim (ftype (function (sim fixnum (or null double-float)) (values null &optional))
                 contact-save!)
-         (ftype (function (sim) (values sim &optional)) berth-hold! latched-load-update!)
+         (ftype (function (sim) (values sim &optional))
+                berth-hold! latched-load-update! exclusion-update!)
+         (ftype (function (sim double-float) (values sim &optional)) transfer-step!)
          (ftype (function (sim fixnum fixnum) (values (or null fixnum) &optional))
                 contact-test!))
 
@@ -302,7 +304,9 @@ contact answered at the step's start) or nil."
           (third-bodies-step-into! third-bodies time h))
         ;; Berthed (decision 112): not integrated, set from the station below.
         (cond ((sim-berthed sim)
-               (fill (controls-duties controls) 0d0))
+               (fill (controls-duties controls) 0d0)
+               (when (sim-transfer sim)
+                 (transfer-step! sim h)))
               (coarse
                (let ((*hold-controls* controls))
                  (with-stack-load (load sim)
@@ -336,6 +340,8 @@ contact answered at the step's start) or nil."
           (object-crash-tests! sim before ticks)
           (or (and (not lost) (not *contact-redo*) (contact-test! sim level ticks))
               (progn (unless lost
+                       (when (sim-excluded sim)
+                         (exclusion-update! sim))
                        (sim-update-objects! sim))
                      ticks)))))))
 
@@ -348,13 +354,15 @@ to land on UNTIL (a grid time; one not ahead is ignored) and on the Δv
 cut-off, then flight-step! with SIM's model and the stack's mass (its
 latched load's too) and each promoted object's object-step! (the Moon and
 the Sun read once for all), the berthed ship held at its station
-(berth-hold!, no flight-step!) or a latched load written from the stack
+(berth-hold!, no flight-step!; the transfer's propellant first,
+transfer-step!) or a latched load written from the stack
 (latched-load-update!), the claws latched at their closing end, then the
 crash test (a crash
 leaves SIM lost at the impact, hazards.lisp), the objects' crash tests and
 rails removals (object-crash-tests!), contact with promoted objects
 (contact-test!: a bounce redoes the step to the grid point before it, a
-fast one kills), then, unless lost, promotion and demotion.
+fast one kills), then, unless lost, the excluded object's check
+(exclusion-update!), promotion and demotion.
 Returns h (0 for a contact answered at the step's start), or nil for a
 lost sim. Hot callers declare it inline: a full
 call boxes h."

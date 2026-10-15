@@ -242,33 +242,6 @@ checkpoint from before brings it back. :burned-up writes the notice
                  (format nil "~A BURNED UP" (object-def-name (object-def-of object)))))
   object)
 
-;;; The grapple's and the transfer's keys (decision 113: Grapple and contact
-;;; details the design leaves open): G and B, each nil or a refusal's text.
-
-(defun grapple-key! (sim)
-  "G: stowed ↔ armed; refused while the claws close. PLACEHOLDER(191):
-latched, the release."
-  (let ((grapple (sim-grapple sim)))
-    (ecase (grapple-state grapple)
-      (:stowed (setf (grapple-state grapple) :armed) nil)
-      (:armed (setf (grapple-state grapple) :stowed) nil)
-      (:closing "RELEASE LOCKED: CLAWS CLOSING")
-      (:latched nil))))
-
-(defun berth-object (sim)
-  "The object SIM is berthed at, or nil."
-  (and (sim-berthed sim)
-       (svref (sim-objects sim) (grapple-object (sim-grapple sim)))))
-
-(defun transfer-key! (sim)
-  "B: the transfer on or off, berthed at a depot only. PLACEHOLDER(191):
-the flow and TANKS FULL."
-  (let ((station (berth-object sim)))
-    (cond ((null station) "NOT BERTHED")
-          ((not (object-def-depot (object-def-of station))) "NO PROPELLANT HERE")
-          (t (setf (sim-transfer sim) (not (sim-transfer sim)))
-             nil))))
-
 (defun crash-point (body p time)
   "(latitude longitude) of BODY-centred P at TIME."
   (multiple-value-list (latitude-longitude body p time)))
@@ -1193,3 +1166,119 @@ Conses nothing without a contact."
                      (setf found i))))
       (and (>= found 0)
            (contact-respond! sim scratch level ticks found best)))))
+
+;;; Release, the excluded object and propellant transfer (decision 112,
+;;; decision 113, decision 26: Refuelling and economy): G and B, each nil or
+;;; a refusal's text.
+
+(defparameter *release-rotation-max* (deg->rad 0.5d0) "rad/s; decision 113.")
+(defparameter *transfer-rate* 10d0 "kg/s; decision 26.")
+(declaim (type double-float *release-rotation-max* *transfer-rate*))
+
+(defun delivery-start! (sim index)
+  "A towable release of SIM's INDEXth object: where the delivery check
+starts. PLACEHOLDER(192)."
+  (declare (ignore sim index))
+  nil)
+
+(defun grapple-release! (sim)
+  "The release (decision 112): a latched load takes the stack's motion at
+its CoM (latched-load-update!) and is :promoted again, the ship's CoM
+alone the stack's motion at it, v + ω × (r_ship − r_stack), ω kept; a
+berthed ship keeps the fixture point's motion berth-hold! gave it and is
+integrated again, the transfer off. Rate damping kept, the grapple armed,
+the object excluded until the shapes part. SIM."
+  (let* ((grapple (sim-grapple sim))
+         (index (grapple-object grapple))
+         (object (svref (sim-objects sim) index)))
+    (cond ((sim-berthed sim)
+           (setf (sim-berthed sim) nil
+                 (sim-transfer sim) nil))
+          (t
+           (latched-load-update! sim)
+           (let* ((ship (sim-ship sim))
+                  (alone (mass-properties-com (ship-mass-properties (ship-state-m-p ship) nil)))
+                  (x (with-stack-properties (properties sim)
+                       (quat-rotate (ship-state-q ship)
+                                    (vec3-sub alone (mass-properties-com properties)))))
+                  (w (quat-rotate (ship-state-q ship) (ship-state-w ship))))
+             (vec3-add! (ship-state-r ship) (ship-state-r ship) x)
+             (vec3-add! (ship-state-v ship) (ship-state-v ship) (vec3-cross w x)))
+           (setf (object-status object) :promoted)))
+    (setf (grapple-state grapple) :armed
+          (grapple-object grapple) nil
+          (grapple-fixture grapple) nil
+          (sim-excluded sim) index)
+    (when (eq (object-def-kind (object-def-of object)) :towable)
+      (delivery-start! sim index))
+    sim))
+
+(defun grapple-key! (sim)
+  "G: stowed ↔ armed; refused while the claws close; latched or berthed the
+release, refused above *release-rotation-max* or with the engine on."
+  (let ((grapple (sim-grapple sim))
+        (ship (sim-ship sim)))
+    (ecase (grapple-state grapple)
+      (:stowed (setf (grapple-state grapple) :armed) nil)
+      (:armed (setf (grapple-state grapple) :stowed) nil)
+      (:closing "RELEASE LOCKED: CLAWS CLOSING")
+      (:latched
+       (cond ((> (vec3-norm (ship-state-w ship)) *release-rotation-max*)
+              "RELEASE REFUSED: ROTATING")
+             ((and (> (ship-engine-force (controls-throttle (sim-controls sim))) 0d0)
+                   (> (ship-state-m-p ship) 0d0))
+              "RELEASE REFUSED: ENGINE ON")
+             (t (grapple-release! sim) nil))))))
+
+(defun exclusion-update! (sim)
+  "After a step: the excluded object no longer excluded once it is not
+promoted or its shapes and the stack's no longer overlap. SIM; conses
+nothing."
+  (declare (optimize speed) (type sim sim))
+  (let ((index (sim-excluded sim)))
+    (when index
+      (let ((object (svref (sim-objects sim) index)))
+        (if (not (eq (object-status object) :promoted))
+            (setf (sim-excluded sim) nil)
+            (with-stack-properties (properties sim load)
+              (let ((state (object-state object))
+                    (ship (sim-ship sim))
+                    (p (make-vec3))
+                    (out (make-array 7 :element-type 'double-float)))
+                (declare (dynamic-extent p out))
+                (vec3-sub! p (ship-state-r state) (ship-state-r ship))
+                (unless (and (<= (vec3-norm p)
+                                 (+ (locally (declare (inline stack-bound))
+                                      (stack-bound (mass-properties-com properties) load))
+                                    (object-def-bound (object-def-of object))))
+                             (stack-object-contact! out p (ship-state-q ship) (ship-state-q state)
+                                                    (mass-properties-com properties)
+                                                    (object-def-of object) load))
+                  (setf (sim-excluded sim) nil))))))))
+  sim)
+
+(defun berth-object (sim)
+  "The object SIM is berthed at, or nil."
+  (and (sim-berthed sim)
+       (svref (sim-objects sim) (grapple-object (sim-grapple sim)))))
+
+(defun transfer-key! (sim)
+  "B: the transfer on or off, berthed at a depot only."
+  (let ((station (berth-object sim)))
+    (cond ((null station) "NOT BERTHED")
+          ((not (object-def-depot (object-def-of station))) "NO PROPELLANT HERE")
+          (t (setf (sim-transfer sim) (not (sim-transfer sim)))
+             nil))))
+
+(defun transfer-step! (sim h)
+  "A berthed step of H with the transfer on: m_p += min(*transfer-rate* H,
+full − m_p), exact on the grid; at full the transfer off and the notice
+\"TANKS FULL\". SIM."
+  (declare (type sim sim) (type double-float h))
+  (let ((ship (sim-ship sim)))
+    (incf (ship-state-m-p ship) (min (* *transfer-rate* h)
+                                     (- *propellant-full* (ship-state-m-p ship))))
+    (when (>= (ship-state-m-p ship) *propellant-full*)
+      (setf (sim-transfer sim) nil)
+      (sim-notice! sim :transfer "TANKS FULL")))
+  sim)

@@ -216,7 +216,8 @@ to its horizon; without it a fresh one, prediction.lisp)."
   (rate-real nil :type (simple-array double-float (*))) ; per frame, a ring
   (rate-game nil :type (simple-array double-float (*)))
   (rate-index 0 :type fixnum)                   ; the next ring slot
-  (messages nil)                                ; piece 5's
+  (message-list nil)                            ; (key text stamp), oldest first
+  (held nil)                                    ; the last step coarse under a hold
   (previous nil :type ship-state)               ; the ship before the last step
   (previous-t 0d0 :type double-float)
   (frame-steps 0 :type fixnum)                  ; steps in the last frame
@@ -245,6 +246,102 @@ to its horizon; without it a fresh one, prediction.lisp)."
   "(values ship-state t) before the last step, for interpolation."
   (values (clock-previous clock) (clock-previous-t clock)))
 
+;;; Messages (decision 31, decision 73): text and a real-time stamp from the
+;;; summed elapsed; a new one replaces the live one of its key.
+
+(defparameter *message-time* 3d0 "s of real time a message shows; decision 31.")
+(declaim (type double-float *message-time*))
+
+(defun clock-message! (clock key text)
+  (setf (clock-message-list clock)
+        (append (remove key (clock-message-list clock) :key #'first)
+                (list (list key text (clock-real-time clock))))))
+
+(defun clock-messages (clock)
+  "The live messages' texts, oldest first."
+  (setf (clock-message-list clock)
+        (remove-if (lambda (m) (>= (- (clock-real-time clock) (third m)) *message-time*))
+                   (clock-message-list clock)))
+  (mapcar #'second (clock-message-list clock)))
+
+(defun format-duration (seconds)
+  "SECONDS, rounded, as the messages write it: 2 D 3 H, 1 H 5 MIN, 4 MIN 20 S, 20 S."
+  (multiple-value-bind (days hours minutes second) (duration-fields (fround seconds))
+    (let ((second (round second)))
+      (cond ((> days 0) (format nil "~D D ~D H" days hours))
+            ((> hours 0) (format nil "~D H ~D MIN" hours minutes))
+            ((> minutes 0) (format nil "~D MIN ~D S" minutes second))
+            (t (format nil "~D S" second))))))
+
+;;; Warp rules (decision 19: Time-warp rules, decision 31, decision 73)
+
+(defparameter *thrust-warp-limit* 10 "Manual throttle's highest level; decision 31.")
+(defparameter *cutoff-warp-limit* 100 "With a Δv cut-off armed; decision 31.")
+(defparameter *warp-rotation-limit* 0.01d0
+  "rad/s: above ×4 without a hold, |ω| below it; decision 19.")
+(defparameter *dropout-real-time* 3d0
+  "s of real time an event stays ahead at the level; decision 19, decision 73.")
+(declaim (type fixnum *thrust-warp-limit* *cutoff-warp-limit*)
+         (type double-float *warp-rotation-limit* *dropout-real-time*))
+
+(defun sim-engine-on-p (sim)
+  "Thrust on: the throttle up with propellant left."
+  (and (> (ship-engine-force (controls-throttle (sim-controls sim))) 0d0)
+       (> (ship-state-m-p (sim-ship sim)) 0d0)))
+
+(defun thrust-warp-limit (sim)
+  (if (sim-cutoff sim) *cutoff-warp-limit* *thrust-warp-limit*))
+
+(defun held-p (sim) (eq (controls-attitude-mode (sim-controls sim)) :hold))
+
+(defun clock-dropout (clock sim)
+  "(values Δ kind loss) to the prediction's earliest drop-out event, or nil."
+  (multiple-value-bind (time kind) (prediction-dropout-event (clock-prediction clock))
+    (when time
+      (values (max 0d0 (- time (sim-t sim))) kind
+              (nth-value 1 (prediction-event (clock-prediction clock) kind))))))
+
+(defun warp-refusal (clock sim level)
+  "The message refusing a warp up to LEVEL, or nil (decision 19, decision 73)."
+  (multiple-value-bind (delta kind) (clock-dropout clock sim)
+    (cond ((and (sim-engine-on-p sim) (> level (thrust-warp-limit sim)))
+           (format nil "WARP REFUSED: ENGINE ON, LIMIT ×~:D" (thrust-warp-limit sim)))
+          ((and (> level *fine-levels-max*) (not (held-p sim))
+                (>= (vec3-norm (ship-state-w (sim-ship sim))) *warp-rotation-limit*))
+           "WARP REFUSED: ROTATING, SET A HOLD")
+          ((and delta (< delta (* *dropout-real-time* level)))
+           (format nil "WARP REFUSED: ~A IN ~A" kind (format-duration delta))))))
+
+(defun dropout-message (level delta loss)
+  "decision 73's text for a drop-out to LEVEL, Δ ahead of LOSS's impact."
+  (if (and loss (eq (loss-body loss) :moon))
+      (format nil "WARP ×~:D: MOON IMPACT AHEAD" level)
+      (let ((body (body (if loss (loss-body loss) :earth))))
+        (format nil "WARP ×~:D: PERIAPSIS BELOW ~D KM IN ~A" level
+                (round (- (body-crash-radius body) (body-radius body)) 1000)
+                (format-duration delta)))))
+
+(defun clock-check-level! (clock sim)
+  "Before every step (decision 73): the thrust limit, ×4 for a hold released
+above ×4, the highest level with the drop-out event ≥ 3 s of real time
+ahead; each lowering writes its message."
+  (flet ((lower! (level text)
+           (when (< level (clock-level clock))
+             (clock-set-level-index! clock (position level *warp-levels*))
+             (clock-message! clock :lowered text))))
+    (when (and (sim-engine-on-p sim) (> (clock-level clock) (thrust-warp-limit sim)))
+      (lower! (thrust-warp-limit sim)
+              (format nil "WARP ×~:D: ENGINE ON" (thrust-warp-limit sim))))
+    (when (and (clock-held clock) (not (held-p sim)) (> (clock-level clock) *fine-levels-max*))
+      (lower! *fine-levels-max* (format nil "WARP ×~D: HOLD RELEASED" *fine-levels-max*)))
+    (multiple-value-bind (delta kind loss) (clock-dropout clock sim)
+      (declare (ignore kind))
+      (when (and delta (< delta (* *dropout-real-time* (clock-level clock))))
+        (let ((level (or (find-if (lambda (l) (>= delta (* *dropout-real-time* l)))
+                                  *warp-levels* :from-end t)
+                         1)))
+          (lower! level (dropout-message level delta loss)))))))
+
 ;;; Commands: between frames, so at a step boundary; never touching the sim.
 
 (defun clock-set-level-index! (clock index)
@@ -256,8 +353,22 @@ owed stays."
           (* (clock-accumulator clock) (/ (float (clock-level clock) 1d0) old)))
     clock))
 
-(defun clock-warp-up (clock)
-  (clock-set-level-index! clock (min (1+ (clock-level-index clock)) (1- (length *warp-levels*)))))
+(defun clock-warp-up (clock sim)
+  "One level up unless refused (decision 19, decision 73): then the level
+stays and the refusal is a message. True when raised. Entering above ×4
+with no hold, the next step engages an inertial hold (sim-step!)."
+  (let ((index (1+ (clock-level-index clock))))
+    (when (< index (length *warp-levels*))
+      (let* ((level (nth index *warp-levels*))
+             (refusal (warp-refusal clock sim level)))
+        (cond (refusal
+               (clock-message! clock :refused refusal)
+               nil)
+              (t
+               (when (<= (clock-level clock) *fine-levels-max*)
+                 (setf (clock-held clock) nil))
+               (clock-set-level-index! clock index)
+               t))))))
 
 (defun clock-warp-down (clock)
   (clock-set-level-index! clock (max (1- (clock-level-index clock)) 0)))
@@ -295,6 +406,7 @@ the rest dropped. The step count."
                   (and deadline (> steps 0) (zerop (mod steps +time-check-interval+))
                        (> (get-internal-real-time) deadline)))
           (drop!))
+        (clock-check-level! clock sim)
         (let* ((level (clock-level clock))
                (until (and hook (funcall hook clock sim))))
           (declare (type (or null double-float) until))
@@ -304,6 +416,7 @@ the rest dropped. The step count."
           (setf (clock-previous-t clock) (sim-t sim))
           (let ((ticks (sim-step-ticks! sim level until)))
             (decf (clock-accumulator clock) (* (the fixnum ticks) +fine-step+))
+            (setf (clock-held clock) (and (> level *fine-levels-max*) (held-p sim)))
             (incf steps)))))))
 
 (defun rate-meter-record! (clock real game)
@@ -343,3 +456,19 @@ or lost. The steps taken."
                  (clock-steps! clock sim))))
     (rate-meter-record! clock elapsed (- (sim-t sim) start))
     (clock-frame-steps clock)))
+
+;;; Restart (decision 34: How death works): the LOST panel's Return and N.
+
+(defun clock-restart! (clock sim checkpoint)
+  "SIM restored to CHECKPOINT; CLOCK at ×1, unpaused, its accumulator,
+messages and prediction cleared. SIM."
+  (restore-checkpoint! sim checkpoint)
+  (setf (clock-level-index clock) 0
+        (clock-paused clock) nil
+        (clock-accumulator clock) 0d0
+        (clock-message-list clock) nil
+        (clock-held clock) nil
+        (clock-previous-t clock) (sim-t sim))
+  (ship-state-assign! (clock-previous clock) (sim-ship sim))
+  (prediction-invalidate! (clock-prediction clock))
+  sim)

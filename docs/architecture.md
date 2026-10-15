@@ -229,7 +229,10 @@ The ship is integrated with classical RK4 on a fixed, deterministic step in its 
   - Before each step the frame computes its h (`step-h`, the same function `sim-step!` uses) with the hook's `until`, and steps only while the accumulator holds it; the ship state is copied into the previous state first.
   - The hook: nil or `(fn clock sim)` called before each step's check, returning a grid `until` or nil (flight scripts); it may be called again at the same `t` when the frame ends there.
   - Paused or lost: no steps, the accumulator emptied, the level kept.
-  - Warp commands (`clock-warp-up`, `clock-warp-down`, `clock-warp-reset`, `clock-toggle-pause`) run between frames, so at a step boundary, and never touch the sim; a level change scales the accumulator by new/old, so the real time owed stays. `clock-kinematic-p`: above ×4.
+  - Warp commands (`(clock-warp-up clock sim)`, `clock-warp-down`, `clock-warp-reset`, `clock-toggle-pause`) run between frames, so at a step boundary, and never touch the sim; a level change scales the accumulator by new/old, so the real time owed stays. `clock-warp-up` may be refused ("Time warp"); down and reset never are. `clock-kinematic-p`: above ×4.
+  - Before each step, before the hook, `clock-check-level!` applies the per-step lowering of "Time warp".
+  - Messages: `(clock-messages clock)` gives the live texts, oldest first; each has a real-time stamp from the summed `elapsed` (no wall clock) and lives 3 s; a new refusal replaces a live refusal, a new lowering a live lowering.
+  - `(clock-restart! clock sim checkpoint)` (`decision 34: How death works`): `restore-checkpoint!`, ×1, unpaused, accumulator 0, messages cleared, the prediction restarted; the LOST panel's Return and N call it with the start state.
 - One step, `(sim-step! sim level &key until)` (`clock.lisp`, `decision 72: Simulation state and the one step function in clock.lisp`), with every rule; the frame, flight scripts and the prediction all call it, so they agree bit for bit:
   - h: the fine step at ×1 and ×4; above, `coarse-step` with the hold's kinematic attitude (no RCS); with no hold an inertial hold at the current attitude is engaged first (`decision 73: Warp levels above x4: entry, holds and lowering`).
   - Landing: h is shortened so that `t + h` ≤ `until` (a grid time: a script action, a date, an apsis wait; one not ahead is ignored); all steps stay multiples of 1/64 s.
@@ -380,6 +383,16 @@ Levels and rules are `decision 19: Time-warp rules`; where they touch play, the 
 - The last two and the Sun's distance come from `decision 43: Warp drop-outs for contact and life support`, which extends `decision 19`'s list of events and keeps its rule.
 - Warp up is refused while thrust is on above the thrust limit, while rotating without a hold, or with an event less than 3 s real time away at the new level.
 - Changing warp never changes the state; only the step size changes, at a step boundary.
+- Holds above ×4 (`decision 73: Warp levels above x4: entry, holds and lowering`), in `clock.lisp`:
+  - Entry: with no hold (direct or rate damping), |ω| < 0.01 rad/s; the first coarse step engages an inertial hold at the current attitude, as R would (`sim-step!`), kept when warp comes down.
+  - A hold not yet settled, or a hold switched above ×4, snaps to its target at the next coarse step (kinematic attitude).
+  - Releasing the hold above ×4 lowers warp to ×4 ("WARP ×4: HOLD RELEASED"); the clock knows it from the last step having been coarse under a hold.
+- Per-step checks (`clock-check-level!`, before every step, not once per frame: at ×1,000,000 a frame is up to 16,667 s):
+  - Thrust on above the limit (×10, ×100 with a cut-off armed): lowered to the limit ("WARP ×10: ENGINE ON").
+  - Above ×4 with the hold released: ×4.
+  - Δ = t_e − t to the prediction's next drop-out event (milestone 2: the impact): the highest level L ≤ the current with Δ ≥ 3 s × L, so ×4 from 30 s, ×1 below 12 s and at the event ("WARP ×L: PERIAPSIS BELOW 100 KM IN 2 MIN 5 S"; "WARP ×L: MOON IMPACT AHEAD" for the Moon).
+  - Each lowering scales the accumulator by new/old and writes one message.
+- Tunables (`clock.lisp`): `*thrust-warp-limit*` 10, `*cutoff-warp-limit*` 100, `*warp-rotation-limit*` 0.01 rad/s, `*dropout-real-time*` 3 s, `*message-time*` 3 s.
 
 ### Collisions and the Sun
 - Crash spheres: one per body, radius R + h_crash in its frame; defaults h_crash = 0 for all bodies and 100 km for Earth (entry interface: a ship without a heat shield does not survive entry); the design picks the radii and what a crash means. Bodies are spheres (`decision 14`).
@@ -520,7 +533,13 @@ The flight computer's closed loops are tested through `flight-step!` (`tests/con
 
 ### Warp, events and collisions
 - Warp transitions without jumps (`tests/clock.lisp`): switching warp at a step boundary leaves the state bit for bit unchanged; the next step uses the new step size; switching ×1 → ×1,000 → ×1 over one orbit stays within the coarse position bound of a run that never left ×1.
-- Warp refusals and drop-outs ("Time warp"): warp up is refused while thrusting above the thrust limit, while rotating without a hold, and when an event is closer than 3 s real time at the new level; at ×1,000,000 towards a periapsis below the crash radius, the clock lowers the warp so that the impact arrives no sooner than 3 s real time, and is at ×1 at the impact; likewise before an SOI change, a scheduled burn's lead time, entering 0.551 AU from the Sun, a predicted contact (a ship coasting at 2 m/s towards a promoted 50 t sphere 5 km away, at ×1,000) and the life-support alarms at 30 and 7 days (`decision 43: Warp drop-outs for contact and life support`); warp up is refused with any of them closer than 3 s real time.
+- Warp refusals and drop-outs in milestone 2 (`tests/clock.lisp`, as built):
+  - Refusals with their messages: throttle on at ×10 → ×100 ("ENGINE ON, LIMIT ×10"), allowed with a cut-off armed, then ×1,000 refused ("LIMIT ×100"); rate damping at |ω| = 0.02 rad/s → ×10 refused ("ROTATING, SET A HOLD"), at 0.005 rad/s allowed, an inertial hold engaged at the first coarse step; an impact 20 s ahead: ×4 → ×10 refused ("IMPACT IN 20 S").
+  - Lowering: throttle up at ×100 without a cut-off → ×10; the hold released at ×1,000 → ×4.
+  - Drop-out to impact (`:point`, periapsis 50 km below the crash radius, from 1 h before at ×1,000,000 through `clock-frame!`): at every step above ×1, Δ to the flown impact ≥ 3 s × level (less 0.05 s, the prediction's error); ×1 at the impact; a lowering message at ×1,000, ×100, ×10, ×4 and ×1; the impact time within 1e-2 s of Kepler and the point within 0.01°.
+  - Messages: one per refusal or lowering, a refusal replacing a refusal; gone after 3 s of summed `elapsed`.
+  - Restart: after a death, `clock-restart!` with the start state gives a sim `equalp` to `(new-game-sim)` at ×1, unpaused, no messages; 1,000 frames after it equal 1,000 frames of a fresh start bit for bit.
+- Warp refusals and drop-outs, all milestones ("Time warp"): warp up is refused while thrusting above the thrust limit, while rotating without a hold, and when an event is closer than 3 s real time at the new level; at ×1,000,000 towards a periapsis below the crash radius, the clock lowers the warp so that the impact arrives no sooner than 3 s real time, and is at ×1 at the impact; likewise before an SOI change, a scheduled burn's lead time, entering 0.551 AU from the Sun, a predicted contact (a ship coasting at 2 m/s towards a promoted 50 t sphere 5 km away, at ×1,000) and the life-support alarms at 30 and 7 days (`decision 43: Warp drop-outs for contact and life support`); warp up is refused with any of them closer than 3 s real time.
 - Crash detection (`tests/hazards.lisp`):
   - Radial free fall from 1,000 km: impact time within 1e-3 s of the closed form for radial Kepler motion, at the fine and at the coarse step.
   - An orbit with periapsis 50 km below the crash radius, run at the coarse step and through the clock at ×1,000,000: the impact is found on the first pass, its time within 1e-2 s of the Kepler solution, its latitude and longitude within 0.01° of the closed-form point (body-fixed, "Frames"), its speed the vis-viva speed at R_c within 1e-3 m/s (the clock case is `tests/clock.lisp`'s).

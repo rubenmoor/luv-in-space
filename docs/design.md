@@ -328,7 +328,18 @@ Within `decision 19: Time-warp rules` and `docs/architecture.md` "Time warp"; th
   - a scheduled burn, at its start minus the lead time: 60 s or the estimated slew to the burn attitude plus 10 s, whichever is longer. The slew rule ("Control modes") turns 180° in 40 s wet and 59 s with 100 t, so 60 s covers almost every case;
   - entering the Sun's warning zone, inside 0.551 AU ("Dying and what follows"); a predicted contact with an object ("Grappling and berthing"); and the life-support alarms at 30 and 7 days (these added to `decision 19`'s list by `decision 43: Warp drop-outs for contact and life support`).
 - Refusals (`decision 19`): warp up is refused while thrusting above the limit, while rotating faster than 0.01 rad/s without a hold, or with an event under 3 s of real time away at the new level.
-- Shown: the readout's warp field (nominal level; actual rate in amber when below 90 % of nominal; "PAUSED"); a refusal or drop-out writes a message with its reason for 3 s, e.g. "WARP REFUSED: ENGINE ON, LIMIT ×10", "WARP REFUSED: ROTATING, SET A HOLD", "WARP ×1: PERIAPSIS BELOW 100 KM IN 3 S". From `milestone 3` the cockpit's WARP lamp flashes with it ("The cockpit"); from `milestone 6` a short tone ("Sound").
+- Holds above ×4 (`decision 73: Warp levels above x4: entry, holds and lowering`):
+  - Warping above ×4 with no hold (direct or rate damping, under 0.01 rad/s) engages an inertial hold at the current attitude, as R would; it shows in the readout and stays when warp comes down.
+  - A hold not yet settled, or one switched above ×4 (1–6, R), snaps to its attitude at once.
+  - Releasing the hold above ×4 (T, or the active hold's key) lowers warp to ×4.
+  - Rotation and translation keys above ×4 are ignored with a message (`decision 31`).
+- Shown: the readout's warp field (nominal level; actual rate in amber when below 90 % of nominal; "PAUSED"); a refusal or drop-out writes a message with its reason for 3 s of real time; a new one replaces the last of its kind (refusal or lowering). The texts (`decision 73`):
+  - "WARP REFUSED: ENGINE ON, LIMIT ×10" (×100 with a cut-off armed);
+  - "WARP REFUSED: ROTATING, SET A HOLD";
+  - "WARP REFUSED: IMPACT IN 20 S";
+  - "WARP ×10: ENGINE ON" (×100 with a cut-off armed), "WARP ×4: HOLD RELEASED";
+  - "WARP ×1: PERIAPSIS BELOW 100 KM IN 3 S" (Earth); "WARP ×100: MOON IMPACT AHEAD" (the Moon);
+  - durations as "2 D 3 H", "1 H 5 MIN", "4 MIN 20 S", "20 S", rounded to the second. From `milestone 3` the cockpit's WARP lamp flashes with it ("The cockpit"); from `milestone 6` a short tone ("Sound").
 - Pause (P) is apart from warp: no steps run, every view, the camera and the map still work, flight inputs are ignored; resuming restores the warp level.
 - Warp is allowed while grappled and coasting, e.g. while refuelling (`decision 26: Refuelling and economy`), under the same rules.
 

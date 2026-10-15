@@ -79,11 +79,12 @@
           (when predicted
             (true (< (abs (- predicted kepler)) 1d-3)
                   "~A ~,6F s from Kepler" kind (- predicted kepler))
-            ;; The flight: coarse to 300 s before, then ×1 to the grid point
-            ;; after; r·v changes sign over the last fine step.
+            ;; The flight: coarse to 20 s before (the inertial hold it engages
+            ;; makes ×1 steps cost the mixer), then ×1 to the grid point after;
+            ;; r·v changes sign over the last fine step.
             (let ((after (lis::grid-ceiling predicted))
                   (before-sign nil))
-              (step-sim sim 100000 1000 (- after 300))
+              (step-sim sim 100000 1000 (- after 20))
               (step-sim sim 100000 1 (- after 1/64))
               (setf before-sign (plusp (r-dot-v sim)))
               (step-sim sim 1 1 after)

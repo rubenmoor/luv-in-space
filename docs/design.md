@@ -204,6 +204,7 @@ How the ship is flown: controls, control modes, views, instruments, time warp, t
 Keyboard and mouse through luv's canvas events (`docs/luv-capabilities.md` "Windowing and input"); the lasting choice is `decision 29: Control scheme: key map, control modes, gamepad`. Code: `input.lisp` turns events into `controls` (`controls.lisp`), which the autopilot and flight scripts also write.
 - Keys are luv's physical key names (SDL scancodes: `:w`, `:shift-left`, `:|.|` …), so the map keeps its positions on any keyboard layout; help texts show the layout's character (`canvas-key-event-character`). Letters below are QWERTY positions.
 - Held keys act from press to release; key-repeat events are ignored; losing window focus releases all keys.
+- Held keys are sampled once per frame, before the frame's steps (`input-frame!`); a key pressed and released between two frames counts as held for exactly that one frame (the tap latch, the shortest tap), so no tap is lost (`decision 81: Input in milestone 2: held keys per frame, taps, gating and the shared key map`).
 - Rates of held keys (throttle ramp, head look by keys) run in real time, not game time, so they feel the same at every warp level.
 
 | Function | Keys | From milestone |

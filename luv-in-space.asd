@@ -26,6 +26,7 @@
                (:file "post")
                (:file "overlay")
                (:file "render")
+               (:file "input")
                (:file "main")
                (:file "capture")))
 
@@ -59,6 +60,7 @@
                (:file "meshes")
                (:file "post")
                (:file "render")
+               (:file "input")
                (:file "capture"))
   :perform (test-op (operation component)
              (declare (ignore operation component))

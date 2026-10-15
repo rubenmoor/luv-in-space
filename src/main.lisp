@@ -6,7 +6,7 @@
 ;;; render state are touched only on the canvas thread.
 
 (defclass game ()
-  ((canvas :initarg :canvas :reader game-canvas)
+  ((canvas :initarg :canvas :initform nil :reader game-canvas)
    (device :initarg :device :reader game-device)
    (context :initarg :context :reader game-context)
    (renderer :initarg :renderer :reader game-renderer)
@@ -22,6 +22,8 @@
    (frame-time :initform nil :accessor game-frame-time
                :documentation "luv's time of the last frame, nil before the first.")
    (frame-count :initform 0 :accessor game-frame-count)
+   (input :initform (make-input) :reader game-input
+          :documentation "Held keys, taps and the pointer (input.lisp); not in the sim.")
    (quit-requested-p :initform nil :accessor game-quit-requested-p)))
 
 (defvar *game* nil)
@@ -88,6 +90,7 @@ snap on the first frame and when ELAPSED is nil (decision 76)."
        (let ((elapsed (frame-elapsed! game time))
              (extent (luv:canvas-extent context)))
          (note-swapchain-target (game-renderer game) texture extent)
+         (input-frame! game elapsed)
          (clock-frame! (game-clock game) (game-sim game) elapsed)
          (unless (clock-paused (game-clock game))
            (incf (render-state-lights-t (game-render-state game)) elapsed))
@@ -114,13 +117,6 @@ snap on the first frame and when ELAPSED is nil (decision 76)."
                                 (declare (ignore timestamp))
                                 (setf result (funcall function))))
     result))
-
-;; Runs on the canvas thread: only flag the quit; STOP runs on the caller's.
-(defun handle-event (game event)
-  (when (or (and (typep event 'luv:canvas-key-press-event)
-                 (eq :escape (luv:canvas-key-event-key-name event)))
-            (typep event 'luv:canvas-window-close-request-event))
-    (setf (game-quit-requested-p game) t)))
 
 (defun start (&key (visible t) (width 1280) (height 800) (sim (new-game-sim)) paused)
   "Open the game window on SIM (used as is, the start checkpoint taken of

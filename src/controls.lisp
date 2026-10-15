@@ -88,6 +88,40 @@ key releases a hold to rate damping."
         sign)
   controls)
 
+;;; The held-key map (decision 81: Input in milestone 2: held keys per
+;;; frame, taps, gating and the shared key map), shared by input.lisp and
+;;; the flight scripts' (:keys …).
+
+(defparameter *flight-keys*
+  '((:w :rotation :pitch -1) (:s :rotation :pitch 1)
+    (:a :rotation :yaw -1) (:d :rotation :yaw 1)
+    (:q :rotation :roll -1) (:e :rotation :roll 1)
+    (:h :translation :x 1) (:n :translation :x -1)
+    (:i :translation :z -1) (:k :translation :z 1)
+    (:j :translation :y -1) (:l :translation :y 1))
+  "(key :rotation|:translation axis sign): luv's physical key names.")
+
+(defun held-keys-sign (keys kind axis)
+  (signum (loop for (key k a sign) in *flight-keys*
+                when (and (eq k kind) (eq a axis) (member key keys))
+                  sum sign)))
+
+(defun controls-apply-held-keys! (controls keys)
+  "Set each rotation and translation key state to the sum of the signs of
+its held KEYS (opposite keys cancel), calling the setters only on a change
+so their hold rules apply then; CONTROLS."
+  (loop for axis in '(:roll :pitch :yaw)
+        for i from 0
+        for sign = (held-keys-sign keys :rotation axis)
+        unless (= sign (aref (controls-rotation-keys controls) i))
+          do (controls-set-rotation-key controls axis sign))
+  (loop for axis in '(:x :y :z)
+        for i from 0
+        for sign = (held-keys-sign keys :translation axis)
+        unless (= sign (aref (controls-translation-keys controls) i))
+          do (controls-set-translation-key controls axis sign))
+  controls)
+
 (defun controls-toggle-fine (controls)
   (setf (controls-fine controls) (not (controls-fine controls)))
   controls)

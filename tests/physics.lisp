@@ -585,10 +585,11 @@ by bisection down to adjacent doubles (~2.4e-7 s in 2040)."
         (true (< (abs (lis::vec3-dot (lis::quat-rotate q (lis::vec3 0 1 0)) south)) 1d-14))
         (true (plusp (lis::vec3-dot (lis::quat-rotate q (lis::vec3 0 0 1)) south)))))))
 
-(defun rails-attitude-loop (object r v q w time n)
-  (declare (type double-float time) (type fixnum n))
-  (dotimes (i n)
-    (lis::object-state-into! r v q w object (+ time (* 7d0 i)))))
+(defun rails-attitude-loop (object r v q w times)
+  ;; Times boxed beforehand: a double made here would be boxed for the call.
+  (declare (type simple-vector times))
+  (loop for time across times
+        do (lis::object-state-into! r v q w object time)))
 
 (define-test rails-cons-nothing
   (let* ((t0 (lis::start-t))
@@ -604,9 +605,10 @@ by bisection down to adjacent doubles (~2.4e-7 s in 2040)."
                                       (lis::make-rails (lis::make-hyperbolic-orbit
                                                         lis::+mu-earth+ 7378d3 1.5d0 (deg 30)
                                                         0d0 0d0 -1d0 t0)
-                                                       t0)))))
+                                                       t0))))
+         (times (coerce (loop for i below 1000 collect (+ t0 (* 7d0 i))) 'simple-vector)))
     (dolist (object (cons hyperbola objects))
-      (rails-attitude-loop object r v q w t0 1000)
-      (let ((consed (least-bytes-consed (lambda () (rails-attitude-loop object r v q w t0 1000)))))
+      (rails-attitude-loop object r v q w times)
+      (let ((consed (least-bytes-consed (lambda () (rails-attitude-loop object r v q w times)))))
         (true (<= consed 0) "~A: ~D bytes" (lis::attitude-kind (lis::object-attitude object))
               consed)))))

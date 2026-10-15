@@ -349,7 +349,7 @@ The milestone-2 readout as built (`decision 85: Minimal readout: layout, formats
   - `THR 45% ON`: the lever in whole %, `ON` with propellant left, else `OFF`.
   - `PROP 28000 KG 100%`: whole kg and whole % of 28,000 kg.
   - `MODE DIRECT`, `MODE RATE DAMP`, `MODE HOLD PROGRADE SETTLED` (or `SLEWING`), then `FINE`.
-  - `WARP ×1000`: the nominal level; `! ACT ×490000` in amber when the actual rate is below 90 % of it (3 significant digits); `PAUSED`.
+  - `WARP ×1000`: the nominal level; `! ACT ×490000` in amber when the actual rate is below 90 % of it (3 significant digits), measured only over a full second at the current level (none in the first second after a warp change or a pause or resume); `PAUSED`.
   - `UTC 2040-01-01 00:00:00`: `format-utc`, seconds truncated.
 - Alarms below the rows: amber `! PE BELOW 100 KM` while the osculating periapsis is below the crash radius; red, inverted, flashing at 2 Hz of real time `EARTH IMPACT IN 4 MIN 20 S` (`MOON` for the Moon) while the clock's prediction holds an `:impact` event, the time from t_r to it in `format-duration`'s text, the warp messages' too.
 - Then the clock's live messages (3 s each), newest last, at most 3, amber with `!`, cut at 40 characters with `…`.

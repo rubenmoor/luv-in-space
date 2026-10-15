@@ -333,12 +333,22 @@ ahead; each lowering writes its message."
                          1)))
           (lower! level (dropout-message level delta loss)))))))
 
+;;; The rate meter: real and game seconds per frame, emptied at each warp
+;;; change and pause or resume, so it measures only the current level.
+
+(defun rate-meter-reset! (clock)
+  (fill (clock-rate-real clock) 0d0)
+  (fill (clock-rate-game clock) 0d0)
+  (setf (clock-rate-index clock) 0))
+
 ;;; Commands: between frames, so at a step boundary; never touching the sim.
 
 (defun clock-set-level-index! (clock index)
   "Warp level INDEX; the accumulator scales by new/old, so the real time
 owed stays."
   (let ((old (clock-level clock)))
+    (unless (= index (clock-level-index clock))
+      (rate-meter-reset! clock))
     (setf (clock-level-index clock) index)
     (setf (clock-accumulator clock)
           (* (clock-accumulator clock) (/ (float (clock-level clock) 1d0) old)))
@@ -370,6 +380,7 @@ with no hold, the next step engages an inertial hold (sim-step!)."
 
 (defun clock-toggle-pause (clock)
   "Pause or resume; the level is kept."
+  (rate-meter-reset! clock)
   (setf (clock-paused clock) (not (clock-paused clock)))
   clock)
 
@@ -417,8 +428,8 @@ the rest dropped. The step count."
           (clock-rate-index clock) (mod (1+ i) *rate-meter-frames*))))
 
 (defun clock-actual-rate (clock)
-  "Game seconds per real second over the frames of the last second; 0d0
-before any frame."
+  "Game seconds per real second over the frames of the last second; nil
+until the meter holds a second since the last warp change or pause."
   (let ((real 0d0) (game 0d0) (n *rate-meter-frames*))
     (declare (type double-float real game))
     (loop for k from 1 to n
@@ -426,7 +437,7 @@ before any frame."
           while (< real 1d0)
           do (incf real (aref (clock-rate-real clock) i))
              (incf game (aref (clock-rate-game clock) i)))
-    (if (> real 0d0) (/ game real) 0d0)))
+    (and (>= real 1d0) (/ game real))))
 
 (defun clock-frame! (clock sim elapsed)
   "One frame of ELAPSED real seconds: the prediction updated, then the
@@ -454,6 +465,7 @@ or lost. The steps taken."
   "SIM restored to CHECKPOINT; CLOCK at ×1, unpaused, its accumulator,
 messages and prediction cleared. SIM."
   (restore-checkpoint! sim checkpoint)
+  (rate-meter-reset! clock)
   (setf (clock-level-index clock) 0
         (clock-paused clock) nil
         (clock-accumulator clock) 0d0

@@ -399,7 +399,7 @@ summed seconds; then CLOCK's live messages."
              (row "MODE" (mode-text controls))
              (row "WARP" (format nil "×~D" level)
                   (and (not paused) (null (render-state-loss render-state))
-                       (> rate 0d0) (< rate (* *readout-act-fraction* level))
+                       rate (< rate (* *readout-act-fraction* level))
                        (lambda (space)
                          (caution (format nil "ACT ×~A" (format-significant rate 3)) space)))
                   (and paused "PAUSED"))

@@ -274,7 +274,22 @@ top, or nil."
       (is string= "WARP ×1000000 ! ACT ×490000" (lis::line-text line))
       (is = #xFFB000 (lis::run-colour (third line)))
       (is string= " ! ACT ×490000" (lis::run-text (third line))))
-    (is string= "WARP ×1000000" (lis::line-text (metered 950000d0)))))
+    (is string= "WARP ×1000000" (lis::line-text (metered 950000d0))))
+  ;; task 150: the meter starts afresh at each warp change and pause
+  (let* ((lis::*frame-step-time-limit* nil)
+         (sim (lis::new-game-sim))
+         (clock (lis::new-clock sim)))
+    (dotimes (i 60) (lis::clock-frame! clock sim 1/60))
+    (true (lis::clock-warp-up clock sim))
+    (lis::clock-frame! clock sim 1/60)
+    (is string= "WARP ×4" (lis::line-text (readout-line (readout sim clock) "WARP")))
+    (false (lis::clock-actual-rate clock))
+    (dotimes (i 60) (lis::clock-frame! clock sim 1/60))
+    (lis::clock-toggle-pause clock)
+    (lis::clock-frame! clock sim 1/60)
+    (lis::clock-toggle-pause clock)
+    (lis::clock-frame! clock sim 1/60)
+    (is string= "WARP ×4" (lis::line-text (readout-line (readout sim clock) "WARP")))))
 
 (define-test readout-alarms
   (let* ((lis::*frame-step-time-limit* nil)

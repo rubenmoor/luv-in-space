@@ -298,7 +298,9 @@ at LEVEL. (values mismatches checks steps-per-frame clock)."
          (lis::*frame-step-time-limit* nil)
          (lis::*prediction-steps-per-frame* 64))
     (lis::clock-set-level-index! clock (level-index 1000000))
-    (dotimes (i 61) (lis::clock-frame! clock sim 1/60))
+    (dotimes (i 59) (lis::clock-frame! clock sim 1/60))
+    (false (lis::clock-actual-rate clock) "under a second metered")
+    (dotimes (i 2) (lis::clock-frame! clock sim 1/60))
     (let ((rate (lis::clock-actual-rate clock)))
       (true (< (relative-error rate expected) 0.01) "~F against ~F" rate expected))))
 

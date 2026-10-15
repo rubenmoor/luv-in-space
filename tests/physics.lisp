@@ -155,9 +155,8 @@
     ;; The first run fills the ephemeris cache.
     (is = 2000d0 (gravity-and-step-loop a r time 1000))
     ;; Measured before the check: Parachute conses its result first.
-    (let ((consed (let ((before (sb-ext:get-bytes-consed)))
-                    (gravity-and-step-loop a r time 1000)
-                    (- (sb-ext:get-bytes-consed) before))))
+    (let ((consed (least-bytes-consed
+                   (lambda () (gravity-and-step-loop a r time 1000)))))
       ;; The returned sum is one boxed double.
       (true (<= consed 16) "~D bytes" consed))))
 
@@ -343,10 +342,9 @@ angular momentum compared in inertial axes."
     (lis::make-ship-state r v (lis::quat 1 0 0 0) (lis::vec3 0.01d0 0 0) 28000d0)))
 
 (define-test rk4-cons-nothing-and-deterministic
-  (let ((a (full-steps (leo-state) 10000))
+  (let ((a (leo-state))
         (b (leo-state)))
-    (let ((consed (let ((before (sb-ext:get-bytes-consed)))
-                    (full-steps b 10000)
-                    (- (sb-ext:get-bytes-consed) before))))
+    (dotimes (i 3) (full-steps a 3333))
+    (let ((consed (least-bytes-consed (lambda () (full-steps b 3333)))))
       (true (< consed 1024) "~D bytes" consed))
     (is equalp a b)))

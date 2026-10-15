@@ -461,6 +461,7 @@ Physics is tested headless, in the same SBCL process as the rest of `scripts/tes
 - Time budget: the whole `scripts/test` stays under ~15 s on this machine (lavapipe frame included); physics tests together under ~5 s. Runs are sized to fit (step counts below assume ~50 ns per point-mass step, ~200 ns per full ship step, "Integrator").
 - Tests run in a fresh image, never read a wall clock, and compare simulation results bit for bit where determinism promises it ("Determinism"), with tolerances elsewhere.
 - Reference values come from closed forms (Kepler's equation, the rocket equation) or committed constants with their source; never from a previous run of the same code.
+- "Conses nothing" tests measure with `least-bytes-consed` (`tests/package.lisp`): the least of three runs of `sb-ext:get-bytes-consed`. SBCL counts allocation per 32 KB region, so a few setup bytes read 0 or now and then 32,768; 16 bytes or more in every step read a region on each of the three runs once a run has 2,048 steps or more.
 
 ### Drift bounds
 The ship is never on rails (`decision 17: Gravity model`, `decision 19: Time-warp rules`), so the drift tests cover the two step rules the ship flies with, the fine step (×1, ×4) and the coarse step (above ×4), rather than a rails mode. They run two-body: Earth as a point mass, no J2, no third bodies, since energy is not conserved in a moving frame with perturbations.

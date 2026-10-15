@@ -192,7 +192,5 @@
   (let ((p (lis::make-mass-properties))
         (b (lis::make-rcs-matrix)))
     (mass-properties-loop 1 p b)
-    (let ((consed (let ((before (sb-ext:get-bytes-consed)))
-                    (mass-properties-loop 10000 p b)
-                    (- (sb-ext:get-bytes-consed) before))))
+    (let ((consed (least-bytes-consed (lambda () (mass-properties-loop 3334 p b)))))
       (true (< consed 1024) "~D bytes" consed))))

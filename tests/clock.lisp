@@ -131,9 +131,8 @@ inertial hold) and a cut-off; SIM."
          (flown (lis::copy-sim (mixed-run sim 2000))))
     (true (eq :inertial (lis::controls-hold (lis::sim-controls flown))))
     (false (equalp flown checkpoint))
-    (let ((consed (let ((before (sb-ext:get-bytes-consed)))
-                    (lis::restore-checkpoint! sim checkpoint)
-                    (- (sb-ext:get-bytes-consed) before))))
+    (let ((consed (least-bytes-consed
+                   (lambda () (lis::restore-checkpoint! sim checkpoint)))))
       (is = 0 consed))
     (true (equalp sim checkpoint))
     (mixed-run sim 2000)
@@ -158,10 +157,9 @@ inertial hold) and a cut-off; SIM."
   (let* ((a (lis::new-game-sim))
          (b (lis::copy-sim a)))
     ;; The first run fills the ephemeris cache.
-    (step-sim (step-sim a 5000 1) 5000 1000)
-    (let ((consed (let ((before (sb-ext:get-bytes-consed)))
-                    (step-sim (step-sim b 5000 1) 5000 1000)
-                    (- (sb-ext:get-bytes-consed) before))))
+    (dotimes (i 3) (step-sim (step-sim a 1667 1) 1667 1000))
+    (let ((consed (least-bytes-consed
+                   (lambda () (step-sim (step-sim b 1667 1) 1667 1000)))))
       (true (< consed 1024) "~D bytes" consed))
     (true (equalp a b))))
 

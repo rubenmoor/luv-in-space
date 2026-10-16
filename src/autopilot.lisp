@@ -650,6 +650,7 @@ pivoting; a singular J J ᵀ is regularised. OUT."
    :type (simple-array double-float (3)))       ; the one refined, then the one chosen
   (retime-chosen nil :type boolean)
   (retime-own 0d0 :type double-float)           ; m/s the candidate's own times cost in the model
+  (retime-forced nil :type boolean)             ; the candidate's shot failed the path check (task 276)
   (last-largest 0d0 :type double-float)         ; a rendezvous: the accepted shot's largest residual
   (base-params (make-array (* 3 *plan-max-burns*) :element-type 'double-float :initial-element 0d0)
    :type (simple-array double-float (*)))       ; … and its parameters
@@ -971,6 +972,7 @@ without a plan."
         (assert (<= n *plan-max-burns*))
         (setf (autopilot-job-burn-count job) n
               (autopilot-job-tolerance job) 1d0
+              (autopilot-job-retime-forced job) nil
               ;; a rendezvous's Newton: the :departure's and :arrival's Δv
               (autopilot-job-fixed job)
               (if rendezvous
@@ -1175,7 +1177,8 @@ RENDEZVOUS part."
 (defun job-check! (job)
   "The refusals on JOB's final shot, else the plan with the shot's cut
 states: :done. A rendezvous's shot also passes the path check
-(shot-path-margin); a candidate failing it or refused but for propellant
+(shot-path-margin); a candidate failing it is re-timed once more, its own
+times no option (job-retime-force!), then, or refused but for propellant,
 gives way to the next (job-next-candidate!)."
   (let ((reason (or (let ((abort (autopilot-job-lead-abort job)))
                       (and abort (subseq abort (length "AUTOPILOT ABORT: "))))
@@ -1190,13 +1193,15 @@ gives way to the next (job-next-candidate!)."
                                                          (autopilot-job-measure job))
                  (autopilot-job-stage job) :done))
           (t (multiple-value-bind (margin passes) (shot-path-margin job)
-               (if (< margin 0d0)
-                   (job-next-candidate! job "NO CLEAR TRANSFER")
-                   (setf (autopilot-job-plan job)
-                         (shot-cut-plan (autopilot-job-candidate job) (autopilot-job-shot job)
-                                        :aim-point (job-rendezvous-part job passes)
-                                        (autopilot-job-lead-cuts job))
-                         (autopilot-job-stage job) :done)))))
+               (cond ((and (< margin 0d0) (job-retime-force-p job passes))
+                      (job-retime-force! job))
+                     ((< margin 0d0)
+                      (job-next-candidate! job "NO CLEAR TRANSFER"))
+                     (t (setf (autopilot-job-plan job)
+                              (shot-cut-plan (autopilot-job-candidate job) (autopilot-job-shot job)
+                                             :aim-point (job-rendezvous-part job passes)
+                                             (autopilot-job-lead-cuts job))
+                              (autopilot-job-stage job) :done))))))
     job))
 
 (defun autopilot-job-work! (job budget)
@@ -3328,7 +3333,8 @@ section's or a check's."
 point its golden sections in departure and transfer time, then the check:
 the refined point, else the scan's, chosen when clear by
 *retime-clearance-margin* and *retime-gain* cheaper than the candidate's
-own times (retime-own); the pool ends at the first that is not cheaper."
+own times (retime-own), at any cost when a failed path check forced the
+re-timing (retime-forced); the pool ends at the first that is not cheaper."
   (let* ((cursor (autopilot-job-retime-cursor job))
          (centre (autopilot-job-retime-centre job))
          (point (autopilot-job-retime-point job))
@@ -3349,7 +3355,8 @@ own times (retime-own); the pool ends at the first that is not cheaper."
                  (unless (and margin (>= margin *retime-clearance-margin*))
                    (replace point pool :start2 (* 3 k) :end2 (+ (* 3 k) 3))
                    (setf margin (retime-margin job (aref point 1) (aref point 2))))
-                 (cond ((>= (aref point 0) (- (autopilot-job-retime-own job) *retime-gain*))
+                 (cond ((and (not (autopilot-job-retime-forced job))
+                             (>= (aref point 0) (- (autopilot-job-retime-own job) *retime-gain*)))
                         ;; the rest cost more: keep the candidate's times
                         (setf (autopilot-job-retime-count job) k))
                        ((and margin (>= margin *retime-clearance-margin*))
@@ -3359,9 +3366,10 @@ own times (retime-own); the pool ends at the first that is not cheaper."
 (defun job-retime-advance! (job budget)
   "JOB's re-timing within BUDGET units: the reference coast as a shot
 extends; then the candidate's own times in the model (retime-own), and
-unless they cost no more than its guess and *retime-gain*, items while
-their units fit (a call that fits none takes one) until a clear point is
-chosen or the pool is spent. (values done units)."
+unless they cost no more than its guess and *retime-gain* (or a failed path
+check forced the re-timing, retime-forced), items while their units fit (a
+call that fits none takes one) until a clear point is chosen or the pool is
+spent. (values done units)."
   (let ((units 0)
         (coast (autopilot-job-shot job)))
     (when (< (autopilot-job-retime-cursor job) 0)
@@ -3376,7 +3384,8 @@ chosen or the pool is spent. (values done units)."
               (autopilot-job-retime-own job)
               (or (retime-evaluate job (aref centre 0) (aref centre 1)) most-positive-double-float))
         ;; the model prices the candidate's own times at its guess: no scan
-        (when (<= (autopilot-job-retime-own job) (+ (job-params-dv job d (+ d 2)) *retime-gain*))
+        (when (and (not (autopilot-job-retime-forced job))
+                   (<= (autopilot-job-retime-own job) (+ (job-params-dv job d (+ d 2)) *retime-gain*)))
           (setf (autopilot-job-retime-cursor job) (retime-rows)))))
     (flet ((done-p ()
              (or (autopilot-job-retime-chosen job)
@@ -3390,10 +3399,38 @@ chosen or the pool is spent. (values done units)."
                  (incf units most)))
       (values (done-p) units))))
 
+(defun job-retime-force-p (job passes)
+  "True when JOB's converged shot, failing the path check by the target
+(PASSES, shot-path-margin's), can be re-timed once more: a rendezvous with a
+:departure and an :arrival left, not yet forced."
+  (let* ((n (autopilot-job-burn-count job))
+         (d (autopilot-job-fixed job))
+         (labels (autopilot-job-burn-labels job))
+         (object (target-object (prediction-sim (autopilot-job-shot job)) (autopilot-job-target job)))
+         (pass (and object (cdr (assoc (object-key object) passes)))))
+    (and (eq (autopilot-job-preset job) :rendezvous)
+         (not (autopilot-job-retime-forced job))
+         pass
+         (< pass (+ (object-def-bound (object-def-of object)) *object-clearance*))
+         (= n (+ d 2)) (eq (svref labels d) :departure) (eq (svref labels (1+ d)) :arrival))))
+
+(defun job-retime-force! (job)
+  "JOB's candidate re-timed after its converged shot failed the path check
+(task 276: the search's least-Δv transfers pass the target at its
+clearance, a shot under J2 a few m inside): the scan's cheapest clear point
+whatever it costs (retime-forced), then Newton from it afresh; none, the
+next candidate."
+  (setf (autopilot-job-retime-forced job) t
+        (autopilot-job-iteration job) 0
+        (autopilot-job-column job) -1
+        (autopilot-job-tolerance job) 1d0)
+  (job-retime-start! job))
+
 (defun job-retime-done! (job)
   "The chosen re-timed transfer as JOB's :departure and :arrival (their
 nodes, states and LVLH Δv), then shot; none chosen, the candidate shot as
-it was, not re-timed again."
+it was, not re-timed again, or after a forced re-timing the next
+(job-next-candidate!)."
   (let ((point (autopilot-job-retime-point job))
         (d (autopilot-job-fixed job)))
     (multiple-value-bind (total r-d v-d dv1 r-a v2 dv2)
@@ -3419,10 +3456,14 @@ it was, not re-timed again."
                 (*coast-delta* nil))
             (job-departure-finite! job r-a (vec3-add v2 dv2)
                                    (vec3-normalize (vec3-cross r-d v-d))))))))
-  (unless (autopilot-job-retime-chosen job)
-    (setf (autopilot-job-retimes job) *retime-max*))
-  (setf (autopilot-job-stage job) :iterate)
-  (job-shoot! job))
+  (cond ((autopilot-job-retime-chosen job)
+         (setf (autopilot-job-stage job) :iterate)
+         (job-shoot! job))
+        ((autopilot-job-retime-forced job)
+         (job-next-candidate! job "NO CLEAR TRANSFER"))
+        (t (setf (autopilot-job-retimes job) *retime-max*
+                 (autopilot-job-stage job) :iterate)
+           (job-shoot! job))))
 
 (defun job-next-candidate! (job reason)
   "JOB's current candidate dropped: the next one guessed and shot, past the

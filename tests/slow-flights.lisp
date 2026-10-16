@@ -76,6 +76,21 @@ Returns the record and the end sim."
   ;; rendezvous-plan-highport's check for the other four places.
   (lt::rendezvous-places '(:tern-station :fulmar-depot :k-17 :skua-yard)))
 
+(define-test rendezvous-plan-fulmar-phasing
+  ;; rendezvous-fulmar-phasing's start: the search's first candidate (95.5
+  ;; m/s) passes the depot 1.7 m inside its clearance once shot, so it is
+  ;; re-timed (job-retime-force!) and planned within 3 % of the search
+  ;; (94.7), not the second candidate's 105.5 (task 276); ≥ 233.7 m clear.
+  (let ((sim (lis::stated-sim '(:date "2040-01-01" :orbit (:circular 400e3 :lead (:fulmar-depot 297.96))))))
+    (multiple-value-bind (plan job) (lt::rendezvous-now sim '((:fulmar-depot :a)))
+      (when plan
+        (is = 0 (lis::autopilot-job-index job))
+        (true (lis::autopilot-job-retime-forced job))
+        (lt::check-arrival job lis::*rendezvous-stall-tolerance*)
+        (lt::check-pass plan :fulmar-depot 233.7d0)
+        (true (<= (lt::plan-dv plan) (* 1.03d0 (lt::job-search-total job)))
+              "~,2F m/s, search ~,2F" (lt::plan-dv plan) (lt::job-search-total job))))))
+
 ;;; plan 27's rendezvous end to end (task 272: Slow tests: rendezvous end to
 ;;; end, Tern Station twice and Skua Yard 5): tests/autopilot.lisp's
 ;;; rendezvous-run, planned at once, flown through clock-step!.

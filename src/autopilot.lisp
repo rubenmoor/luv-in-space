@@ -1461,6 +1461,42 @@ drifts as the sim flies it (the osculating a's mean motion is off by up to
                (- (rails-segment-mean-rate segment) (orbit-n (rails-segment-orbit segment))))
             (rails-segment-raan-rate segment))))
 
+(declaim (inline conic-drift-rates))
+(defun conic-drift-rates (r v)
+  "rails-drift-rates of coast-rails from R, V in closed form: (values u̇
+Ω̇). Conses nothing with *coast-delta*."
+  (declare (type vec3 r v))
+  (with-vec3 (((x y z) r) ((vx vy vz) v))
+    (let* ((mu +mu-earth+)
+           (hx (- (* y vz) (* z vy))) (hy (- (* z vx) (* x vz))) (hz (- (* x vy) (* y vx)))
+           (h2 (+ (* hx hx) (* hy hy) (* hz hz)))
+           (a (/ 1 (- (/ 2 (sqrt (+ (* x x) (* y y) (* z z)))) (/ (+ (* vx vx) (* vy vy) (* vz vz)) mu))))
+           (p (/ h2 mu)))
+      (if (or (not *coast-j2*) (<= a 0d0) (<= h2 0d0))
+          (values 0d0 0d0)
+          (let* ((e2 (max 0d0 (- 1 (/ p a))))
+                 (c (/ hz (sqrt h2)))
+                 (n (sqrt (/ mu (* a a a))))
+                 (k (* n +j2-earth+ (expt (/ +radius-earth+ p) 2)))
+                 (mean-a (if *coast-delta* (- a *coast-delta*) (j2-mean-semi-major-axis r v)))
+                 (mean-a (if (< (abs (- mean-a a)) (* 1d-2 a)) mean-a a)))
+            (values (+ (* 3/4 k (- (* 5 c c) 1))
+                       (* 3/4 k (sqrt (- 1 e2)) (- (* 3 c c) 1))
+                       (- (sqrt (/ mu (* mean-a mean-a mean-a))) n))
+                    (if (< (abs c) *polar-cos*) 0d0 (* -3/2 k c))))))))
+
+(defparameter *arc-drift-angle* 1d-2
+  "rad: an arc whose own drift over its transfer differs from its departure
+coast's by more is set back by its own (LEO arcs ~1e-3, 7 km; Highport's 0.2).")
+
+(declaim (inline arc-drift-due-p))
+(defun arc-drift-due-p (du dnode drift node-drift tof)
+  "The arc's drift DU, DNODE over TOF differs from the coast's DRIFT,
+NODE-DRIFT by more than *arc-drift-angle*: from 500 km the coast drifts 11°
+in 14 h, an arc to Highport's apogee 0.1°."
+  (declare (type double-float du dnode drift node-drift tof))
+  (> (* tof (max (abs (- du drift)) (abs (- dnode node-drift)))) (the double-float *arc-drift-angle*)))
+
 (declaim (inline rotate-into!))
 (defun rotate-into! (out v axis angle)
   "OUT = V turned by ANGLE about the unit AXIS (Rodrigues); OUT may be V."
@@ -2108,11 +2144,11 @@ solve to the grid's aim point, kept in the pool by its total Δv; its units."
          (drift (search-group-drift group))
          (node-drift (search-group-node-drift group))
          (r-d (make-vec3)) (v-d (make-vec3)) (r-a (make-vec3)) (v-a (make-vec3))
-         (v1 (make-vec3)) (v2 (make-vec3)) (d1 (make-vec3)) (d2 (make-vec3))
+         (v1 (make-vec3)) (v2 (make-vec3)) (d1 (make-vec3)) (d2 (make-vec3)) (aim (make-vec3))
          (units 1))
     (declare (type double-float t-d deadline floor cost drift node-drift) (type fixnum units)
              (type (simple-array double-float (*)) transfers) (type vec3 normal)
-             (dynamic-extent r-d v-d r-a v-a v1 v2 d1 d2))
+             (dynamic-extent r-d v-d r-a v-a v1 v2 d1 d2 aim))
     (rails-state-into! r-d v-d (first (search-group-rails group)) t-d)
     (let ((close (if (search-aim-into! r-a v-a search t-d)
                      (<= (vec3-norm (vec3-sub! r-a r-a r-d)) *search-close-distance*)
@@ -2122,16 +2158,26 @@ solve to the grid's aim point, kept in the pool by its total Δv; its units."
             for t-a of-type double-float = (+ t-d tof)
             when (<= t-a deadline)
               do (incf units *lambert-work*)
-                 ;; the Lambert end set back by the rails' drift over TOF
-                 (when (and (search-aim-into! r-a v-a search t-a)
-                            (drift-into! r-a r-a normal (- (* drift tof)) (- (* node-drift tof)))
-                            (lambert-into! v1 v2 r-d r-a tof +mu-earth+ normal)
-                            (not (arc-below-p r-d v1 r-a v2 floor)))
-                   (drift-into! v2 v2 normal (* drift tof) (* node-drift tof))
-                   (pool-insert! group
-                                 (+ cost (vec3-norm (vec3-sub! d1 v1 v-d))
-                                    (vec3-norm (vec3-sub! d2 v-a v2)))
-                                 t-d tof k j))))
+                 ;; the Lambert end set back by the coast's drift over TOF,
+                 ;; again by the arc's where that differs (arc-drift-due-p)
+                 (when (and (search-aim-into! aim v-a search t-a)
+                            (drift-into! r-a aim normal (- (* drift tof)) (- (* node-drift tof)))
+                            (lambert-into! v1 v2 r-d r-a tof +mu-earth+ normal))
+                   (multiple-value-bind (du dnode) (conic-drift-rates r-d v1)
+                     (declare (type double-float du dnode))
+                     (let ((due (arc-drift-due-p du dnode drift node-drift tof)))
+                       (unless due
+                         (setf du drift dnode node-drift))
+                       (when (or (not due)
+                                 (progn (incf units *lambert-work*)
+                                        (drift-into! r-a aim normal (- (* du tof)) (- (* dnode tof)))
+                                        (lambert-into! v1 v2 r-d r-a tof +mu-earth+ normal)))
+                         (unless (arc-below-p r-d v1 r-a v2 floor)
+                           (drift-into! v2 v2 normal (* du tof) (* dnode tof))
+                           (pool-insert! group
+                                         (+ cost (vec3-norm (vec3-sub! d1 v1 v-d))
+                                            (vec3-norm (vec3-sub! d2 v-a v2)))
+                                         t-d tof k j))))))))
     units))
 
 ;;; Exact evaluations and their scans
@@ -2142,11 +2188,16 @@ solve to the grid's aim point, kept in the pool by its total Δv; its units."
 (defun coast-lambert-into! (v1 v2 r-d t-d r-a tof normal group)
   "V1 at R-D (T-D) of the conic whose rails (coast-rails) reach R-A TOF s
 later, V2 their velocity there: Lambert to R-A set back by GROUP's drift,
-then the end's miss on the rails added to the aim, *coast-lambert-iterations*
-times at most; true, or nil (no solution, or the arc below the floor)."
-  (let ((aim (make-vec3)) (r (make-vec3)) (miss (make-vec3)))
-    (drift-into! aim r-a normal (- (* (search-group-drift group) tof))
-                 (- (* (search-group-node-drift group) tof)))
+again by the arc's where that differs (arc-drift-due-p), then the end's miss
+on the rails added to the aim, *coast-lambert-iterations* times at most;
+true, or nil (no solution, or the arc below the floor)."
+  (let ((aim (make-vec3)) (r (make-vec3)) (miss (make-vec3))
+        (drift (search-group-drift group)) (node-drift (search-group-node-drift group)))
+    (drift-into! aim r-a normal (- (* drift tof)) (- (* node-drift tof)))
+    (when (lambert-into! v1 v2 r-d aim tof +mu-earth+ normal)
+      (multiple-value-bind (du dnode) (conic-drift-rates r-d v1)
+        (when (arc-drift-due-p du dnode drift node-drift tof)
+          (drift-into! aim r-a normal (- (* du tof)) (- (* dnode tof))))))
     (dotimes (i *coast-lambert-iterations* t)
       (unless (and (lambert-into! v1 v2 r-d aim tof +mu-earth+ normal)
                    (not (arc-below-p r-d v1 aim v2 (search-floor))))
@@ -2485,7 +2536,7 @@ among those within *search-tie-dv* of the least total left."
         (ecase (rendezvous-search-stage search)
           (:aims *aim-bucket-work*)
           (:phasing *phasing-point-work*)
-          (:grid (1+ (* *lambert-work* (length (rendezvous-search-transfers search)))))
+          (:grid (1+ (* 2 *lambert-work* (length (rendezvous-search-transfers search)))))
           ((:seeds :refine) (+ *aim-bucket-work* *aim-work*))
           ((:group :finish :done) 1)))))
 

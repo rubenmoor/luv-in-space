@@ -63,10 +63,9 @@ Returns the record and the end sim."
 ;;; plan 27's runs marked for the slow command (tests/autopilot.lisp).
 
 (define-test rendezvous-search-highport-phases
-  ;; rendezvous-search-highport (phases 0 and 4) at the odd phases from
-  ;; Fulmar Depot's 500 km: <= 2,758 m/s. Not phases 2 (2,784.6) and 6
-  ;; (2,770.7): task 275 finds why.
-  (dolist (k '(1 3 5 7))
+  ;; rendezvous-search-highport (phases 0 and 4) at the other six phases
+  ;; from Fulmar Depot's 500 km: <= 2,758 m/s (2,744.0-2,751.1).
+  (dolist (k '(1 2 3 5 6 7))
     (let* ((sim (lt::highport-phase-sim k))
            (candidates (lt::search-now sim :highport)))
       (lt::check-candidates sim candidates lis::*rendezvous-limit*)

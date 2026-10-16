@@ -753,8 +753,8 @@ Skua Yard 5 on its rails, at its velocity."
 
 (define-test rendezvous-search-highport
   ;; From Fulmar Depot's 500 km at phases 0 and 4/8 of Highport's period:
-  ;; ≤ 2,758 m/s. Two of the plan's eight (~70 ms each); the odd ones in
-  ;; tests/slow-flights.lisp, 2 and 6 for task 275.
+  ;; ≤ 2,758 m/s (2,752.3 and 2,752.5). Two of the plan's eight (~70 ms
+  ;; each); the other six in tests/slow-flights.lisp.
   (dolist (k '(0 4))
     (let* ((sim (highport-phase-sim k))
            (candidates (search-now sim :highport)))

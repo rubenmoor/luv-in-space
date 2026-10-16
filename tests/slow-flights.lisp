@@ -75,6 +75,66 @@ Returns the record and the end sim."
   ;; rendezvous-plan-highport's check for the other four places.
   (lt::rendezvous-places '(:tern-station :fulmar-depot :k-17 :skua-yard)))
 
+;;; plan 27's rendezvous end to end (task 272: Slow tests: rendezvous end to
+;;; end, Tern Station twice and Skua Yard 5): tests/autopilot.lisp's
+;;; rendezvous-run, planned at once, flown through clock-step!.
+
+(define-test rendezvous-end-to-end-tern-twice
+  ;; rendezvous-end-to-end-tern flown twice: the end sims equalp.
+  (flet ((run ()
+           (let ((sim (lt::model-sim :j2)))
+             (multiple-value-bind (clock plan) (lt::rendezvous-run sim '(:tern-station :limit 64800d0))
+               (declare (ignore clock))
+               (true plan)
+               (is eq :station (lis::sim-plan-phase sim))
+               sim))))
+    (true (equalp (run) (run)) "end sims differ")))
+
+(defun skua-yard-5-run ()
+  "Rendezvous: Skua Yard 5 from rendezvous-skua-yard's state at :j2, 48 h:
+(values sim plan seconds dv nearest), NEAREST per other object (key . m) the
+least CoM distance before each step from the first burn's start to :station."
+  (let* ((sim (lt::skua-plant-sim))
+         (nearest (loop for object across (lis::sim-objects sim)
+                        unless (eq (lis::object-key object) :skua-yard-5)
+                          collect (cons (lis::object-key object) most-positive-double-float)))
+         (r (lis::make-vec3)) (v (lis::make-vec3))
+         (start nil))
+    (setf (lis::sim-model sim) :j2)
+    (multiple-value-bind (clock plan seconds dv)
+        (lt::rendezvous-run
+         sim '(:skua-yard-5)
+         :watch (lambda (s)
+                  (unless start
+                    (setf start (lis::planned-burn-start (svref (lis::burn-plan-burns (lis::sim-plan s)) 0))))
+                  (when (>= (lis::sim-t s) start)
+                    (let ((ship (lis::ship-state-r (lis::sim-ship s))))
+                      (dolist (entry nearest)
+                        (when (lis::object-planning-state-into! r v (lis::sim-object s (car entry)) s (lis::sim-t s))
+                          (setf (cdr entry) (min (cdr entry) (lis::vec3-norm (lis::vec3-sub ship r))))))))))
+      (declare (ignore clock))
+      (values sim plan seconds dv nearest))))
+
+(define-test rendezvous-end-to-end-skua-yard-5
+  ;; From rendezvous-skua-yard's state: <= 21 m/s (14.88: the plan 2.20,
+  ;; :departure 1.38 and :arrival 0.83, the terminal phase the rest), on
+  ;; station within 93,600 s (79,787 s); every other object >= its bound +
+  ;; 200 m from the first burn on (decision 59: Rendezvous transfers pass
+  ;; the target clear; decision 163: Rendezvous: Skua Yard 5's clearance is
+  ;; decision 59's, not the design's 500 m). Flown twice: equalp.
+  (multiple-value-bind (sim plan seconds dv nearest) (skua-yard-5-run)
+    (true plan)
+    (is eq :station (lis::sim-plan-phase sim))
+    (true (<= dv 21d0) "~,2F m/s" dv)
+    (true (<= seconds 93600d0) "~,1F s" seconds)
+    (loop for (key . distance) in nearest
+          for bound = (lis::object-def-bound (lis::object-definition key))
+          do (true (>= distance (+ bound lis::*object-clearance*)) "~A ~,1F m (bound ~,1F)" key distance bound))
+    (format t "~&rendezvous-skua-yard-5: ~,1F s, ~,2F m/s~{ ~A ~,1F m~}~%" seconds dv
+            (loop for (key . distance) in (sort (copy-list nearest) #'< :key #'cdr)
+                  repeat 4 append (list key distance)))
+    (true (equalp sim (skua-yard-5-run)) "end sims differ")))
+
 ;;; The preset scripts: every Earth-orbit place by the autopilot alone from
 ;;; the start state (plan 28's Done when). preset-fulmar-depot is left out
 ;;; until task 277 (ON STATION while the ship still turns: 0.452 m/s at the

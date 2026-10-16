@@ -1145,7 +1145,7 @@ seconds dv): seconds from SIM's t, dv spent."
   ;; 48 h at less time): on station at 13.7 h, 32.94 m/s. The bound 34.3
   ;; (11 + 3 % + 20 + 3) assumed the search's 11 m/s; the planned 19.35
   ;; (decision 161) leaves 13.6 for the terminal phase, inside it. 0.66 s;
-  ;; this run twice equalp and Skua Yard 5's are task 272's (slow command).
+  ;; this run twice equalp and Skua Yard 5's are in tests/slow-flights.lisp.
   (multiple-value-bind (clock plan seconds dv)
       (rendezvous-run (model-sim :j2) '(:tern-station :limit 64800d0))
     (when plan

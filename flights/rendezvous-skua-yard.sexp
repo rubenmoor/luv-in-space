@@ -12,7 +12,7 @@
 ;;; Clearance: every object but the target stays >= its bound + 200 m away
 ;;; (decision 59), one expectation each. Not Highport: the engage comes 360 s
 ;;; after the release at 0.2 m/s, ~72 m from the plant (the end-to-end test
-;;; of task 272 holds it clear from the first burn on).
+;;; rendezvous-end-to-end-skua-yard-5 holds it clear from the first burn on).
 ((:start :state (:date (:periapsis :highport :before 3600)
                  :berthed (:highport :plant)))
  (:release)

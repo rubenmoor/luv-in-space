@@ -1635,7 +1635,7 @@ nose prograde: on station at the first step, then the :target hold's slew."
   ;; From aim point (1) 1 km behind a promoted Tern Station at ×1, each
   ;; step's notices and checkpoint request handed to a clock, then 120 s of
   ;; station-keeping at ×4 (one orbit, 0.87 m and 0.011 m/s at most, takes
-  ;; 1.8 s: task 270 moves it to the slow command). The closing speed exceeds |p| / 100 s by up to 0.20 m/s
+  ;; 2.5 s: the slow command's station-keeping-tern-orbit). The closing speed exceeds |p| / 100 s by up to 0.20 m/s
   ;; between 600 and 360 m, where the RCS's 0.05 m/s² cannot follow w's
   ;; decay and the engine waits for 0.3 m/s (decision 162: The terminal
   ;; approach's bounds: the closing speed's lag and the controlled point).
@@ -1675,9 +1675,9 @@ nose prograde: on station at the first step, then the :target hold's slew."
 
 (define-test terminal-station-keeping
   ;; Fulmar Depot's A (Sun-pointing) and K-17's fixture (spinning) for 150
-  ;; s each, not the plan's quarter orbit (1.1 m and 0.6 m at most over it;
-  ;; task 270 for the slow command); from the stop point, so the
-  ;; :target hold's slew comes first.
+  ;; s each, not the plan's quarter orbit (1.0 m and 0.6 m at most over it;
+  ;; the slow command's station-keeping-quarter-orbit); from the stop point,
+  ;; so the :target hold's slew comes first.
   (dolist (target '(:fulmar-depot :k-17))
     (let ((sim (station-sim target (+ (lis::start-t) 3600d0))))
       (step-sim sim 1 1)

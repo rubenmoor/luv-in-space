@@ -89,3 +89,60 @@ Returns the record and the end sim."
 
 (define-test preset-highport
   (fly-script "preset-highport"))
+
+;;; plan 27 piece 5's terminal tests at full length (task 270: Slow tests:
+;;; full-length station-keeping and the Skua Yard 5 terminal approach),
+;;; shortened in scripts/test (tests/clock.lisp).
+
+(defun rails-period (key)
+  "s: the period of KEY's first rails segment."
+  (lis::orbit-period (lis::rails-segment-orbit (first (lis::object-def-rails (lis::object-definition key))))))
+
+(defun check-station (target time seconds level)
+  "From TARGET's stop point at TIME, SECONDS of station-keeping at LEVEL:
+|p| <= 5 m and |u| <= 0.05 m/s at every step."
+  (let ((sim (lt::station-sim target time)))
+    (lt::step-sim sim 1 1)
+    (is eq :station (lis::sim-plan-phase sim))
+    (multiple-value-bind (p-max u-max) (lt::station-bounds sim seconds level)
+      (true (<= p-max 5d0) "~A x~D ~,2F m" target level p-max)
+      (true (<= u-max 0.05d0) "~A x~D ~,3F m/s" target level u-max))))
+
+(define-test station-keeping-tern-orbit
+  ;; One orbit at Tern Station at x1 and x4 (0.87 m, 0.011 m/s at most).
+  (dolist (level '(1 4))
+    (check-station :tern-station (lis::start-t) (rails-period :tern-station) level)))
+
+(define-test station-keeping-quarter-orbit
+  ;; Fulmar Depot's A (Sun-pointing; 1.02 m, 0.010 m/s) and K-17's fixture
+  ;; (spinning; 0.61 m, 0.008 m/s), a quarter orbit each at x4.
+  (dolist (target '(:fulmar-depot :k-17))
+    (check-station target (+ (lis::start-t) 3600d0) (/ (rails-period target) 4) 4)))
+
+(defun skua-apogee ()
+  "Skua Yard 5's first apogee, on the grid."
+  (lt::grid-round (lis::orbit-next-apsis (lis::rails-segment-orbit
+                                          (first (lis::object-def-rails (lis::object-definition :skua-yard-5))))
+                                         (lis::start-t) :apoapsis)))
+
+(define-test terminal-approach-skua-yard
+  ;; From aim point (2) above Skua Yard 5 at its first apogee: the
+  ;; controlled point's path (the checked segment's, 563.0 m from Skua
+  ;; Yard 1) keeps 560 m from Skua Yard 1's and POD 14's CoM; the CoM, 6.3
+  ;; m behind the tip, comes to 557 m of Skua Yard 1 (decision 162: The
+  ;; terminal approach's bounds: the closing speed's lag and the controlled
+  ;; point).
+  (let ((sim (lt::terminal-sim :skua-yard-5 :number 2 :time (skua-apogee)))
+        (nearest (list (cons :skua-yard-1 most-positive-double-float)
+                       (cons :pod-14 most-positive-double-float))))
+    (loop until (or (eq (lis::sim-plan-phase sim) :station) (null (lis::sim-plan sim)))
+          do (lt::step-sim sim 1 1)
+             (let ((point (lt::controlled-point sim)))
+               (dolist (entry nearest)
+                 (setf (cdr entry)
+                       (min (cdr entry)
+                            (lis::vec3-norm (lis::vec3-sub point (lt::object-com sim (car entry)
+                                                                                 (lis::sim-t sim)))))))))
+    (is eq :station (lis::sim-plan-phase sim))
+    (dolist (entry nearest)
+      (true (>= (cdr entry) 560d0) "~A ~,1F m" (car entry) (cdr entry)))))

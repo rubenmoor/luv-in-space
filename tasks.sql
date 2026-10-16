@@ -1,5 +1,5 @@
 -- pm database. Change it with pm; after a hand edit run `pm validate`.
-PRAGMA user_version = 21;
+PRAGMA user_version = 22;
 
 CREATE TABLE milestone (
     id             INTEGER PRIMARY KEY,
@@ -128,6 +128,16 @@ CREATE TABLE resource_use_task (                           -- each task done whe
     task_id     INTEGER NOT NULL REFERENCES task (id),
     category_id INTEGER NOT NULL REFERENCES resource_use_category (id),
     PRIMARY KEY (report_id, task_id)
+) STRICT;
+
+CREATE TABLE custom_report (                               -- the human's question, answered in one paragraph by an exec task
+    id          INTEGER PRIMARY KEY,
+    task_id     INTEGER NOT NULL UNIQUE REFERENCES task (id),
+    question    TEXT NOT NULL CHECK (trim(question) <> ''),
+    answer      TEXT,                                      -- NULL: not answered yet
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    answered_at TEXT,
+    CONSTRAINT "answered_at is set exactly when answered" CHECK ((answer IS NULL) = (answered_at IS NULL))
 ) STRICT;
 
 CREATE INDEX plan_milestone ON plan (milestone_id);

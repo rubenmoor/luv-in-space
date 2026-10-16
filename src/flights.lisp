@@ -1938,12 +1938,16 @@ plus its bound of the stack's CoM."
 (defun flight-coast-cap (flight sim)
   "(:warp :coast)'s highest level now (decision 122): ×1 while :approach or
 :translate runs; ×4 in a plan's :terminal or :station, or near a promoted
-object unless berthed; else *flight-coast-limit*."
+object unless berthed or a plan waits for its next burn (task 274: the
+clock's look-ahead and drop-outs guard it); else *flight-coast-limit*."
   (let ((step (flight-current flight)))
     (cond ((and step (eq (flight-phase flight) :running)
                 (member (flight-step-name step) '(:approach :translate)))
            1)
-          ((or (plan-terminal-p sim) (and (not (sim-berthed sim)) (flight-close-object-p sim)))
+          ((or (plan-terminal-p sim)
+               (and (not (sim-berthed sim))
+                    (not (and (sim-plan sim) (eq (sim-plan-phase sim) :pending)))
+                    (flight-close-object-p sim)))
            *fine-levels-max*)
           (t *flight-coast-limit*))))
 

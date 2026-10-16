@@ -34,8 +34,7 @@ Returns the record and the end sim."
           (values record sim))))))
 
 ;;; The approach and rendezvous scripts (docs/architecture.md "Scripts by
-;;; milestone"). skua-yard-apogee-approach is left out until task 274
-;;; (it picks aim point 1 and passes Skua Yard 1 at 265 m).
+;;; milestone").
 
 (define-test approach-tern
   (multiple-value-bind (record sim) (fly-script "approach-tern")
@@ -57,6 +56,9 @@ Returns the record and the end sim."
 
 (define-test rendezvous-skua-yard
   (fly-script "rendezvous-skua-yard"))
+
+(define-test skua-yard-apogee-approach
+  (fly-script "skua-yard-apogee-approach"))
 
 ;;; plan 27's runs marked for the slow command (tests/autopilot.lisp).
 

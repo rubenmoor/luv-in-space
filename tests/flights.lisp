@@ -649,6 +649,12 @@ record sim-at-the-end frames-planning)."
  (:warp :coast) (:screenshot \"a\") (:after 60) (:screenshot \"b\"))")))
     (true (lis::flight-record-passed-p record))
     (is = 64 (shot-steps-per-second record "a" "b")))
+  ;; The same with a plan waiting for its burn: above ×4 (task 274).
+  (let ((record (lis::run-flight "((:start :state (:orbit (:on-axis :k-17 100)))
+ (:autopilot :set-ap 1000e3) (:warp :coast) (:screenshot \"a\") (:after 20) (:screenshot \"b\"))"
+                                 :model :point)))
+    (true (lis::flight-record-passed-p record))
+    (true (< (shot-steps-per-second record "a" "b") 1)))
   ;; Berthed: above ×4.
   (let ((record (lis::run-flight "((:start :state (:berthed (:tern-station :berth)))
  (:warp :coast) (:screenshot \"a\") (:after 600) (:screenshot \"b\"))")))

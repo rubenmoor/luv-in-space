@@ -74,3 +74,18 @@ Returns the record and the end sim."
 (define-test rendezvous-plan-places
   ;; rendezvous-plan-highport's check for the other four places.
   (lt::rendezvous-places '(:tern-station :fulmar-depot :k-17 :skua-yard)))
+
+;;; The preset scripts: every Earth-orbit place by the autopilot alone from
+;;; the start state (plan 28's Done when). preset-fulmar-depot is left out
+;;; until task 277 (ON STATION while the ship still turns: 0.452 m/s at the
+;;; tip), preset-skua-yard until task 278 (the stop point's rails velocity
+;;; ~1.05 m/s off its position's rate: APPROACH TIMED OUT at 103 m).
+
+(define-test preset-tern-station
+  (fly-script "preset-tern-station"))
+
+(define-test preset-k-17
+  (fly-script "preset-k-17"))
+
+(define-test preset-highport
+  (fly-script "preset-highport"))

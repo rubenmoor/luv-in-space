@@ -357,6 +357,123 @@ not below t or the sim is lost; the target at the render time
         (aref out (+ index 2)) (coerce z 'single-float)
         (aref out (+ index 3)) (coerce w 'single-float)))
 
+;;; The grapple at work (decision 124: Meshes of the places: models, scenery
+;;; liveries, lights, far dots, the grapple's claws, floodlight and range
+;;; finder): where the Mule's floodlight and range finder are in the world,
+;;; the floodlight in an object's axes and the range finder's spot.
+
+(defun stack-reference-into! (out state)
+  "OUT: R's position, r − q c about the stack's CoM c (with the latched load).
+Conses nothing once render-state-update! ran."
+  (declare (type vec3 out) (type render-state state))
+  (let ((com (if (render-state-com-valid state)
+                 (render-state-com state)
+                 (mass-properties-com (ship-mass-properties (render-state-m-p state) nil
+                                                            (render-state-own state)))))
+        (qc (make-vec3)))
+    (declare (dynamic-extent qc))
+    (quat-rotate! qc (render-state-q state) com)
+    (vec3-sub! out (render-state-r state) qc)))
+
+(defun ship-point-into! (out state p)
+  "OUT: the body point P of the Mule in the world."
+  (declare (type vec3 out p) (type render-state state))
+  (let ((reference (make-vec3)))
+    (declare (dynamic-extent reference))
+    (stack-reference-into! reference state)
+    (quat-rotate! out (render-state-q state) p)
+    (vec3-add! out out reference)))
+
+(defun object-floodlight-rows! (out state o)
+  "The ship block's floodlight rows (52 to 59) of OUT for the object O of the
+render STATE: the Mule's lamp and beam axis in O's body axes, the lamp's
+intensity in w, zero while the floodlight is off. Conses nothing."
+  (declare (optimize speed) (type (simple-array single-float (*)) out)
+           (type render-state state) (type object-render o))
+  (if (render-grapple-floodlight (render-state-grapple state))
+      (let ((lamp (make-vec3)) (axis (make-vec3)) (inverse (make-quat)) (local (make-vec3)))
+        (declare (dynamic-extent lamp axis inverse local))
+        (ship-point-into! lamp state *floodlight-position*)
+        (vec3-set! axis 1d0 0d0 0d0)
+        (quat-rotate! axis (render-state-q state) axis)
+        (quat-conjugate! inverse (object-render-q o))
+        (vec3-sub! lamp lamp (object-render-r o))
+        (quat-rotate! local inverse lamp)
+        (put4! out 52 (aref local 0) (aref local 1) (aref local 2)
+               (the double-float *floodlight-intensity*))
+        (quat-rotate! local inverse axis)
+        (put4! out 56 (aref local 0) (aref local 1) (aref local 2) 0d0))
+      (progn (put4! out 52 0d0 0d0 0d0 0d0)
+             (put4! out 56 0d0 0d0 0d0 0d0))))
+
+(declaim (inline ray-shape-distance))
+(defun ray-shape-distance (origin direction shape)
+  "The first distance t ≥ 0 along the ray ORIGIN + t DIRECTION (unit), both in the
+body axes of the object holding SHAPE, where it meets SHAPE; nil when it
+does not. Conses nothing."
+  (declare (optimize speed) (type vec3 origin direction) (type shape shape))
+  (let ((o (make-vec3)))
+    (declare (dynamic-extent o))
+    (vec3-sub! o origin (shape-centre shape))
+    (ecase (shape-kind shape)
+      (:sphere
+       (let* ((b (vec3-dot o direction))
+              (radius (shape-radius shape))
+              (c (- (vec3-dot o o) (* radius radius)))
+              (discriminant (- (* b b) c)))
+         (declare (type double-float b radius c discriminant))
+         (when (>= discriminant 0d0)
+           (let ((near (- (- b) (sqrt discriminant))))
+             (declare (type double-float near))
+             (cond ((>= near 0d0) near)
+                   ((>= c 0d0) nil)
+                   (t 0d0))))))
+      (:box
+       (let ((size (shape-size shape)) (near 0d0) (far 1d300))
+         (declare (type vec3 size) (type double-float near far))
+         (dotimes (i 3)
+           (let ((half (* 0.5d0 (aref size i))) (oi (aref o i)) (di (aref direction i)))
+             (declare (type double-float half oi di))
+             (if (< (abs di) 1d-12)
+                 (when (> (abs oi) half) (return-from ray-shape-distance nil))
+                 (let ((t1 (/ (- (- half) oi) di)) (t2 (/ (- half oi) di)))
+                   (declare (type double-float t1 t2))
+                   (setf near (max near (min t1 t2))
+                         far (min far (max t1 t2)))))))
+         (and (<= near far) near))))))
+
+(defun range-finder-spot (out state)
+  "The range finder's spot: the ray from the grapple's tip along the Mule's +x
+meets the drawn objects' shapes (any of their boxes and spheres) within
+*range-finder-max*: true, and OUT the first hit pulled *range-spot-pull*
+towards the ship; nil when nothing is hit. Conses nothing."
+  (declare (optimize speed) (type vec3 out) (type render-state state))
+  (let ((origin (make-vec3)) (direction (make-vec3)) (inverse (make-quat))
+        (o (make-vec3)) (d (make-vec3)) (c (make-vec3))
+        (best (the double-float *range-finder-max*)) (hit nil))
+    (declare (dynamic-extent origin direction inverse o d c) (type double-float best))
+    (ship-point-into! origin state *grapple-tip*)
+    (vec3-set! direction 1d0 0d0 0d0)
+    (quat-rotate! direction (render-state-q state) direction)
+    (loop for object across (the simple-vector (render-state-objects state))
+          do (let ((def (object-render-def (the object-render object))))
+               (when (and def (object-render-drawn object))
+                 (vec3-sub! c (object-render-r object) origin)
+                 (when (<= (vec3-norm c) (+ best (object-def-bound def)))
+                   (quat-conjugate! inverse (object-render-q object))
+                   (vec3-sub! c origin (object-render-r object))
+                   (quat-rotate! o inverse c)
+                   (quat-rotate! d inverse direction)
+                   (dolist (shape (object-def-shapes def))
+                     (let ((distance (ray-shape-distance o d shape)))
+                       (when (and distance (< (the double-float distance) best))
+                         (setf best distance hit t))))))))
+    (when hit
+      (let ((pulled (max 0d0 (- best (the double-float *range-spot-pull*)))))
+        (declare (type double-float pulled))
+        (vec3-add-scaled! out origin direction pulled))
+      t)))
+
 (defun object-uniforms! (out state o eye)
   "The ship block (shaders.lisp) into OUT for the object O of the render
 STATE seen from EYE: the rows of its q, its CoM (the body origin) relative to
@@ -402,6 +519,7 @@ emission. Conses nothing."
       (quat-rotate! r-hat inverse v)
       (put4! out 44 (aref r-hat 0) (aref r-hat 1) (aref r-hat 2) 1d0)
       (put4! out 48 0d0 0d0 0d0 0d0))
+    (object-floodlight-rows! out state o)
     out))
 
 (declaim (inline strobe-lit-p))
@@ -547,7 +665,15 @@ the hull, the engine if any, the instance groups, then its glows through
                   (luv:set-bind-group pass 0 bind-group)
                   (luv:set-vertex-buffer pass 0 (ship-gpu-corners ship))
                   (luv:set-vertex-buffer pass 1 (object-slot-glows object-slot))
-                  (luv:draw pass 6 count))))))))))
+                  (luv:draw pass 6 count))))))))
+      ;; The range finder's spot last: the objects' surfaces would cover it.
+      (when (plusp (ship-spot-glow! (ship-gpu-spot ship) state eye))
+        (luv:write-buffer (ship-slot-spot slot) (ship-gpu-spot ship))
+        (luv:set-pipeline pass (renderer-pipeline renderer :ship-glow))
+        (luv:set-bind-group pass 0 (ship-slot-bind-group slot))
+        (luv:set-vertex-buffer pass 0 (ship-gpu-corners ship))
+        (luv:set-vertex-buffer pass 1 (ship-slot-spot slot))
+        (luv:draw pass 6 1))))
 
 (defun single-floats (list)
   (map '(simple-array single-float (*)) (lambda (x) (coerce x 'single-float)) list))

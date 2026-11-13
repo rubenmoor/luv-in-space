@@ -276,7 +276,11 @@ top, or nil."
       (is string= "WARP ×1000000 ! ACT ×490000" (lis::line-text line))
       (is = #xFFB000 (lis::run-colour (third line)))
       (is string= " ! ACT ×490000" (lis::run-text (third line))))
-    (is string= "WARP ×1000000" (lis::line-text (metered 950000d0))))
+    (is string= "WARP ×1000000" (lis::line-text (metered 950000d0)))
+    ;; task 279: a measured rate of 0 must not crash the frame
+    (is string= "WARP ×1000000 ! ACT ×0.00" (lis::line-text (metered 0d0)))
+    (is string= "0.00" (lis::format-significant 0d0 3))
+    (is string= "0.00" (lis::format-significant 0.0 3)))
   ;; task 150: the meter starts afresh at each warp change and pause
   (let* ((lis::*frame-step-time-limit* nil)
          (sim (lis::new-game-sim))

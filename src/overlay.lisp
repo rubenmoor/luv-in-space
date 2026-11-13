@@ -83,9 +83,11 @@ tests require every one used, glyph-missing).")
 (defparameter *marker-box-px* 12 "The target's box; decision 125: Map in milestone 3.")
 (defparameter *marker-triangle-px* 10 "Closest approach; decision 125.")
 (defparameter *marker-plus-px* 12 "Burns; decision 125.")
-(defparameter *overlay-max-vertices* 73728
+(defparameter *overlay-max-vertices* 85740
   "Capacity of the frame's overlay buffer (a multiple of 6, so whole quads
-are kept): the readout, the map's markers and labels and the LOST panel.")
+are kept), by decision 129: twice the fullest readout (29,478 vertices) and
+message line (71 characters, 7,248) plus 12,288 for the map's markers and
+labels. The autopilot panel's share comes with its drawing.")
 
 (defun glyph (char)
   "CHAR's seven rows, upcased, or nil."
@@ -456,7 +458,12 @@ summed seconds; then CLOCK's live messages."
                                             (format-duration (- impact time)))
                                     *readout-danger-colour* :inverted flash)))))
        (mapcar (lambda (text) (list (caution (cut-text text))))
-               (last (clock-messages clock) *readout-messages*))))))
+               (let ((texts (clock-messages clock))
+                     (newest (first (clock-log clock))))
+                 ;; the message line shows the newest entry (decision 129)
+                 (when (and newest texts (string= (third newest) (car (last texts))))
+                   (setf texts (butlast texts)))
+                 (last texts *readout-messages*)))))))
 
 (defparameter *readout-cell-width-px* 12 "A character's cell, 6 dots of 2 px; decision 85.")
 (defparameter *readout-cell-height-px* 22 "A line's height; decision 85.")
@@ -504,6 +511,101 @@ box's colour; a flashing run in its :off phase not at all. OUT."
                        (label-at! out text left centre (run-colour run))))
                  (incf left (* (length text) *readout-cell-width-px*))))))
   out)
+
+;;; The message line (decision 129: Overlay of the outside and map views in
+;;; milestone 3): the newest SHIP log entry as one line in the readout's format.
+
+(defparameter *message-line-chars* 60 "A text longer than this is cut, \"…\" last; decision 129.")
+(defparameter *message-line-fresh* 30d0
+  "s of real time after its arrival an :info or :caution entry turns grey; decision 129.")
+
+(defun autopilot-message-severity (text)
+  (cond ((or (eql 0 (search "AUTOPILOT ABORT" text)) (string= text "AUTOPILOT: GOAL MISSED"))
+         :danger)
+        ((eql 0 (search "PLAN STALE" text)) :caution)
+        (t :info)))
+
+(defun grapple-message-severity (text)
+  "LATCHED and BERTHED are news, every other grapple notice a refusal."
+  (if (or (eql 0 (search "LATCHED " text)) (eql 0 (search "BERTHED " text))) :info :caution))
+
+(defun transfer-message-severity (text)
+  (if (string= text "TANKS FULL") :info :caution))
+
+(defparameter *message-severity*
+  '((:refused . :caution) (:lowered . :caution) (:engine-locked . :caution) (:rcs-off . :caution)
+    (:target . :caution) (:autopilot-refused . :caution)
+    (:autopilot . autopilot-message-severity)
+    (:grapple . grapple-message-severity)
+    (:transfer . transfer-message-severity))
+  "Notice key to :info, :caution, :danger, or to a function of the text giving one;
+a key not here is :info (:removal, :delivery, :station); decision 129.")
+
+(defun message-severity (key text)
+  (let ((value (cdr (assoc key *message-severity*))))
+    (cond ((null value) :info)
+          ((keywordp value) value)
+          (t (funcall value text)))))
+
+(defstruct (message-line (:constructor make-message-line ()))
+  "The render side's arrival tracking: the newest log entry seen (eq) and the
+real time it was first seen."
+  (entry nil)
+  (seen 0d0 :type double-float))
+
+(defun message-line-reset! (message-line)
+  (setf (message-line-entry message-line) nil
+        (message-line-seen message-line) 0d0)
+  message-line)
+
+(defun message-line-update! (message-line clock real-time &optional (age 0d0))
+  "Once per frame: a newer newest entry of CLOCK's log is seen at REAL-TIME,
+AGE seconds ago (captures). Conses nothing."
+  (declare (type double-float real-time age))
+  (let ((newest (first (clock-log clock))))
+    (unless (eq newest (message-line-entry message-line))
+      (setf (message-line-entry message-line) newest
+            (message-line-seen message-line) (- real-time age))))
+  message-line)
+
+(defun message-line-lines (clock message-line real-time)
+  "The message line (decision 129): nil without a log entry, else a list of one
+line: the entry's game UTC time grey, its text by its severity, cut at
+*message-line-chars*; :caution amber with \"! \", :danger red inverted, flashing
+at 2 Hz while unread (below clock-log-read), steady after; :info and :caution
+grey from *message-line-fresh* s after MESSAGE-LINE saw it."
+  (let ((entry (message-line-entry message-line)))
+    (when entry
+      (destructuring-bind (game-t key text) entry
+        (let* ((severity (message-severity key text))
+               (text (cut-text text *message-line-chars*))
+               (stamp (readout-run (format nil "~A " (subseq (format-utc game-t) 11))
+                                   *readout-label-colour*)))
+          (list
+           (list stamp
+                 (ecase severity
+                   (:danger
+                    (readout-run text *readout-danger-colour* :inverted
+                                 (and (member entry (clock-log-unread clock) :test #'eq)
+                                      (if (< (mod real-time *readout-flash-period*)
+                                             (* 0.5d0 *readout-flash-period*))
+                                          :on :off))))
+                   ((:info :caution)
+                    (let ((prefix (if (eq severity :caution) "! " "")))
+                      (readout-run (concatenate 'string prefix text)
+                                   (cond ((>= (- real-time (message-line-seen message-line))
+                                              *message-line-fresh*)
+                                          *readout-label-colour*)
+                                         ((eq severity :caution) *readout-caution-colour*)
+                                         (t *readout-value-colour*))))))))))))) 
+
+(defun message-line-origin (lines extent)
+  "The top left pixel of the box for LINES in a frame of EXTENT (width height):
+centred horizontally, its bottom *readout-margin-px* above the frame's bottom."
+  (destructuring-bind (width height) extent
+    (multiple-value-bind (box-width box-height) (readout-box-size lines)
+      (values (max 0 (floor (- width box-width) 2))
+              (max 0 (- height *readout-margin-px* box-height))))))
 
 ;;; The LOST panel (decision 86: Death view, LOST panel and restart in
 ;;; milestone 2): lines in the readout's format, a pure function of the loss.

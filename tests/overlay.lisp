@@ -325,18 +325,24 @@ top, or nil."
 (define-test readout-messages
   (let* ((sim (lis::new-game-sim))
          (clock (clock-at sim 10)))
+    (lis::clock-message! clock :target "NO TARGET")
     (lis::controls-throttle-full (lis::sim-controls sim))
     (lis::clock-warp-up clock sim)
-    (let ((line (readout-line (readout sim clock) "! WARP REFUSED")))
-      (is string= "! WARP REFUSED: ENGINE ON, LIMIT ×10" (lis::line-text line))
+    ;; the refusal is the newest entry: the message line's (decision 129), not the readout's
+    (let ((line (readout-line (readout sim clock) "! NO TARGET")))
+      (is string= "! NO TARGET" (lis::line-text line))
       (is = #xFFB000 (lis::run-colour (first line))))
+    (false (readout-line (readout sim clock) "! WARP REFUSED"))
+    (is string= "! WARP REFUSED: ENGINE ON, LIMIT ×10"
+        (second (line-runs-text (message-line-of clock))))
     (check-glyphs (readout sim clock))
     (incf (lis::clock-real-time clock) 3d0)
-    (false (readout-line (readout sim clock) "! WARP")))
+    (false (readout-line (readout sim clock) "! NO TARGET")))
   (let* ((sim (lis::new-game-sim))
          (clock (lis::new-clock sim)))
     (dotimes (i 4) (lis::clock-message! clock i (format nil "MESSAGE ~D" i)))
     (lis::clock-message! clock :long (make-string 60 :initial-element #\A))
+    (lis::clock-message! clock :newest "NEWEST")
     (let ((texts (last (readout-texts (readout sim clock)) 3)))
       (is equal '("! MESSAGE 2" "! MESSAGE 3") (subseq texts 0 2))
       (is = (+ 2 40) (length (third texts)))
@@ -400,10 +406,160 @@ top, or nil."
                         (loop repeat 3 collect (funcall runs (make-string 42 :initial-element #\W)))))
          (out (lis::make-overlay-buffer 200000)))
     (lis::readout-vertices! out lines 16 16)
-    (let ((readout (lis::overlay-buffer-count out)))
-      (true (< (+ (* 2 readout) 12288) lis::*overlay-max-vertices*)
-            "~D readout vertices" readout)
+    (let ((readout (lis::overlay-buffer-count out))
+          (message (progn (lis::overlay-clear! out)
+                          (lis::readout-vertices!
+                           out (list (list (lis::readout-run (make-string (+ 9 2 lis::*message-line-chars*)
+                                                                          :initial-element #\W)
+                                                             #xE8E4D8)))
+                           0 0)
+                          (lis::overlay-buffer-count out))))
+      (true (<= (+ (* 2 (+ readout message)) 12288) lis::*overlay-max-vertices*)
+            "~D readout and ~D message line vertices" readout message)
       (is = 0 (mod lis::*overlay-max-vertices* 6)))))
+
+;;; The message line (decision 129: Overlay of the outside and map views in
+;;; milestone 3)
+
+(defun message-clock ()
+  (lis::new-clock (lis::new-game-sim)))
+
+(defun message-line-of (clock &optional (real-time 0d0) (seen 0d0))
+  "The line of CLOCK's newest log entry, first seen at SEEN, at REAL-TIME."
+  (let ((ml (lis::make-message-line)))
+    (lis::message-line-update! ml clock seen)
+    (first (lis::message-line-lines clock ml real-time))))
+
+(defun line-runs-text (line) (mapcar #'lis::run-text line))
+
+(define-test message-line-none
+  (let* ((clock (message-clock)) (ml (lis::make-message-line)))
+    (lis::message-line-update! ml clock 0d0)
+    (false (lis::message-line-lines clock ml 0d0))))
+
+(define-test message-line-info
+  (let ((clock (message-clock)))
+    (setf (lis::clock-game-t clock) (+ (lis::start-t) 3725d0))
+    (lis::clock-message! clock :grapple "LATCHED TERN STATION")
+    (let ((line (message-line-of clock)))
+      (is string= (format nil "~A LATCHED TERN STATION" (subseq (lis::format-utc (+ (lis::start-t) 3725d0)) 11))
+          (lis::line-text line))
+      (is = #x8A8A80 (lis::run-colour (first line)))
+      (is = #xE8E4D8 (lis::run-colour (second line)))
+      (is eq :plain (lis::run-style (second line)))
+      (false (lis::glyph-missing (lis::line-text line))))))
+
+(define-test message-line-severities
+  (let ((clock (message-clock)))
+    (lis::clock-message! clock :refused "WARP REFUSED: BURN IN 20 S")
+    (let ((line (message-line-of clock)))
+      (is = #xFFB000 (lis::run-colour (second line)))
+      (is string= "! WARP REFUSED: BURN IN 20 S" (second (line-runs-text line))))
+    (lis::clock-message! clock :autopilot "AUTOPILOT: PLAN COMPLETE")
+    (is = #xE8E4D8 (lis::run-colour (second (message-line-of clock))))
+    (lis::clock-message! clock :autopilot "PLAN STALE: REPLANNING")
+    (is = #xFFB000 (lis::run-colour (second (message-line-of clock))))
+    (lis::clock-message! clock :grapple "NO CAPTURE: TOO FAST")
+    (is = #xFFB000 (lis::run-colour (second (message-line-of clock))))))
+
+(define-test message-line-danger
+  (let ((clock (message-clock)))
+    (lis::clock-message! clock :autopilot "AUTOPILOT ABORT: PROPELLANT LOW")
+    (let ((on (second (message-line-of clock 0.1d0)))
+          (off (second (message-line-of clock 0.3d0))))
+      (is = #xFF3030 (lis::run-colour on))
+      (is eq :inverted (lis::run-style on))
+      (is eq :on (lis::run-flash on))
+      (is eq :off (lis::run-flash off)))
+    ;; acknowledged: steady
+    (lis::clock-acknowledge! clock)
+    (let ((steady (second (message-line-of clock 0.3d0))))
+      (is eq :inverted (lis::run-style steady))
+      (false (lis::run-flash steady)))
+    ;; a danger entry does not age
+    (is = #xFF3030 (lis::run-colour (second (message-line-of clock 100d0))))
+    (lis::clock-message! clock :autopilot "AUTOPILOT: GOAL MISSED")
+    (is eq :inverted (lis::run-style (second (message-line-of clock))))))
+
+(define-test message-line-ages
+  (let ((clock (message-clock)))
+    (lis::clock-message! clock :grapple "LATCHED TERN STATION")
+    (is = #xE8E4D8 (lis::run-colour (second (message-line-of clock 29.9d0))))
+    (is = #x8A8A80 (lis::run-colour (second (message-line-of clock 30.1d0))))
+    (lis::clock-message! clock :refused "WARP REFUSED: BURN IN 20 S")
+    (is = #xFFB000 (lis::run-colour (second (message-line-of clock 29.9d0))))
+    (let ((line (message-line-of clock 30.1d0)))
+      (is = #x8A8A80 (lis::run-colour (second line)))
+      (is string= "! WARP REFUSED: BURN IN 20 S" (second (line-runs-text line))))))
+
+(define-test message-line-cut
+  (let ((clock (message-clock)))
+    (lis::clock-message! clock :removal (make-string 75 :initial-element #\A))
+    (let ((text (second (line-runs-text (message-line-of clock)))))
+      (is = 60 (length text))
+      (is string= (concatenate 'string (make-string 59 :initial-element #\A) "…") text))))
+
+(define-test message-line-duplicate-rule
+  (let ((clock (message-clock)) (sim (lis::new-game-sim)))
+    (lis::clock-message! clock :refused "MESSAGE 1")
+    (lis::clock-message! clock :lowered "MESSAGE 2")
+    (lis::clock-message! clock :grapple "MESSAGE 3")
+    (let ((texts (readout-texts (readout sim clock))))
+      (is equal '("! MESSAGE 1" "! MESSAGE 2") (last texts 2))
+      (false (find "! MESSAGE 3" texts :test #'string=)))))
+
+(define-test message-line-tracking
+  (let* ((clock (message-clock)) (ml (lis::make-message-line)))
+    (lis::clock-message! clock :refused "A")
+    (lis::message-line-update! ml clock 5d0)
+    (lis::message-line-update! ml clock 9d0)
+    (is = 5d0 (lis::message-line-seen ml))
+    (lis::clock-message! clock :refused "B")
+    (lis::message-line-update! ml clock 11d0 2d0)
+    (is = 9d0 (lis::message-line-seen ml))
+    (lis::message-line-reset! ml)
+    (false (lis::message-line-entry ml))
+    (let ((bytes (least-bytes-consed
+                  (lambda () (loop repeat 1000 do (lis::message-line-update! ml clock 12d0))) 5)))
+      (true (< bytes 1024) "~D bytes over 1000 frames" bytes))))
+
+(define-test message-line-origin
+  (let* ((lines (list (list (lis::readout-run "00:00:00 LATCHED TERN STATION" #xE8E4D8))))
+         (extent '(1280 800)))
+    (multiple-value-bind (x y) (lis::message-line-origin lines extent)
+      (multiple-value-bind (w h) (lis::readout-box-size lines)
+        (is = 800 (+ y h lis::*readout-margin-px*))
+        (true (<= (abs (- (* 2 x) (- 1280 w))) 1))
+        ;; clear of the LOST panel's top
+        (true (> y (* lis::*lost-panel-top* 800)))))))
+
+(defun message-keys-in-sources ()
+  "Every notice key the message-writing sources pass to clock-message!, sim-notice!
+and key-refusal!, read from their text."
+  (let ((keys '()))
+    (dolist (file '("hazards" "input" "places" "clock" "autopilot" "prediction" "controls"))
+      (let ((text (uiop:read-file-string
+                   (asdf:system-relative-pathname "luv-in-space" (format nil "src/~A.lisp" file)))))
+        (dolist (pattern '("(sim-notice! sim :" "(clock-message! clock :" "(clock-message! (game-clock game) :"
+                           "(key-refusal! clock :"))
+          (loop with start = 0
+                for at = (search pattern text :start2 start)
+                while at
+                do (let* ((from (+ at (length pattern) -1))
+                          (end (position-if (lambda (c) (member c '(#\Space #\) #\Newline))) text
+                                            :start from)))
+                     (pushnew (intern (string-upcase (subseq text (1+ from) end)) :keyword) keys)
+                     (setf start end))))))
+    keys))
+
+(define-test message-severity-keys-resolve
+  (let ((keys (message-keys-in-sources))
+        (info '(:removal :delivery :station)))
+    (true (> (length keys) 8) "~S" keys)
+    (dolist (key keys)
+      (true (or (assoc key lis::*message-severity*) (member key info)) "~S has no severity" key))
+    (dolist (key info)
+      (false (assoc key lis::*message-severity*)))))
 
 (define-test death-glow-radiance
   (let ((earth (lis::make-loss :crash :earth 0d0 7800d0 0d0 0d0))

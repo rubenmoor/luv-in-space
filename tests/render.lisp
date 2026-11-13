@@ -1665,6 +1665,71 @@ without it the scene shows there."
                 "the scene under the readout's box"))))
     (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))))
 
+(defun message-line-checks (game png width height)
+  "The message line at WIDTH x HEIGHT (decision 129) with an :info and then a
+danger entry in the log: inside its computed box only the box's, the time's,
+the text's exact colours and the flash's red, each present; without the readout
+the scene shows there."
+  (let ((allowed (mapcar #'rgb-bytes '(#x0A0C0C #x8A8A80 #xE8E4D8 #xFF3030))))
+    (lis::call-on-canvas-thread
+     game (lambda ()
+            (let ((clock (lis::game-clock game)))
+              (lis::clock-message! clock :grapple "LATCHED TERN STATION"))))
+    (flet ((check (pixels-fn colours-required)
+             (let* ((lines (lis::call-on-canvas-thread
+                            game (lambda ()
+                                   (lis::message-line-lines (lis::game-clock game)
+                                                            (lis::game-message-line game)
+                                                            (lis::game-real-time game)))))
+                    (counts (make-hash-table :test #'equal)))
+               (multiple-value-bind (x0 y0) (lis::message-line-origin lines (list width height))
+                 (multiple-value-bind (box-width box-height) (lis::readout-box-size lines)
+                   (true (and (< (+ x0 box-width) width) (<= (+ y0 box-height) height)))
+                   (multiple-value-bind (pixels format) (funcall pixels-fn)
+                     (loop for y from y0 below (+ y0 box-height)
+                           do (loop for x from x0 below (+ x0 box-width)
+                                    do (incf (gethash (pixel-rgb pixels format width x y) counts 0)))))))
+               (dolist (colour colours-required)
+                 (true (plusp (gethash colour counts 0)) "no pixel of ~A in the message line" colour))
+               (loop for colour being the hash-keys of counts using (hash-value n)
+                     do (true (member colour allowed :test #'equal)
+                              "~D pixels of ~A in the message line" n colour))
+               counts)))
+      (flet ((shot (&key (readout t))
+               (lambda ()
+                 (multiple-value-bind (path w h pixels format)
+                     (lis::capture-game-state game png :sim (lis::new-game-sim) :frames 1
+                                                       :readout readout)
+                   (declare (ignore path w h))
+                   (values pixels format)))))
+        (check (shot) (mapcar #'rgb-bytes '(#x0A0C0C #x8A8A80 #xE8E4D8)))
+        ;; the unread danger entry flashes at 2 Hz: over a run of frames red shows
+        (lis::call-on-canvas-thread
+         game (lambda ()
+                (lis::clock-message! (lis::game-clock game) :autopilot "AUTOPILOT ABORT: PROPELLANT LOW")))
+        (let ((seen-red nil))
+          (loop repeat 40 until seen-red
+                do (let ((counts (check (shot) '())))
+                     (when (plusp (gethash (rgb-bytes #xFF3030) counts 0))
+                       (setf seen-red t))))
+          (true seen-red "the danger entry's red in its on phase"))
+        ;; without the readout the scene shows in the box's region
+        (let ((counts (make-hash-table :test #'equal)))
+          (let* ((lines (lis::call-on-canvas-thread
+                         game (lambda ()
+                                (lis::message-line-lines (lis::game-clock game)
+                                                         (lis::game-message-line game) 0d0)))))
+            (multiple-value-bind (x0 y0) (lis::message-line-origin lines (list width height))
+              (multiple-value-bind (box-width box-height) (lis::readout-box-size lines)
+                (multiple-value-bind (pixels format) (funcall (shot :readout nil))
+                  (loop for y from y0 below (+ y0 box-height)
+                        do (loop for x from x0 below (+ x0 box-width)
+                                 do (incf (gethash (pixel-rgb pixels format width x y) counts 0))))))))
+          (true (loop for colour being the hash-keys of counts
+                      thereis (not (member colour allowed :test #'equal)))
+                "the scene under the message line's box")))))
+  (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream))))
+
 (defun lost-sim ()
   "The deorbit case of hazards' tests, lost at the impact."
   (let ((sim (fly-until-lost (orbit-sim (dive-orbit (- *earth-crash-radius* 50d3)))
@@ -2523,6 +2588,7 @@ is read where the pose puts it."
            (luv:resize-canvas (lis::game-canvas game) 1280 800)
            (lis::wait-for-frames game 3)
            (readout-checks game png 1280 800)
+           (message-line-checks game png 1280 800)
            (console-checks game png 1280 800)
            (attitude-mode-line-checks game png 1280 800)
            (console-checks game png 1280 800 :sim (sun-sim 60 30) :screens-only t)

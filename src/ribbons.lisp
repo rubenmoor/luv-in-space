@@ -788,6 +788,7 @@ for a kept plan. Conses nothing."
                     (setf phase end
                           end-t (aref (ribbon-times ribbon) (ribbon-count ribbon)))))
                 (orbit-of (render-state-r state) (render-state-v state) *ribbon-colour*)))
+          (map-lines-add-terminal-path! lines ribbon state eye camera extent)
           ;; the shot's dashes: from the first burn (shown, kept), or on from the prediction's end
           (when (and shot dash-t)
             (let* ((from (if (eq mode :engaged) (max end-t (shot-first-time shot)) (max dash-t (shot-first-time shot))))
@@ -819,6 +820,58 @@ lines function, if any, adds its own first."
       (luv:set-vertex-buffer pass 1 buffer)
       (luv:draw pass 6 count))))
 
+;;; The rendezvous aim point and terminal path (decision 125; decision 119).
+
+(defun render-state-aim-update! (state sim)
+  "STATE's aim-valid, aim-r and stop-r: while the map's plan is a rendezvous
+whose arrival lies after t_r, its aim point at t_r (the target's drop-point
+state there plus the plan's offset, kept in the terminal frame: turned by the
+frame at t_r from the frame at the arrival) and its stop point at t_r
+(stop-point-into!), both Earth-centred; else aim-valid nil."
+  (declare (type render-state state) (type sim sim))
+  (setf (render-state-aim-valid state) nil)
+  (let ((model (render-state-autopilot-model state)))
+    (when model
+      (let* ((plan (autopilot-map-plan model))
+             (part (and plan (burn-plan-rendezvous plan)))
+             (tr (render-state-t state)))
+        (declare (type double-float tr))
+        (when (and part (> (rendezvous-part-arrival part) tr)
+                   (target-available-p sim (rendezvous-part-target part)))
+          (let* ((target (rendezvous-part-target part))
+                 (object (target-object sim target))
+                 (arrival (rendezvous-part-arrival part))
+                 (rt (make-vec3)) (vt (make-vec3)) (q (make-quat)) (w (make-vec3))
+                 (offset (make-vec3)) (stop-v (make-vec3)))
+            (when (and (stop-target-state-into! rt vt sim target :drop-point arrival)
+                       (progn
+                         (terminal-frame-into! q w object rt vt arrival)
+                         (quat-rotate! offset (quat-conjugate! q q) (rendezvous-part-offset part))
+                         (stop-target-state-into! rt vt sim target :drop-point tr)))
+              (terminal-frame-into! q w object rt vt tr)
+              (quat-rotate! offset q offset)
+              (vec3-add! (render-state-aim-r state) rt offset)
+              (when (stop-point-into! (render-state-stop-r state) stop-v sim target
+                                      (rendezvous-part-fixture part) (rendezvous-part-range part) tr)
+                (setf (render-state-aim-valid state) t)))))))
+    state))
+
+(defun map-lines-add-terminal-path! (lines ribbon state eye camera extent)
+  "The terminal path of the rendezvous plan: the straight segment from the aim
+point to the stop point (render-state-aim-update!), cyan and dashed, grey for
+a kept plan. Conses nothing."
+  (when (and (render-state-aim-valid state) (render-state-autopilot-model state))
+    (let ((points (ribbon-points ribbon)) (kept (ribbon-count ribbon)))
+      (replace points (render-state-aim-r state))
+      (replace points (render-state-stop-r state) :start1 3)
+      (setf (aref (ribbon-mid-radii ribbon) 0) 1d12
+            (ribbon-count ribbon) 1)
+      (let ((colour (if (eq (nth-value 2 (autopilot-map-plan (render-state-autopilot-model state))) :kept)
+                        *plan-kept-colour* *ribbon-colour*)))
+        (map-lines-add-orbit! lines ribbon eye camera extent :colour colour :crash-colour colour
+                                                             :dashed t))
+      (setf (ribbon-count ribbon) kept))))
+
 ;;; The map's markers (decision 84): the ship, the apsides, the impact and
 ;;; bodies below 6 px, each a pixel position, a colour and a label, from the
 ;;; render state's r, v in double; drawn by overlay.lisp after the tone map.
@@ -831,13 +884,14 @@ lines function, if any, adds its own first."
 (defparameter *marker-label-colour* #xE8E4D8 "Labels, paper white, sRGB; decision 84.")
 (defparameter *marker-target-colour* #xE040E0 "The target, its closest-approach point and the relative nodes, magenta, sRGB; decision 125.")
 (defparameter *marker-target-px* 12 "The target's box; decision 125.")
+(defparameter *marker-aim-px* 9 "The rendezvous aim point's ring; decision 125.")
 (defparameter *marker-candidate-px* 8 "The other candidates' boxes; decision 125.")
 (defparameter *marker-candidate-body-px* 6d0
   "A candidate whose bound projects to this many px or more has no box; decision 125.")
 (defparameter *map-pick-px* 10d0 "A click picks a marker within this many px; decision 125.")
 (defparameter *marker-ship-label* "M-07" "decision 49: Story: names, call signs and ships.")
 (declaim (type double-float *marker-body-px* *marker-candidate-body-px* *map-pick-px*)
-         (type fixnum *marker-target-px* *marker-candidate-px*)
+         (type fixnum *marker-target-px* *marker-candidate-px* *marker-aim-px*)
          (type (unsigned-byte 24) *marker-target-colour*)
          (type fixnum *marker-label-gap-px*)
          (type (unsigned-byte 24) *marker-colour* *marker-impact-colour* *marker-body-colour*
@@ -1212,6 +1266,9 @@ OUT."
                              (write-burn-label! (svref (map-markers-burn-labels out) i) (1+ i)
                                                 (planned-burn-dv burn))
                              scratch :both time)))))))))
+        (when (render-state-aim-valid render-state)
+          (add :aim :ring *marker-target-colour* "AIM" (render-state-aim-r render-state) :both
+               0d0 *marker-aim-px*))
         (let ((target (render-state-target render-state)))
           (when target
             (add :target :box *marker-target-colour* (target-name target)

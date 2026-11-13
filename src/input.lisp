@@ -286,7 +286,8 @@ below 0.1 off (controls-set-throttle)."
          (unless (and (= dx 0d0) (= dy 0d0))
            (outside-view-drag! view dx dy))
          (unless (= notches 0d0)
-           (outside-view-zoom! view notches (ship-state-m-p (sim-ship (game-sim game)))))))
+           (with-stack-load (load (game-sim game))
+             (outside-view-zoom! view notches (ship-state-m-p (sim-ship (game-sim game))) load)))))
       (:map
        (let ((view (game-map-view game)))
          (unless (and (= dx 0d0) (= dy 0d0))

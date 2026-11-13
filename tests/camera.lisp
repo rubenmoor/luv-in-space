@@ -450,3 +450,45 @@ against |c|^2 - R^2 in rationals, for C at ALTITUDE over Earth."
     (is = 0 (least-bytes-consed
              (lambda () (dotimes (i 1000)
                           (lis::map-camera-update! camera view state 0.016d0)))))))
+
+(define-test outside-min-distance-with-load
+  ;; decision 124: 1.2 x the larger of the boxes' corner radius and the load's
+  ;; CoM distance from the stack's CoM plus its bound, both about the stack's CoM.
+  (flet ((hand (load)
+           (let* ((com (lis::mass-properties-com (lis::ship-mass-properties lis::*propellant-full* load)))
+                  (corners 0d0)
+                  (reach (+ (lis::vec3-norm (lis::vec3-sub (lis::stack-load-com load) com))
+                            (lis::object-def-bound (lis::stack-load-def load)))))
+             (loop for (nil nil centres size) in lis::*ship-parts*
+                   do (dolist (c centres)
+                        (dolist (sx '(-0.5d0 0.5d0))
+                          (dolist (sy '(-0.5d0 0.5d0))
+                            (dolist (sz '(-0.5d0 0.5d0))
+                              (setf corners
+                                    (max corners
+                                         (lis::vec3-norm
+                                          (lis::vec3-sub (lis::vec3 (+ (first c) (* sx (first size)))
+                                                                    (+ (second c) (* sy (second size)))
+                                                                    (+ (third c) (* sz (third size))))
+                                                         com)))))))))
+             (values (* 1.2d0 (max corners reach)) corners reach))))
+    (let* ((def (lis::object-definition :skua-yard-6))
+           (load (lis::stack-design-pose def))
+           (wet lis::*propellant-full*))
+      ;; At the design pose the boxes' corners still decide, about the shifted CoM.
+      (multiple-value-bind (expected corners reach) (hand load)
+        (true (> corners reach))
+        (true (< (abs (- (lis::outside-min-distance wet load) expected)) 1d-3)
+              "~F against ~F" (lis::outside-min-distance wet load) expected))
+      ;; A light load far out: its reach decides.
+      (let ((far (lis::make-stack-load (lis::object-definition :pod-14) (lis::vec3 100d0 0d0 0d0) (lis::quat 1 0 0 0))))
+        (multiple-value-bind (expected corners reach) (hand far)
+          (true (< corners reach))
+          (true (< (abs (- (lis::outside-min-distance wet far) expected)) 1d-3)
+                "~F against ~F" (lis::outside-min-distance wet far) expected)))
+      ;; Without a load: as before (outside-min-distance-measured).
+      (true (< (abs (- (lis::outside-min-distance wet nil) 14.6446d0)) 1d-4))
+      ;; The wheel clamps to it.
+      (let ((view (lis::new-outside-view)))
+        (lis::outside-view-zoom! view 100 wet load)
+        (is = (lis::outside-min-distance wet load) (lis::outside-view-target view))))))

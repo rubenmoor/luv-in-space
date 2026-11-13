@@ -148,3 +148,39 @@ from Earth and the Sun."
   (let ((state (sim-render-state (start-sim-at 180))))
     (is = 0d0 (lis::render-state-sun-fraction state))
     (is = lis::*exposure-deep* (exposure (ship-camera state 40d0) state))))
+
+(defun far-render-state ()
+  "The start state's render state with the ship 100,000 km from Earth."
+  (let ((state (sim-render-state (lis::new-game-sim))))
+    (replace (lis::render-state-r state) (lis::vec3 0d0 1d8 0d0))
+    state))
+
+(define-test exposure-sunlit-object
+  ;; decision 124: a drawn object within the view counts like the ship: a
+  ;; sunlit Tern Station filling 1 % of the frame sets the sunlit exposure
+  ;; though the eye is in Earth's shadow (the ship's sun-fraction 0); not one in
+  ;; shadow, undrawn or tiny. The ship far from Earth and the Moon, looking
+  ;; away from the Sun and from Earth.
+  (let* ((state (far-render-state))
+         (tern (object-render-of state :tern-station))
+         (r (lis::render-state-r state))
+         (f (lis::vec3-normalize (lis::vec3-cross r (lis::render-state-sun state))))
+         (camera (look-along! (lis::make-camera) f))
+         (cone (nth-value 1 (lis::view-cone camera 1.6d0)))
+         (bound (lis::object-def-bound (lis::object-render-def tern)))
+         (distance (/ bound (sin (* 0.1d0 cone)))))
+    (setf (lis::render-state-sun-fraction state) 0d0
+          (lis::object-render-drawn tern) t
+          (lis::object-render-sun-fraction tern) 1d0)
+    (replace (lis::object-render-r tern) (lis::vec3-add-scaled r f distance))
+    (is = lis::*exposure-sunlit* (exposure camera state))
+    (setf (lis::object-render-sun-fraction tern) 0d0)
+    (is = lis::*exposure-deep* (exposure camera state))
+    (setf (lis::object-render-sun-fraction tern) 1d0
+          (lis::object-render-drawn tern) nil)
+    (is = lis::*exposure-deep* (exposure camera state))
+    (setf (lis::object-render-drawn tern) t)
+    (replace (lis::object-render-r tern) (lis::vec3-add-scaled r f (* 40 distance)))
+    (is = lis::*exposure-deep* (exposure camera state))
+    ;; The map's exposure stays.
+    (is = lis::*exposure-map* (exposure camera state :map))))

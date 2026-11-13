@@ -1345,6 +1345,11 @@ texture-from-pixels; alpha 0 off the cairn and the letters."
   model layout hull hull-count engine engine-count
   groups                                ; (primitive count instances count) per group
   decal-view decal-sampler corners
+  (objects (make-hash-table :test #'eq)) ; an object-gpu per object definition key
+  (object-glow-floats 0 :type fixnum)   ; the most floats one object's glows take
+  (object-glows nil)                    ; scratch of that size
+  (object-uniforms (make-array +ship-uniform-floats+ :element-type 'single-float
+                                                     :initial-element 0f0))
   (scratch (make-mass-properties) :type mass-properties)
   (glows (make-array (* +glow-floats+ +glow-count+) :element-type 'single-float
                                                     :initial-element 0f0))
@@ -1395,7 +1400,7 @@ written, compare :greater; and :ship-glow: additive, depth tested, not written."
                        :format format :blend :premultiplied-alpha
                        :depth-stencil '(:format :depth32-float :depth-write-enabled nil
                                         :depth-compare :greater))
-        (%make-ship-gpu
+        (let ((gpu (%make-ship-gpu
          :model model :layout layout
          :hull (vertex-buffer renderer (model-vertices model) "hull")
          :hull-count (count-of (model-vertices model) +vertex-floats+)
@@ -1409,11 +1414,19 @@ written, compare :greater; and :ship-glow: additive, depth tested, not written."
                                                     (format nil "~A instances" kind))
                                      (count-of (instance-group-instances g) +instance-floats+)))
          :decal-view view :decal-sampler sampler
-         :corners (vertex-buffer renderer (star-corners) "glow corners"))))))
+         :corners (vertex-buffer renderer (star-corners) "glow corners"))))
+          (make-object-gpus! gpu renderer)
+          gpu)))))
 
 (defstruct ship-slot
-  "A target's ship block, material table, bind group and glow instances."
-  buffer materials bind-group glows)
+  "A target's ship block, material table, bind group and glow instances, and
+its OBJECTS: an object-slot per entry of *objects* (decision 124)."
+  buffer materials bind-group glows (objects (vector)))
+
+(defstruct object-slot
+  "One object's ship block, bind group (the frame block, the shared decal and
+material table, its own block) and glow instances in a target."
+  buffer bind-group glows)
 
 (defun make-ship-target-slot (renderer ship frame-buffer)
   "The per-target resources of SHIP's draws; FRAME-BUFFER the target's frame block."
@@ -1426,6 +1439,7 @@ written, compare :greater; and :ship-glow: additive, depth tested, not written."
                                         :size (* 4 (length (ship-gpu-materials ship)))
                                         :usage '(:storage :copy-dst)))))
     (make-ship-slot
+     :objects (make-object-slots renderer ship frame-buffer materials)
      :buffer buffer :materials materials
      :glows (luv:create device (luv:make-buffer-descriptor
                                 :label "ship glows"
@@ -1440,6 +1454,10 @@ written, compare :greater; and :ship-glow: additive, depth tested, not written."
                                                 (:binding 4 :resource ,materials)))))))
 
 (defun release-ship-slot (slot)
+  (loop for o across (ship-slot-objects slot)
+        do (luv:destroy (object-slot-glows o))
+           (luv:destroy (object-slot-bind-group o))
+           (luv:destroy (object-slot-buffer o)))
   (luv:destroy (ship-slot-glows slot))
   (luv:destroy (ship-slot-bind-group slot))
   (luv:destroy (ship-slot-materials slot))
@@ -1460,16 +1478,22 @@ written, compare :greater; and :ship-glow: additive, depth tested, not written."
   (let ((qc (quat-rotate (render-state-q state) com)))
     (vec3-sub! out (render-state-r state) qc)))
 
+(declaim (inline earth-lit-cap))
 (defun earth-lit-cap (r s-hat)
   "The lit share of the Earth seen from R (decision 99: Earthshine from the
 lit part of the visible cap): max(0, cos θ) of the Sun's zenith angle θ,
 averaged over θ0 ± λ, θ0 its angle at the sub-ship point (S-HAT the unit
 direction to the Sun), λ = acos(R⊕ / |r|) the cap's half-angle. 0 when the
-whole cap is past the terminator."
+whole cap is past the terminator. Conses nothing."
+  (declare (optimize speed) (type vec3 r s-hat))
   (let* ((d (vec3-norm r))
-         (cap (if (> d +radius-earth+) (acos (/ +radius-earth+ d)) 0d0))
-         (theta (acos (max -1d0 (min 1d0 (/ (vec3-dot r s-hat) d)))))
+         (cap (if (> d +radius-earth+)
+                  (acos (the (double-float 0d0 1d0) (/ +radius-earth+ d)))
+                  0d0))
+         (theta (acos (the (double-float -1d0 1d0)
+                           (max -1d0 (min 1d0 (/ (vec3-dot r s-hat) d))))))
          (low (- theta cap)))
+    (declare (type double-float d cap theta low))
     (cond ((>= low (/ pi 2)) 0d0)
           ((< cap 1d-9) (max 0d0 (cos theta)))
           (t (/ (- (sin (min (+ theta cap) (/ pi 2))) (sin low)) (* 2 cap))))))
@@ -1521,10 +1545,13 @@ the lights-on flag, the emissive colour."
 
 (defun encode-ship (pass renderer ship slot state eye)
   "The Mule into the open scene PASS (after the impostors, before the
-ribbons): the hull, the instance groups, then the engine as instance 1 of
+ribbons), about the stack's CoM (render-state-com, with the latched load):
+the hull, the instance groups, then the engine as instance 1 of
 :ship-mesh, so its vertex stage turns it by its trim; then its glows."
-  (let ((com (mass-properties-com (ship-mass-properties (render-state-m-p state) nil
-                                                        (ship-gpu-scratch ship))))
+  (let ((com (if (render-state-com-valid state)
+                 (render-state-com state)
+                 (mass-properties-com (ship-mass-properties (render-state-m-p state) nil
+                                                            (ship-gpu-scratch ship)))))
         (bind-group (ship-slot-bind-group slot)))
     (luv:write-buffer (ship-slot-buffer slot) (ship-uniforms! (ship-gpu-uniforms ship) state eye com))
     (luv:write-buffer (ship-slot-materials slot) (ship-materials! (ship-gpu-materials ship)))
@@ -1548,3 +1575,95 @@ ribbons): the hull, the instance groups, then the engine as instance 1 of
         (luv:set-vertex-buffer pass 0 (ship-gpu-corners ship))
         (luv:set-vertex-buffer pass 1 (ship-slot-glows slot))
         (luv:draw pass 6 glows)))))
+
+;;; Objects (decision 124: Meshes of the places: models, scenery liveries,
+;;; lights, far dots, the grapple's claws, floodlight and range finder): each
+;;; promoted or rails object of the render state as its model's mesh from 2 px
+;;; of projected extent, below that as a dim dot, its lights always.
+
+(defparameter *lamp-glow-radius* 0.04d0 "m: a fixture lamp.")
+(defparameter *lamp-radiance* 5d0)
+(defparameter *strobe-offset* 0.37d0 "Seconds of strobe phase per object index.")
+(defparameter *dot-radiance* 0.5d0 "x the Sun term x (1 + cos phase) / 2 x sun-fraction.")
+(defparameter *object-mesh-pixels* 2d0 "Least projected extent drawn as a mesh, px.")
+
+(defstruct (object-gpu (:constructor %make-object-gpu))
+  "One model's buffers (the hull, the engine if any, the instance groups as
+ship-gpu's), its EXTENT (the farthest vertex from the CoM), the DOT-RADIUS of
+a disc of a quarter of its shapes' surface, and its BEACONS (kind position)."
+  key hull (hull-count 0 :type fixnum) engine (engine-count 0 :type fixnum) groups
+  (extent 0d0 :type double-float) (dot-radius 0d0 :type double-float) beacons)
+
+(defun shapes-quarter-area (def)
+  "A quarter of DEF's shapes' surface, m²: the mean cross-section of a convex body."
+  (/ (loop for shape in (object-def-shapes def)
+           sum (ecase (shape-kind shape)
+                 (:sphere (* 4 pi (expt (shape-radius shape) 2)))
+                 (:box (let ((s (shape-size shape)))
+                         (* 2 (+ (* (aref s 0) (aref s 1)) (* (aref s 1) (aref s 2))
+                                 (* (aref s 2) (aref s 0))))))))
+     4d0))
+
+(defun make-object-gpu (renderer def)
+  (let* ((model (object-model (object-def-key def)))
+         (label (string-downcase (object-def-key def))))
+    (flet ((count-of (floats size) (floor (length floats) size)))
+      (%make-object-gpu
+       :key (object-def-key def)
+       :hull (and (plusp (length (model-vertices model)))
+                  (vertex-buffer renderer (model-vertices model) label))
+       :hull-count (count-of (model-vertices model) +vertex-floats+)
+       :engine (and (plusp (length (model-engine model)))
+                    (vertex-buffer renderer (model-engine model) (format nil "~A engine" label)))
+       :engine-count (count-of (model-engine model) +vertex-floats+)
+       :groups (loop for g in (model-groups model)
+                     for kind = (string-downcase (instance-group-kind g))
+                     for count = (count-of (instance-group-instances g) +instance-floats+)
+                     when (plusp count)
+                       collect (list (vertex-buffer renderer (instance-group-primitive g)
+                                                    (format nil "~A ~A" label kind))
+                                     (count-of (instance-group-primitive g) +vertex-floats+)
+                                     (vertex-buffer renderer (instance-group-instances g)
+                                                    (format nil "~A ~A instances" label kind))
+                                     count))
+       :extent (float (model-extent model) 1d0)
+       :dot-radius (sqrt (/ (shapes-quarter-area def) pi))
+       :beacons (model-beacons model)))))
+
+(defun make-object-gpus! (gpu renderer)
+  "An object-gpu for each of *objects* into GPU's table, and the glow capacity
+(each model's beacons and a dot)."
+  (let ((most 1))
+    (dolist (def *objects*)
+      (let ((object (make-object-gpu renderer def)))
+        (setf (gethash (object-def-key def) (ship-gpu-objects gpu)) object)
+        (setf most (max most (1+ (length (object-gpu-beacons object)))))))
+    (setf (ship-gpu-object-glow-floats gpu) (* +glow-floats+ most)
+          (ship-gpu-object-glows gpu) (make-array (* +glow-floats+ most) :element-type 'single-float
+                                                                          :initial-element 0f0))
+    gpu))
+
+(defun make-object-slots (renderer ship frame-buffer materials)
+  "An object-slot per entry of *objects* for one target (the object's block,
+bind group sharing the target's material table MATERIALS, glow instances)."
+  (let ((device (renderer-device renderer)))
+    (coerce
+     (loop for def in *objects*
+           collect (let ((buffer (luv:create device (luv:make-buffer-descriptor
+                                                      :label "object" :size (* 4 +ship-uniform-floats+)
+                                                      :usage '(:uniform :copy-dst)))))
+                     (make-object-slot
+                      :buffer buffer
+                      :glows (luv:create device (luv:make-buffer-descriptor
+                                                 :label "object glows"
+                                                 :size (* 4 (ship-gpu-object-glow-floats ship))
+                                                 :usage '(:vertex :copy-dst)))
+                      :bind-group (luv:create
+                                   device (luv:make-bind-group-descriptor
+                                           :layout (ship-gpu-layout ship)
+                                           :entries `((:binding 0 :resource ,frame-buffer)
+                                                      (:binding 1 :resource ,(ship-gpu-decal-view ship))
+                                                      (:binding 2 :resource ,(ship-gpu-decal-sampler ship))
+                                                      (:binding 3 :resource ,buffer)
+                                                      (:binding 4 :resource ,materials)))))))
+     'simple-vector)))

@@ -18,7 +18,8 @@ its position."
   (q (quat 1 0 0 0) :type quat)
   (w (make-vec3) :type vec3)
   (drawn nil)
-  (sun-fraction 1d0 :type double-float))
+  (sun-fraction 1d0 :type double-float)
+  (def nil :type (or null object-def)))   ; its definition (model, bound)
 
 (defstruct (render-grapple (:constructor make-render-grapple ()) (:copier nil))
   "The grapple as a frame draws it: the sim's STATE and attached OBJECT
@@ -67,6 +68,11 @@ closing speed of a rails target: the position's rate)."
                    'simple-vector)
    :type simple-vector)                 ; an object-render per sim-objects entry
   (grapple (make-render-grapple) :type render-grapple)
+  (com (make-vec3) :type vec3)          ; the stack's CoM in body axes from R (with the latched load)
+  (own (make-mass-properties) :type mass-properties) ; scratch: the Mule's own
+  (com-valid nil)                       ; true once render-state-update! set COM
+  (load-reach 0d0 :type double-float)   ; m: the latched load's CoM distance from COM + its bound, 0 none
+  (stack-shift 0d0 :type double-float)  ; m: COM from the Mule's own CoM
   (claws-eased nil)                     ; true: the shown angle eases (render-state-ease-claws!)
   (state-a (make-ship-state (make-vec3) (make-vec3) (quat 1 0 0 0) (make-vec3) 0d0)
    :type ship-state)                    ; scratch: an object's previous and current state
@@ -183,6 +189,25 @@ removed object not drawn. Conses nothing."
          (b (render-state-state-b out)))
     (declare (type (or null fixnum) attached))
     (with-stack-properties (properties sim load)
+      (let ((com (mass-properties-com properties))
+            (own (make-vec3)))
+        (declare (dynamic-extent own))
+        (replace (render-state-com out) com)
+        (setf (render-state-com-valid out) t)
+        (vec3-set! own 0d0 0d0 0d0)
+        (setf (render-state-stack-shift out)
+              (if load
+                  (let ((plain (render-state-own out)))
+                    (locally (declare (inline ship-mass-properties))
+                      (ship-mass-properties (ship-state-m-p (sim-ship sim)) nil plain))
+                    (vec3-sub! own com (mass-properties-com plain))
+                    (vec3-norm own))
+                  0d0)
+              (render-state-load-reach out)
+              (if load
+                  (progn (vec3-sub! own (stack-load-com load) com)
+                         (+ (vec3-norm own) (object-def-bound (stack-load-def load))))
+                  0d0)))
       (dotimes (i (length objects))
         (let* ((object (svref objects i))
                (o (svref renders i))
@@ -209,7 +234,8 @@ removed object not drawn. Conses nothing."
                                (t (hermite-states! (object-render-r o) (object-render-v o)
                                                    (object-render-q o) (object-render-w o)
                                                    prev cur h s))))))))
-          (setf (object-render-drawn o) (and drawn t))
+          (setf (object-render-drawn o) (and drawn t)
+                (object-render-def o) (object-def-of object))
           (when drawn
             (setf (object-render-sun-fraction o)
                   (sun-visible-fraction (object-render-r o) tr))))))
@@ -317,6 +343,211 @@ not below t or the sim is lost; the target at the render time
                                      rate))
             (fill (render-state-target-relative out) 0d0))))
     out))
+
+;;; Drawing the objects (decision 124): their blocks, glows and draw kinds,
+;;; here for the render state's accessors to inline (meshes.lisp holds their
+;;; buffers and slots).
+
+(declaim (inline put4!))
+(defun put4! (out index x y z w)
+  (declare (type (simple-array single-float (*)) out) (type fixnum index)
+           (type double-float x y z w))
+  (setf (aref out index) (coerce x 'single-float)
+        (aref out (+ index 1)) (coerce y 'single-float)
+        (aref out (+ index 2)) (coerce z 'single-float)
+        (aref out (+ index 3)) (coerce w 'single-float)))
+
+(defun object-uniforms! (out state o eye)
+  "The ship block (shaders.lisp) into OUT for the object O of the render
+STATE seen from EYE: the rows of its q, its CoM (the body origin) relative to
+the eye (decision 5: Precision of positions) with the glows' least sigma, no
+gimbal, identity trim, then in its body axes the Sun's direction with
+(1 AU / d)² x its sun-fraction, the direction to Earth with the earthshine
+from its position, the tint and ambient, the eye with the lights on, no
+emission. Conses nothing."
+  (declare (optimize speed) (type (simple-array single-float (*)) out)
+           (type render-state state) (type object-render o) (type vec3 eye))
+  (let ((q (object-render-q o)) (r (object-render-r o))
+        (sun (make-vec3)) (s-hat (make-vec3)) (r-hat (make-vec3)) (v (make-vec3))
+        (inverse (make-quat)))
+    (declare (dynamic-extent sun s-hat r-hat v inverse))
+    (with-quat (((w x y z) q))
+      (put4! out 0 (- 1 (* 2 (+ (* y y) (* z z)))) (* 2 (- (* x y) (* w z))) (* 2 (+ (* x z) (* w y))) 0d0)
+      (put4! out 4 (* 2 (+ (* x y) (* w z))) (- 1 (* 2 (+ (* x x) (* z z)))) (* 2 (- (* y z) (* w x))) 0d0)
+      (put4! out 8 (* 2 (- (* x z) (* w y))) (* 2 (+ (* y z) (* w x))) (- 1 (* 2 (+ (* x x) (* y y)))) 0d0))
+    (dotimes (i 3)
+      (setf (aref out (+ 12 i)) (coerce (- (aref r i) (aref eye i)) 'single-float)))
+    (setf (aref out 15) (coerce (* 0.5d0 (the double-float *glow-min-pixels*)) 'single-float))
+    (put4! out 16 0d0 0d0 0d0 0d0)
+    (put4! out 20 1d0 0d0 0d0 0d0)
+    (put4! out 24 0d0 1d0 0d0 0d0)
+    (put4! out 28 0d0 0d0 1d0 0d0)
+    (vec3-sub! sun (render-state-sun state) r)
+    (let* ((d-sun (vec3-norm sun))
+           (irradiance (let ((k (/ +au+ d-sun))) (* k k)))
+           (earthshine (let* ((distance (vec3-norm r))
+                              (k (/ +radius-earth+ distance)))
+                         (vec3-scale! s-hat sun (/ d-sun))
+                         (* (the double-float *earth-albedo*) k k (earth-lit-cap r s-hat) irradiance)))
+           (tint *earthshine-tint*))
+      (quat-conjugate! inverse q)
+      (vec3-scale! r-hat r (/ -1d0 (vec3-norm r)))
+      (quat-rotate! v inverse s-hat)
+      (put4! out 32 (aref v 0) (aref v 1) (aref v 2) (* irradiance (object-render-sun-fraction o)))
+      (quat-rotate! v inverse r-hat)
+      (put4! out 36 (aref v 0) (aref v 1) (aref v 2) earthshine)
+      (put4! out 40 (the double-float (first tint)) (the double-float (second tint))
+             (the double-float (third tint)) (the double-float *ship-ambient*))
+      (vec3-sub! v eye r)
+      (quat-rotate! r-hat inverse v)
+      (put4! out 44 (aref r-hat 0) (aref r-hat 1) (aref r-hat 2) 1d0)
+      (put4! out 48 0d0 0d0 0d0 0d0))
+    out))
+
+(declaim (inline strobe-lit-p))
+(defun strobe-lit-p (time)
+  "Whether a strobe is lit at TIME (s, not below 0) of the lights' clock: the
+phase in *strobe-period*, reduced in double. Conses nothing."
+  (declare (optimize speed) (type double-float time))
+  (let* ((period (the double-float *strobe-period*))
+         (n (truncate (the (double-float 0d0 1d12) (/ (max 0d0 time) period))))
+         (phase (- (max 0d0 time) (* period n))))
+    (declare (type double-float period phase))
+    (< phase (the double-float *strobe-on*))))
+
+(declaim (inline put-glow!))
+(defun put-glow! (out n centre eye radius red green blue pull)
+  "Glow N of OUT: CENTRE − EYE (double, then single), RADIUS, the colour and PULL."
+  (declare (type (simple-array single-float (*)) out) (type fixnum n) (type vec3 centre eye)
+           (type double-float radius red green blue pull))
+  (let ((o (* n +glow-floats+)))
+    (declare (type fixnum o))
+    (dotimes (i 3)
+      (setf (aref out (+ o i)) (coerce (- (aref centre i) (aref eye i)) 'single-float)))
+    (setf (aref out (+ o 3)) (coerce radius 'single-float)
+          (aref out (+ o 4)) (coerce red 'single-float)
+          (aref out (+ o 5)) (coerce green 'single-float)
+          (aref out (+ o 6)) (coerce blue 'single-float)
+          (aref out (+ o 7)) (coerce pull 'single-float))))
+
+(defun object-glows! (out gpu state o eye dot-p index)
+  "The glows of the object O (the INDEXth of the sim's) seen from EYE into OUT,
++glow-floats+ each; returns their count: its beacons (red and green steady,
+lamps steady, strobes on the lights' clock offset by *strobe-offset* x INDEX)
+and, with DOT-P, the dot: a glow of the radius of a disc of a quarter of its
+shapes' surface, radiance *dot-radiance* x the Sun term x (1 + cos phase) / 2
+x its sun-fraction (decision 124). Conses nothing."
+  (declare (optimize speed) (type (simple-array single-float (*)) out) (type object-gpu gpu)
+           (type render-state state) (type object-render o) (type vec3 eye) (type fixnum index))
+  (let ((q (object-render-q o)) (r (object-render-r o))
+        (centre (make-vec3)) (local (make-vec3)) (n 0)
+        (clock (+ (render-state-lights-t state) (* (the double-float *strobe-offset*) index))))
+    (declare (dynamic-extent centre local) (type fixnum n) (type double-float clock))
+    (dolist (beacon (object-gpu-beacons gpu))
+      (let ((kind (first beacon)) (p (second beacon)))
+        (declare (type vec3 p))
+        (when (or (not (eq kind :strobe)) (strobe-lit-p clock))
+          (quat-rotate! local q p)
+          (vec3-add! centre local r)
+          (let ((radius (ecase kind
+                          ((:red :green) (the double-float *nav-light-radius*))
+                          (:strobe (the double-float *strobe-radius*))
+                          (:lamp (the double-float *lamp-glow-radius*)))))
+            (declare (type double-float radius))
+            (ecase kind
+              (:red (let ((c *nav-red*) (l (the double-float *nav-light-radiance*)))
+                      (put-glow! out n centre eye radius (* l (the double-float (first c)))
+                                 (* l (the double-float (second c))) (* l (the double-float (third c)))
+                                 (* (the double-float *light-pull*) radius))))
+              (:green (let ((c *nav-green*) (l (the double-float *nav-light-radiance*)))
+                        (put-glow! out n centre eye radius (* l (the double-float (first c)))
+                                   (* l (the double-float (second c))) (* l (the double-float (third c)))
+                                   (* (the double-float *light-pull*) radius))))
+              (:strobe (let ((l (the double-float *strobe-radiance*)))
+                         (put-glow! out n centre eye radius l l l
+                                    (* (the double-float *light-pull*) radius))))
+              (:lamp (let ((l (the double-float *lamp-radiance*)))
+                       (put-glow! out n centre eye radius l l l
+                                  (* (the double-float *light-pull*) radius)))))
+            (incf n)))))
+    (when dot-p
+      (let* ((sun (make-vec3)) (to-eye (make-vec3)))
+        (declare (dynamic-extent sun to-eye))
+        (vec3-sub! sun (render-state-sun state) r)
+        (vec3-sub! to-eye eye r)
+        (let* ((d-sun (vec3-norm sun)) (d-eye (vec3-norm to-eye))
+               (irradiance (let ((k (/ +au+ d-sun))) (* k k)))
+               (phase (/ (vec3-dot sun to-eye) (* d-sun d-eye)))
+               (radiance (* (the double-float *dot-radiance*) irradiance 0.5d0 (+ 1d0 phase)
+                            (object-render-sun-fraction o))))
+          (declare (type double-float d-sun d-eye irradiance phase radiance))
+          (when (> radiance 0d0)
+            (put-glow! out n r eye (object-gpu-dot-radius gpu) radiance radiance radiance 0d0)
+            (incf n)))))
+    n))
+
+(defun object-draw-kind (gpu o camera extent eye)
+  "How the frame draws the object O: :mesh when its model's extent projects to
+*object-mesh-pixels* or more and reaches in front of the near plane, :dot when
+smaller and ahead of the eye, nil when behind it. CAMERA, EXTENT (width
+height) and EYE as the frame's. Conses nothing."
+  (declare (optimize speed) (type object-gpu gpu) (type object-render o) (type camera camera)
+           (type list extent) (type vec3 eye))
+  (let ((c (make-vec3)) (forward (make-vec3)) (axis (make-vec3)))
+    (declare (dynamic-extent c forward axis))
+    (vec3-sub! c (object-render-r o) eye)
+    (vec3-set! axis 1d0 0d0 0d0)
+    (quat-rotate! forward (camera-orientation camera) axis)
+    (let* ((d (max (vec3-norm c) 1d-3))
+           (depth (vec3-dot forward c))
+           (focal (/ (tan (* 0.5d0 (camera-field-of-view camera)))))
+           (pixels (/ (* (object-gpu-extent gpu) focal 0.5d0 (float (the fixnum (second extent)) 1d0)) d)))
+      (declare (type double-float d depth focal pixels))
+      (cond ((>= pixels (the double-float *object-mesh-pixels*))
+             (and (> (+ depth (object-gpu-extent gpu)) (camera-near camera)) :mesh))
+            ((> depth 0d0) :dot)
+            (t nil)))))
+
+(defun encode-objects (pass renderer ship slot state camera extent eye)
+  "The objects of the render STATE into the open scene PASS, after the Mule
+(every view): each drawn one as its mesh or, far, its dot (object-draw-kind),
+the hull, the engine if any, the instance groups, then its glows through
+:ship-glow. Each object has its own block, bind group and glow buffer in SLOT."
+  (let ((objects (render-state-objects state))
+        (slots (ship-slot-objects slot)))
+    (dotimes (i (min (length objects) (length slots)))
+      (let* ((o (svref objects i))
+             (def (object-render-def o))
+             (gpu (and def (object-render-drawn o)
+                       (gethash (object-def-key def) (ship-gpu-objects ship))))
+             (kind (and gpu (object-draw-kind gpu o camera extent eye))))
+        (when kind
+          (let ((object-slot (svref slots i))
+                (glows (ship-gpu-object-glows ship)))
+            (let ((bind-group (object-slot-bind-group object-slot)))
+              (luv:write-buffer (object-slot-buffer object-slot)
+                                (object-uniforms! (ship-gpu-object-uniforms ship) state o eye))
+              (when (eq kind :mesh)
+                (when (object-gpu-hull gpu)
+                  (luv:set-pipeline pass (renderer-pipeline renderer :ship-mesh))
+                  (luv:set-bind-group pass 0 bind-group)
+                  (luv:set-vertex-buffer pass 0 (object-gpu-hull gpu))
+                  (luv:draw pass (object-gpu-hull-count gpu)))
+                (when (object-gpu-groups gpu)
+                  (luv:set-pipeline pass (renderer-pipeline renderer :ship-instanced))
+                  (luv:set-bind-group pass 0 bind-group)
+                  (loop for (primitive vertices instances count) in (object-gpu-groups gpu)
+                        do (luv:set-vertex-buffer pass 0 primitive)
+                           (luv:set-vertex-buffer pass 1 instances)
+                           (luv:draw pass vertices count))))
+              (let ((count (object-glows! glows gpu state o eye (eq kind :dot) i)))
+                (when (plusp count)
+                  (luv:write-buffer (object-slot-glows object-slot) glows)
+                  (luv:set-pipeline pass (renderer-pipeline renderer :ship-glow))
+                  (luv:set-bind-group pass 0 bind-group)
+                  (luv:set-vertex-buffer pass 0 (ship-gpu-corners ship))
+                  (luv:set-vertex-buffer pass 1 (object-slot-glows object-slot))
+                  (luv:draw pass 6 count))))))))))
 
 (defun single-floats (list)
   (map '(simple-array single-float (*)) (lambda (x) (coerce x 'single-float)) list))
@@ -579,7 +810,7 @@ left (decision 85), then PANEL, nil or lost-panel-lines' lines (decision 86)."
   "The frame into TARGET of EXTENT (width height) from the render STATE seen
 by CAMERA, in three stages (decision 76: Frame passes, radiance scale and
 exposure): the scene pass into the HDR target (the stars, the Sun, the
-Moon, Earth, Earth's halo, the Mule, in :map the orbit's ribbon); the bloom
+Moon, Earth, Earth's halo, the Mule, the objects, in :map the orbit's ribbon); the bloom
 chain; one pass on TARGET, the tone map at EXPOSURE and then the overlay
 (in :map the markers and their labels, then READOUT, readout-lines' lines
 or nil, then the LOST PANEL's lines or nil). VIEW: :outside or :map."
@@ -616,6 +847,8 @@ or nil, then the LOST PANEL's lines or nil). VIEW: :outside or :map."
                   do (draw-impostor pass renderer role form bind-group corners)))
           (encode-ship pass renderer (frame-renderer-ship renderer) (frame-slot-ship slot)
                        state (frame-renderer-eye renderer))
+          (encode-objects pass renderer (frame-renderer-ship renderer) (frame-slot-ship slot)
+                          state camera extent (frame-renderer-eye renderer))
           (when (eq view :map)
             (encode-ribbon pass renderer bind-group (frame-renderer-ribbon renderer)
                            (frame-slot-ribbon slot) (frame-renderer-ribbon-corners renderer)

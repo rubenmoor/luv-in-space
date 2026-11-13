@@ -587,3 +587,11 @@ vertices of the \"plate\" parts, by part."
                       sum (floor (length (lis::instance-group-instances g)) lis::+instance-floats+))
                 2000))
       (true (eq model (lis::object-model (lis::object-def-key def)))))))
+
+(define-test object-gpu-dot-numbers
+  ;; decision 124: a far object's dot is a disc of a quarter of its shapes'
+  ;; surface; a rock's is pi r^2; its extent is its model's.
+  (let ((rock (lis::object-definition :skua-yard-3)))
+    (true (< (abs (- (lis::shapes-quarter-area rock)
+                     (* pi (expt (lis::shape-radius (first (lis::object-def-shapes rock))) 2))))
+             1d-9))))

@@ -1408,6 +1408,7 @@ work."
       (return-from clock-step! nil))
     (clock-check-level! clock sim)
     (let* ((hook (clock-hook clock))
+           (paused (clock-paused clock))
            (until (let ((until (and hook (funcall hook clock sim))))
                     (declare (type (or null double-float) until))
                     (if (and barrier (or (null until) (<= until (sim-t sim)) (< barrier until)))
@@ -1415,6 +1416,14 @@ work."
                         until)))
            (level (clock-level clock)))         ; after the hook: its warp acts now
       (declare (type (or null double-float) until))
+      (when (and (clock-paused clock) (not paused))
+        ;; the hook paused the clock (a live shot, decision 131): no step; the
+        ;; render state shows the sim's state
+        (setf (clock-accumulator clock) 0d0)
+        (ship-state-assign! (clock-previous clock) (sim-ship sim))
+        (clock-previous-objects-assign! clock sim)
+        (setf (clock-previous-t clock) (sim-t sim))
+        (return-from clock-step! nil))
       (unless (and budget (< budget (the double-float (step-h sim level until))))
         (ship-state-assign! (clock-previous clock) (sim-ship sim))
         (clock-previous-objects-assign! clock sim)

@@ -1037,7 +1037,10 @@ whatever the prediction says.")
   (engage nil)                                  ; the last engage's flight-engage
   (approach nil)                                ; a running (:approach …)'s pilot
   (plan-burn nil)                               ; an open plan burn: (what label start . odometer)
-  (screens nil))                                ; :screenshot entries waiting for their screen
+  (screens nil)                                 ; :screenshot entries waiting for their screen
+  (shots nil)                                   ; live: the directory of the PNGs (decision 131)
+  (pending nil)                                 ; live: entries waiting for their PNG, the first being shot
+  (paths nil))                                  ; live: the PNGs written, newest first
 
 ;;; The last engage (decision 122): the reference of the record's
 ;;; expectations, and the clearance kept since.
@@ -1207,11 +1210,23 @@ the hook, once the clock's warp rules have run (decision 131)."
     entry))
 
 (defun flight-screens-fill! (flight clock)
-  "The screen of CLOCK in the entries that wait for one."
+  "The screen of CLOCK in the entries that wait for one; with live shots
+(flight-shots, not headless) they become pending and the clock is paused,
+which clock-step! sees (decision 131)."
   (when (flight-screens flight)
-    (dolist (entry (reverse (flight-screens flight)))
-      (setf (flight-entry-screen entry) (clock-screen-snapshot clock)))
+    (let ((entries (reverse (flight-screens flight))))
+      (dolist (entry entries)
+        (setf (flight-entry-screen entry) (clock-screen-snapshot clock)))
+      (when (and (flight-shots flight) (not (flight-headless flight)))
+        (setf (flight-pending flight) (append (flight-pending flight) entries))
+        (unless (clock-paused clock)
+          (clock-toggle-pause clock))))
     (setf (flight-screens flight) nil)))
+
+(defun flight-shot-pending-p (&optional (game *game*))
+  "GAME's flight has a shot pending: the clock stays paused, P is ignored."
+  (let ((flight (and game (game-flight game))))
+    (and flight (flight-pending flight) t)))
 
 (defun flight-burn-check! (flight sim &optional end)
   "Open a burn at the throttle going on, close it at its going off, a loss
@@ -2168,12 +2183,49 @@ as run-flight calls it after a loss."
   (let ((flight (and game (game-flight game))))
     (and flight (not (flight-done flight)))))
 
-(defun fly (name &key (game *game*))
+(defun flight-shooter (game flight)
+  "The body of the fly-shots thread: each pending shot of FLIGHT written by
+fly-live-shot!, then the clock unpaused when none is left; at the flight's
+end after its last shot the PNG paths printed; it ends when GAME's flight is
+no longer FLIGHT (decision 131)."
+  (flet ((current-p () (eq (game-flight game) flight)))
+    (loop
+      (unless (current-p)
+        (return))
+      (let ((entry (first (flight-pending flight))))
+        (cond (entry
+               (let ((path (fly-live-shot! game entry (1+ (length (flight-paths flight)))
+                                           (flight-shots flight))))
+                 (call-in-game game
+                               (lambda ()
+                                 (when (current-p)
+                                   (pop (flight-pending flight))
+                                   (push path (flight-paths flight))
+                                   (when (and (null (flight-pending flight))
+                                              (clock-paused (game-clock game)))
+                                     (clock-toggle-pause (game-clock game))))))))
+              ((flight-done flight)
+               (call-in-game game
+                             (lambda ()
+                               (format t "~&~{~A~%~}" (reverse (flight-paths-text flight)))
+                               (finish-output)))
+               (return))
+              (t (sleep 0.01)))))))
+
+(defun flight-paths-text (flight)
+  (mapcar #'uiop:native-namestring (flight-paths flight)))
+
+(defun fly (name &key (game *game*) shots)
   "Fly the script NAME (read-flight's source) in GAME from its start state
 (flight-start-sim), the view outside; returns at once. At the end the
-record lines are printed to the image's output; flight-status reads them."
+record lines are printed to the image's output; flight-status reads them.
+With SHOTS, a directory, the clock pauses at each :screenshot step and the
+thread fly-shots writes <SHOTS>/<nn>-<label>.png of the window, then goes on;
+the PNG paths are printed after the record (decision 131)."
   (let* ((steps (read-flight name))
          (start (flight-start-sim steps)))
+    (when shots
+      (ensure-directories-exist (uiop:ensure-directory-pathname shots)))
     (call-in-game game
                   (lambda ()
                     (let ((flight (new-flight steps start)))
@@ -2182,6 +2234,10 @@ record lines are printed to the image's output; flight-status reads them."
                       (setf (clock-checkpoint (game-clock game)) nil)
                       (game-restart! game (flight-start flight))
                       (setf (game-flight game) flight)
+                      (when shots
+                        (setf (flight-shots flight) (uiop:ensure-directory-pathname shots))
+                        (sb-thread:make-thread (lambda () (flight-shooter game flight))
+                                               :name "fly-shots"))
                       (flight-install! (game-clock game) flight
                                        (lambda (flight sim)
                                          (declare (ignore sim))
@@ -2191,17 +2247,22 @@ record lines are printed to the image's output; flight-status reads them."
     name))
 
 (defun flight-status (&key (game *game*))
-  "The record lines of GAME's flight so far, or nil."
+  "The record lines of GAME's flight so far, then the paths of the PNGs
+written so far (fly :shots), or nil."
   (call-in-game game
                 (lambda ()
                   (let ((flight (game-flight game)))
-                    (and flight (flight-record-lines (flight-record flight)))))))
+                    (and flight (append (flight-record-lines (flight-record flight))
+                                        (reverse (flight-paths-text flight))))))))
 
 (defun flight-stop (&key (game *game*))
-  "Stop GAME's flight: the hook removed, the slot cleared."
+  "Stop GAME's flight: the hook removed, the slot cleared, the clock
+unpaused if a shot was pending; the fly-shots thread ends."
   (call-in-game game
                 (lambda ()
                   (when (game-flight game)
+                    (when (and (flight-pending (game-flight game)) (clock-paused (game-clock game)))
+                      (clock-toggle-pause (game-clock game)))
                     (setf (clock-hook (game-clock game)) nil
                           (game-flight game) nil))))
   (values))

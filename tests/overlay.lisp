@@ -413,9 +413,17 @@ top, or nil."
                                                                           :initial-element #\W)
                                                              #xE8E4D8)))
                            0 0)
-                          (lis::overlay-buffer-count out))))
-      (true (<= (+ (* 2 (+ readout message)) 12288) lis::*overlay-max-vertices*)
-            "~D readout and ~D message line vertices" readout message)
+                          (lis::overlay-buffer-count out)))
+          (panel (progn (lis::overlay-clear! out)
+                        (lis::readout-vertices!
+                         out (loop repeat 13 collect
+                                   (list (lis::readout-run (make-string lis::*autopilot-panel-chars*
+                                                                        :initial-element #\W)
+                                                           #xE8E4D8)))
+                         0 0 lis::*autopilot-panel-chars* lis::*autopilot-panel-chars*)
+                        (lis::overlay-buffer-count out))))
+      (true (<= (+ (* 2 (+ readout message panel)) 12288) lis::*overlay-max-vertices*)
+            "~D readout, ~D panel and ~D message line vertices" readout panel message)
       (is = 0 (mod lis::*overlay-max-vertices* 6)))))
 
 ;;; The message line (decision 129: Overlay of the outside and map views in
@@ -848,3 +856,21 @@ only (format directives made letters), outside the docstrings of definitions."
       (is = 30 (length (car (last texts))))
       (is string= "…" (subseq (car (last texts)) 29))
       (dolist (text texts) (false (lis::glyph-missing text) "~S" text)))))
+
+(define-test autopilot-panel-origin
+  (let* ((lines (list (list (lis::readout-run "AUTOPILOT MENU" #x8A8A80))))
+         (full (lis::readout-box-size nil 30 30)))
+    (multiple-value-bind (x y) (lis::autopilot-panel-origin lines '(1280 800))
+      (is = 16 y)
+      ;; fixed 30 cells wide, 16 px from the right edge
+      (is = (- 1280 16 full) x)
+      (is = (lis::readout-box-size lines 30 30) full)
+      ;; clear of the fullest readout (~40 cells) and the message line (71 cells, bottom centre)
+      (true (> x (+ 16 (lis::readout-box-size (list (list (lis::readout-run (make-string 40 :initial-element #\W) 0)))))))
+      (let ((message (list (list (lis::readout-run (make-string 71 :initial-element #\W) 0)))))
+        (multiple-value-bind (mx my) (lis::message-line-origin message '(1280 800))
+          (declare (ignore mx))
+          (true (> my (+ 16 (nth-value 1 (lis::readout-box-size (make-list 13 :initial-element (first lines)))))))))))
+  ;; the box does not jump: min and max bound the width
+  (is = (lis::readout-box-size (list (list (lis::readout-run "AB" 0))) 30 30)
+      (lis::readout-box-size (list (list (lis::readout-run (make-string 50 :initial-element #\W) 0))) 30 30)))

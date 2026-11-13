@@ -868,6 +868,40 @@ PRED."
   (prediction-refresh! pred sim)
   (prediction-extend! pred most-positive-fixnum))
 
+(defun prediction-keep! (out pred)
+  "OUT: a copy of PRED's stored path for reading (the nodes, target nodes,
+events, cuts, horizon, loss and the copy's body): what the map draws of a
+shot once its job has moved on (decision 125: Map in milestone 3). OUT's
+buffers and sim are made at the first call. OUT."
+  (declare (type prediction out pred))
+  (replace (prediction-nodes out) (prediction-nodes pred) :end2 (* +node-size+ (prediction-count pred)))
+  (replace (prediction-target-nodes out) (prediction-target-nodes pred)
+           :end2 (* +target-node-size+ (prediction-target-count pred)))
+  (replace (prediction-event-times out) (prediction-event-times pred))
+  (replace (prediction-event-kinds out) (prediction-event-kinds pred))
+  (replace (prediction-event-objects out) (prediction-event-objects pred))
+  (replace (prediction-event-values out) (prediction-event-values pred))
+  (replace (prediction-cut-times out) (prediction-cut-times pred))
+  (cond ((null (prediction-sim pred)))
+        ((prediction-sim out) (sim-assign! (prediction-sim out) (prediction-sim pred)))
+        (t (setf (prediction-sim out) (copy-sim (prediction-sim pred)))))
+  (setf (prediction-head out) (prediction-head pred)
+        (prediction-count out) (prediction-count pred)
+        (prediction-target-count out) (prediction-target-count pred)
+        (prediction-thin out) (prediction-thin pred)
+        (prediction-stride out) (prediction-stride pred)
+        (prediction-periods out) (prediction-periods pred)
+        (prediction-until out) (prediction-until pred)
+        (prediction-until-plan out) (prediction-until-plan pred)
+        (prediction-end out) (prediction-end pred)
+        (prediction-state out) (prediction-state pred)
+        (prediction-now out) (prediction-now pred)
+        (prediction-event-count out) (prediction-event-count pred)
+        (prediction-cut-count out) (prediction-cut-count pred)
+        (prediction-impact out) (prediction-impact pred)
+        (prediction-abort out) (prediction-abort pred))
+  out)
+
 (defun prediction-complete-p (pred)
   (eq (prediction-state pred) :complete))
 

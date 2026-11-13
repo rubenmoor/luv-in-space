@@ -1913,3 +1913,134 @@ the window's plane and of a porthole's plane."
       (let ((before (sb-ext:get-bytes-consed)))
         (rebuild)
         (true (< (- (sb-ext:get-bytes-consed) before) 16384) "~D bytes" (- (sb-ext:get-bytes-consed) before))))))
+
+;;; The buttons, picking and the hover (plan 32 piece 6; decision 128: Cockpit
+;;; devices, buttons, picking, the grapple camera and messages in milestone 3).
+
+(defun test-buttons ()
+  (lis::make-cockpit-buttons (text-test-atlas) (lis::make-text-batch) (lis::make-line-batch)))
+
+(define-test button-engravings-fit-their-lenses
+  (let ((buttons (test-buttons)))
+    (is = 18 (length (lis::cockpit-buttons-lenses buttons)))
+    (dolist (lens (lis::cockpit-buttons-lenses buttons))
+      (let* ((c (lis::plane-frame-centre (lis::button-lens-frame lens)))
+             (d (sqrt (reduce #'+ (map 'list (lambda (x) (* x x)) c)))))
+        (true (<= (+ (lis::button-lens-advance lens) 0.004) lis::*button-lens*)
+              "~A: ~F m on a lens of ~F" (third (lis::button-lens-entry lens))
+              (lis::button-lens-advance lens) lis::*button-lens*)
+        (true (>= (lis::button-lens-cap lens) (* 0.0175d0 d)))))))
+
+(defun project-pixel (p view width height)
+  "The pixel of the eye-axes point P in the cockpit camera of VIEW."
+  (let* ((q (lis::make-quat)) (v (lis::make-vec3)))
+    (lis::cockpit-head-quat! q view)
+    (lis::quat-rotate! v (lis::quat-conjugate q) p)
+    (let ((tan-half (tan (* 0.5d0 (lis::cockpit-view-fov view)))) (aspect (/ width height 1d0)))
+      (values (* 0.5d0 width (+ 1d0 (/ (aref v 1) (aref v 0) tan-half aspect)))
+              (* 0.5d0 height (+ 1d0 (/ (aref v 2) (aref v 0) tan-half)))))))
+
+(defun clickable-pixel (id view width height &optional (index 0))
+  (project-pixel (lis::clickable-centre (lis::clickable-for id index)) view width height))
+
+(defun turned-view ()
+  (let ((view (lis::new-cockpit-view)))
+    (setf (lis::cockpit-view-yaw view) (lis::degrees-to-radians 20)
+          (lis::cockpit-view-fov view) (lis::degrees-to-radians 40))
+    view))
+
+(define-test cockpit-pick-hits-every-button-mstr-and-a-menu-row
+  (dolist (view (list (lis::new-cockpit-view) (turned-view)))
+    (dolist (id (append (mapcar #'first lis::*buttons*) '(:mstr :comms)))
+      (multiple-value-bind (x y) (clickable-pixel id view 1280 800)
+        (is eq id (lis::cockpit-pick view 1280 800 x y) "~A" id)))
+    (multiple-value-bind (x y) (clickable-pixel :menu-row view 1280 800 3)
+      (multiple-value-bind (id index) (lis::cockpit-pick view 1280 800 x y :menu-rows 7)
+        (is eq :menu-row id)
+        (is = 3 index))
+      (is eq nil (lis::cockpit-pick view 1280 800 x y :menu-rows 3) "a row not shown"))))
+
+(define-test cockpit-pick-misses-beyond-a-lens-edge
+  (let ((view (lis::new-cockpit-view)))
+    (dolist (id '(:pro :nml :tgt :inrt :xfer :ap))
+      (let* ((c (lis::clickable-for id)) (hw (lis::clickable-half-width c)))
+        (multiple-value-bind (cx cy) (project-pixel (lis::clickable-centre c) view 1280 800)
+          (multiple-value-bind (ex ey)
+              (project-pixel (lis::vlin (lis::clickable-centre c) hw (lis::clickable-right c)) view 1280 800)
+            (let* ((dx (- ex cx)) (dy (- ey cy)) (n (sqrt (+ (* dx dx) (* dy dy)))))
+              (is eq id (lis::cockpit-pick view 1280 800 (- ex (/ dx n)) (- ey (/ dy n)))
+                  "just inside ~A" id)
+              (is eq nil (lis::cockpit-pick view 1280 800 (+ ex (/ dx n)) (+ ey (/ dy n)))
+                  "1 px outside ~A" id))))))))
+
+(define-test cockpit-pick-takes-the-nearer-rectangle
+  (let* ((far (lis::make-clickable :id :far :centre (lis::vec3 -0.9d0 0d0 0d0)
+                                   :normal (lis::vec3 1d0 0d0 0d0) :right (lis::vec3 0d0 1d0 0d0)
+                                   :up (lis::vec3 0d0 0d0 1d0) :half-width 0.5d0 :half-height 0.5d0))
+         (near (lis::make-clickable :id :near :centre (lis::vec3 -0.5d0 0d0 0d0)
+                                    :normal (lis::vec3 1d0 0d0 0d0) :right (lis::vec3 0d0 1d0 0d0)
+                                    :up (lis::vec3 0d0 0d0 1d0) :half-width 0.1d0 :half-height 0.1d0))
+         (view (lis::new-cockpit-view)))
+    ;; Facing -x from the eye: the rectangles stand at x = -0.5 and -0.9, their normals to the eye.
+    (setf (lis::cockpit-view-yaw view) pi (lis::cockpit-view-pitch view) 0d0)
+    (is eq :near (lis::cockpit-pick view 1280 800 640 400 :clickables (vector far near)))
+    (is eq :near (lis::cockpit-pick view 1280 800 640 400 :clickables (vector near far)))
+    (is eq :far (lis::cockpit-pick view 1280 800 640 200 :clickables (vector far near)))))
+
+(define-test button-lighting
+  (multiple-value-bind (state clock) (screen-state (lis::new-game-sim))
+    (flet ((colour (id) (lis::button-colour (find id lis::*buttons* :key #'first) state clock))
+           (controls () (lis::render-state-controls state)))
+      (is eq :green (colour :pro) "prograde settled")
+      (setf (lis::controls-settled (controls)) nil)
+      (is eq :amber (colour :pro) "slewing")
+      (is eq nil (colour :retr))
+      (is eq nil (colour :damp))
+      (setf (lis::controls-attitude-mode (controls)) :rate-damping)
+      (is eq :green (colour :damp))
+      (is eq nil (colour :pro))
+      (setf (lis::controls-fine (controls)) t)
+      (is eq :green (colour :fine))
+      (setf (lis::render-state-transfer state) t)
+      (is eq :green (colour :xfer))
+      (is eq nil (colour :wrp+))
+      (setf (lis::clock-level-index clock) 2)
+      (is eq :white (colour :wrp+))
+      (is eq nil (colour :wrp-))
+      (is eq nil (colour :ap)))))
+
+(define-test button-press-flashes-the-lens-white
+  (let* ((buttons (test-buttons)) (cockpit (lis::make-cockpit-state))
+         (region (lis::cockpit-buttons-lens-region buttons))
+         (data (lis::line-batch-data (lis::line-region-batch region))))
+    (multiple-value-bind (state clock) (screen-state (lis::new-game-sim))
+      (flet ((red (i) (aref data (+ 6 (* lis::+line-record-floats+ (+ (lis::line-region-start region) i))))))
+        (lis::cockpit-buttons-draw! buttons cockpit state clock 10d0)
+        (let ((idle (red 4)))
+          (lis::button-press! cockpit :|5| 10.5d0)
+          (lis::cockpit-buttons-draw! buttons cockpit state clock 10.6d0)
+          (is = (aref (lis::screen-line-colour lis::*screen-white*) 0) (red 4))
+          (lis::cockpit-buttons-draw! buttons cockpit state clock 10.7d0)
+          (is = idle (red 4) "after 0.15 s"))))))
+
+(define-test hover-outline-is-drawn-around-the-lens
+  (let* ((buttons (test-buttons)) (cockpit (lis::make-cockpit-state))
+         (region (lis::cockpit-buttons-outline-region buttons))
+         (data (lis::line-batch-data (lis::line-region-batch region))))
+    (multiple-value-bind (state clock) (screen-state (lis::new-game-sim))
+      (flet ((width (i) (aref data (+ 9 (* lis::+line-record-floats+ (+ (lis::line-region-start region) i))))))
+        (lis::cockpit-buttons-draw! buttons cockpit state clock 1d0)
+        (is = 0 (width 0))
+        (setf (lis::cockpit-state-hover-id cockpit) :pro
+              (lis::cockpit-state-pixel-scale cockpit) (/ (* 2 (tan (lis::degrees-to-radians 35))) 800))
+        (lis::cockpit-buttons-draw! buttons cockpit state clock 1d0)
+        (let ((distance (lis::vec3-norm (lis::clickable-centre (lis::clickable-for :pro)))))
+          (true (< (abs (- (width 2) (* 2 distance (lis::cockpit-state-pixel-scale cockpit)))) 1d-6)))
+        (setf (lis::cockpit-state-hover-id cockpit) nil)
+        (lis::cockpit-buttons-draw! buttons cockpit state clock 1d0)
+        (is = 0 (width 0))))))
+
+(define-test button-hover-text-names-the-key
+  (is string= "PRO [1]" (lis::button-hover-text :pro))
+  (is string= "WRP- [,]" (lis::button-hover-text :wrp-))
+  (is eq nil (lis::button-hover-text :mstr)))

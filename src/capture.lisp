@@ -72,7 +72,7 @@ the field of view snapped."
 (defun capture-game-state (game pathname &key sim camera-fn (view :outside) head (interior t)
                                               (frames *screenshot-frames*)
                                               (readout (game-readout-p game))
-                                              (death-elapsed 0d0))
+                                              (death-elapsed 0d0) pointer)
   "Write a PNG of GAME showing SIM (default its current state) after FRAMES
 frames in VIEW (:outside, :cockpit with the head at Home or at HEAD,
 (yaw pitch [fov]) in degrees, and the cab's interior unless INTERIOR is nil,
@@ -83,6 +83,8 @@ panel and the death glow DEATH-ELAPSED real seconds after the death
 (default 0, the peak; decision 86). Returns as SCREENSHOT."
   (when sim
     (game-load-state! game sim))
+  (setf (input-pointer-x (game-input game)) (and pointer (float (first pointer) 1d0))
+        (input-pointer-y (game-input game)) (and pointer (float (second pointer) 1d0)))
   (setf (game-readout-p game) (and readout t)
         (game-death-elapsed game) (float death-elapsed 1d0))
   (setf (game-interior-p game) (and interior t))
@@ -98,15 +100,16 @@ panel and the death glow DEATH-ELAPSED real seconds after the death
 
 (defun capture-state (pathname sim &key camera-fn (view :outside) head (interior t)
                                        (frames *screenshot-frames*)
-                                       (width 1280) (height 800) (readout t) (death-elapsed 0d0))
+                                       (width 1280) (height 800) (readout t) (death-elapsed 0d0) pointer)
   "A PNG showing exactly SIM's state (a copy, the game frozen) on a hidden
 canvas in VIEW (:outside, :cockpit with HEAD and INTERIOR as capture-game-state's, or :map), with the readout unless READOUT is nil
 (decision 85); a lost SIM with the LOST panel and the glow DEATH-ELAPSED
-real seconds after the death (decision 86). Call on luv's SDL main thread."
+real seconds after the death (decision 86); POINTER, (x y) pixels, poses the
+pointer for the hover. Call on luv's SDL main thread."
   (with-capture-game (game :width width :height height :sim sim :readout readout)
     (capture-game-state game pathname :camera-fn camera-fn :view view :head head
                                       :interior interior :frames frames
-                                      :death-elapsed death-elapsed)))
+                                      :death-elapsed death-elapsed :pointer pointer)))
 
 (defun capture-scene (pathname &key (frames *screenshot-frames*) (width 1280) (height 800)
                                     (view :outside))

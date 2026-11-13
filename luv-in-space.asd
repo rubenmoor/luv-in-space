@@ -34,6 +34,7 @@
                (:file "render")
                (:file "cockpit-screens")
                (:file "cockpit-devices")
+               (:file "cockpit-attitude")
                (:file "input")
                (:file "main")
                (:file "capture")))

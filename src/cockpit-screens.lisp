@@ -220,6 +220,43 @@ of the plan shown or engaged."
      (screen-line :grey "SUN --- AU")
      (screen-line :grey "HULL --- K"))))
 
+;;; ATTITUDE (19 × 8): the plot and the bars are cockpit-attitude.lisp's; here
+;;; the bars' letters and the mode line.
+
+(defparameter *hold-abbreviations*
+  '((:prograde . "PRO") (:retrograde . "RET") (:normal . "NRM") (:anti-normal . "ANRM")
+    (:radial-out . "ROUT") (:radial-in . "RIN") (:inertial . "INRT") (:target . "TGT")
+    (:anti-target . "ATGT") (:relative-prograde . "RPRO") (:relative-retrograde . "RRET"))
+  "A hold's name in at most four characters, for ATTITUDE's mode line.")
+
+(defun attitude-mode-line (state)
+  "The mode line (decision 127): \"HOLD PRO  SETTLED\" or \"HOLD PRO  SLEWING\", \"DAMP\",
+\"DIRECT\", \"+FINE\" after any, led by \"AUTOPILOT\" while a plan is engaged."
+  (let* ((controls (render-state-controls state))
+         (mode (controls-attitude-mode controls))
+         (fine (controls-fine controls))
+         (autopilot (render-state-autopilot state))
+         (hold (cdr (assoc (controls-hold controls) *hold-abbreviations*)))
+         (settled (controls-settled controls)))
+    (append
+     (when autopilot (screen-line :green "AUTOPILOT "))
+     (ecase mode
+       (:direct (screen-line :white "DIRECT"))
+       (:rate-damping (screen-line :white "DAMP"))
+       (:hold (cond (autopilot (screen-line :white (format nil "HOLD ~A" hold)))
+                    (fine (screen-line :white (format nil "~A " hold)
+                                       (if settled :green :amber) (if settled "SETTLED" "SLEWING")))
+                    (t (screen-line :white (format nil "HOLD ~A  " hold)
+                                    (if settled :green :amber) (if settled "SETTLED" "SLEWING"))))))
+     (when fine (screen-line :amber " +FINE")))))
+
+(defun attitude-lines (state)
+  "Rows 1 to 7 hold the plot; the bars' letters P Y R under the bars on row 7,
+the mode on row 8."
+  (list '() '() '() '() '() '()
+        (screen-line :grey "             P Y R")
+        (attitude-mode-line state)))
+
 ;;; The screens, by name: their grids come from *cockpit-panels*.
 
 (defun screen-lines (name state clock real-time &optional cockpit)
@@ -230,6 +267,7 @@ advances the log's scroll in COCKPIT, the game's cockpit-state)."
     (mapcar (lambda (line) (screen-fit-line line columns))
             (ecase name
               (:orbit (orbit-lines state real-time))
+              (:attitude (attitude-lines state))
               (:ship (ship-lines state))
               (:comms (comms-lines clock (or cockpit (make-cockpit-state))))))))
 
@@ -407,16 +445,17 @@ the berth, the transfer, the log's length. Conses nothing."
   (logand (+ (* 7 (cockpit-state-typing-serial cockpit)) (cockpit-state-scroll cockpit))
           most-positive-fixnum))
 
-(defun cockpit-update! (cockpit views atlas state clock real-time view &key strip devices snap)
+(defun cockpit-update! (cockpit views atlas state clock real-time view &key strip devices attitude snap)
   "Rebuild the text of each of VIEWS (screen-views) whose last rebuild is 0.1 s
 of REAL-TIME old, or was made under another cockpit-signature (COMMS also
 while it types); COCKPIT the game's cockpit-state. The log's typing and the
-strip (a strip-view) advance every frame; SNAP shows both finished (captures:
+strip (a strip-view) advance every frame, as ATTITUDE's plot (an attitude-view); SNAP shows both finished (captures:
 the log fully typed, the strip's latest message static). Returns the number
 of screens rebuilt."
   (declare (type cockpit-state cockpit) (type double-float real-time))
   (comms-type! cockpit clock real-time snap)
   (when strip (strip-update! cockpit strip state clock real-time snap))
+  (when attitude (attitude-view-update! attitude atlas state))
   (let ((signature (cockpit-signature state clock view)) (built 0))
     (declare (type fixnum signature built))
     (when devices

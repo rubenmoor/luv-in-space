@@ -2164,6 +2164,42 @@ Earth's shadow; each thing is read where the pose puts it."
           (true (>= lit (* 5 unlit)) "a lit lens ~,4F against an unlit one ~,4F" lit unlit)))))
   (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream))))
 
+;;; The ATTITUDE plot (plan 32 piece 4; decision 127): the body's disc filled in
+;;; its blue-grey about the nadir, empty beyond the limb; read at points between
+;;; the 10-degree rings.
+
+(defun attitude-checks (game png width height)
+  (with-canvas-values (game (lis::*bloom-strength* 0.0))
+    (let ((sim (start-sim-at 180)) (radius (getf lis::*attitude-plot* :radius)))
+      (multiple-value-bind (c n r u) (lis::panel-frame (lis::cockpit-panel :attitude))
+        (let* ((centre (lis::vlin c (getf lis::*attitude-plot* :a) r (getf lis::*attitude-plot* :b) u))
+               (yaw (lis::rad->deg (atan (aref centre 1) (aref centre 0))))
+               (pitch (lis::rad->deg (asin (/ (aref centre 2) (lis::vec3-norm centre)))))
+               (fov 16))
+          (multiple-value-bind (path w h pixels format)
+              (lis::capture-game-state game png :sim sim :view :cockpit :readout nil :frames 3
+                                                :head (list yaw pitch fov))
+            (declare (ignore path w h))
+            (flet ((pixel-at (theta-degrees phi-degrees)
+                     ;; the plot point THETA degrees off the nose towards PHI degrees (0 right, 90 up)
+                     (let* ((rho (/ theta-degrees 180))
+                            (px (* radius rho (cos (lis::deg->rad phi-degrees))))
+                            (py (* radius rho (sin (lis::deg->rad phi-degrees))))
+                            (point (lis::vlin centre px r py u 0.001d0 n)))
+                       (multiple-value-bind (x y) (head-projection point yaw pitch)
+                         (let ((per (/ (/ height 2) (tan (lis::deg->rad (/ fov 2))))))
+                           (pixel-rgb pixels format width (round (+ (/ width 2) (* x per)))
+                                      (round (+ (/ height 2) (* y per)))))))))
+              ;; The body's disc is where the direction is within 70.2 degrees of the nadir (down, +z):
+              ;; on the ray 30 degrees below the horizontal its limb is at 42.9 degrees off the nose.
+              (let ((fill-colour '(#x24 #x30 #x3A))
+                    (inside (pixel-at 55 -30)) (outside (pixel-at 35 -30)) (sky (pixel-at 112.7 30)))
+                (true (within-bytes-p inside fill-colour 8) "4 degrees inside the limb: ~A" inside)
+                (true (not (within-bytes-p outside fill-colour 30)) "3 degrees outside the limb: ~A" outside)
+                (true (within-bytes-p outside '(#x0A #x0C #x0C) 8) "outside the limb the face: ~A" outside)
+                (true (within-bytes-p sky '(#x0A #x0C #x0C) 8) "the upper sky the face: ~A" sky)))))))
+    (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))))
+
 ;;; The dot-matrix strip (plan 32 piece 2; decision 128): the head aimed at one
 ;;; dot, a lit one amber and an unlit one dim.
 
@@ -2345,6 +2381,7 @@ Earth's shadow; each thing is read where the pose puts it."
            (screen-checks game png width height)
            (strip-checks game png width height)
            (lamp-checks game png width height)
+           (attitude-checks game png width height)
            (sun-patch-checks game png width height)
            (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))
            ;; Resizes replace the swapchain's textures; what the renderer kept

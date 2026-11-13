@@ -50,10 +50,14 @@ reversed-Z with an infinite far plane."
   (vec3-add! out anchor-position (camera-offset camera)))
 
 (defun camera-anchor-position! (out camera render-state)
-  "The camera's anchor in the render state: the ship's r or Earth's centre."
+  "The camera's anchor in the render state: the ship's r, Earth's centre or
+the target's r at t_r (the ship's without a target)."
   (declare (type vec3 out) (type camera camera))
   (ecase (camera-anchor camera)
     (:ship (replace out (render-state-r render-state)))
+    (:target (if (render-state-target render-state)
+                 (replace out (render-state-target-r render-state))
+                 (replace out (render-state-r render-state))))
     (:earth (vec3-set! out 0d0 0d0 0d0))))
 
 (defun eye-relative-single (p eye out index)
@@ -259,7 +263,8 @@ lights, far dots, the grapple's claws, floodlight and range finder)."
                *map-page-factor* *map-degenerate-h*))
 
 (defstruct (map-view (:constructor new-map-view ()))
-  (focus :earth :type (member :earth :ship))
+  (focus :earth :type (member :earth :ship :target))
+  (bound 0d0 :type double-float)        ; the target's bound while focused, m
   (e1 (vec3 1 0 0) :type vec3)
   (e2 (vec3 0 1 0) :type vec3)
   (n (vec3 0 0 1) :type vec3)
@@ -268,14 +273,32 @@ lights, far dots, the grapple's claws, floodlight and range finder)."
   (distance *map-max-distance* :type (double-float (0d0)))
   (target *map-max-distance* :type (double-float (0d0))))
 
-(defun map-min-distance (focus)
-  "50 m around the ship, 1.2 R⊕ from Earth's centre."
+(defun map-min-distance (focus &optional (bound 0d0))
+  "50 m around the ship, 1.2 R⊕ from Earth's centre, max(50 m, 2 × BOUND)
+from the target (decision 125: Map in milestone 3: the trajectory line, line
+styles, plan display, markers, labels, click and focus)."
   (ecase focus
     (:ship *map-min-distance-ship*)
+    (:target (max *map-min-distance-ship* (* 2 bound)))
     (:earth (* *map-min-factor-earth* +radius-earth+))))
 
 (defun map-clamp-distance (view distance)
-  (max (map-min-distance (map-view-focus view)) (min *map-max-distance* distance)))
+  (max (map-min-distance (map-view-focus view) (map-view-bound view))
+       (min *map-max-distance* distance)))
+
+(defun map-view-set-focus! (view focus &optional (bound 0d0))
+  "FOCUS (:ship, :earth or :target with its BOUND), keeping basis, angles and
+distance, clamped to the new focus's range."
+  (setf (map-view-focus view) focus
+        (map-view-bound view) (float bound 1d0)
+        (map-view-target view) (map-clamp-distance view (map-view-target view))
+        (map-view-distance view) (map-clamp-distance view (map-view-distance view)))
+  view)
+
+(defun target-bound (key)
+  "Target KEY's object's bound, m; 0 for a point on rails (Skua Yard's drop point)."
+  (let ((object (target-object-key key)))
+    (if object (object-def-bound (object-definition object)) 0d0)))
 
 (defun map-view-open! (view render-state)
   "M or Home: the basis from the render state's r, v, focus Earth, the
@@ -298,19 +321,23 @@ opening angles, distance and target 2.5 × max(apoapsis radius, |r|)."
     (let* ((apoapsis (orbit-apoapsis-radius (state->orbit r v +mu-earth+ (render-state-t render-state))))
            (distance (* *map-opening-factor* (if apoapsis (max apoapsis rn) rn))))
       (setf (map-view-focus view) :earth
+            (map-view-bound view) 0d0
             (map-view-azimuth view) *map-azimuth*
             (map-view-elevation view) *map-elevation*
             (map-view-target view) (map-clamp-distance view distance)
             (map-view-distance view) (map-view-target view))))
   view)
 
-(defun map-view-cycle-focus! (view)
-  "Tab: Earth ↔ the ship, keeping the basis, angles and distance, clamped to
-the new focus's range."
-  (setf (map-view-focus view) (if (eq (map-view-focus view) :earth) :ship :earth)
-        (map-view-target view) (map-clamp-distance view (map-view-target view))
-        (map-view-distance view) (map-clamp-distance view (map-view-distance view)))
-  view)
+(defun map-view-cycle-focus! (view &optional target)
+  "Tab: the ship → Earth → TARGET (a target key, only when there is one) →
+the ship, keeping the basis, angles and distance, clamped to the new focus's
+range (decision 125)."
+  (ecase (map-view-focus view)
+    (:ship (map-view-set-focus! view :earth))
+    (:earth (if target
+                (map-view-set-focus! view :target (target-bound target))
+                (map-view-set-focus! view :ship)))
+    (:target (map-view-set-focus! view :ship))))
 
 (defun map-view-zoom! (view factor)
   "The target distance × FACTOR, clamped: the wheel 1.2^(−notches), Page-up
@@ -343,7 +370,9 @@ when ELAPSED is nil."
 CAMERA anchored on the focus, looking at it with n's projection as up, 50°
 vertical. Conses nothing."
   (declare (optimize speed) (type camera camera) (type map-view view)
-           (type (or null double-float) elapsed) (ignore render-state))
+           (type (or null double-float) elapsed))
+  (when (and (eq (map-view-focus view) :target) (not (render-state-target render-state)))
+    (map-view-set-focus! view :ship))
   (setf (map-view-distance view)
         (map-ease-distance (map-view-distance view) (map-view-target view) elapsed))
   (let ((d (make-vec3)) (x (make-vec3)) (y (make-vec3)) (z (make-vec3))

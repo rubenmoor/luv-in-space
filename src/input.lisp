@@ -150,7 +150,8 @@ keys, disengages the autopilot (\"AUTOPILOT OFF: PILOT INPUT\"; decision 118).")
                        (cdr (assoc command *autopilot-commands*))))
       (:restart (game-return! game))
       (:new-game (game-new-game! game))
-      (:map-focus (when (map-p game) (map-view-cycle-focus! (game-map-view game))))
+      (:map-focus (when (map-p game)
+                    (map-view-cycle-focus! (game-map-view game) (sim-target sim))))
       (:map-zoom-in (when (map-p game) (map-view-zoom! (game-map-view game) (/ *map-page-factor*))))
       (:map-zoom-out (when (map-p game) (map-view-zoom! (game-map-view game) *map-page-factor*))))))
 
@@ -255,9 +256,13 @@ key that acts disengages an engaged autopilot first (decision 118)."
            (setf (input-held input) (remove key (input-held input)))
            (pushnew key (input-released input)))))
       (luv:canvas-pointer-button-press-event
-       (when (eq :right (luv:canvas-pointer-event-button event))
-         (setf (input-drag input) t)
-         (set-relative-pointer-mode game t)))
+       (case (luv:canvas-pointer-event-button event)
+         (:right (setf (input-drag input) t)
+          (set-relative-pointer-mode game t))
+         (:left (when (map-p game)
+                  (map-click! game (luv:canvas-pointer-event-x event)
+                              (luv:canvas-pointer-event-y event)
+                              (luv:canvas-pointer-event-clicks event))))))
       (luv:canvas-pointer-button-release-event
        (when (and (eq :right (luv:canvas-pointer-event-button event)) (input-drag input))
          (setf (input-drag input) nil)
@@ -273,6 +278,33 @@ key that acts disengages an engaged autopilot first (decision 118)."
        (set-relative-pointer-mode game nil))
       (luv:canvas-window-close-request-event
        (setf (game-quit-requested-p game) t)))))
+
+(defun map-click! (game x y clicks)
+  "A left press at pixel X, Y in the map (decision 125: Map in milestone 3:
+the trajectory line, line styles, plan display, markers, labels, click and
+focus): on the markers the last frame drew, a candidate becomes the target
+(gated as ] [ \\: paused and at every warp, not while lost or a flight runs);
+with CLICKS of 2 or more the marker is also focused, as Tab does (paused,
+lost, during a flight): the ship, Earth, or the target. The Moon and the Sun
+do nothing until milestone 4."
+  (let* ((state (game-render-state game))
+         (marker (map-pick (map-markers state (game-camera game) (game-extent game)
+                                        (game-pick-markers game))
+                           x y)))
+    (when marker
+      (let ((sim (game-sim game))
+            (key (map-marker-target marker)))
+        (when (and (eq (map-marker-key marker) :candidate)
+                   (not (or (sim-lost-p sim) (flight-running-p game))))
+          (sim-set-target! sim key))
+        (when (>= clicks 2)
+          (let ((view (game-map-view game)))
+            (ecase (map-marker-key marker)
+              (:ship (map-view-set-focus! view :ship))
+              (:earth (map-view-set-focus! view :earth))
+              ((:target :candidate)
+               (when (eq key (sim-target sim))
+                 (map-view-set-focus! view :target (target-bound key)))))))))))
 
 (defun throttle-ramp! (controls keys elapsed)
   "Shift-left raises the lever, from off to 0.1; Control-left lowers it,

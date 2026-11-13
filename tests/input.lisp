@@ -904,3 +904,121 @@ digits inside the 1–6 range, the rest by name."
       (lis::game-restart! game)
       (is eq lis::*default-view* (lis::game-view game))
       (is = yaw (lis::cockpit-view-yaw (cockpit-of game))))))
+
+;;; The map's click, double click, Tab with the target and focus :target
+;;; (decision 125: Map in milestone 3: the trajectory line, line styles, plan
+;;; display, markers, labels, click and focus).
+
+(defun map-game ()
+  "A game in the map view with its camera posed and the markers drawn."
+  (let ((game (input-game)))
+    (input-tap game :m)
+    (lis::update-view! game nil)
+    game))
+
+(defun frame-markers (game)
+  (lis::map-markers (lis::game-render-state game) (lis::game-camera game) (lis::game-extent game)))
+
+(defun click-at (game x y clicks)
+  (lis::handle-event game (make-instance 'luv:canvas-pointer-button-press-event
+                                         :timestamp 0 :button :left :clicks clicks :x x :y y)))
+
+(defun click-marker (game key &key (clicks 1) target)
+  "A left press with CLICKS at the centre of the frame's marker KEY (and its
+TARGET key, when given); the marker."
+  (let* ((markers (frame-markers game))
+         (marker (find-if (lambda (m) (and (eq key (lis::map-marker-key m))
+                                           (or (null target) (eq target (lis::map-marker-target m)))))
+                          (subseq (lis::map-markers-items markers) 0 (lis::map-markers-count markers)))))
+    (when marker
+      (click-at game (float (lis::map-marker-x marker)) (float (lis::map-marker-y marker)) clicks))
+    marker))
+
+(defun visible-candidate (game)
+  (let ((markers (lis::map-markers (lis::game-render-state game) (lis::game-camera game)
+                                   (lis::game-extent game))))
+    (find :candidate (subseq (lis::map-markers-items markers) 0 (lis::map-markers-count markers))
+          :key #'lis::map-marker-key)))
+
+(define-test input-map-click-targets
+  (let* ((game (map-game))
+         (sim (lis::game-sim game))
+         (candidate (visible-candidate game))
+         (key (lis::map-marker-target candidate)))
+    (true candidate)
+    ;; Empty space and the ship's ring do not target.
+    (click-at game 1.0 1.0 1)
+    (false (lis::sim-target sim))
+    (click-marker game :ship)
+    (false (lis::sim-target sim))
+    (click-marker game :candidate :target key)
+    (is eq key (lis::sim-target sim))
+    ;; One click does not focus; a double click does, on the target's r.
+    (is eq :earth (lis::map-view-focus (map-view game)))
+    (lis::update-view! game nil)
+    (click-marker game :target :clicks 2)
+    (is eq :target (lis::map-view-focus (map-view game)))
+    (lis::update-view! game nil)
+    (is eq :target (lis::camera-anchor (lis::game-camera game)))
+    (is equalp (lis::render-state-target-r (lis::game-render-state game))
+        (lis::camera-anchor-position! (lis::make-vec3) (lis::game-camera game)
+                                      (lis::game-render-state game)))
+    ;; The least distance: max(50 m, 2 × the bound).
+    (is = (max 50d0 (* 2 (lis::target-bound key))) (lis::map-min-distance :target (lis::target-bound key)))
+    ;; Clearing the target gives the ship, angles kept.
+    (let ((az (lis::map-view-azimuth (map-view game))))
+      (input-tap game :\\)
+      (lis::update-view! game nil)
+      (is eq :ship (lis::map-view-focus (map-view game)))
+      (is = az (lis::map-view-azimuth (map-view game))))))
+
+(define-test input-map-click-gating
+  ;; Lost and a flight running: a click does not target, a double click on the
+  ;; ship still focuses; paused both act.
+  (dolist (setup (list (lambda (game)
+                         (setf (lis::sim-loss (lis::game-sim game))
+                               (lis::make-loss :crash :earth 0d0 100d0 0d0 0d0)))
+                       (lambda (game) (lis::fly "burn" :game game))))
+    (let ((game (input-game)))
+      (funcall setup game)
+      (unless (eq :map (lis::game-view game)) (input-tap game :m))
+      (lis::update-view! game nil)
+      (let ((candidate (visible-candidate game)))
+        (true candidate)
+        (click-marker game :candidate :target (lis::map-marker-target candidate)))
+      (false (lis::sim-target (lis::game-sim game)))
+      (click-marker game :earth :clicks 2)
+      (is eq :earth (lis::map-view-focus (map-view game)))
+      (click-marker game :ship :clicks 2)
+      (is eq :ship (lis::map-view-focus (map-view game)))))
+  (let ((game (map-game)))
+    (setf (lis::clock-paused (lis::game-clock game)) t)
+    (let ((candidate (visible-candidate game)))
+      (click-marker game :candidate :target (lis::map-marker-target candidate))
+      (is eq (lis::map-marker-target candidate) (lis::sim-target (lis::game-sim game))))))
+
+(define-test input-map-tab-target
+  (let ((game (map-game)))
+    (input-tap game :tab)
+    (is eq :ship (lis::map-view-focus (map-view game)))
+    (input-tap game :tab)
+    (is eq :earth (lis::map-view-focus (map-view game)))
+    (input-tap game :tab)
+    (is eq :ship (lis::map-view-focus (map-view game)))
+    (lis::sim-set-target! (lis::game-sim game) :k-17)
+    (input-tap game :tab)
+    (input-tap game :tab)
+    (is eq :target (lis::map-view-focus (map-view game)))
+    (true (>= (lis::map-view-target (map-view game)) (* 2 (lis::target-bound :k-17))))
+    (input-tap game :tab)
+    (is eq :ship (lis::map-view-focus (map-view game)))
+    ;; K-17's removal while focused: the ship.
+    (input-tap game :tab)
+    (input-tap game :tab)
+    (is eq :target (lis::map-view-focus (map-view game)))
+    (let ((az (lis::map-view-azimuth (map-view game))))
+      (setf (lis::object-status (lis::sim-object (lis::game-sim game) :k-17)) :removed)
+      (lis::target-check! (lis::game-sim game))
+      (lis::update-view! game nil)
+      (is eq :ship (lis::map-view-focus (map-view game)))
+      (is = az (lis::map-view-azimuth (map-view game))))))

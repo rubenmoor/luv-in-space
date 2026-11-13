@@ -61,18 +61,6 @@ in the quadrant (*eng-lens*). The nominal colour tints the unlit lens.")
     (or (< (orbit-periapsis-radius orbit) (body-crash-radius (body :earth)))
         (and prediction (prediction-event prediction :impact) t))))
 
-(defun autopilot-abort-unread-p (clock model)
-  "Whether the engaged plan ended in an abort (the model :off with its text)
-whose log entry Y has not marked read."
-  (and model (eq (autopilot-model-state model) :off)
-       (let ((text (autopilot-model-text model)))
-         (and text (search "ABORT" text)
-              (let ((mark (clock-log-read clock)))
-                (loop for entry in (clock-log clock)
-                      until (eq entry mark)
-                      thereis (and (eq (second entry) :autopilot) (search "ABORT" (third entry)) t)))))
-       t))
-
 (defun grapple-refused-recently-p (clock)
   "Whether the newest :grapple message, within 3 s, is a missed capture or an over-rating."
   (and (message-recent-p clock :grapple)

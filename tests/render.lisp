@@ -30,6 +30,171 @@
       (is = (lis::ship-state-m-p (lis::sim-ship sim)) (lis::render-state-m-p state))
       (true (equalp (lis::render-state-controls state) (lis::sim-controls sim))))))
 
+;;; Objects and the grapple in the render state (task 221, decision 124)
+
+(defun object-render-of (state key)
+  (svref (lis::render-state-objects state)
+         (position key lis::*objects* :key #'lis::object-def-key)))
+
+(defun update-at (state clock sim fraction)
+  "STATE updated with the accumulator at FRACTION of the last step's h."
+  (setf (lis::clock-accumulator clock) (* fraction (- (lis::sim-t sim) (lis::clock-previous-t clock))))
+  (lis::render-state-update! state clock sim))
+
+(define-test render-objects-rails-exact
+  (multiple-value-bind (sim clock h) (stepped-sim :sim (lis::new-game-sim))
+    (let ((state (lis::make-render-state)))
+      (dolist (fraction '(0d0 0.5d0 1d0))
+        (update-at state clock sim fraction)
+        (let ((tr (lis::render-state-t state)))
+          (is = (length lis::*objects*) (length (lis::render-state-objects state)))
+          (loop for object across (lis::sim-objects sim)
+                for o across (lis::render-state-objects state)
+                do (let ((r (lis::make-vec3)) (v (lis::make-vec3)) (q (lis::make-quat))
+                         (w (lis::make-vec3)))
+                     (true (lis::object-state-into! r v q w object tr))
+                     (true (lis::object-render-drawn o))
+                     (true (and (equalp r (lis::object-render-r o)) (equalp v (lis::object-render-v o))
+                                (equalp q (lis::object-render-q o)) (equalp w (lis::object-render-w o))))))))
+      (true (> h 0)))))
+
+(define-test render-objects-promoted-hermite
+  (let* ((sim (skua-yard-sim))
+         (t0 (lis::sim-t sim))
+         (reference (lis::copy-sim sim))
+         (clock (lis::new-clock sim))
+         (state (lis::make-render-state))
+         (h (lis::sim-step! sim 1000 :until (+ t0 2d0)))
+         (index (position :skua-yard-3 lis::*objects* :key #'lis::object-def-key)))
+    (is = 2d0 h)
+    (true (lis::object-promoted-p (svref (lis::sim-objects sim) index)))
+    (let ((o (svref (lis::render-state-objects state) index))
+          (before (lis::object-state (svref (lis::sim-objects reference) index)))
+          (after (lis::object-state (svref (lis::sim-objects sim) index))))
+      (update-at state clock sim 0d0)
+      (true (and (equalp (lis::object-render-r o) (lis::ship-state-r before))
+                 (equalp (lis::object-render-q o) (lis::ship-state-q before))))
+      (update-at state clock sim 1d0)
+      (true (and (equalp (lis::object-render-r o) (lis::ship-state-r after))
+                 (equalp (lis::object-render-q o) (lis::ship-state-q after))))
+      (update-at state clock sim 0.5d0)
+      (step-sim reference 64 1)
+      (let ((fine (lis::object-state (svref (lis::sim-objects reference) index))))
+        (is = (+ t0 1d0) (lis::sim-t reference))
+        (true (< (lis::vec3-norm (lis::vec3-sub (lis::object-render-r o) (lis::ship-state-r fine)))
+                 1d-3))))))
+
+(define-test render-objects-promoted-last-step-continuous
+  ;; Tern Station on rails before the step, promoted in it: drawn near its rails
+  ;; (the step's Hermite starts on them).
+  (let* ((sim (ship-near :tern-station 100d0))
+         (fresh (lis::new-game-sim))
+         (clock (lis::new-clock fresh))
+         (state (lis::make-render-state))
+         (tern (lis::sim-object fresh :tern-station)))
+    (true (lis::object-promoted-p (lis::sim-object sim :tern-station)))
+    (lis::sim-step! sim 1)
+    (update-at state clock sim 0.5d0)
+    (let ((o (object-render-of state :tern-station))
+          (r (lis::make-vec3)))
+      (lis::object-state-into! r (lis::make-vec3) (lis::make-quat) (lis::make-vec3)
+                               tern
+                               (lis::render-state-t state))
+      ;; The rails' position runs ~4 m/s off their own velocity (the plane's
+      ;; precession), so the integrated state starts ~0.17 m off in 1/64 s.
+      (true (< (lis::vec3-norm (lis::vec3-sub r (lis::object-render-r o))) 0.3d0)))))
+
+(defun relative-pose (state key)
+  "The object KEY's position and attitude in the ship's axes at STATE."
+  (let* ((o (object-render-of state key))
+         (conjugate (lis::quat-conjugate (lis::render-state-q state))))
+    (values (lis::quat-rotate conjugate (lis::vec3-sub (lis::object-render-r o)
+                                                       (lis::render-state-r state)))
+            (lis::quat-mul conjugate (lis::object-render-q o)))))
+
+(defun check-attached-pose (sim key)
+  (let ((clock (lis::new-clock sim))
+        (state (lis::make-render-state)))
+    (lis::sim-step! sim 1)
+    (update-at state clock sim 1d0)
+    (multiple-value-bind (position attitude) (relative-pose state key)
+      (dolist (fraction '(0.3d0 0.75d0))
+        (update-at state clock sim fraction)
+        (multiple-value-bind (p q) (relative-pose state key)
+          (true (< (lis::vec3-norm (lis::vec3-sub p position)) 1d-9)
+                "~E m" (lis::vec3-norm (lis::vec3-sub p position)))
+          (true (< (reduce #'max (map 'list (lambda (a b) (abs (- a b))) q attitude)) 1d-12)))))))
+
+(define-test render-objects-latched-and-berthed
+  (let ((sim (skua-yard-sim)))
+    (lis::grapple-capture! sim (position :skua-yard-3 lis::*objects* :key #'lis::object-def-key) 0)
+    (is eq :latched (lis::object-status (lis::sim-object sim :skua-yard-3)))
+    (check-attached-pose sim :skua-yard-3))
+  (let ((sim (ship-near :tern-station 100d0)))
+    (lis::berth-capture! sim (position :tern-station lis::*objects* :key #'lis::object-def-key) 0)
+    (true (lis::sim-berthed sim))
+    (check-attached-pose sim :tern-station)))
+
+(define-test render-objects-removed-not-drawn
+  (multiple-value-bind (sim clock) (stepped-sim :sim (lis::new-game-sim))
+    (setf (lis::object-status (lis::sim-object sim :k-17)) :removed)
+    (let ((state (update-at (lis::make-render-state) clock sim 0.5d0)))
+      (false (lis::object-render-drawn (object-render-of state :k-17)))
+      (true (lis::object-render-drawn (object-render-of state :tern-station))))))
+
+(define-test render-grapple-claws
+  (let* ((sim (lis::new-game-sim))
+         (grapple (lis::sim-grapple sim))
+         (clock (lis::new-clock sim))
+         (state (lis::make-render-state))
+         (shown (lis::render-state-grapple state)))
+    (flet ((update () (lis::render-state-update! state clock sim)))
+      (update)
+      (is = 0 (lis::render-grapple-angle shown))
+      (false (lis::render-grapple-floodlight shown))
+      (setf (lis::grapple-state grapple) :armed)
+      (update)
+      (is = 30 (lis::render-grapple-angle shown))
+      (true (lis::render-grapple-floodlight shown))
+      (true (lis::render-grapple-range-finder shown))
+      (setf (lis::grapple-state grapple) :closing
+            (lis::grapple-closing-end grapple) (+ (lis::sim-t sim) 1d0))
+      (update)
+      (is = 11 (lis::render-grapple-angle shown))
+      (setf (lis::grapple-state grapple) :latched)
+      (update)
+      (is = -8 (lis::render-grapple-angle shown))
+      (false (lis::render-grapple-range-finder shown))
+      ;; Easing at 90 deg/s between stowed and armed, in the game only.
+      (setf (lis::render-state-claws-eased state) t
+            (lis::grapple-state grapple) :stowed)
+      (update)
+      (lis::render-state-ease-claws! state 0.1d0)
+      (is = 0 (lis::render-grapple-angle shown))
+      (setf (lis::grapple-state grapple) :armed)
+      (update)
+      (is = 0 (lis::render-grapple-angle shown))
+      (lis::render-state-ease-claws! state 0.1d0)
+      (true (< (abs (- 9 (lis::render-grapple-angle shown))) 1d-12))
+      (lis::render-state-ease-claws! state 1d0)
+      (is = 30 (lis::render-grapple-angle shown))
+      (lis::render-state-ease-claws! state nil)
+      (is = 30 (lis::render-grapple-angle shown)))))
+
+(define-test render-state-objects-cons-nothing
+  (flet ((check (sim)
+           (let ((clock (lis::new-clock sim)) (state (lis::make-render-state)))
+             (lis::sim-step! sim 1)
+             (setf (lis::clock-accumulator clock) 0.005d0)
+             (lis::render-state-update! state clock sim)
+             (is = 0 (least-bytes-consed
+                      (lambda () (dotimes (i 1000) (lis::render-state-update! state clock sim))))))))
+    (check (lis::new-game-sim))
+    (check (skua-yard-sim))
+    (let ((sim (skua-yard-sim)))
+      (lis::grapple-capture! sim (position :skua-yard-3 lis::*objects* :key #'lis::object-def-key) 0)
+      (check sim))))
+
 (define-test render-state-hermite-midpoint
   ;; Half of a 2 s coarse step on the circular orbit against Kepler.
   (let ((t0 (lis::start-t)))

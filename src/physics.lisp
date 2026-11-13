@@ -643,6 +643,7 @@ the Sun, z the ecliptic south pole made perpendicular to x. :inertial: q.
          (vec3-scale! w (quat-rotate! w q axis) rate))))
     q))
 
+(declaim (sb-ext:maybe-inline object-state-into!))
 (defun object-state-into! (r v q w object time)
   "Write OBJECT's state at TIME into R, V (m, m/s, Earth-centred), Q (body ->
 inertial) and W (rad/s, body axes); true, or nil for a removed object or a

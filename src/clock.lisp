@@ -1067,6 +1067,7 @@ the clock's, run to its horizon; without it a fresh one, prediction.lisp)."
   (message-list nil)                            ; (key text stamp), oldest first
   (held nil)                                    ; the last step coarse under a hold
   (previous nil :type ship-state)               ; the ship before the last step
+  (previous-objects #() :type simple-vector)    ; the objects before it (decision 124)
   (previous-t 0d0 :type double-float)
   (frame-steps 0 :type fixnum)                  ; steps in the last frame
   (hook nil :type (or null function))           ; (fn clock sim) → a grid until or nil
@@ -1089,8 +1090,18 @@ prediction two periods ahead while coasting (decision 116)."
                                                             :initial-element 0d0))))
     (setf (clock-previous-t clock) (sim-t sim)
           (clock-game-t clock) (sim-t sim)
+          (clock-previous-objects clock) (map 'simple-vector #'copy-object (sim-objects sim))
           (clock-autopilot clock) (make-autopilot-model))
     clock))
+
+(defun clock-previous-objects-assign! (clock sim)
+  "CLOCK's previous objects := SIM's, consing nothing unless their number changed."
+  (declare (optimize speed) (type clock clock) (type sim sim))
+  (let ((previous (clock-previous-objects clock)) (objects (sim-objects sim)))
+    (if (= (length previous) (length objects))
+        (dotimes (i (length objects))
+          (object-assign! (svref previous i) (svref objects i)))
+        (setf (clock-previous-objects clock) (map 'simple-vector #'copy-object objects)))))
 
 (defun clock-level (clock)
   "The warp level, ×1 … ×1,000,000."
@@ -1358,6 +1369,7 @@ work."
       (declare (type (or null double-float) until))
       (unless (and budget (< budget (the double-float (step-h sim level until))))
         (ship-state-assign! (clock-previous clock) (sim-ship sim))
+        (clock-previous-objects-assign! clock sim)
         (setf (clock-previous-t clock) (sim-t sim))
         (let ((ticks (sim-step-ticks! sim level until)))
           (setf (clock-held clock) (and (> level *fine-levels-max*) (held-p sim))
@@ -1459,5 +1471,6 @@ checkpoint and the SHIP log kept. SIM."
         (clock-held clock) nil
         (clock-previous-t clock) (sim-t sim))
   (ship-state-assign! (clock-previous clock) (sim-ship sim))
+  (clock-previous-objects-assign! clock sim)
   (prediction-invalidate! (clock-prediction clock))
   sim)

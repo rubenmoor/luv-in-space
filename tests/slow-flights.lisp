@@ -11,17 +11,35 @@
 
 (declaim (notinline make-instance))
 
-(defun fly-script (name)
+(defun without-screenshots (steps)
+  "STEPS less the :screenshot actions and the waits added for them (:in-burn,
+:terminal, :range-below; decision 131)."
+  (remove-if (lambda (step)
+               (or (eq (lis::flight-step-name step) :screenshot)
+                   (and (eq (lis::flight-step-kind step) :wait)
+                        (member (lis::flight-step-name step) '(:in-burn :terminal :range-below)))))
+             steps))
+
+(defun fly-script (name &key labels)
   "Fly flights/NAME.sexp twice: passed, the end sims equalp and the records
 equal. Prints its line: game time, steps, wall time, PASSED or FAILED.
-Returns the record and the end sim."
-  (let ((start (lis::flight-start-sim (lis::read-flight name)))
-        (wall (get-internal-real-time)))
-    (multiple-value-bind (record sim) (lis::run-flight name)
-      (multiple-value-bind (again again-sim) (lis::run-flight name)
-        (let ((passed (and (lis::flight-record-passed-p record)
-                           (equalp sim again-sim)
-                           (lt::record-equal record again))))
+Returns the record and the end sim. With LABELS (the screenshot labels in
+order) the script has screenshots: the second run flies it without them and
+their waits, and its record equals the first's less the :screenshot entries
+(decision 131: the script rule)."
+  (let* ((steps (lis::read-flight name))
+         (start (lis::flight-start-sim steps))
+         (wall (get-internal-real-time)))
+    (multiple-value-bind (record sim) (lis::run-flight steps)
+      (multiple-value-bind (again again-sim)
+          (lis::run-flight (if labels (without-screenshots steps) steps))
+        (let* ((shots (remove :screenshot record :key #'lis::flight-entry-kind :test-not #'eq))
+               (record (if labels (remove :screenshot record :key #'lis::flight-entry-kind) record))
+               (passed (and (lis::flight-record-passed-p record)
+                            (equalp sim again-sim)
+                            (lt::record-equal record again))))
+          (when labels
+            (is equal labels (map 'list #'lis::flight-entry-label shots)))
           (true (lis::flight-record-passed-p record) "~A:~%~A" name (lt::script-record-lines record))
           (true (equalp sim again-sim) "~A: end sims differ" name)
           (true (lt::record-equal record again) "~A: records differ" name)
@@ -155,19 +173,24 @@ least CoM distance before each step from the first burn's start to :station."
 ;;; the start state (plan 28's Done when).
 
 (define-test preset-tern-station
-  (fly-script "preset-tern-station"))
+  (fly-script "preset-tern-station"
+               :labels '("start" "plan" "plan-panel" "departure" "departure-cockpit" "arrival" "terminal" "terminal-outside" "on-station" "on-station-cockpit" "on-station-map")))
 
 (define-test preset-fulmar-depot
-  (fly-script "preset-fulmar-depot"))
+  (fly-script "preset-fulmar-depot"
+               :labels '("start" "plan" "plan-panel" "departure" "departure-cockpit" "arrival" "terminal" "terminal-outside" "on-station" "on-station-cockpit" "on-station-map")))
 
 (define-test preset-skua-yard
-  (fly-script "preset-skua-yard"))
+  (fly-script "preset-skua-yard"
+               :labels '("start" "plan" "plan-panel" "departure" "departure-cockpit" "arrival" "terminal" "terminal-outside" "on-station" "on-station-cockpit" "on-station-map")))
 
 (define-test preset-k-17
-  (fly-script "preset-k-17"))
+  (fly-script "preset-k-17"
+               :labels '("start" "plan" "plan-panel" "phasing" "departure" "departure-cockpit" "arrival" "terminal" "terminal-outside" "on-station" "on-station-cockpit" "on-station-map")))
 
 (define-test preset-highport
-  (fly-script "preset-highport"))
+  (fly-script "preset-highport"
+               :labels '("start" "plan" "plan-panel" "departure" "departure-cockpit" "arrival" "terminal" "terminal-outside" "on-station" "on-station-cockpit" "on-station-map")))
 
 ;;; plan 27 piece 5's terminal tests at full length (task 270: Slow tests:
 ;;; full-length station-keeping and the Skua Yard 5 terminal approach),

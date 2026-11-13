@@ -654,13 +654,15 @@ target: the position's rate), so it is −d(range)/dt. Conses nothing."
 (defparameter *station-speed-max* 0.05d0 "m/s, the wanted speed in :station; decision 120.")
 (defparameter *terminal-key-on* 0.01d0 "m/s of error along an axis that holds its key; decision 120.")
 (defparameter *terminal-key-off* 0.003d0 "m/s: under it the key is released; decision 120.")
+(defparameter *terminal-target-distance* 10d0
+  "m from the stop point inside which the :terminal phase holds :target, so the turn is done by arrival; decision 175.")
 (defparameter *terminal-throttle* 0.1d0 "decision 120.")
 (defparameter *terminal-throttle-on* 0.3d0 "m/s of −e along +x that lights the engine; decision 120.")
 (defparameter *terminal-throttle-off* 0.05d0 "m/s: under it the engine is cut; decision 120.")
 (defparameter *terminal-throttle-cone* (cos (deg->rad 10d0))
   "cos of the angle −e may make with +x for the engine; decision 120.")
 (declaim (type double-float *terminal-time* *terminal-speed-max* *station-speed-max*
-               *terminal-key-on* *terminal-key-off* *terminal-throttle*
+               *terminal-key-on* *terminal-key-off* *terminal-target-distance* *terminal-throttle*
                *terminal-throttle-on* *terminal-throttle-off* *terminal-throttle-cone*))
 
 (defun terminal-controls! (controls p u q phase)
@@ -672,8 +674,8 @@ the stop point (m), U their relative velocity (m/s), Q the ship's attitude
 held above *terminal-key-on*, released under *terminal-key-off*; the
 throttle *terminal-throttle* while −e lies within 10° of +x and exceeds
 *terminal-throttle-on* along it, cut under *terminal-throttle-off*; full
-RCS, not fine; the hold :relative-retrograde in :terminal, :target in
-:station, its roll transported from Q when engaged. Pure; CONTROLS. Conses
+RCS, not fine; the hold :relative-retrograde in :terminal beyond
+*terminal-target-distance*, :target within it and in :station, its roll transported from Q when engaged. Pure; CONTROLS. Conses
 nothing."
   (declare (optimize speed) (type controls controls) (type vec3 p u) (type quat q)
            (type (member :terminal :station) phase))
@@ -682,7 +684,8 @@ nothing."
          (scale (if (> (* n (/ *terminal-time*)) cap) (/ cap n) (/ *terminal-time*)))
          (e (make-vec3)) (c (make-quat))
          (keys (controls-translation-keys controls))
-         (kind (if (eq phase :station) :target :relative-retrograde)))
+         (kind (if (or (eq phase :station) (<= n *terminal-target-distance*))
+                   :target :relative-retrograde)))
     (declare (dynamic-extent e c) (type double-float n cap scale))
     (vec3-add-scaled! e u p scale)
     (quat-conjugate! c q)

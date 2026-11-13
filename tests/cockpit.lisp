@@ -1903,9 +1903,8 @@ the window's plane and of a porthole's plane."
              (lis::screen-view-draw! view atlas (lis::screen-lines :autopilot state clock 0d0))
              (lis::autopilot-plot-update! (lis::screen-view-plot view) state)))
       (rebuild) (rebuild)
-      (let ((before (sb-ext:get-bytes-consed)))
-        (rebuild)
-        (true (< (- (sb-ext:get-bytes-consed) before) 16384) "~D bytes" (- (sb-ext:get-bytes-consed) before))))))
+      (let ((consed (least-bytes-consed #'rebuild 5)))
+        (true (< consed 16384) "~D bytes" consed)))))
 
 ;;; The buttons, picking and the hover (plan 32 piece 6; decision 128: Cockpit
 ;;; devices, buttons, picking, the grapple camera and messages in milestone 3).

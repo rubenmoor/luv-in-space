@@ -367,8 +367,8 @@
 
 ;; The foil's crinkle: N tilted against the gradient of value noise of
 ;; the body position, cell 0.08 m, on a lattice turned off the body axes so
-;; it shows no squares; amplitude 0.25 (decision 80).
-(define-shader-function foil-normal (n p)
+;; it shows no squares; AMPLITUDE 0.25 (decision 80), the peeling foil's 0.6.
+(define-shader-function foil-normal (n p amplitude)
   (let* ((q (/ (vec3 (dot p (vec3 0.667 0.667 -0.333)) (dot p (vec3 -0.333 0.667 0.667))
                      (dot p (vec3 0.667 -0.333 0.667)))
                0.08))
@@ -382,13 +382,27 @@
                     (* (vec3 0.667 0.667 -0.333) (swizzle g :y))
                     (* (vec3 -0.333 0.667 0.667) (swizzle g :z))))
          (tangent (- body-g (* n (dot body-g n)))))
-    (normalize (- n (* tangent 0.25)))))
+    (normalize (- n (* tangent amplitude)))))
+
+;; The rows the fragment names, in row order: the test checks them against
+;; *ship-material-names*.
+(defparameter *ship-shader-material-rows*
+  '(:steel :lh2-foil :lox-foil :cab-paint :stencil :cairn :red-paint :solar-cells
+    :radiator :aluminium :nozzle :throat :glass :hatch :decal
+    :decal-m04 :decal-m05 :decal-tern :decal-pod-14 :rock :net :scorched :peeling-foil
+    :fixture :boreal-green))
 
 ;; One fragment for both pipelines. Material rows (src/meshes.lisp
 ;; *ship-material-names*): 0 steel, 1 LH2 foil, 2 LOX foil, 6 red paint, 10
-;; nozzle, 11 throat, 13 hatch, 14 decal. Steel darker x0.6 within 0.06 m of
-;; a tube's end; the bell's first 0.15 m the throat's (the only nozzle part
-;; over 1 m long); the hatch's 0.05 m border red; the decal over the paint.
+;; nozzle, 11 throat, 13 hatch, 14 to 18 the decals (one atlas row each), 19
+;; rock, 20 net, 21 scorched, 22 peeling foil, 23 fixture. Steel darker x0.6
+;; within 0.06 m of a tube's end; the bell's first 0.15 m the throat's (the
+;; only nozzle part over 1 m long); the hatch's 0.05 m border red; the decal
+;; over the paint; the net's cords 0.04 m wide every 0.45 m on the rock
+;; (the surface parameters its arc lengths along latitude and longitude); the
+;; scorched steel's streaks of value noise along x; the peeling foil's patches
+;; where the noise exceeds 0.55 showing scorched steel; the fixture's black
+;; cross from the plate's centre coordinates (decision 124).
 ;; Light: the Sun, earthshine tinted, ambient; Blinn-Phong in the Sun.
 (define-ship-shader ship-fragment
     (:stage :fragment
@@ -402,18 +416,38 @@
          (throat (and (= id (uint 10.0)) (> span 1.0) (< axial 0.15)))
          (border (and (= id (uint 13.0))
                       (or (> (abs axial) 0.35) (> (abs span) 0.55))))
-         (row (if throat (uint 11.0) (if border (uint 6.0) id)))
+         (cord (and (= id (uint 20.0))
+                    (or (< (abs (- (fract (+ (/ axial 0.45) 0.5)) 0.5)) 0.044)
+                        (< (abs (- (fract (+ (/ span 0.45) 0.5)) 0.5)) 0.044))))
+         (patchy (value-noise (+ (* body 1.3) (vec3 11.0 5.0 3.0))))
+         (patch (and (= id (uint 22.0)) (> patchy 0.55)))
+         (row (if throat (uint 11.0)
+                  (if border (uint 6.0)
+                      (if (= id (uint 20.0)) (if cord (uint 20.0) (uint 19.0))
+                          (if patch (uint 21.0) id)))))
          (m0 (buffer-element materials (* row (uint 2.0))))
          (m1 (buffer-element materials (+ (* row (uint 2.0)) (uint 1.0))))
          (weld (if (and (= id (uint 0.0)) (> span 0.0)
                         (or (< axial 0.06) (< (- span axial) 0.06)))
                    0.6 1.0))
-         (texel (sample decal decal-sampler (vec2 axial span)))
+         (decal-row (max (- (swizzle surface :x) 14.0) 0.0))
+         (texel (sample decal decal-sampler (vec2 axial (/ (+ span decal-row) 5.0))))
+         (is-decal (and (> (swizzle surface :x) 13.5) (< (swizzle surface :x) 18.5)))
+         (streak (+ 0.55 (* 0.45 (value-noise (vec3 (* (swizzle body :x) 0.5)
+                                                    (* (swizzle body :y) 5.0)
+                                                    (* (swizzle body :z) 5.0))))))
+         (target (and (= id (uint 23.0))
+                      (or (< (abs axial) 0.025) (< (abs span) 0.025))
+                      (< (+ (* axial axial) (* span span)) 0.2025)))
          (paint (swizzle m0 :xyz))
-         (albedo (* (if (= id (uint 14.0)) (mix paint (swizzle texel :rgb) (swizzle texel :w)) paint)
-                    weld))
+         (albedo (* (if is-decal (mix paint (swizzle texel :rgb) (swizzle texel :w)) paint)
+                    weld
+                    (if (or (= id (uint 21.0)) patch) streak 1.0)
+                    (if target 0.04 1.0)))
          (flat (normalize body-normal))
-         (n (if (or (= id (uint 1.0)) (= id (uint 2.0))) (foil-normal flat body) flat))
+         (amplitude (if (or (= id (uint 1.0)) (= id (uint 2.0))) 0.25
+                        (if (and (= id (uint 22.0)) (<= patchy 0.55)) 0.6 0.0)))
+         (n (if (> amplitude 0.0) (foil-normal flat body amplitude) flat))
          (s (swizzle ship-sun :xyz))
          (v (normalize (- (swizzle ship-eye :xyz) body)))
          (h (normalize (+ s v)))

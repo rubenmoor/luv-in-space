@@ -139,7 +139,7 @@
 
 (define-test stencil-decal
   (let ((pixels (lis::stencil-decal-pixels)))
-    (is equal '(128 512) (array-dimensions pixels))
+    (is equal '(640 512) (array-dimensions pixels))
     (loop for (char x0 y0 x1 y1) in (lis::decal-glyph-boxes)
           do (let ((dark (loop for y from y0 below y1
                                sum (loop for x from x0 below x1
@@ -185,8 +185,11 @@
 (define-test ship-fragment-material-rows
   ;; shaders.lisp's ship-fragment names these rows by number.
   (loop for (name row) in '((:steel 0) (:lh2-foil 1) (:lox-foil 2) (:red-paint 6) (:nozzle 10)
-                            (:throat 11) (:hatch 13) (:decal 14))
-        do (is = row (lis::material-id name))))
+                            (:throat 11) (:hatch 13) (:decal 14) (:decal-pod-14 18) (:rock 19)
+                            (:net 20) (:scorched 21) (:peeling-foil 22) (:fixture 23))
+        do (is = row (lis::material-id name)))
+  (is equal lis::*ship-material-names* luv-in-space.shaders::*ship-shader-material-rows*)
+  (is = (length lis::*ship-material-names*) (array-dimension lis::*ship-materials* 0)))
 
 (define-test ship-uniforms
   (flet ((block-of (sim offset)
@@ -284,3 +287,123 @@
         (is = 0f0 (aref out 23))
         (setf (lis::render-state-ship-lights-on state) nil)
         (is = 1 (glows state))))))
+
+;;; Piece 1 of plan 29: the builders, the fixture, the atlas (decision 124).
+
+(defvar *tanker* nil)
+(defun tanker () (or *tanker* (setf *tanker* (lis::tanker-model))))
+
+(defun close-to (a b &optional (tolerance 1d-3))
+  (< (lis::vec3-norm (lis::vec3-sub a b)) tolerance))
+
+(define-test truss-ship-models
+  (let ((model (tanker)))
+    (flet ((span (name)
+             (multiple-value-bind (lo hi) (lis::positions-box (lis::model-part-positions model name))
+               (list (aref lo 0) (aref hi 0)))))
+      ;; 4 longerons, 17 frames of 4, 16 bays of 4 diagonals.
+      (is = 136 (multiple-value-bind (where start end) (lis::model-part model "truss")
+                  (declare (ignore where)) (- end start)))
+      (let ((s (span "truss")))
+        (true (< (abs (- (second s) (first s) 24)) 0.1) "truss ~A" s))
+      (loop for (name x0 x1) in '(("LH2 tank 1" 0.5 8.1) ("LOX tank 1" 8.5 11.8)
+                                  ("LH2 tank 2" 12.2 19.8) ("LOX tank 2" 20.2 23.5))
+            do (let ((s (span name)))
+                 (true (and (< (abs (- (first s) x0)) 0.01) (< (abs (- (second s) x1)) 0.01))
+                       "~A ~A" name s)))
+      ;; The nose fixture's plate: its face centre at x 24.15.
+      (let* ((plate (lis::model-part-positions model "plate"))
+             (face (remove-if-not (lambda (p) (< (abs (- (aref p 0) 24.15)) 1d-5)) plate)))
+        (true face)
+        (true (close-to (lis::vec3-scale (reduce #'lis::vec3-add face) (/ 1d0 (length face)))
+                        (lis::vec3 24.15 0 0)))))
+    ;; The truss rods are the Mule's for 15 m.
+    (loop for a in (lis::truss-members) for b in (lis::truss-rods 15d0 10)
+          do (true (and (< (abs (- (first a) (first b))) 1d-9)
+                        (close-to (second a) (second b) 1d-9)
+                        (close-to (third a) (third b) 1d-9)
+                        (< (abs (- (fourth a) (fourth b))) 1d-9))))
+    ;; The capsule: nose at 0, 4.5 m long.
+    (multiple-value-bind (lo hi) (lis::positions-box (lis::model-positions (lis::capsule-model)))
+      (true (box-within lo hi '(0 -4.95 -1.95) '(4.5 4.95 1.95))))))
+
+(define-test bake-model
+  (let* ((model (mule))
+         (xf (lis::xform '(10 -3 2) :x '(0 1 0) :y '(-1 0 0)))
+         (out (lis::make-builder)))
+    (lis::bake-model! out model xf)
+    (let* ((baked (lis::builder-model out))
+           (source-hull (lis::floats-positions (lis::model-vertices model) 0
+                                               (floor (length (lis::model-vertices model))
+                                                      lis::+vertex-floats+)))
+           (source-engine (lis::floats-positions (lis::model-engine model) 0
+                                                 (floor (length (lis::model-engine model))
+                                                        lis::+vertex-floats+)))
+           (baked-hull (lis::floats-positions (lis::model-vertices baked) 0
+                                              (floor (length (lis::model-vertices baked))
+                                                     lis::+vertex-floats+))))
+      (flet ((moved (p) (lis::xform-point xf (aref p 0) (aref p 1) (aref p 2))))
+        (is = (+ (length source-hull) (length source-engine)) (length baked-hull))
+        (loop for p in (append source-hull source-engine) for q in baked-hull
+              do (true (close-to (moved p) q 1d-5)))
+        (dolist (kind '(:tube :box :cone))
+          (let ((a (lis::model-group model kind)) (b (lis::model-group baked kind)))
+            (loop for p in (lis::instance-positions a 0 (floor (length (lis::instance-group-instances a))
+                                                              lis::+instance-floats+))
+                  for q in (lis::instance-positions b 0 (floor (length (lis::instance-group-instances b))
+                                                              lis::+instance-floats+))
+                  do (true (close-to (moved p) q 1d-4)))))
+        (is = 3 (length (lis::model-beacons baked)))
+        (loop for (kind position) in (lis::model-beacons baked)
+              do (true (close-to position (moved (getf (lis::model-lights model) kind)) 1d-5)))))))
+
+(define-test fixture-mesh
+  (let* ((axis (lis::vec3-normalize (lis::vec3 1 2 -2)))
+         (pin (lis::vec3 3 -1 4))
+         (model (lis::fixture-mesh pin axis)))
+    (let* ((floats (lis::model-vertices model))
+           (n (floor (length floats) lis::+vertex-floats+))
+           (face (loop for i below n
+                       for o = (* i lis::+vertex-floats+)
+                       when (= (aref floats (+ o 6)) (float (lis::material-id :fixture) 1.0))
+                         collect o)))
+      (true face)
+      (let ((centroid (lis::vec3 0 0 0)))
+        (dolist (o face)
+          (lis::vec3-add! centroid centroid (lis::vec3 (aref floats o) (aref floats (+ o 1)) (aref floats (+ o 2)))))
+        (true (close-to (lis::vec3-scale centroid (/ 1d0 (length face))) pin 1d-3)))
+      (dolist (o face)
+        (let ((normal (lis::vec3 (aref floats (+ o 3)) (aref floats (+ o 4)) (aref floats (+ o 5)))))
+          (true (< (acos (min 1d0 (lis::vec3-dot normal axis))) (degrees-to-rad 0.01)))))
+      ;; The pin and every guide within 0.6 m of the axis.
+      (flet ((off-axis (p)
+               (let ((d (lis::vec3-sub p pin)))
+                 (lis::vec3-norm (lis::vec3-sub d (lis::vec3-scale axis (lis::vec3-dot d axis)))))))
+        (dolist (kind '(:tube :box))
+          (let* ((group (lis::model-group model kind)) (instances (lis::instance-group-instances group)))
+            (when (eq kind :box) (is = 3 (floor (length instances) lis::+instance-floats+)))
+            (dotimes (i (floor (length instances) lis::+instance-floats+))
+              (let ((origin (lis::xform-origin (lis::instance-xform instances i))))
+                (when (member kind '(:box))
+                  (true (< (off-axis origin) 0.6)))))))
+        (multiple-value-bind (where start end) (lis::model-part model "pin")
+          (declare (ignore where))
+          (let ((tube (lis::instance-xform (lis::instance-group-instances (lis::model-group model :tube)) start)))
+            (true (< (off-axis (lis::xform-point tube 1 0 0)) 0.6))
+            (is = 1 (- end start))))))))
+
+(defun degrees-to-rad (d) (* d (/ pi 180)))
+
+(define-test decal-atlas
+  (let ((pixels (lis::stencil-decal-pixels)))
+    (loop for row below 5
+          for text in '("M-07" "M-04" "M-05" "TERN" "POD 14")
+          for boxes = (lis::decal-glyph-boxes row)
+          do (is = (count-if-not (lambda (c) (char= c #\Space)) text) (length boxes))
+             (is string= (remove #\Space text) (coerce (mapcar #'first boxes) 'string))
+             (loop for (char x0 y0 x1 y1) in boxes
+                   do (let ((dark (loop for y from y0 below y1
+                                        sum (loop for x from x0 below x1
+                                                  count (dark-pixel-p (aref pixels y x))))))
+                        (true (<= 0.15 (/ dark (* (- x1 x0) (- y1 y0))) 0.60)
+                              "~A ~C covers ~A" text char dark))))))

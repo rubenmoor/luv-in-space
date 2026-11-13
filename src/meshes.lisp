@@ -24,14 +24,14 @@
 
 (defparameter *ship-material-names*
   '(:steel :lh2-foil :lox-foil :cab-paint :stencil :cairn :red-paint :solar-cells
-    :radiator :aluminium :nozzle :throat :glass :hatch :decal)
-  "Row order of *ship-materials*; a vertex's material id is the row.")
+    :radiator :aluminium :nozzle :throat :glass :hatch :decal
+    :decal-m04 :decal-m05 :decal-tern :decal-pod-14 :rock :net :scorched :peeling-foil
+    :fixture :boreal-green)
+  "Row order of *ship-materials*; a vertex's material id is the row. The decals
+are rows 14 to 18, one per row of the decal atlas.")
 
 (defparameter *ship-materials*
-  (make-array '(15 6)
-              :element-type 'single-float
-              :initial-contents
-              '((0.45 0.45 0.47 0.15 16.0 0.0)     ; steel, x0.6 at weld nodes
+  (let ((rows '((0.45 0.45 0.47 0.15 16.0 0.0)     ; steel, x0.6 at weld nodes
                 (0.80 0.55 0.20 0.6 64.0 0.0)      ; LH2 foil, gold
                 (0.75 0.75 0.78 0.6 64.0 0.0)      ; LOX foil, silver
                 (0.80 0.80 0.78 0.05 8.0 0.0)      ; cab white paint
@@ -45,7 +45,18 @@
                 (0.35 0.33 0.30 0.1 16.0 0.0)      ; throat band, first 0.15 m
                 (0.02 0.02 0.02 0.8 128.0 0.005)   ; window and porthole glass
                 (0.80 0.80 0.78 0.05 8.0 0.0)      ; hatch: paint, red border
-                (0.80 0.80 0.78 0.05 8.0 0.0)))    ; decal: paint under the texture
+                (0.80 0.80 0.78 0.05 8.0 0.0)      ; decal: paint under the texture
+                (0.80 0.80 0.78 0.05 8.0 0.0)      ; decal row 1
+                (0.80 0.80 0.78 0.05 8.0 0.0)      ; decal row 2
+                (0.80 0.80 0.78 0.05 8.0 0.0)      ; decal row 3
+                (0.80 0.80 0.78 0.05 8.0 0.0)      ; decal row 4
+                (0.07 0.065 0.06 0.05 8.0 0.0)     ; rock
+                (0.55 0.50 0.40 0.05 8.0 0.0)      ; net cord, over the rock
+                (0.25 0.25 0.25 0.05 8.0 0.0)      ; scorched, streaked by noise
+                (0.75 0.75 0.78 0.6 64.0 0.0)      ; peeling foil, patches of scorched
+                (0.85 0.85 0.85 0.5 32.0 0.0)      ; fixture plate, black target
+                (0.45 0.70 0.50 0.05 8.0 0.0))))   ; Boreal green band
+    (make-array (list (length rows) 6) :element-type 'single-float :initial-contents rows))
   "Rows of *ship-material-names*: r g b, specular weight, exponent, emission; live.")
 
 (defun material-id (name)
@@ -248,6 +259,7 @@ and v along z from and to UV, by default metres from the centre."
   (groups '())                          ; instance-groups, :tube :box :cone
   (parts '())                           ; (name where start end), where :hull :engine or a kind
   (lights '())                          ; plist of light positions, body axes
+  (beacons '())                         ; (kind position): :red :green :strobe :lamp
   (hull-points nil :type (or null (simple-array double-float (*))))
   (engine-points nil :type (or null (simple-array double-float (*))))
   (scratch (make-mass-properties) :type mass-properties))
@@ -298,7 +310,120 @@ and v along z from and to UV, by default metres from the centre."
       (dotimes (i 3)
         (setf (aref lo i) (min (aref lo i) (aref p i)) (aref hi i) (max (aref hi i) (aref p i)))))))
 
-;;; The Mule (decision 80; docs/design.md "How they look", "Parts")
+;;; Builders (decision 124: Meshes of the places: models, scenery liveries,
+;;; lights, far dots, the grapple's claws, floodlight and range finder). A
+;;; builder collects a model's hull, engine, instances, parts and beacons;
+;;; `bake-model!` appends another model to it under a transform.
+
+(defstruct (builder (:constructor make-builder ()))
+  (hull (make-float-buffer))
+  (engine (make-float-buffer))
+  (groups (list (list :tube) (list :box) (list :cone)))
+  (parts '())
+  (beacons '()))
+
+(defun builder-vertex-count (b where)
+  (floor (fill-pointer (if (eq where :engine) (builder-engine b) (builder-hull b)))
+         +vertex-floats+))
+
+(defun builder-add (b kind instance)
+  (nconc (assoc kind (builder-groups b)) (list instance)))
+
+(defun builder-tube (b a c radius material)
+  (builder-add b :tube (tube-instance a c radius material)))
+
+(defun builder-part (b name where thunk)
+  "Run THUNK, recording the vertices or instances it adds as part NAME of WHERE."
+  (let* ((group (assoc where (builder-groups b)))
+         (count (lambda () (if group (length (rest group)) (builder-vertex-count b where))))
+         (start (funcall count)))
+    (funcall thunk)
+    (push (list name where start (funcall count)) (builder-parts b))))
+
+(defun builder-model (b &optional lights)
+  "The model of builder B; LIGHTS the plist of its light positions."
+  (make-model
+   :vertices (simple-floats (builder-hull b))
+   :engine (simple-floats (builder-engine b))
+   :groups (loop for (kind . instances) in (builder-groups b)
+                 collect (make-instance-group
+                          kind (unit-primitive kind)
+                          (let ((out (make-array (* +instance-floats+ (length instances))
+                                                 :element-type 'single-float)))
+                            (loop for inst in instances for i from 0
+                                  do (replace out inst :start1 (* i +instance-floats+)))
+                            out)))
+   :parts (reverse (builder-parts b))
+   :lights lights
+   :beacons (reverse (builder-beacons b))))
+
+(defun light-beacons (lights)
+  "((kind position) …) of the navigation lights and strobe in the plist LIGHTS."
+  (loop for (kind position) on lights by #'cddr
+        when (member kind '(:red :green :strobe :lamp))
+          collect (list kind position)))
+
+(defun bake-model! (out model xform)
+  "Append MODEL to the builder OUT under XFORM, an origin, a rotation and a
+uniform scale: its hull, its engine (at zero trim, into the hull), its
+instance groups (the bases composed with the transform) and its beacons.
+The instances' scale must be uniform for this to be exact."
+  (let* ((s (xform-scale xform))
+         (k (aref s 0))
+         (m (xform-basis xform))
+         (hull (builder-hull out))
+         (hull-before (builder-vertex-count out :hull))
+         (source-hull (floor (length (model-vertices model)) +vertex-floats+))
+         (before (loop for (kind . instances) in (builder-groups out) collect (cons kind (length instances)))))
+    (unless (and (= (aref s 0) (aref s 1)) (= (aref s 1) (aref s 2)))
+      (error "bake-model!: the scale ~A is not uniform." s))
+    (dolist (floats (list (model-vertices model) (model-engine model)))
+      (loop for o from 0 below (length floats) by +vertex-floats+
+            do (let ((p (xform-point xform (aref floats o) (aref floats (+ o 1)) (aref floats (+ o 2))))
+                     (n (xform-normal xform (aref floats (+ o 3)) (aref floats (+ o 4))
+                                      (aref floats (+ o 5)))))
+                 (dolist (v (list (aref p 0) (aref p 1) (aref p 2) (aref n 0) (aref n 1) (aref n 2)
+                                  (aref floats (+ o 6)) (aref floats (+ o 7)) (aref floats (+ o 8))))
+                   (vector-push-extend (float v 1.0) hull)))))
+    (dolist (g (model-groups model))
+      (let ((instances (instance-group-instances g)))
+        (dotimes (i (floor (length instances) +instance-floats+))
+          (let* ((xf (instance-xform instances i))
+                 (o (xform-point xform (aref (xform-origin xf) 0) (aref (xform-origin xf) 1)
+                                 (aref (xform-origin xf) 2)))
+                 (new (make-array +instance-floats+ :element-type 'single-float))
+                 (b (xform-basis xf)))
+            (dotimes (c 3)
+              (let ((axis (mat3*vec3 m (vec3 (aref b c) (aref b (+ c 3)) (aref b (+ c 6))))))
+                (dotimes (r 3) (setf (aref new (+ 3 (* 3 c) r)) (float (aref axis r) 1.0)))))
+            (dotimes (r 3)
+              (setf (aref new r) (float (aref o r) 1.0)
+                    (aref new (+ 12 r)) (float (* k (aref (xform-scale xf) r)) 1.0)))
+            (setf (aref new 15) (aref instances (+ (* i +instance-floats+) 15)))
+            (builder-add out (instance-group-kind g) new)))))
+    ;; The parts come along, the engine's after the hull's.
+    (dolist (part (model-parts model))
+      (destructuring-bind (name where start end) part
+        (let ((shift (case where
+                       (:hull hull-before)
+                       (:engine (+ hull-before source-hull))
+                       (t (cdr (assoc where before))))))
+          (push (list name (if (eq where :engine) :hull where) (+ start shift) (+ end shift))
+                (builder-parts out)))))
+    (dolist (beacon (model-beacons model))
+      (destructuring-bind (kind position) beacon
+        (push (list kind (xform-point xform (aref position 0) (aref position 1) (aref position 2)))
+              (builder-beacons out))))
+    out))
+
+(defun model-extent (model &optional (com (vec3 0 0 0)))
+  "The largest distance from COM (default the body origin) to any vertex of
+MODEL, instances expanded, the engine at zero trim."
+  (sqrt (loop for p in (model-positions model)
+              maximize (let ((d (vec3-sub p com))) (vec3-dot d d)))))
+
+;;; The truss ships: the Mule, tankers (decision 80; docs/design.md "How
+;;; they look", "Parts", "Rigid bodies")
 
 (defparameter *cab-axis* '(0 -3.5d0) "y, z of the cab's axis.")
 (defparameter *cab-radius* 1.5d0)
@@ -310,88 +435,119 @@ and v along z from and to UV, by default metres from the centre."
 
 (defun degrees-to-radians (d) (* d (/ pi 180)))
 
-(defun mule-model ()
-  "The Mule: the baked hull, the instance groups, the engine, the lights."
-  (let ((hull (make-float-buffer)) (engine (make-float-buffer))
-        (groups (list (list :tube) (list :box) (list :cone)))
-        (parts '()))
+(defun truss-rods (length bays)
+  "The truss's rods like `truss-members` (decision 71), for LENGTH m in BAYS
+bays: ((weight centre direction rod-length) …), 4 longerons, 4 per frame, 4
+diagonals per bay. The Mule's are 15 m and 10 bays."
+  (let ((members '()) (bay (/ length bays)))
+    (flet ((rod (weight centre direction rod-length)
+             (push (list weight (apply #'vec3 centre) (vec3-normalize (apply #'vec3 direction))
+                         rod-length)
+                   members)))
+      (dolist (y '(1.8d0 -1.8d0))
+        (dolist (z '(1.8d0 -1.8d0))
+          (rod 112.65d0 (list (* 0.5d0 length) y z) '(1 0 0) length)))
+      (dotimes (k (1+ bays))
+        (let ((x (* bay k)))
+          (dolist (s '(1.8d0 -1.8d0))
+            (rod 16.06d0 (list x s 0) '(0 0 1) 3.6d0)
+            (rod 16.06d0 (list x 0 s) '(0 1 0) 3.6d0))))
+      (dotimes (k bays)
+        (let ((x (+ (* bay k) (* 0.5d0 bay)))
+              (sign (if (evenp k) 3.6d0 -3.6d0))
+              (rod-length (sqrt (+ (* bay bay) (* 3.6d0 3.6d0)))))
+          (dolist (s '(1.8d0 -1.8d0))
+            (rod 17.39d0 (list x s 0) (list bay 0 sign) rod-length)
+            (rod 17.39d0 (list x 0 s) (list bay sign 0) rod-length)))))
+    (nreverse members)))
+
+(defun truss-ship-model (&key (length 15d0) (bays 10) tanks (tank-radius 1.6d0)
+                           cab decal (nose :grapple) (engine-x -0.6d0) (engine-z -0.5d0)
+                           (rcs-x '(0.5d0 14.5d0)) (wings t) (radiators t) (equipment t) lights)
+  "A ship on a truss of LENGTH m in BAYS bays along +x from x 0: TANKS
+((name x0 x1 material) …) with hemispherical domes of TANK-RADIUS; CAB nil or
+(x0 x1), the cab on top with its struts, window, portholes and hatch, and
+DECAL nil or the decal material on its sides; NOSE :grapple (the Mule's, with
+its claws) or (:fixture x) for a fixture plate with its pin at x; the engine
+at zero trim, its bell's rim at ENGINE-X on the axis at z ENGINE-Z; RCS blocks
+at the x in RCS-X (four each, with the Mule's thruster triples; blocks past
+x 7 move with the nose); WINGS, RADIATORS, EQUIPMENT (the gas conditioning
+and the equipment bay) flags; LIGHTS the plist of light positions. The Mule
+is one case (`mule-model`), a tanker another."
+  (let* ((b (make-builder)) (hull (builder-hull b)) (engine (builder-engine b))
+         (cab-dx (if cab (- (first cab) 10.5d0) 0d0))
+         (nose-shift (- length 15d0))
+         (gimbal (vec3 (+ engine-x 0.6d0) 0 engine-z)))
     (labels ((id (name) (material-id name))
-             (vertex-count (buffer) (floor (fill-pointer buffer) +vertex-floats+))
-             (part (name where thunk)
-               (let* ((group (assoc where groups))
-                      (start (if group (length (rest group))
-                                 (vertex-count (if (eq where :engine) engine hull)))))
-                 (funcall thunk)
-                 (push (list name where start
-                             (if group (length (rest group))
-                                 (vertex-count (if (eq where :engine) engine hull))))
-                       parts)))
-             (add (kind instance) (nconc (assoc kind groups) (list instance)))
-             (tube (a b radius) (add :tube (tube-instance a b radius (id :steel))))
+             (part (name where thunk) (builder-part b name where thunk))
+             (add (kind instance) (builder-add b kind instance))
+             (tube (a c radius) (builder-tube b a c radius (id :steel)))
              (cab-xf (x0 x1 radius)
                (xform (list x0 0 (second *cab-axis*)) :y '(0 1 0) :scale (list (- x1 x0) radius radius))))
-      ;; Truss: the rods of ship.lisp's truss-members.
       (part "truss" :tube
             (lambda ()
-              (loop for (nil centre direction length) in (truss-members)
-                    for half = (vec3-scale direction (* 0.5d0 length))
+              (loop for (nil centre direction rod-length) in (truss-rods length bays)
+                    for half = (vec3-scale direction (* 0.5d0 rod-length))
                     do (tube (vec3-sub centre half) (vec3-add centre half)
-                             (if (= length 15.0d0) 0.038d0 0.030d0)))))
-      (part "cab struts" :tube
-            (lambda ()
-              (dolist (x '(11.0d0 14.5d0))
-                (dolist (s '(1 -1))
-                  (tube (list x (* s 1.8d0) -1.8d0) (list x (* s 0.9d0) -2.3d0) 0.04d0)))))
+                             (if (= rod-length length) 0.038d0 0.030d0)))))
+      (when cab
+        (part "cab struts" :tube
+              (lambda ()
+                (dolist (x (list (+ 11.0d0 cab-dx) (+ 14.5d0 cab-dx)))
+                  (dolist (s '(1 -1))
+                    (tube (list x (* s 1.8d0) -1.8d0) (list x (* s 0.9d0) -2.3d0) 0.04d0))))))
       (part "thrust frame" :tube
             (lambda ()
               (dolist (y '(1.8d0 -1.8d0))
                 (dolist (z '(1.8d0 -1.8d0))
                   (let* ((corner (vec3 0 y z))
-                         (end (vec3-add-scaled *engine-gimbal*
-                                               (vec3-normalize (vec3-sub corner *engine-gimbal*))
-                                               0.3d0)))
+                         (end (vec3-add-scaled gimbal (vec3-normalize (vec3-sub corner gimbal)) 0.3d0)))
                     (tube corner end 0.04d0))))))
-      (part "grapple struts" :tube
-            (lambda ()
-              (dolist (y '(1 -1))
-                (dolist (z '(1 -1))
-                  (let ((rim (* 0.3d0 (sqrt 0.5d0))))
-                    (tube (list 15.0d0 (* y 1.8d0) (* z 1.8d0)) (list 15.0d0 (* y rim) (* z rim))
-                          0.03d0))))))
-      (part "wing booms" :tube
-            (lambda ()
-              (dolist (s '(1 -1))
-                (tube (list 5.0d0 (* s 1.8d0) 0) (list 5.0d0 (* s 2.3d0) 0) 0.04d0))))
+      (when (eq nose :grapple)
+        (part "grapple struts" :tube
+              (lambda ()
+                (dolist (y '(1 -1))
+                  (dolist (z '(1 -1))
+                    (let ((rim (* 0.3d0 (sqrt 0.5d0))))
+                      (tube (list length (* y 1.8d0) (* z 1.8d0)) (list length (* y rim) (* z rim))
+                            0.03d0)))))))
+      (when wings
+        (part "wing booms" :tube
+              (lambda ()
+                (dolist (s '(1 -1))
+                  (tube (list 5.0d0 (* s 1.8d0) 0) (list 5.0d0 (* s 2.3d0) 0) 0.04d0)))))
       ;; RCS: a block per thruster triple of ship.lisp, a nozzle per thruster
       ;; pointing along its exhaust, from the block's face.
-      (part "RCS blocks" :box
-            (lambda ()
-              (loop for i from 0 below +rcs-count+ by 3
-                    do (add :box (instance (list (aref *rcs-positions* i 0) (aref *rcs-positions* i 1)
-                                                 (aref *rcs-positions* i 2))
-                                           '(1 0 0) '(0 1 0) '(0.3d0 0.4d0 0.4d0) (id :aluminium))))))
-      (part "RCS nozzles" :cone
-            (lambda ()
-              (dotimes (i +rcs-count+)
-                (let* ((exhaust (vec3 (- (aref *rcs-directions* i 0)) (- (aref *rcs-directions* i 1))
-                                      (- (aref *rcs-directions* i 2))))
-                       (face (+ (* 0.15d0 (abs (aref exhaust 0)))
-                                (* 0.2d0 (+ (abs (aref exhaust 1)) (abs (aref exhaust 2))))))
-                       (centre (vec3 (aref *rcs-positions* i 0) (aref *rcs-positions* i 1)
-                                     (aref *rcs-positions* i 2))))
-                  (add :cone (instance (vec3-add-scaled centre exhaust face) exhaust nil
-                                       '(0.12d0 0.08d0 0.08d0) (id :nozzle)))))))
-      (part "claws" :box
-            (lambda ()
-              (dotimes (k 3)
-                (let ((a (degrees-to-radians (* 120 k))))
-                  (add :box (instance (list 16.3d0 (* 0.85d0 (sin a)) (* -0.85d0 (cos a)))
-                                      '(1 0 0) (list 0 (sin a) (- (cos a)))
-                                      '(0.6d0 0.1d0 0.1d0) (id :steel)))))))
+      (flet ((rcs-position (i)
+               (let ((x (aref *rcs-positions* i 0)))
+                 (vec3 (if (> x 7) (+ (second rcs-x) (- x 14.5d0)) (+ (first rcs-x) (- x 0.5d0)))
+                       (aref *rcs-positions* i 1) (aref *rcs-positions* i 2)))))
+        (part "RCS blocks" :box
+              (lambda ()
+                (loop for i from 0 below +rcs-count+ by 3
+                      do (add :box (instance (rcs-position i) '(1 0 0) '(0 1 0)
+                                             '(0.3d0 0.4d0 0.4d0) (id :aluminium))))))
+        (part "RCS nozzles" :cone
+              (lambda ()
+                (dotimes (i +rcs-count+)
+                  (let* ((exhaust (vec3 (- (aref *rcs-directions* i 0)) (- (aref *rcs-directions* i 1))
+                                        (- (aref *rcs-directions* i 2))))
+                         (face (+ (* 0.15d0 (abs (aref exhaust 0)))
+                                  (* 0.2d0 (+ (abs (aref exhaust 1)) (abs (aref exhaust 2))))))
+                         (centre (rcs-position i)))
+                    (add :cone (instance (vec3-add-scaled centre exhaust face) exhaust nil
+                                         '(0.12d0 0.08d0 0.08d0) (id :nozzle))))))))
+      (when (eq nose :grapple)
+        (part "claws" :box
+              (lambda ()
+                (dotimes (k 3)
+                  (let ((a (degrees-to-radians (* 120 k))))
+                    (add :box (instance (list (+ 16.3d0 nose-shift) (* 0.85d0 (sin a)) (* -0.85d0 (cos a)))
+                                        '(1 0 0) (list 0 (sin a) (- (cos a)))
+                                        '(0.6d0 0.1d0 0.1d0) (id :steel))))))))
       ;; Tanks with hemispherical domes, foil-wrapped.
-      (loop for (name x0 x1 material) in '(("LH2 tank" 0.50d0 9.36d0 :lh2-foil)
-                                           ("LOX tank" 9.76d0 13.48d0 :lox-foil))
-            do (let ((r 1.6d0) (m (id material)))
+      (loop for (name x0 x1 material) in tanks
+            do (let ((r tank-radius) (m (id material)))
                  (part name :hull
                        (lambda ()
                          (cylinder hull (xform (list (+ x0 r) 0 0) :scale (list (- x1 x0 r r) r r))
@@ -401,82 +557,177 @@ and v along z from and to UV, by default metres from the centre."
                                      m 8 32)
                          (hemisphere hull (xform (list (- x1 r) 0 0) :scale (list r r r)) m 8 32)))))
       ;; Cab: flat ends, window, portholes, hatch, decals.
-      (part "cab" :hull
-            (lambda () (cylinder hull (cab-xf 10.5d0 15.0d0 *cab-radius*) (id :cab-paint) 32)))
-      (part "window" :hull
-            (lambda () (rect hull (xform '(15.003d0 0 -3.6d0) :y '(0 1 0) :scale '(1 1.2d0 0.6d0))
-                             (id :glass))))
-      (part "portholes" :hull
-            (lambda ()
-              (dolist (s '(1 -1))
-                (let* ((a (degrees-to-radians 37)) (r (+ *cab-radius* *porthole-skin*))
-                       (normal (list 0 (* s (cos a)) (sin a))))
-                  (disc hull (xform (list 14.1d0 (* s r (cos a)) (+ (second *cab-axis*) (* r (sin a))))
-                                    :x normal :y '(1 0 0) :scale '(1 0.175d0 0.175d0))
-                        (id :glass) 16)))))
-      (part "hatch" :hull
-            (lambda ()
-              (let ((half (/ 0.6d0 (+ *cab-radius* *cab-skin*))))
-                (cylinder-patch hull (cab-xf 11.0d0 11.8d0 (+ *cab-radius* *cab-skin*)) (id :hatch)
-                                12 (- half) half :uv '(-0.4d0 0.4d0 -0.6d0 0.6d0)))))
-      ;; The decal reads left to right from outside: along +x on +y, -x on -y;
-      ;; v 0 at its top (towards -z).
-      (destructuring-bind (x0 x1) *decal-span*
-        (let* ((r (+ *cab-radius* *cab-skin*))
-               (half (/ *decal-height* r 2))
-               (xf (cab-xf x0 x1 r)))
-          (part "decal +y" :hull
+      (when cab
+        (destructuring-bind (cx0 cx1) cab
+          (part "cab" :hull
+                (lambda () (cylinder hull (cab-xf cx0 cx1 *cab-radius*) (id :cab-paint) 32)))
+          (part "window" :hull
+                (lambda () (rect hull (xform (list (+ cx1 0.003d0) 0 -3.6d0) :y '(0 1 0)
+                                             :scale '(1 1.2d0 0.6d0))
+                                 (id :glass))))
+          (part "portholes" :hull
                 (lambda ()
-                  (cylinder-patch hull xf (id :decal) 8 (- (- *decal-angle*) half)
-                                  (+ (- *decal-angle*) half) :uv '(0 1 0 1))))
-          (part "decal -y" :hull
+                  (dolist (s '(1 -1))
+                    (let* ((a (degrees-to-radians 37)) (r (+ *cab-radius* *porthole-skin*))
+                           (normal (list 0 (* s (cos a)) (sin a))))
+                      (disc hull (xform (list (+ 14.1d0 cab-dx) (* s r (cos a))
+                                              (+ (second *cab-axis*) (* r (sin a))))
+                                        :x normal :y '(1 0 0) :scale '(1 0.175d0 0.175d0))
+                            (id :glass) 16)))))
+          (part "hatch" :hull
                 (lambda ()
-                  (cylinder-patch hull xf (id :decal) 8 (- (+ pi *decal-angle*) half)
-                                  (+ pi *decal-angle* half) :uv '(1 0 1 0))))))
-      (part "grapple" :hull
-            (lambda ()
-              (cylinder hull (xform '(15.0d0 0 0) :scale '(0.8d0 0.3d0 0.3d0)) (id :steel) 16)
-              (frustum hull (xform '(15.8d0 0 0) :scale '(0.8d0 1 1)) (id :steel) 16 0.3d0 0.8d0)))
-      (part "solar wings" :hull
-            (lambda ()
-              (dolist (s '(1 -1))
-                (box hull (xform (list 5.0d0 (* s 5.3d0) 0) :scale '(2.0d0 6.0d0 0.05d0))
-                     (append (make-list 5 :initial-element (id :steel)) (list (id :solar-cells)))))))
-      (part "radiators" :hull
-            (lambda ()
-              (dolist (s '(1 -1))
-                (box hull (xform (list 8.0d0 (* s 1.2d0) 2.55d0) :scale '(4.0d0 0.05d0 1.5d0))
-                     (id :radiator)))))
-      (part "gas conditioning" :hull
-            (lambda () (box hull (xform '(9.5d0 0 1.4d0) :scale '(1.0d0 1.2d0 0.6d0)) (id :aluminium))))
-      (part "equipment bay" :hull
-            (lambda () (box hull (xform '(10.0d0 0 2.3d0) :scale '(1.0d0 1.6d0 0.8d0)) (id :aluminium))))
-      ;; The engine at zero trim, its axis at z -0.5: the bell from the
-      ;; throat (the axial parameter 0 there), chamber, turbopumps.
+                  (let ((half (/ 0.6d0 (+ *cab-radius* *cab-skin*))))
+                    (cylinder-patch hull (cab-xf (+ 11.0d0 cab-dx) (+ 11.8d0 cab-dx)
+                                                 (+ *cab-radius* *cab-skin*))
+                                    (id :hatch) 12 (- half) half :uv '(-0.4d0 0.4d0 -0.6d0 0.6d0)))))
+          ;; The decal reads left to right from outside: along +x on +y, -x on -y;
+          ;; v 0 at its top (towards -z).
+          (when decal
+            (destructuring-bind (x0 x1) (mapcar (lambda (x) (+ x cab-dx)) *decal-span*)
+              (let* ((r (+ *cab-radius* *cab-skin*))
+                     (half (/ *decal-height* r 2))
+                     (xf (cab-xf x0 x1 r)))
+                (part "decal +y" :hull
+                      (lambda ()
+                        (cylinder-patch hull xf (id decal) 8 (- (- *decal-angle*) half)
+                                        (+ (- *decal-angle*) half) :uv '(0 1 0 1))))
+                (part "decal -y" :hull
+                      (lambda ()
+                        (cylinder-patch hull xf (id decal) 8 (- (+ pi *decal-angle*) half)
+                                        (+ pi *decal-angle* half) :uv '(1 0 1 0)))))))))
+      (case (if (consp nose) (first nose) nose)
+        (:grapple
+         (part "grapple" :hull
+               (lambda ()
+                 (cylinder hull (xform (list length 0 0) :scale '(0.8d0 0.3d0 0.3d0)) (id :steel) 16)
+                 (frustum hull (xform (list (+ length 0.8d0) 0 0) :scale '(0.8d0 1 1)) (id :steel) 16
+                          0.3d0 0.8d0))))
+        (:fixture
+         (let ((fixture (fixture-mesh (list (second nose) 0 0) '(1 0 0)
+                                      :standoff (- (second nose) 0.05d0 length))))
+           (bake-model! b fixture (xform '(0 0 0))))))
+      (when wings
+        (part "solar wings" :hull
+              (lambda ()
+                (dolist (s '(1 -1))
+                  (box hull (xform (list 5.0d0 (* s 5.3d0) 0) :scale '(2.0d0 6.0d0 0.05d0))
+                       (append (make-list 5 :initial-element (id :steel)) (list (id :solar-cells))))))))
+      (when radiators
+        (part "radiators" :hull
+              (lambda ()
+                (dolist (s '(1 -1))
+                  (box hull (xform (list 8.0d0 (* s 1.2d0) 2.55d0) :scale '(4.0d0 0.05d0 1.5d0))
+                       (id :radiator))))))
+      (when equipment
+        (part "gas conditioning" :hull
+              (lambda () (box hull (xform '(9.5d0 0 1.4d0) :scale '(1.0d0 1.2d0 0.6d0)) (id :aluminium))))
+        (part "equipment bay" :hull
+              (lambda () (box hull (xform '(10.0d0 0 2.3d0) :scale '(1.0d0 1.6d0 0.8d0)) (id :aluminium)))))
+      ;; The engine at zero trim: the bell from the throat (the axial
+      ;; parameter 0 there), chamber, turbopumps.
       (part "engine" :engine
             (lambda ()
-              (frustum engine (xform '(-0.6d0 0 -0.5d0) :x '(-1 0 0) :y '(0 -1 0) :scale '(1.6d0 1 1))
+              (frustum engine (xform (list engine-x 0 engine-z) :x '(-1 0 0) :y '(0 -1 0)
+                                                                :scale '(1.6d0 1 1))
                        (id :nozzle) 24 0.15d0 0.725d0)
-              (cylinder engine (xform '(-0.6d0 0 -0.5d0) :scale '(0.6d0 0.25d0 0.25d0)) (id :steel) 16)
+              (cylinder engine (xform (list engine-x 0 engine-z) :scale '(0.6d0 0.25d0 0.25d0))
+                        (id :steel) 16)
               (dolist (s '(1 -1))
-                (box engine (xform (list -0.3d0 (* s 0.35d0) -0.5d0) :scale '(0.3d0 0.25d0 0.25d0))
+                (box engine (xform (list (+ engine-x 0.3d0) (* s 0.35d0) engine-z)
+                                   :scale '(0.3d0 0.25d0 0.25d0))
                      (id :aluminium)))))
-      (make-model
-       :vertices (simple-floats hull)
-       :engine (simple-floats engine)
-       :groups (loop for (kind . instances) in groups
-                     collect (make-instance-group
-                              kind (unit-primitive kind)
-                              (let ((out (make-array (* +instance-floats+ (length instances))
-                                                     :element-type 'single-float)))
-                                (loop for inst in instances for i from 0
-                                      do (replace out inst :start1 (* i +instance-floats+)))
-                                out)))
-       :parts (reverse parts)
-       ;; The navigation lights on brackets 0.15 m out from the truss's top
-       ;; front corners, so its tubes don't cut them (decision 100).
-       :lights (list :red (vec3 15.0d0 -1.95d0 -1.95d0) :green (vec3 15.0d0 1.95d0 -1.95d0)
-                     :strobe (vec3 12.75d0 0 -5.05d0) :engine-exit (vec3 -2.2d0 0 -0.5d0))))))
+      (let ((lights (or lights
+                        (list :red (vec3 length -1.95d0 -1.95d0) :green (vec3 length 1.95d0 -1.95d0)
+                              :strobe (vec3 (* 0.5d0 length) 0 -2.1d0)
+                              :engine-exit (vec3 (- engine-x 1.6d0) 0 engine-z)))))
+        (dolist (beacon (light-beacons lights)) (push beacon (builder-beacons b)))
+        (builder-model b lights)))))
+
+(defun mule-model ()
+  "The Mule: the baked hull, the instance groups, the engine, the lights."
+  (truss-ship-model
+   :tanks '(("LH2 tank" 0.50d0 9.36d0 :lh2-foil) ("LOX tank" 9.76d0 13.48d0 :lox-foil))
+   :cab '(10.5d0 15.0d0) :decal :decal
+   ;; The navigation lights on brackets 0.15 m out from the truss's top
+   ;; front corners, so its tubes don't cut them (decision 100).
+   :lights (list :red (vec3 15.0d0 -1.95d0 -1.95d0) :green (vec3 15.0d0 1.95d0 -1.95d0)
+                 :strobe (vec3 12.75d0 0 -5.05d0) :engine-exit (vec3 -2.2d0 0 -0.5d0))))
+
+(defun tanker-model ()
+  "TANKER 3 (docs/design.md \"Rigid bodies\"): 24 m of truss in 16 bays, two
+LH2 and two LOX tanks in a row, the nose fixture's pin at x 24.15, the engine
+on the axis."
+  (truss-ship-model
+   :length 24d0 :bays 16
+   :tanks '(("LH2 tank 1" 0.50d0 8.10d0 :lh2-foil) ("LOX tank 1" 8.50d0 11.80d0 :lox-foil)
+            ("LH2 tank 2" 12.20d0 19.80d0 :lh2-foil) ("LOX tank 2" 20.20d0 23.50d0 :lox-foil))
+   :nose '(:fixture 24.15d0) :engine-x -0.7d0 :engine-z 0d0 :rcs-x '(0.5d0 23.5d0)))
+
+(defun capsule-model ()
+  "AURORA 11's capsule, nose at x 0 pointing +x: a frustum Ø 1.5 → 3.9 over
+2.5 m, the service section Ø 3.9 × 2.0 with a 0.6 m Boreal band round its
+middle, two wings 1.0 × 3.0 m."
+  (let* ((b (make-builder)) (hull (builder-hull b)))
+    (flet ((id (name) (material-id name)))
+      (builder-part b "frustum" :hull
+                    (lambda () (frustum hull (xform '(0 0 0) :scale '(2.5d0 1 1)) (id :cab-paint) 32
+                                        0.75d0 1.95d0)))
+      (builder-part b "service section" :hull
+                    (lambda ()
+                      (cylinder hull (xform '(2.5d0 0 0) :scale '(2.0d0 1.95d0 1.95d0)) (id :cab-paint) 32)))
+      (builder-part b "band" :hull
+                    (lambda ()
+                      (cylinder hull (xform '(3.2d0 0 0) :scale '(0.6d0 1.953d0 1.953d0))
+                                (id :boreal-green) 32 :caps nil)))
+      (builder-part b "wings" :hull
+                    (lambda ()
+                      (dolist (s '(1 -1))
+                        (box hull (xform (list 3.5d0 (* s 3.45d0) 0) :scale '(1.0d0 3.0d0 0.05d0))
+                             (append (make-list 5 :initial-element (id :steel)) (list (id :solar-cells))))))))
+    (builder-model b)))
+
+(defun fixture-mesh (pin axis &key (standoff 0.1d0) (material :fixture))
+  "The standard berth fixture as a model (decision 124): a disc plate Ø 1.0 ×
+0.05 m whose outer face centre is PIN, its normal the unit AXIS, in MATERIAL
+(with the black target mark from the plate's centre coordinates), a pin Ø
+0.08 × 0.25 outward, three guides 0.06 × 0.20 × 0.30 at 120° on radius 0.42
+leaning 30° out, and a stand-off tube Ø 0.25 STANDOFF m back from the plate."
+  (let* ((b (make-builder)) (hull (builder-hull b))
+         (pin (v3 pin)) (a (vec3-normalize (v3 axis))))
+    (multiple-value-bind (ax ay az) (orthonormal-basis a)
+      (declare (ignore ax))
+      (flet ((id (name) (material-id name))
+             (along (distance) (vec3-add-scaled pin a distance)))
+        (builder-part b "plate" :hull
+                      (lambda ()
+                        (cylinder hull (xform (along -0.05d0) :x a :scale '(0.05d0 0.5d0 0.5d0))
+                                  (id :aluminium) 24 :caps :start)
+                        (disc hull (xform pin :x a :scale '(1 0.5d0 0.5d0)) (id material) 24)))
+        (builder-part b "pin" :tube
+                      (lambda () (builder-tube b pin (along 0.25d0) 0.04d0 (id :aluminium))))
+        (builder-part b "guides" :box
+                      (lambda ()
+                        (dotimes (k 3)
+                          (let* ((angle (degrees-to-radians (* 120 k)))
+                                 (radial (vec3-add (vec3-scale ay (cos angle)) (vec3-scale az (sin angle))))
+                                 (lean (vec3-add (vec3-scale a (cos (degrees-to-radians 30)))
+                                                 (vec3-scale radial (sin (degrees-to-radians 30)))))
+                                 (tilt (vec3-add (vec3-scale radial (cos (degrees-to-radians 30)))
+                                                 (vec3-scale a (- (sin (degrees-to-radians 30))))))
+                                 (origin (vec3-add (vec3-add-scaled pin radial 0.42d0)
+                                                   (vec3-scale lean 0.15d0))))
+                            (builder-add b :box (instance origin (vec3-cross radial a) tilt
+                                                          '(0.06d0 0.20d0 0.30d0) (id :aluminium)))))))
+        (builder-part b "stand-off" :tube
+                      (lambda ()
+                        (builder-tube b (along (- (+ 0.05d0 standoff))) (along -0.05d0) 0.125d0
+                                      (id :aluminium))))))
+    (builder-model b)))
+
+(defvar *models* (make-hash-table :test #'eq) "Models by key, made once.")
+
+(defun cached-model (key maker)
+  (or (gethash key *models*) (setf (gethash key *models*) (funcall maker))))
 
 ;;; The engine's trim (docs/design.md "Propulsion"): its axis through the
 ;;; gimbal turned onto the CoM.
@@ -608,13 +859,19 @@ instances expanded, the engine at its trim; conses nothing after the first call.
                                        (expt (- z cz) 2))))))
     (sqrt best)))
 
-;;; The stencil decal (decision 80): Cairn Water's cairn and "M-07", 2.8 x
-;;; 0.7 m in a 512 x 128 texture, row 0 at the top.
+;;; The stencil decals (decision 80; decision 124): an atlas of 512 x 128 rows,
+;;; row 0 at the top, each 0.6 m letters at 183 px/m: Cairn Water's cairn and
+;;; "M-07", "M-04", "M-05", then Boreal's "TERN" and the pod's "POD 14". A
+;;; model picks its row by its decal material (rows 14 to 18 of the shader).
 
-(defparameter *decal-pixel-size* '(128 512) "Rows, columns.")
+(defparameter *decal-pixel-size* '(128 512) "Rows, columns of one atlas row.")
 (defparameter *decal-cell* 15 "Pixels per cell of the 5 x 7 grid: 0.6 m letters at 183 px/m.")
-(defparameter *decal-letters* '(150 12 90)
-  "The first letter's left column and top row, and the letters' pitch, px.")
+(defparameter *decal-rows*
+  ;; (text first-letter-left top pitch cairn)
+  '(("M-07" 150 12 90 t) ("M-04" 150 12 90 t) ("M-05" 150 12 90 t)
+    ("TERN" 83 12 90 nil) ("POD 14" 18 12 80 nil))
+  "The atlas rows from the top: the text, its first letter's left column, the
+letters' top row and pitch (px), and whether the cairn is drawn.")
 (defparameter *decal-cairn* '((71 94 55 22) (71 58 41 16.5) (71 32 27.5 11))
   "The cairn's stones from the bottom: centre column, row, half width, half height, px.")
 
@@ -628,7 +885,22 @@ instances expanded, the engine at its trim; conses nothing after the first call.
     (#\0 ("01110" "10001" "10001" "10001" "10001" "10001" "01110")
      ((2.35 0 2.65 1) (2.35 6 2.65 7)))
     (#\7 ("11111" "00001" "00010" "00100" "01000" "01000" "01000")
-     ((4 0.85 5 1.15)))))
+     ((4 0.85 5 1.15)))
+    (#\1 ("00100" "01100" "00100" "00100" "00100" "00100" "01110") ())
+    (#\4 ("00010" "00110" "01010" "10010" "11111" "00010" "00010") ())
+    (#\5 ("11111" "10000" "11110" "00001" "00001" "10001" "01110") ())
+    (#\D ("11110" "10001" "10001" "10001" "10001" "10001" "11110")
+     ((2.35 0 2.65 1) (2.35 6 2.65 7)))
+    (#\E ("11111" "10000" "10000" "11110" "10000" "10000" "11111") ())
+    (#\N ("10001" "11001" "10101" "10011" "10001" "10001" "10001") ())
+    (#\O ("01110" "10001" "10001" "10001" "10001" "10001" "01110")
+     ((2.35 0 2.65 1) (2.35 6 2.65 7)))
+    (#\P ("11110" "10001" "10001" "11110" "10000" "10000" "10000")
+     ((2.35 0 2.65 1)))
+    (#\R ("11110" "10001" "10001" "11110" "10100" "10010" "10001")
+     ((2.35 0 2.65 1)))
+    (#\T ("11111" "00100" "00100" "00100" "00100" "00100" "00100") ())
+    (#\Space ("00000" "00000" "00000" "00000" "00000" "00000" "00000") ())))
 
 (defun linear-srgb-byte (x)
   (let ((x (max 0d0 (min 1d0 (float x 1d0)))))
@@ -642,39 +914,52 @@ instances expanded, the engine at its trim; conses nothing after the first call.
             (ash (linear-srgb-byte (aref *ship-materials* row 2)) 16)
             (ash 255 24))))
 
-(defun decal-glyph-boxes ()
-  "((char left top right bottom) …): each letter's 5 x 7 box in pixels, ends exclusive."
-  (destructuring-bind (left top pitch) *decal-letters*
-    (loop for char across "M-07" for i from 0
+(defun decal-glyph-boxes (&optional (row 0))
+  "((char left top right bottom) …): each letter's 5 x 7 box of atlas row ROW
+in atlas pixels, ends exclusive; spaces have none."
+  (destructuring-bind (text left top pitch cairn) (nth row *decal-rows*)
+    (declare (ignore cairn))
+    (loop for char across text for i from 0
           for x = (+ left (* i pitch))
-          collect (list char x top (+ x (* 5 *decal-cell*)) (+ top (* 7 *decal-cell*))))))
+          for y = (+ top (* row (first *decal-pixel-size*)))
+          unless (char= char #\Space)
+            collect (list char x y (+ x (* 5 *decal-cell*)) (+ y (* 7 *decal-cell*))))))
 
 (defun stencil-decal-pixels ()
-  "The decal: rank-2 (unsigned-byte 32), 128 x 512, for texture-from-pixels;
-alpha 0 off the cairn and the letters."
-  (let ((pixels (make-array *decal-pixel-size* :element-type '(unsigned-byte 32) :initial-element 0))
-        (black (decal-colour :stencil)) (grey (decal-colour :cairn)) (cell *decal-cell*))
-    (flet ((fill-box (x0 y0 x1 y1 colour)
-             (loop for y from (max 0 (round y0)) below (min 128 (round y1))
-                   do (loop for x from (max 0 (round x0)) below (min 512 (round x1))
-                            do (setf (aref pixels y x) colour)))))
-      (loop for (cx cy rx ry) in *decal-cairn*
-            do (dotimes (y 128)
-                 (dotimes (x 512)
-                   (when (<= (+ (expt (/ (- (+ x 0.5) cx) rx) 2) (expt (/ (- (+ y 0.5) cy) ry) 2)) 1)
-                     (setf (aref pixels y x) grey)))))
-      (loop for (char left top) in (decal-glyph-boxes)
-            for (nil rows bridges) = (assoc char *stencil-glyphs*)
-            do (loop for row in rows for j from 0
-                     do (loop for c across row for i from 0
-                              when (char= c #\1)
-                                do (fill-box (+ left (* i cell)) (+ top (* j cell))
-                                             (+ left (* (1+ i) cell)) (+ top (* (1+ j) cell)) black)))
-               (when (char= char #\-)
-                 (fill-box left (+ top (* 2.75 cell)) (+ left (* 5 cell)) (+ top (* 4.25 cell)) black))
-               (loop for (c0 r0 c1 r1) in bridges
-                     do (fill-box (+ left (* c0 cell)) (+ top (* r0 cell))
-                                  (+ left (* c1 cell)) (+ top (* r1 cell)) 0))))
+  "The decal atlas: rank-2 (unsigned-byte 32), 5 x 128 rows of 512, for
+texture-from-pixels; alpha 0 off the cairn and the letters."
+  (let* ((rows (first *decal-pixel-size*)) (columns (second *decal-pixel-size*))
+         (pixels (make-array (list (* rows (length *decal-rows*)) columns)
+                             :element-type '(unsigned-byte 32) :initial-element 0))
+         (black (decal-colour :stencil)) (grey (decal-colour :cairn)) (cell *decal-cell*))
+    (loop for (nil nil nil nil cairn) in *decal-rows* for row from 0
+          for y-base = (* row rows)
+          do (flet ((fill-box (x0 y0 x1 y1 colour)
+                      (loop for y from (max y-base (round y0)) below (min (+ y-base rows) (round y1))
+                            do (loop for x from (max 0 (round x0)) below (min columns (round x1))
+                                     do (setf (aref pixels y x) colour)))))
+               (when cairn
+                 (loop for (cx cy rx ry) in *decal-cairn*
+                       do (dotimes (y rows)
+                            (dotimes (x columns)
+                              (when (<= (+ (expt (/ (- (+ x 0.5) cx) rx) 2)
+                                           (expt (/ (- (+ y 0.5) cy) ry) 2))
+                                        1)
+                                (setf (aref pixels (+ y-base y) x) grey))))))
+               (loop for (char left top) in (decal-glyph-boxes row)
+                     for (nil glyph-rows bridges) = (assoc char *stencil-glyphs*)
+                     do (loop for glyph-row in glyph-rows for j from 0
+                              do (loop for c across glyph-row for i from 0
+                                       when (char= c #\1)
+                                         do (fill-box (+ left (* i cell)) (+ top (* j cell))
+                                                      (+ left (* (1+ i) cell)) (+ top (* (1+ j) cell))
+                                                      black)))
+                        (when (char= char #\-)
+                          (fill-box left (+ top (* 2.75 cell)) (+ left (* 5 cell))
+                                    (+ top (* 4.25 cell)) black))
+                        (loop for (c0 r0 c1 r1) in bridges
+                              do (fill-box (+ left (* c0 cell)) (+ top (* r0 cell))
+                                           (+ left (* c1 cell)) (+ top (* r1 cell)) 0)))))
     pixels))
 
 ;;; The Mule on the GPU (decision 80; docs/architecture.md "Rendering

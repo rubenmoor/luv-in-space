@@ -7,6 +7,30 @@
 
 ;;; The render state
 
+(defstruct (object-render (:constructor make-object-render ()) (:copier nil))
+  "One object as a frame draws it (plan 29, decision 124: Meshes of the
+places: models, scenery liveries, lights, far dots, the grapple's claws,
+floodlight and range finder): R, V, Q, W as in ship-state (Q body ->
+inertial, W in body axes), DRAWN nil for a removed object, SUN-FRACTION at
+its position."
+  (r (make-vec3) :type vec3)
+  (v (make-vec3) :type vec3)
+  (q (quat 1 0 0 0) :type quat)
+  (w (make-vec3) :type vec3)
+  (drawn nil)
+  (sun-fraction 1d0 :type double-float))
+
+(defstruct (render-grapple (:constructor make-render-grapple ()) (:copier nil))
+  "The grapple as a frame draws it: the sim's STATE and attached OBJECT
+index, the claws' TARGET angle (deg) at the render time and the ANGLE shown,
+FLOODLIGHT and RANGE-FINDER on."
+  (state :stowed :type (member :stowed :armed :closing :latched))
+  (object nil :type (or null fixnum))
+  (target 0d0 :type double-float)
+  (angle 0d0 :type double-float)
+  (floodlight nil)
+  (range-finder nil))
+
 (defstruct (render-state (:constructor make-render-state ()) (:copier nil))
   "What a frame draws, at the render time T: the ship (R, V, Q, W as in
 ship-state), M-P, CONTROLS and LOSS from the sim, the Sun and the Moon
@@ -39,6 +63,15 @@ closing speed of a rails target: the position's rate)."
   (target-r (make-vec3) :type vec3)
   (target-v (make-vec3) :type vec3)
   (target-relative (make-target-relative) :type target-relative)
+  (objects (coerce (loop repeat (length *objects*) collect (make-object-render))
+                   'simple-vector)
+   :type simple-vector)                 ; an object-render per sim-objects entry
+  (grapple (make-render-grapple) :type render-grapple)
+  (claws-eased nil)                     ; true: the shown angle eases (render-state-ease-claws!)
+  (state-a (make-ship-state (make-vec3) (make-vec3) (quat 1 0 0 0) (make-vec3) 0d0)
+   :type ship-state)                    ; scratch: an object's previous and current state
+  (state-b (make-ship-state (make-vec3) (make-vec3) (quat 1 0 0 0) (make-vec3) 0d0)
+   :type ship-state)
   (scratch (make-vec3) :type vec3))     ; the bodies' velocities, unused
 
 (defun render-state-assign-ship! (out ship)
@@ -47,11 +80,12 @@ closing speed of a rails target: the position's rate)."
   (replace (render-state-q out) (ship-state-q ship))
   (replace (render-state-w out) (ship-state-w ship)))
 
-(declaim (inline render-state-hermite!))
-(defun render-state-hermite! (out previous current h s)
+(declaim (inline hermite-states!))
+(defun hermite-states! (r v q w previous current h s)
   "Cubic Hermite position and velocity over a step of H s at S, slerp of
-the attitude, ω blended linearly."
-  (declare (type render-state out) (type ship-state previous current)
+the attitude, ω blended linearly, from the ship-states PREVIOUS and CURRENT
+into the arrays R, V, Q, W."
+  (declare (type vec3 r v w) (type quat q) (type ship-state previous current)
            (type double-float h s))
   (let* ((s2 (* s s)) (s3 (* s2 s))
          (h00 (+ (* 2 s3) (* -3 s2) 1)) (h10 (+ s3 (* -2 s2) s))
@@ -61,15 +95,170 @@ the attitude, ω blended linearly."
          (p1 (ship-state-r current)) (v1 (ship-state-v current))
          (w0 (ship-state-w previous)) (w1 (ship-state-w current)))
     (dotimes (i 3)
-      (setf (aref (render-state-r out) i)
+      (setf (aref r i)
             (+ (* h00 (aref p0 i)) (* h h10 (aref v0 i))
                (* h01 (aref p1 i)) (* h h11 (aref v1 i)))
-            (aref (render-state-v out) i)
+            (aref v i)
             (+ (* d00 (- (aref p0 i) (aref p1 i)))
                (* d10 (aref v0 i)) (* d11 (aref v1 i)))
-            (aref (render-state-w out) i)
+            (aref w i)
             (+ (* (- 1 s) (aref w0 i)) (* s (aref w1 i)))))
-    (quat-slerp! (render-state-q out) (ship-state-q previous) (ship-state-q current) s)))
+    (quat-slerp! q (ship-state-q previous) (ship-state-q current) s)))
+
+(declaim (inline render-state-hermite!))
+(defun render-state-hermite! (out previous current h s)
+  "hermite-states! into OUT's ship."
+  (declare (type render-state out) (type ship-state previous current)
+           (type double-float h s))
+  (hermite-states! (render-state-r out) (render-state-v out) (render-state-q out)
+                   (render-state-w out) previous current h s))
+
+;;; Objects and the grapple (decision 124)
+
+(defun object-render-assign! (out state)
+  (replace (object-render-r out) (ship-state-r state))
+  (replace (object-render-v out) (ship-state-v state))
+  (replace (object-render-q out) (ship-state-q state))
+  (replace (object-render-w out) (ship-state-w state)))
+
+(declaim (inline object-state-for-render!))
+(defun object-state-for-render! (state object time)
+  "OBJECT's state at TIME: the stored one of a promoted or latched object
+(valid at the sim's t), else its rails' into the scratch STATE. The
+ship-state, or nil past its rails' end."
+  (declare (type ship-state state) (type object object) (type double-float time)
+           (inline object-state-into! rails-state-into! object-attitude-into!))
+  (if (member (object-status object) '(:promoted :latched))
+      (object-state object)
+      (and (object-state-into! (ship-state-r state) (ship-state-v state) (ship-state-q state)
+                               (ship-state-w state) object time)
+           state)))
+
+(defun attached-object-render! (o out grapple properties load)
+  "O, the latched load's or the berthed station's pose from OUT's ship
+render pose and the grapple's relative pose (decision 112; decision 138:
+Berthed pose: the ship's R point in the station's axes, the engine off)."
+  (declare (type object-render o) (type render-state out) (type grapple grapple)
+           (type mass-properties properties))
+  (let* ((r (render-state-r out)) (v (render-state-v out))
+         (q (render-state-q out)) (w (render-state-w out))
+         (x (make-vec3)) (win (make-vec3)) (y (make-vec3)) (conjugate (make-quat)))
+    (declare (dynamic-extent x win y conjugate))
+    (quat-rotate! win q w)
+    (cond (load
+           (vec3-sub! x (stack-load-com load) (mass-properties-com properties))
+           (quat-rotate! x q x)
+           (vec3-add! (object-render-r o) r x)
+           (quat-mul! (object-render-q o) q (stack-load-q load))
+           (vec3-add! (object-render-v o) v (vec3-cross! y win x)))
+          (t
+           ;; r_s = r − q_s com_g − q com_ship, q_s = q ⊗ q_rel⁻¹
+           (quat-mul! (object-render-q o) q (quat-conjugate! conjugate (grapple-q grapple)))
+           (quat-rotate! x (object-render-q o) (grapple-com grapple))
+           (vec3-sub! y r x)
+           (quat-rotate! x q (mass-properties-com properties))
+           (vec3-sub! (object-render-r o) y x)
+           (vec3-sub! x r (object-render-r o))
+           (vec3-sub! (object-render-v o) v (vec3-cross! y win x))))
+    (quat-rotate! (object-render-w o) (quat-conjugate! conjugate (object-render-q o)) win)
+    o))
+
+(declaim (inline render-objects-update! render-grapple-update!))
+(defun render-objects-update! (out sim previous-objects h s t-prev tr)
+  "OUT's objects at the render time TR (decision 124): rails at both ends
+of the step exactly at TR; promoted, or promoted or demoted in the step, the
+Hermite and slerp of the previous and current states (S of H from T-PREV);
+the latched load and the berthed station from the ship's render pose; a
+removed object not drawn. Conses nothing."
+  (declare (optimize speed) (type render-state out) (type sim sim) (type simple-vector previous-objects)
+           (type double-float h s t-prev tr)
+           (inline object-state-into! rails-state-into! object-attitude-into!))
+  (let* ((objects (sim-objects sim))
+         (grapple (sim-grapple sim))
+         (attached (grapple-object grapple))
+         (berthed (sim-berthed sim))
+         (time (sim-t sim))
+         (renders (render-state-objects out))
+         (a (render-state-state-a out))
+         (b (render-state-state-b out)))
+    (declare (type (or null fixnum) attached))
+    (with-stack-properties (properties sim load)
+      (dotimes (i (length objects))
+        (let* ((object (svref objects i))
+               (o (svref renders i))
+               (status (object-status object))
+               (drawn t))
+          (declare (type object object) (type object-render o))
+          (cond ((eq status :removed) (setf drawn nil))
+                ((and attached (= i attached) (or load berthed))
+                 (attached-object-render! o out grapple properties load))
+                (t
+                 (let ((old (svref previous-objects i)))
+                   (declare (type object old))
+                   (if (and (eq status :rails) (eq (object-status old) :rails))
+                       (setf drawn (object-state-into! (object-render-r o) (object-render-v o)
+                                                       (object-render-q o) (object-render-w o)
+                                                       object tr))
+                       (let* ((cur (object-state-for-render! b object time))
+                              (prev (or (and (not (object-removed-p old))
+                                             (object-state-for-render! a old t-prev))
+                                        cur)))
+                         (cond ((not cur) (setf drawn nil))
+                               ((= s 1d0) (object-render-assign! o cur))
+                               ((= s 0d0) (object-render-assign! o prev))
+                               (t (hermite-states! (object-render-r o) (object-render-v o)
+                                                   (object-render-q o) (object-render-w o)
+                                                   prev cur h s))))))))
+          (setf (object-render-drawn o) (and drawn t))
+          (when drawn
+            (setf (object-render-sun-fraction o)
+                  (sun-visible-fraction (object-render-r o) tr))))))
+    out))
+
+(defun render-grapple-update! (out sim tr eased)
+  "OUT's grapple from the sim's at the render time TR: the claws' target
+angle (30° armed, −8° latched, closing linearly between over the closing
+time to its end), the lights; the shown angle follows closing and latched
+exactly, stowed and armed unless EASED (render-state-ease-claws!)."
+  (declare (optimize speed) (type render-grapple out) (type sim sim) (type double-float tr))
+  (let* ((grapple (sim-grapple sim))
+         (state (grapple-state grapple))
+         (target (ecase state
+                   (:stowed 0d0)
+                   (:armed 30d0)
+                   (:latched -8d0)
+                   (:closing
+                    (let ((f (max 0d0 (min 1d0 (/ (- tr (- (grapple-closing-end grapple)
+                                                            *claws-closing-time*))
+                                                   *claws-closing-time*)))))
+                      (- 30d0 (* 38d0 f)))))))
+    (declare (type double-float target))
+    (setf (render-grapple-state out) state
+          (render-grapple-object out) (grapple-object grapple)
+          (render-grapple-target out) target
+          (render-grapple-floodlight out) (and (not (eq state :stowed)) t)
+          (render-grapple-range-finder out) (and (member state '(:armed :closing)) t))
+    (when (or (not eased) (member state '(:closing :latched)))
+      (setf (render-grapple-angle out) target))
+    out))
+
+(defparameter *claws-ease-rate* 90d0 "deg per real second: the claws between stowed and armed.")
+
+(defun render-state-ease-claws! (state elapsed)
+  "The shown claw angle toward its target at *claws-ease-rate* over ELAPSED
+real seconds; closing and latched follow their target exactly, and without
+ELAPSED (a capture) or an unset claws-eased the angle snaps. STATE."
+  (declare (type render-state state) (type (or null double-float) elapsed))
+  (let* ((grapple (render-state-grapple state))
+         (target (render-grapple-target grapple))
+         (angle (render-grapple-angle grapple)))
+    (setf (render-grapple-angle grapple)
+          (if (and elapsed (render-state-claws-eased state)
+                   (member (render-grapple-state grapple) '(:stowed :armed)))
+              (let ((step (* *claws-ease-rate* elapsed)))
+                (max (- angle step) (min (+ angle step) target)))
+              target))
+    state))
 
 (defun render-state-update! (out clock sim)
   "Fill OUT for the frame (decision 77): render time t_prev + s (t − t_prev),
@@ -95,7 +284,15 @@ not below t or the sim is lost; the target at the render time
                (setf (render-state-t out) t-prev))
               (t
                (render-state-hermite! out previous current h s)
-               (setf (render-state-t out) (+ t-prev (* s h)))))))
+               (setf (render-state-t out) (+ t-prev (* s h)))))
+        (unless (= (length (render-state-objects out)) (length (sim-objects sim)))
+          (setf (render-state-objects out)
+                (coerce (loop repeat (length (sim-objects sim)) collect (make-object-render))
+                        'simple-vector)))
+        (render-objects-update! out sim (clock-previous-objects clock) h s t-prev
+                                (render-state-t out))
+        (render-grapple-update! (render-state-grapple out) sim (render-state-t out)
+                                (render-state-claws-eased out))))
     (setf (render-state-m-p out) (ship-state-m-p current)
           (render-state-loss out) (sim-loss sim)
           (render-state-autopilot out) (and (sim-plan sim) t))

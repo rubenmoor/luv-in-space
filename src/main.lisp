@@ -20,7 +20,10 @@
                  :documentation "The outside view's frame, angles and distance (camera.lisp); not in the sim.")
    (map-view :initform (new-map-view) :reader game-map-view
              :documentation "The map's focus, basis, angles and distance (camera.lisp); not in the sim.")
-   (render-state :initform (make-render-state) :reader game-render-state)
+   (render-state :initform (let ((state (make-render-state)))
+                            (setf (render-state-claws-eased state) t)
+                            state)
+                 :reader game-render-state)
    (exposure :initform nil :accessor game-exposure
              :documentation "The current exposure, nil before the first frame.")
    (frame-time :initform nil :accessor game-frame-time
@@ -82,6 +85,7 @@ then the game's camera-fn."
   (let ((state (game-render-state game))
         (camera (game-camera game)))
     (render-state-update! state (game-clock game) (game-sim game))
+    (render-state-ease-claws! state elapsed)
     (ecase (game-view game)
       (:outside (outside-camera-update! camera (game-outside-view game) state elapsed))
       (:map (map-camera-update! camera (game-map-view game) state elapsed)))

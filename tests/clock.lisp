@@ -777,6 +777,22 @@ promoted), PROMOTED the times Tern Station was promoted."
       (is = 0 (least-bytes-consed (lambda () (lis::sim-assign! b start))))
       (true (equalp b start)))))
 
+;;; The clock's previous objects (task 221, decision 124)
+
+(define-test clock-previous-objects
+  (let* ((sim (skua-yard-sim))
+         (clock (lis::new-clock sim))
+         (before (lis::copy-sim sim)))
+    (true (equalp (lis::clock-previous-objects clock) (lis::sim-objects before)))
+    (step-sim sim 3 1)
+    (setf (lis::clock-accumulator clock) 1d0)
+    (let ((again (lis::copy-sim sim)))
+      (lis::clock-step! clock sim)
+      (true (equalp (lis::clock-previous-objects clock) (lis::sim-objects again)))
+      (false (equalp (lis::clock-previous-objects clock) (lis::sim-objects sim)))
+      (is = 0 (least-bytes-consed (lambda () (lis::clock-previous-objects-assign! clock sim))))
+      (true (equalp (lis::clock-previous-objects clock) (lis::sim-objects sim))))))
+
 ;;; Targets (decision 114: Targets and target holds in the sim)
 
 (defparameter *target-order*

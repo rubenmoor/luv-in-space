@@ -83,11 +83,11 @@ tests require every one used, glyph-missing).")
 (defparameter *marker-box-px* 12 "The target's box; decision 125: Map in milestone 3.")
 (defparameter *marker-triangle-px* 10 "Closest approach; decision 125.")
 (defparameter *marker-plus-px* 12 "Burns; decision 125.")
-(defparameter *overlay-max-vertices* 85740
+(defparameter *overlay-max-vertices* 165312
   "Capacity of the frame's overlay buffer (a multiple of 6, so whole quads
-are kept), by decision 129: twice the fullest readout (29,478 vertices) and
-message line (71 characters, 7,248) plus 12,288 for the map's markers and
-labels. The autopilot panel's share comes with its drawing.")
+are kept), by decision 129: twice the fullest readout (29,478 vertices),
+autopilot panel (13 lines of 30 characters, 39,786) and message line (71
+characters, 7,248) plus 12,288 for the map's markers and labels.")
 
 (defun glyph (char)
   "CHAR's seven rows, upcased, or nil."
@@ -475,19 +475,23 @@ summed seconds; then CLOCK's live messages."
 (defun run-chars (line)
   (loop for run in line sum (length (run-text run))))
 
-(defun readout-box-size (lines)
-  "The width and height in px of the box READOUT-VERTICES! draws for LINES."
+(defun readout-box-size (lines &optional min-chars max-chars)
+  "The width and height in px of the box READOUT-VERTICES! draws for LINES,
+the widest line counted as at least MIN-CHARS and at most MAX-CHARS cells."
   (let ((chars (loop for line in lines maximize (run-chars line))))
+    (when min-chars (setf chars (max chars min-chars)))
+    (when max-chars (setf chars (min chars max-chars)))
     (values (+ (* 2 *readout-padding-px*)
                (max 0 (- (* chars *readout-cell-width-px*) *label-dot-px*)))
             (+ (* 2 *readout-padding-px*) (* (length lines) *readout-cell-height-px*)))))
 
-(defun readout-vertices! (out lines x y)
+(defun readout-vertices! (out lines x y &optional min-chars max-chars)
   "LINES (readout-lines' runs) into OUT: the opaque *readout-box-colour* box
 with its top left at pixel X, Y, sized to the lines, then each run's text
 (decision 85); an :inverted run as its colour's block with the text in the
-box's colour; a flashing run in its :off phase not at all. OUT."
-  (multiple-value-bind (width height) (readout-box-size lines)
+box's colour; a flashing run in its :off phase not at all. MIN-CHARS and
+MAX-CHARS bound the box's width in cells, as readout-box-size's. OUT."
+  (multiple-value-bind (width height) (readout-box-size lines min-chars max-chars)
     (let ((x0 (float x 1f0)) (y0 (float y 1f0))
           (x1 (float (+ x width) 1f0)) (y1 (float (+ y height) 1f0)))
       (with-linear-colour (r g b) *readout-box-colour*
@@ -615,6 +619,14 @@ centred horizontally, its bottom *readout-margin-px* above the frame's bottom."
 (defparameter *autopilot-panel-menu-rows* 8 "Menu rows shown at most; decision 129.")
 (defparameter *autopilot-panel-burns* 6 "Burn rows shown at most; decision 129.")
 (defparameter *readout-ok-colour* #x40D040 "Engaged, in tolerance, green, sRGB; decision 127.")
+
+(defun autopilot-panel-origin (lines extent)
+  "The top left pixel of the panel's box for LINES in a frame of EXTENT
+(width height): *readout-margin-px* from the top and right edges, the box
+*autopilot-panel-chars* cells wide (decision 129)."
+  (let ((box-width (readout-box-size lines *autopilot-panel-chars* *autopilot-panel-chars*)))
+    (values (max 0 (- (first extent) *readout-margin-px* box-width))
+            *readout-margin-px*)))
 
 (defun format-clock-time (seconds)
   "SECONDS (to a future event) as T-mm:ss, T-h:mm:ss above an hour."

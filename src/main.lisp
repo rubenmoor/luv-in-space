@@ -259,7 +259,11 @@ the outside view's distance."
                   :interior (game-interior-p game) :grapple grapple
                   :message (and (game-readout-p game) (not (eq (game-view game) :cockpit))
                                 (message-line-lines (game-clock game) (game-message-line game)
-                                                    (game-real-time game))))))
+                                                    (game-real-time game)))
+                  :autopilot (and (game-readout-p game) (not (eq (game-view game) :cockpit))
+                                  (autopilot-panel-lines (clock-autopilot (game-clock game))
+                                                         (game-sim game) (game-render-state game)
+                                                         (game-clock game) (game-real-time game))))))
 
 (defun game-frame! (game elapsed)
   "One frame's simulation, ELAPSED real seconds: the real time, the input,

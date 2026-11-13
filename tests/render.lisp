@@ -2664,7 +2664,8 @@ is read where the pose puts it."
            (attitude-mode-line-checks game png 1280 800)
            (console-checks game png 1280 800 :sim (sun-sim 60 30) :screens-only t)
            (lost-checks game png 1280 800)
-           (fly-screenshot-checks game)))))))
+           (fly-screenshot-checks game)
+           (screen-state-checks game)))))))
 
 ;;; The target at the render time (decision 114: Targets and target holds in
 ;;; the sim; decision 143: The target at the render time: the sim's gravity

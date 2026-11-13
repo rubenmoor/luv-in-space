@@ -51,7 +51,8 @@
     (:removed :any :object &optional :removal) (:date-between :expect :date :date)
     (:autopilot-done :any) (:dv-below :expect :real) (:elapsed-below :expect :real)
     (:burn :expect :label :between :date :date) (:since-burn :expect :label :below :real)
-    (:clearance-above :expect :real) (:aim-point :expect :aim))
+    (:clearance-above :expect :real) (:aim-point :expect :aim)
+    (:in-burn :any :label) (:terminal :any) (:range-below :any :distance))
   "(condition where argument-type … [&optional type …]); where is :event (a
 wait on the prediction), :wait, :expect or :any.")
 
@@ -649,7 +650,8 @@ new-game-sim."
              (unless args
                (script-error line "WRITE (:APPROACH <FIXTURE> [:SPEED <M/S>] [:TRIES <N>])"))
              (let* ((fixture (state-fixture (first args) line))
-                    (options (parse-options (rest args) '(:speed :tries) line :approach))
+                    (options (parse-options (rest args) '(:speed :tries :screenshots) line :approach))
+                    (views (getf options :screenshots))
                     (speed (script-real (getf options :speed 0.1d0) line :speed))
                     (tries (getf options :tries 3)))
                (unless (<= *approach-speed-min* speed *approach-speed-max*)
@@ -657,7 +659,11 @@ new-game-sim."
                                *approach-speed-max* (getf options :speed)))
                (unless (and (integerp tries) (plusp tries))
                  (script-error line ":TRIES WANTS A WHOLE NUMBER ABOVE 0, NOT ~S" tries))
-               (list fixture speed tries)))
+               (unless (and (listp views) (null (cdr (last views)))
+                            (every (lambda (view) (member view '(:outside :map :cockpit))) views))
+                 (script-error line ":SCREENSHOTS WANTS (<VIEW> …), VIEWS :OUTSIDE, :MAP OR :COCKPIT, NOT ~S"
+                               views))
+               (list fixture speed tries (remove-duplicates views :from-end t))))
             (:autopilot (parse-autopilot args line))))))
 
 (defun parse-autopilot (args line)
@@ -778,6 +784,11 @@ objects (a place for its object), not both; :until :aim-point."
                     for x in given
                     collect (ecase type
                               (:real (script-real x line name))
+                              (:distance
+                               (let ((m (script-real x line name)))
+                                 (when (minusp m)
+                                   (script-error line "~S WANTS A DISTANCE OF 0 OR MORE, NOT ~S" name x))
+                                 m))
                               (:date (parse-utc x line))
                               (:drop-out
                                (check-not-later :drop-out x line)
@@ -985,6 +996,7 @@ whatever the prediction says.")
   (value nil)                                   ; :expect: what it measured, as text
   (view nil)                                    ; :screenshot
   (sim nil)                                     ; :screenshot: a copy
+  (screen nil)                                  ; :screenshot: the clock's clock-screen (decision 131)
   (start nil)                                   ; :burn: t of throttle on
   (dv nil)                                      ; :burn: m/s by the odometer
   (t 0d0 :type double-float)
@@ -1024,7 +1036,8 @@ whatever the prediction says.")
   (request nil)                                 ; a running (:autopilot …): its snapshot's t
   (engage nil)                                  ; the last engage's flight-engage
   (approach nil)                                ; a running (:approach …)'s pilot
-  (plan-burn nil))                              ; an open plan burn: (what label start . odometer)
+  (plan-burn nil)                               ; an open plan burn: (what label start . odometer)
+  (screens nil))                                ; :screenshot entries waiting for their screen
 
 ;;; The last engage (decision 122): the reference of the record's
 ;;; expectations, and the clearance kept since.
@@ -1186,6 +1199,20 @@ label (its start, the cursor leaving it, Δv by the odometer) and one
                 (list* part (planned-burn-label part) (sim-t sim) dv)
                 (list* part :terminal (sim-plan-terminal-t sim) dv))))))
 
+(defun flight-screenshot-at (flight sim label view)
+  "A :screenshot entry of SIM's state, a copy; its screen comes at the end of
+the hook, once the clock's warp rules have run (decision 131)."
+  (let ((entry (flight-entry-at flight sim :screenshot :label label :view view :sim (copy-sim sim))))
+    (push entry (flight-screens flight))
+    entry))
+
+(defun flight-screens-fill! (flight clock)
+  "The screen of CLOCK in the entries that wait for one."
+  (when (flight-screens flight)
+    (dolist (entry (reverse (flight-screens flight)))
+      (setf (flight-entry-screen entry) (clock-screen-snapshot clock)))
+    (setf (flight-screens flight) nil)))
+
 (defun flight-burn-check! (flight sim &optional end)
   "Open a burn at the throttle going on, close it at its going off, a loss
 or the flight's END; while a plan is engaged its burns instead
@@ -1241,6 +1268,7 @@ or the flight's END; while a plan is engaged its burns instead
                         :apoapsis-below :apoapsis-above))
          (km-text x))
         ((eq name :rate-below) (format nil "~,3F°/S" x))
+        ((eq name :range-below) (format nil "~,1F M" x))
         ((member name '(:propellant-above :propellant-full)) (format nil "~,1F KG" x))
         (t (format nil "~,3F S" x))))
 
@@ -1412,6 +1440,14 @@ engage (decision 122); failed with \"NOTHING ENGAGED\" before any."
        (let ((aim (rendezvous-plan-aim-point (flight-engage-plan engage))))
          (values (eql aim (first args)) (if aim (format nil "~D" aim) "NO RENDEZVOUS")))))))
 
+(defun flight-target-range (sim)
+  "m from the stack's CoM to the target's CoM, or nil without a target."
+  (let ((target (sim-target sim)))
+    (when target
+      (let ((r (ship-state-r (sim-ship sim))) (target-r (make-vec3)) (target-v (make-vec3)))
+        (target-state-into! target-r target-v sim)
+        (vec3-norm (vec3-sub target-r r))))))
+
 (defun condition-holds (flight clock sim step)
   "(values holds measured) of STEP's condition now."
   (let* ((name (flight-step-name step))
@@ -1474,6 +1510,14 @@ engage (decision 122); failed with \"NOTHING ENGAGED\" before any."
         (:autopilot-done
          (multiple-value-bind (outcome text) (autopilot-outcome flight clock sim)
            (values (eq outcome :done) text)))
+        (:in-burn
+         (let ((part (and (sim-plan sim) (plan-running-part sim))))
+           (values (and (typep part 'planned-burn) (eq (planned-burn-label part) x))
+                   (and part (typep part 'planned-burn) (planned-burn-label part)))))
+        (:terminal (values (and (sim-plan sim) (eq (sim-plan-phase sim) :terminal)) nil))
+        (:range-below
+         (let ((range (flight-target-range sim)))
+           (values (and range (< range x)) (or range "NO TARGET"))))
         ((:dv-below :elapsed-below :burn :since-burn :clearance-above :aim-point)
          (record-condition flight sim step))))))
 
@@ -1613,9 +1657,7 @@ second value), a wait set up. True when STEP is over at once."
           nil)
          (:fine (setf (controls-fine controls) (first args)) t)
          (:screenshot
-          (flight-entry-at flight sim :screenshot :label (first args)
-                                                  :view (flight-step-view step)
-                                                  :sim (copy-sim sim))
+          (flight-screenshot-at flight sim (first args) (flight-step-view step))
           t)
          (:autopilot
           (let ((model (clock-autopilot clock)))
@@ -1628,8 +1670,8 @@ second value), a wait set up. True when STEP is over at once."
                     (declare (ignore until))
                     (if reason (values nil reason) over))))))
          (:approach
-          (destructuring-bind ((key index) speed tries) args
-            (approach-begin! flight clock sim key index speed tries)))
+          (destructuring-bind ((key index) speed tries views) args
+            (approach-begin! flight clock sim key index speed tries views)))
          (:restart
           (if (sim-loss sim)
               (progn (if (flight-restart flight)
@@ -1681,7 +1723,7 @@ the game's text."
 ;;; autopilot. It reads the range finder's reading of its fixture and writes
 ;;; only keys, F, T and G.
 
-(defstruct (approach (:constructor make-approach (object fixture speed tries next deadline mark))
+(defstruct (approach (:constructor make-approach (object fixture speed tries next deadline mark views))
                      (:copier nil))
   (object 0 :type fixnum)                       ; index in sim-objects
   (fixture 0 :type fixnum)                      ; index in its fixtures
@@ -1694,9 +1736,10 @@ the game's text."
   (mark nil)                                    ; the SHIP log's newest entry at the last look
   (pitch 0 :type fixnum)                        ; turn keys held: −1, 0, +1
   (yaw 0 :type fixnum)
-  (reading (make-grapple-reading) :type grapple-reading))
+  (reading (make-grapple-reading) :type grapple-reading)
+  (views nil :type list))                       ; screenshots at the 20 m hold's end, until taken
 
-(defun approach-begin! (flight clock sim key index speed tries)
+(defun approach-begin! (flight clock sim key index speed tries views)
   "(:approach …)'s start: the fixture INDEX of object KEY must be the range
 finder's, its inward axis within 30° of +x, else \"NO FIXTURE\"; then
 Backspace if engaged, ×1, F on, rate damping (T), the target KEY, G to arm.
@@ -1724,7 +1767,7 @@ Backspace if engaged, ×1, F on, rate damping (T), the target KEY, G to arm.
       (grapple-key! sim))
     (setf (flight-approach flight)
           (make-approach object index speed tries (sim-t sim) (+ (sim-t sim) *approach-time-limit*)
-                         (first (clock-log clock))))
+                         (first (clock-log clock)) views))
     nil))
 
 (defun approach-missed (pilot clock)
@@ -1846,7 +1889,11 @@ with its text; while the claws close no key; else approach-keys!. 2 h fail."
                  (setf (approach-phase pilot) :hold)))
              (if (eq (grapple-state grapple) :closing)
                  (controls-apply-held-keys! controls nil)
-                 (approach-keys! pilot sim))
+                 (let ((phase (approach-phase pilot)))
+                   (approach-keys! pilot sim)
+                   (when (and (eq phase :hold) (eq (approach-phase pilot) :close) (approach-views pilot))
+                     (dolist (view (shiftf (approach-views pilot) nil))
+                       (flight-screenshot-at flight sim (format nil "approach-20m-~(~A~)" view) view)))))
              (values nil (min (approach-next pilot) (approach-deadline pilot))))))))
 
 (defun flight-running! (flight clock sim step)
@@ -1881,6 +1928,8 @@ with its text; while the claws close no key; else approach-keys!. 2 h fail."
            (when (eq outcome :failed)
              (return-from flight-running!
                (values nil nil (format nil "(:WAIT ~A): ~A" (condition-text step) text))))))
+       (when (and (eq (flight-step-name step) :range-below) (null (sim-target sim)))
+         (return-from flight-running! (values nil nil "(:WAIT RANGE-BELOW): NO TARGET")))
        (let ((over (case (flight-step-name step)
                      ((:apoapsis :periapsis) (>= now until))
                      (:impact (or (sim-loss sim) (>= now until)))
@@ -2000,6 +2049,7 @@ runs once."
         (flight-coast! flight clock sim))
       (clock-check-level! clock sim)
       (flight-dropout-check! flight clock sim))
+    (flight-screens-fill! flight clock)
     (let ((engage (flight-engage flight)))
       (when (and engage (null (flight-engage-previous-t engage)))
         (flight-clearance-update! engage sim)))

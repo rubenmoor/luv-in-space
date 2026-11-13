@@ -1130,16 +1130,21 @@ and the four draw forms."
                               (frame-renderer-earth-rows renderer))
         (values data (list sun-form moon-form earth-form halo-form))))))
 
-(defun encode-overlay (pass renderer bind-group buffer state camera extent view readout panel)
+(defun encode-overlay (pass renderer bind-group buffer state camera extent view readout panel
+                       &optional message)
   "The overlay into the open PASS through BUFFER: in :map the markers and
 their labels (decision 84), then READOUT, nil or readout-lines' lines, top
-left (decision 85), then PANEL, nil or lost-panel-lines' lines (decision 86)."
+left (decision 85), then MESSAGE, nil or message-line-lines' lines, bottom
+centre (decision 129), then PANEL, nil or lost-panel-lines' lines (decision 86)."
   (let ((out (overlay-clear! (frame-renderer-overlay renderer)))
         (floats (frame-renderer-overlay-floats renderer)))
     (when (eq view :map)
       (map-marker-vertices! out (map-markers state camera extent (frame-renderer-markers renderer))))
     (when readout
       (readout-vertices! out readout *readout-margin-px* *readout-margin-px*))
+    (when message
+      (multiple-value-bind (x y) (message-line-origin message extent)
+        (readout-vertices! out message x y)))
     (when panel
       (multiple-value-bind (x y) (lost-panel-origin panel extent)
         (readout-vertices! out panel x y)))
@@ -1269,14 +1274,15 @@ swapchain texture the frame draws into, whose slot of its own the pass uses."
         (luv:end-pass pass)))))
 
 (defun encode-frame (renderer encoder target extent state camera exposure
-                     &optional (view :outside) readout panel &key (interior t) grapple)
+                     &optional (view :outside) readout panel &key (interior t) grapple message)
   "The frame into TARGET of EXTENT (width height) from the render STATE seen
 by CAMERA, in three stages (decision 76: Frame passes, radiance scale and
 exposure): the scene pass into the HDR target (the stars, the Sun, the
 Moon, Earth, Earth's halo, the Mule, the objects, in :map the orbit's ribbon); the bloom
 chain; one pass on TARGET, the tone map at EXPOSURE and then the overlay
 (in :map the markers and their labels, then READOUT, readout-lines' lines
-or nil, then the LOST PANEL's lines or nil). VIEW: :outside, :cockpit (the
+or nil, then MESSAGE, message-line-lines' line or nil, then the LOST PANEL's
+lines or nil). VIEW: :outside, :cockpit (the
 Mule without its cab exterior, the eye being inside the cab; decision 126:
 Cockpit structure and view in milestone 3: frames, draw order, Slug text, head
 look, exposure, cab light, portholes, bezels, tape labels) or :map. INTERIOR
@@ -1302,5 +1308,5 @@ this encoder, so the TARGET face shows its image."
                        :clear-value #(0.0 0.0 0.0 1.0)))))))
         (draw-tone-map renderer pass (car (last bind-groups)) (frame-renderer-post renderer))
         (encode-overlay pass renderer bind-group (frame-slot-overlay slot)
-                        state camera extent view readout panel)
+                        state camera extent view readout panel message)
         (luv:end-pass pass)))))

@@ -53,6 +53,10 @@ and view in milestone 3).")
                   :documentation "nil, or the seconds since the death the glow shows (captures).")
    (frozen-p :initarg :frozen :initform nil :accessor game-frozen-p
              :documentation "Captures: the clock takes no steps, unpaused (its prediction still updates).")
+   (message-line :initform (make-message-line) :reader game-message-line
+                 :documentation "The newest SHIP entry seen and when (decision 129); not in the sim.")
+   (message-age :initform 0d0 :accessor game-message-age
+                :documentation "Captures: real seconds the newest entry is shown to have arrived ago.")
    (readout-p :initarg :readout :initform t :accessor game-readout-p
               :documentation "Whether the frame draws the readout (decision 85).")
    (input :initform (make-input) :reader game-input
@@ -187,6 +191,7 @@ snapped. GAME."
         (game-view-changed-p game) t
         (game-loss game) nil
         (game-death-time game) nil)
+  (message-line-reset! (game-message-line game))
   game)
 
 (defun game-return! (game)
@@ -232,6 +237,8 @@ the outside view's distance."
         (grapple (and (eq (game-view game) :cockpit) (game-interior-p game)
                       (grapple-active-p (game-render-state game)))))
     (death-glow! game exposure)
+    (message-line-update! (game-message-line game) (game-clock game) (game-real-time game)
+                          (game-message-age game))
     (when grapple
       ;; the TARGET face's image: its own camera and exposure, snapped (decision 128)
       (let ((camera (frame-renderer-grapple-camera (game-renderer game))))
@@ -249,7 +256,10 @@ the outside view's distance."
                   (and (game-loss game)
                        (lost-panel-lines (game-loss game)
                                          (and (clock-checkpoint (game-clock game)) t)))
-                  :interior (game-interior-p game) :grapple grapple)))
+                  :interior (game-interior-p game) :grapple grapple
+                  :message (and (game-readout-p game) (not (eq (game-view game) :cockpit))
+                                (message-line-lines (game-clock game) (game-message-line game)
+                                                    (game-real-time game))))))
 
 (defun game-frame! (game elapsed)
   "One frame's simulation, ELAPSED real seconds: the real time, the input,

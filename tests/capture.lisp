@@ -57,3 +57,19 @@ fully black."
            (true (< (abs (- (lis::cockpit-view-pitch view) (* -5 (/ pi 180)))) 1d-12))
            (true (< (abs (- (lis::cockpit-view-fov view) (* 50 (/ pi 180)))) 1d-12))
            (false (lis::game-interior-p game))))))))
+
+(define-test capture-message-age
+  ;; :message-age gives the newest SHIP entry's age in real seconds (decision 129).
+  (uiop:with-temporary-file (:pathname png :type "png")
+    (luv:call-with-sdl-main-thread
+     (lambda ()
+       (lis::with-capture-game (game :width 320 :height 200)
+         (lis::call-on-canvas-thread
+          game (lambda () (lis::clock-message! (lis::game-clock game) :grapple "LATCHED TERN STATION")))
+         (lis::capture-game-state game png :frames 2 :message-age 40)
+         (let ((ml (lis::game-message-line game)))
+           (true (lis::message-line-entry ml))
+           (true (> (- (lis::game-real-time game) (lis::message-line-seen ml)) 40d0)))
+         (lis::capture-game-state game png :frames 2)
+         (let ((ml (lis::game-message-line game)))
+           (true (< (- (lis::game-real-time game) (lis::message-line-seen ml)) 30d0))))))))

@@ -1439,14 +1439,19 @@ a horizontal line a quarter of the cap height up (all its segments are lines)."
                                (lis::make-text-plane :origin (coerce origin 'list)
                                                      :right (coerce right 'list) :up (coerce up 'list))
                                "H" :cap (float cap 1f0) :factor factor))))
+         (saved-count (lis::text-batch-count batch))
+         (saved-data (copy-seq (lis::text-batch-data batch)))
          pixels exposure)
     (with-canvas-values (game (lis::*bloom-strength* 0.0) (lis::*star-radiance-limit* 0.0))
       (lis::call-on-canvas-thread game (lambda () (setf (lis::frame-renderer-test-text renderer) batch)))
       (unwind-protect
            (setf pixels (nth-value 3 (lis::capture-game-state game png :frames 1 :camera-fn camera-fn))
                  exposure (lis::game-exposure game))
-        (lis::call-on-canvas-thread game (lambda () (setf (lis::frame-renderer-test-text renderer) nil
-                                                          (lis::text-batch-count batch) 0)))))
+        ;; The cockpit's static text (plate, labels, placeholders) comes back.
+        (lis::call-on-canvas-thread game (lambda () (setf (lis::game-camera-fn game) nil
+                                                          (lis::frame-renderer-test-text renderer) nil
+                                                          (lis::text-batch-count batch) saved-count)
+                                           (replace (lis::text-batch-data batch) saved-data)))))
     (let* ((box-width (* (- (lis::text-glyph-max-x glyph) (lis::text-glyph-min-x glyph)) scale pixels-per-metre))
            (x0 (- (/ width 2) (/ box-width 2))) (x1 (+ x0 box-width))
            (y0 (- (/ height 2) (/ cap-px 2))) (y1 (+ y0 cap-px))
@@ -1610,6 +1615,119 @@ body axes) on the lining cylinder, the normal inward."
            (letters (nth (floor (length values) 50) values))
            (steel (nth (floor (length values) 2) values)))
       (true (>= steel (* 3 letters)) "plate ~,5F, letters ~,5F" steel letters))
+    (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))))
+
+;;; The console (plan 31 piece 5; decision 126): tape labels and the screens'
+;;; placeholders at 1280 x 800 in Earth's shadow, the beige bezel against the
+;;; black ones. Each point is brought to the image's centre by the head.
+
+(defparameter *console-poses*
+  '((0 16 70) (0 0 70) (0 42 60) (-32 45 70) (32 45 70) (-55 30 70) (50 55 70))
+  "Head poses (yaw pitch fov, degrees) the console's checks look from, to cover every label.")
+
+(defun pose-pixel (point width height)
+  "(values x y per pose) of the body POINT in the image of the *console-poses* head
+that puts it nearest the centre, or nil outside every frame; PER is pixels per
+tangent unit."
+  (let ((best nil) (best-d 1e9))
+    (dolist (pose *console-poses*)
+      (destructuring-bind (yaw pitch fov) pose
+        (multiple-value-bind (x y depth) (head-projection point yaw pitch)
+          (let* ((per (/ (/ height 2) (tan (deg (/ fov 2)))))
+                 (px (+ (/ width 2) (* x per))) (py (+ (/ height 2) (* y per)))
+                 (d (+ (abs (- px (/ width 2))) (abs (- py (/ height 2))))))
+            (when (and (> depth 0) (< 20 px (- width 20)) (< 20 py (- height 20)) (< d best-d))
+              (setf best-d d best (list px py per pose)))))))
+    (values-list best)))
+
+(defun byte-linear (byte)
+  (let ((x (/ byte 255.0)))
+    (if (<= x 0.04045) (/ x 12.92) (expt (/ (+ x 0.055) 1.055) 2.4))))
+
+(defun region-values (pixels format width x0 x1 y0 y1)
+  "The linear luminance (mean of the three channels) of every pixel in the box."
+  (loop for y from y0 to y1
+        append (loop for x from x0 to x1
+                     collect (/ (reduce #'+ (mapcar #'byte-linear (pixel-rgb pixels format width x y))) 3))))
+
+(defun contrast-of (values)
+  "(brightest 20 % mean) / median of VALUES, the median floored at a tiny radiance."
+  (let* ((sorted (sort (copy-list values) #'<)) (n (length sorted))
+         (top (subseq sorted (floor (* 0.8 n))))
+         (median (nth (floor n 2) sorted)))
+    (/ (/ (reduce #'+ top) (length top)) (max median 1e-5))))
+
+(defun console-checks (game png width height)
+  "Tape labels, placeholders and bezels from a few head poses at WIDTH x HEIGHT in
+Earth's shadow; each thing is read where the pose puts it."
+  (with-canvas-values (game (lis::*bloom-strength* 0.0))
+    (let ((sim (start-sim-at 180)) (shots '()))
+      (flet ((shot (pose)
+               (or (cdr (assoc pose shots :test #'equal))
+                   (let ((got (multiple-value-list
+                               (lis::capture-game-state game png :sim sim :view :cockpit :readout nil
+                                                                 :frames 1 :head pose))))
+                     (push (cons pose got) shots)
+                     got))))
+        (flet ((ink-contrast (centre cap length)
+                 ;; The box of CAP x LENGTH metres about CENTRE (a body point on a plane
+                 ;; facing the eye), in the first pose that holds it.
+                 (multiple-value-bind (x y per pose) (pose-pixel centre width height)
+                   (when x
+                     (destructuring-bind (path w h pixels format) (shot pose)
+                       (declare (ignore path w h))
+                       (let* ((scale (/ per (lis::vec3-norm centre))) ; per is px per tangent unit
+                              (half-x (floor (* 0.5 length scale))) (half-y (max 2 (floor (* 0.5 cap scale)))))
+                         (values (contrast-of (region-values pixels format width
+                                                             (- (round x) half-x) (+ (round x) half-x)
+                                                             (- (round y) half-y) (+ (round y) half-y)))
+                                 pose)))))))
+          ;; Tape labels: the text's box centred on its strip, the brightest fifth of
+          ;; its pixels against the tape's median, at least 4.5:1.
+          (dolist (label lis::*cockpit-labels*)
+            (multiple-value-bind (centre) (lis::label-frame label)
+              (multiple-value-bind (cap advance) (lis::label-metrics label)
+                (multiple-value-bind (ratio pose) (ink-contrast centre cap advance)
+                  (true pose "tape label ~S in no pose's frame" (getf label :text))
+                  (when pose
+                    (true (>= ratio 4.5) "tape label ~S: contrast ~,1F" (getf label :text) ratio))))))
+          ;; Placeholders: the text's box on each screen's face, at least 7:1.
+          (let* ((panel (lis::cockpit-panel :orbit)) (cap (lis::panel-grid-cap panel))
+                 (origin (lis::panel-grid-origin panel cap))
+                 (centre (multiple-value-bind (c n r u) (lis::panel-frame panel)
+                           (declare (ignore c n))
+                           (lis::vlin origin (* 0.5 (length lis::*placeholder-text*) lis::+text-cell-width+ cap) r
+                                      (* 0.5 cap) u))))
+            (multiple-value-bind (ratio pose)
+                (ink-contrast centre cap (* (length lis::*placeholder-text*) lis::+text-cell-width+ cap))
+              (true pose "ORBIT's placeholder in no frame")
+              (when pose
+                (true (>= ratio 7) "placeholder on the ORBIT face: contrast ~,1F" ratio))))
+          ;; The beige bezel's pixels are warmer than the black ones.
+          (flet ((warmth (point)
+                   (multiple-value-bind (x y per pose) (pose-pixel point width height)
+                     (declare (ignore per))
+                     (when x
+                       (destructuring-bind (path w h pixels format) (shot pose)
+                         (declare (ignore path w h))
+                         (destructuring-bind (red green blue) (pixel-rgb pixels format width (round x) (round y))
+                           (declare (ignore green))
+                           (- red blue)))))))
+            (let* ((beige (lis::cockpit-panel :autopilot)) (black (lis::cockpit-panel :attitude))
+                   (beige-point (multiple-value-bind (c n r u) (lis::panel-frame beige)
+                                  (declare (ignore n u))
+                                  (multiple-value-bind (left) (lis::panel-borders beige)
+                                    (lis::vlin c (- (+ (* 0.5d0 (first (getf beige :size))) (* 0.5d0 left))) r))))
+                   (black-point (multiple-value-bind (c n r u) (lis::panel-frame black)
+                                  (declare (ignore n r))
+                                  (multiple-value-bind (left right top) (lis::panel-borders black)
+                                    (declare (ignore left right))
+                                    (lis::vlin c (+ (* 0.5d0 (second (getf black :size))) (* 0.5d0 top)) u))))
+                   (warm (warmth beige-point)) (cold (warmth black-point)))
+              (true (and warm cold) "the bezels' points lie in a pose's frame")
+              (when (and warm cold)
+                (true (> warm 10) "the beige bezel: red - blue = ~D" warm)
+                (true (> warm cold) "the beige bezel (~D) warmer than the black (~D)" warm cold)))))))
     (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))))
 
 (define-test render-frames
@@ -1784,6 +1902,7 @@ body axes) on the lining cylinder, the normal inward."
            (luv:resize-canvas (lis::game-canvas game) 1280 800)
            (lis::wait-for-frames game 3)
            (readout-checks game png 1280 800)
+           (console-checks game png 1280 800)
            (lost-checks game png 1280 800)
            (fly-screenshot-checks game)))))))
 

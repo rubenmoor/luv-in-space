@@ -678,7 +678,8 @@
 (defparameter *cab-shader-material-rows*
   '(:lining :steel-angle :tread :eclss :red :tape :marker :black-plastic :grey-plastic
     :green-surplus :beige :aluminium :screen-face :cable-black :cable-grey :cable-red
-    :cable-yellow :kapton :cardboard :sheet-metal :led :fabric :seat :hatch :plate))
+    :cable-yellow :kapton :cardboard :sheet-metal :led :fabric :seat :hatch :plate
+    :channel-x :channel-y :channel-z))
 
 ;; One fragment for both pipelines. The lining (row 0) is cut where the window
 ;; and the portholes open it; the tread plate (row 2) gets its diamonds from
@@ -703,9 +704,14 @@
                              0.38)
                           1.0 0.72)
                       1.0))
+         (idf (swizzle surface :x))
+         (slot-coord (if (< idf 25.5) (swizzle body :x) (if (< idf 26.5) (swizzle body :y) (swizzle body :z))))
+         (slotted (if (> idf 24.5)
+                      (if (< (fract (* slot-coord 40.0)) 0.35) 0.35 1.0)
+                      1.0))
          (flat (normalize body-normal))
          (n (* flat (if (> (dot flat body) 0.0) -1.0 1.0)))
-         (paint (* (swizzle m0 :xyz) diamond))
+         (paint (* (swizzle m0 :xyz) (* diamond slotted)))
          (lit (cab-irradiance body n strip-a strip-b light (swizzle params :z))))
     (when (> cut 0.5)
       (discard))

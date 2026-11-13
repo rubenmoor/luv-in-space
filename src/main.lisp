@@ -34,6 +34,10 @@ instruments are drawn (task 166 flips it to :cockpit; decision 126).")
                  :reader game-render-state)
    (exposure :initform nil :accessor game-exposure
              :documentation "The current exposure, nil before the first frame.")
+   (extent :initform (list 1280 800) :accessor game-extent
+           :documentation "The last frame's size in pixels (width height): the map click's picking.")
+   (pick-markers :initform (make-map-markers) :reader game-pick-markers
+                 :documentation "Scratch markers for the map click.")
    (frame-time :initform nil :accessor game-frame-time
                :documentation "luv's time of the last frame, nil before the first.")
    (frame-count :initform 0 :accessor game-frame-count)
@@ -209,6 +213,7 @@ death-glow-radiance ÷ EXPOSURE, so it reads the same lit or in shadow."
   "ELAPSED: real seconds since the last frame, nil to snap the exposure and
 the outside view's distance."
   (update-view! game elapsed)
+  (setf (game-extent game) extent)
   (let ((exposure (update-exposure! game extent elapsed)))
     (death-glow! game exposure)
     (encode-frame (game-renderer game) encoder target extent

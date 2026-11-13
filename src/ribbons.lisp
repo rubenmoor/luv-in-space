@@ -833,16 +833,17 @@ frame at t_r from the frame at the arrival) and its stop point at t_r
   (let ((model (render-state-autopilot-model state)))
     (when model
       (let* ((plan (autopilot-map-plan model))
-             (part (and plan (burn-plan-rendezvous plan)))
-             (tr (render-state-t state)))
-        (declare (type double-float tr))
-        (when (and part (> (rendezvous-part-arrival part) tr)
+             (part (and plan (burn-plan-rendezvous plan))))
+        ;; tr is bound inside: a boxed double bound up front conses on every call
+        (when (and part (> (rendezvous-part-arrival part) (the double-float (render-state-t state)))
                    (target-available-p sim (rendezvous-part-target part)))
-          (let* ((target (rendezvous-part-target part))
+          (let* ((tr (render-state-t state))
+                 (target (rendezvous-part-target part))
                  (object (target-object sim target))
                  (arrival (rendezvous-part-arrival part))
                  (rt (make-vec3)) (vt (make-vec3)) (q (make-quat)) (w (make-vec3))
                  (offset (make-vec3)) (stop-v (make-vec3)))
+            (declare (type double-float tr))
             (when (and (stop-target-state-into! rt vt sim target :drop-point arrival)
                        (progn
                          (terminal-frame-into! q w object rt vt arrival)

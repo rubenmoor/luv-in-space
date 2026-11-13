@@ -339,7 +339,7 @@ the console's tests check: panels on the wall reach behind it)."
   '((:caution-lamps (0.90 -0.72 0) (0.08 0.58) nil)
     (:status-lamps (0.90 0.72 0) (0.08 0.58) nil)
     (:orbit (0.60 -0.28 0.35) (0.30 0.20) (24 8))
-    (:attitude (0.67 0 0.35) (0.24 0.20) (19 8))
+    (:attitude (0.67 0 0.29) (0.24 0.20) (19 8))
     (:target (0.60 0.28 0.35) (0.30 0.20) (24 8))
     (:strip (0.55 0 0.455) (0.30 0.08) (19 3))
     (:buttons (0.46 0 0.52) (0.26 0.13) nil)

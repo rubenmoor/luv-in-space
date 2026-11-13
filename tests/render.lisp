@@ -2208,6 +2208,29 @@ is read where the pose puts it."
                 (true (within-bytes-p sky '(#x0A #x0C #x0C) 8) "the upper sky the face: ~A" sky)))))))
     (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))))
 
+;;; ATTITUDE's mode line at Home (task 283): row 8 stays clear of the strip's tape label.
+
+(defun attitude-mode-line-checks (game png width height)
+  (with-canvas-values (game (lis::*bloom-strength* 0.0))
+    (let* ((panel (lis::cockpit-panel :attitude)) (cap (lis::panel-grid-cap panel))
+           (row-height (* lis::+text-cell-height+ cap)) (cell (* lis::+text-cell-width+ cap)))
+      (multiple-value-bind (c n r u) (lis::panel-frame panel)
+        (multiple-value-bind (path w h pixels format)
+            (lis::capture-game-state game png :sim (start-sim-at 180) :view :cockpit :readout nil :frames 3)
+          (declare (ignore path w h))
+          (let* ((per (/ (/ height 2) (tan (lis::deg->rad 35)))) (green 0)
+                 (x0 (+ (* -0.5d0 (first (getf panel :size))) 0.01d0))
+                 (v (- (* 0.5d0 (second (getf panel :size))) 0.01d0 (* 7.5d0 row-height))))
+            ;; "SETTLED" spans the columns 10 to 16 of "HOLD PRO  SETTLED"
+            (loop for k from 0 below 70
+                  do (let ((point (lis::vlin c (+ x0 (* (+ 10d0 (* k 0.1d0)) cell)) r v u 0.002d0 n)))
+                       (multiple-value-bind (x y) (head-projection point 0 16)
+                         (let ((p (pixel-rgb pixels format width (round (+ (/ width 2) (* x per)))
+                                             (round (+ (/ height 2) (* y per))))))
+                           (when (and (> (second p) 160) (< (first p) 120) (< (third p) 120))
+                             (incf green))))))
+            (true (>= green 5) "ATTITUDE's mode line is green on its row at Home: ~D samples" green)))))))
+
 ;;; The AUTOPILOT screen (plan 32 piece 5; decision 127): the menu's selected row
 ;;; an inverted block, the orbit plot's cyan near its projected points.
 
@@ -2501,6 +2524,7 @@ is read where the pose puts it."
            (lis::wait-for-frames game 3)
            (readout-checks game png 1280 800)
            (console-checks game png 1280 800)
+           (attitude-mode-line-checks game png 1280 800)
            (console-checks game png 1280 800 :sim (sun-sim 60 30) :screens-only t)
            (lost-checks game png 1280 800)
            (fly-screenshot-checks game)))))))

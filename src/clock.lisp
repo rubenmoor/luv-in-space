@@ -1065,6 +1065,7 @@ the clock's, run to its horizon; without it a fresh one, prediction.lisp)."
   (rate-game nil :type (simple-array double-float (*)))
   (rate-index 0 :type fixnum)                   ; the next ring slot
   (message-list nil)                            ; (key text stamp), oldest first
+  (message-stamps nil :type list)               ; (key . stamp) of each key's last message, kept after it expires
   (held nil)                                    ; the last step coarse under a hold
   (previous nil :type ship-state)               ; the ship before the last step
   (previous-objects #() :type simple-vector)    ; the objects before it (decision 124)
@@ -1126,10 +1127,19 @@ KEY (decision 122)."
   (setf (clock-message-list clock)
         (append (remove key (clock-message-list clock) :key #'first)
                 (list (list key text (clock-real-time clock)))))
+  (let ((entry (assoc key (clock-message-stamps clock))))
+    (if entry
+        (setf (cdr entry) (clock-real-time clock))
+        (push (cons key (clock-real-time clock)) (clock-message-stamps clock))))
   (let ((log (cons (list (clock-game-t clock) key text) (clock-log clock))))
     (when (> (length log) *log-length*)
       (setf log (subseq log 0 *log-length*)))
     (setf (clock-log clock) log)))
+
+(defun clock-message-stamp (clock key)
+  "The real time of the last message of KEY, kept after the message expired
+(the WARP and GRPL lamps' flashes, decision 128), or nil."
+  (cdr (assoc key (clock-message-stamps clock))))
 
 (defun clock-log-unread (clock)
   "The SHIP log's entries newer than the read mark, newest first."
@@ -1468,6 +1478,7 @@ checkpoint and the SHIP log kept. SIM."
         (clock-paused clock) nil
         (clock-accumulator clock) 0d0
         (clock-message-list clock) nil
+        (clock-message-stamps clock) nil
         (clock-held clock) nil
         (clock-previous-t clock) (sim-t sim))
   (ship-state-assign! (clock-previous clock) (sim-ship sim))

@@ -1178,8 +1178,11 @@ shaped advance, and its tape's length."
 (defun cockpit-text-region (key)
   (cdr (assoc key *cab-text-regions* :test #'equal)))
 
-(defparameter *cockpit-live-screens* '(:orbit :ship)
-  "The screens plan 32 has drawn so far (cockpit-screens.lisp); a placeholder stands on each other one.")
+(defparameter *cockpit-text-screens* '(:orbit :ship :comms)
+  "The screens of text plan 32 has drawn so far (cockpit-screens.lisp).")
+
+(defparameter *cockpit-live-screens* (append *cockpit-text-screens* '(:strip))
+  "The panels plan 32 has drawn so far (the strip with dots); a placeholder stands on each other screen.")
 
 (defparameter *placeholder-text* "PLACEHOLDER(166)")
 (defparameter *placeholder-ink* '(232 228 216) "Paper white (docs/design.md \"Readability\").")

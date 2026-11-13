@@ -859,6 +859,47 @@
   (let* ((coverage (clamp (- (+ half-width 0.5) (abs across)) 0.0 1.0)))
     (set-output color (vec4 (* shade coverage) coverage))))
 
+;;; The strip's dots (src/cockpit-screens.lisp; decision 128: Cockpit
+;;; devices, buttons, picking, the grapple camera and messages in
+;;; milestone 3): one round LED per instance, a quad facing the eye of
+;;; RADIUS metres' reach. TINT.xyz is the colour as the strip shows it (linear,
+;;; before the tone map), TINT.w how much of it shows (1 lit, 0.06 unlit: the
+;;; displayed colour scaled, then its inverse tone map).
+(define-shader cab-dots-vertex
+    (:stage :vertex
+     :inputs ((corner :vec2 :location 0)
+              (centre-radius :vec4 :location 1)
+              (tint :vec4 :location 2))
+     :outputs ((clip-position :vec4 :built-in :position)
+               (offset :vec2 :location 0)
+               (shade :vec3 :location 1 :interpolation :flat))
+     :resources ((text-block :uniform-block :binding 2
+                  :members #.*cab-block-members*)))
+  (let* ((centre (swizzle centre-radius :xyz))
+         (radius (swizzle centre-radius :w))
+         (c (vec2 (- (* 2.0 (swizzle corner :x)) 1.0) (swizzle corner :y)))
+         (s1 (normalize (vec3 (swizzle centre :y) (- 0.0 (swizzle centre :x)) 0.000001)))
+         (s2 (normalize (vec3 (- (* (swizzle centre :y) (swizzle s1 :z))
+                                 (* (swizzle centre :z) (swizzle s1 :y)))
+                              (- (* (swizzle centre :z) (swizzle s1 :x))
+                                 (* (swizzle centre :x) (swizzle s1 :z)))
+                              (- (* (swizzle centre :x) (swizzle s1 :y))
+                                 (* (swizzle centre :y) (swizzle s1 :x))))))
+         (reach (* radius 1.3))
+         (q (vec4 (+ centre (* s1 (* (swizzle c :x) reach)) (* s2 (* (swizzle c :y) reach))) 1.0)))
+    (set-output clip-position (vec4 (dot clip-x q) (dot clip-y q) (dot clip-z q) (dot clip-w q)))
+    (set-output offset (* c 1.3))
+    (set-output shade (* (inverse-tone-map (* (swizzle tint :xyz) (swizzle tint :w))) (swizzle params :x)))))
+
+;; Premultiplied: a disc of the radius with a soft edge.
+(define-shader cab-dots-fragment
+    (:stage :fragment
+     :inputs ((offset :vec2 :location 0)
+              (shade :vec3 :location 1 :interpolation :flat))
+     :outputs ((color :vec4 :location 0)))
+  (let* ((coverage (clamp (/ (- 1.0 (sqrt (dot offset offset))) 0.25) 0.0 1.0)))
+    (set-output color (vec4 (* shade coverage) coverage))))
+
 ;;; Slug text on planes (src/text.lisp; decision 126: Cockpit structure and
 ;;; view in milestone 3), after Luvcraft's :slug-world-text vertex stage
 ;;; (luvcraft/shaders.lisp, luv by Mikael Brockman): the glyph quad grows past
@@ -1210,6 +1251,10 @@ angle in degrees), weighted by a Gaussian of SIGMA texels, normalised."
   (cab-lines-vertex))
 (defmethod shader-specification-for ((role (eql :cab-lines)) (stage (eql :fragment)))
   (cab-lines-fragment))
+(defmethod shader-specification-for ((role (eql :cab-dots)) (stage (eql :vertex)))
+  (cab-dots-vertex))
+(defmethod shader-specification-for ((role (eql :cab-dots)) (stage (eql :fragment)))
+  (cab-dots-fragment))
 (defmethod shader-specification-for ((role (eql :cab-glass)) (stage (eql :vertex)))
   (cab-mesh-vertex))
 (defmethod shader-specification-for ((role (eql :cab-glass)) (stage (eql :fragment)))

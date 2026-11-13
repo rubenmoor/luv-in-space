@@ -25,7 +25,7 @@
 (defparameter *text-repertoire*
   (concatenate 'string
                (loop for code from 32 to 126 collect (code-char code))
-               "°×…±²³µΔ←→↑↓○⊗▲▼■□◆·")
+               "°×…±²³µΔ←→↑↓○⊗▲▼■□◆·█−")
   "The characters the atlas holds for each font: printable ASCII and the
 extra ones docs/design.md \"Instruments and how each is drawn\" and the
 labels use. A character outside it draws as ?.")
@@ -575,3 +575,67 @@ before), through BUFFER; nothing for an empty batch."
     (luv:set-vertex-buffer pass 0 corners)
     (luv:set-vertex-buffer pass 1 buffer)
     (luv:draw pass 6 (line-batch-count batch))))
+
+;;; The dot batch: the strip's round LEDs of the :cab-dots pipeline
+;;; (shaders.lisp), one record each: centre xyz, the radius in metres, tint rgb,
+;;; the share of the emissive that burns.
+
+(defconstant +dot-record-floats+ 8)
+
+(defstruct (dot-batch (:copier nil) (:constructor %make-dot-batch))
+  (data nil :type (simple-array single-float (*)))
+  (count 0 :type fixnum)
+  (view nil))
+
+(defun make-dot-batch (&optional (capacity 2560))
+  (let ((data (make-array (* capacity +dot-record-floats+) :element-type 'single-float
+                                                           :initial-element 0f0)))
+    (%make-dot-batch :data data
+                     :view (make-array (length data) :element-type 'single-float
+                                                     :displaced-to data :fill-pointer 0))))
+
+(defun dot-batch-capacity (batch)
+  (floor (length (dot-batch-data batch)) +dot-record-floats+))
+
+(defun dot-batch-take! (batch count)
+  "The index of COUNT new records at the batch's end."
+  (let ((start (dot-batch-count batch)))
+    (when (> (+ start count) (dot-batch-capacity batch))
+      (error "The dot batch holds ~D dots; ~D asked for after ~D." (dot-batch-capacity batch) count start))
+    (setf (dot-batch-count batch) (+ start count))
+    start))
+
+(defun dot-batch-upload! (batch buffer)
+  (let ((view (dot-batch-view batch)))
+    (setf (fill-pointer view) (* +dot-record-floats+ (dot-batch-count batch)))
+    (when (plusp (dot-batch-count batch))
+      (luv:write-buffer buffer view))))
+
+(defun dots-pipeline (renderer layout format)
+  "The :cab-dots live pipeline into FORMAT: as the lines'."
+  (live-pipeline renderer :cab-dots layout
+                 `((:array-stride 8
+                    :attributes ((:shader-location 0 :offset 0 :format :float32x2)))
+                   (:array-stride ,(* 4 +dot-record-floats+) :step-mode :instance
+                    :attributes ((:shader-location 1 :offset 0 :format :float32x4)
+                                 (:shader-location 2 :offset 16 :format :float32x4))))
+                 :format format :blend :premultiplied-alpha
+                 :depth-stencil '(:format :depth32-float :depth-write-enabled nil
+                                  :depth-compare :greater)))
+
+(defun make-dot-buffer (renderer capacity)
+  (luv:create (renderer-device renderer)
+              (luv:make-buffer-descriptor :label "dot instances"
+                                          :size (* 4 +dot-record-floats+ capacity)
+                                          :usage '(:vertex :copy-dst))))
+
+(defun encode-dots (pass renderer text-slot batch buffer corners)
+  "BATCH's dots into the open scene PASS (the block of TEXT-SLOT written
+before), through BUFFER, on the lines' corners; nothing for an empty batch."
+  (when (plusp (dot-batch-count batch))
+    (dot-batch-upload! batch buffer)
+    (luv:set-pipeline pass (renderer-pipeline renderer :cab-dots))
+    (luv:set-bind-group pass 0 (text-slot-bind-group text-slot))
+    (luv:set-vertex-buffer pass 0 corners)
+    (luv:set-vertex-buffer pass 1 buffer)
+    (luv:draw pass 6 (dot-batch-count batch))))

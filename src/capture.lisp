@@ -75,7 +75,7 @@ the field of view snapped."
   "Write a PNG of GAME showing SIM (default its current state) after FRAMES
 frames in VIEW (:outside, :cockpit with the head at Home or at HEAD,
 (yaw pitch [fov]) in degrees, and the cab's interior unless INTERIOR is nil,
-or :map framed as on opening); CAMERA-FN (fn
+or :map framed as on opening, its prediction run to completion first); CAMERA-FN (fn
 camera render-state) sets a pose other than the view's; READOUT nil leaves
 the readout out (default: as GAME draws it now). A lost sim shows the LOST
 panel and the death glow DEATH-ELAPSED real seconds after the death
@@ -86,6 +86,11 @@ panel and the death glow DEATH-ELAPSED real seconds after the death
         (game-death-elapsed game) (float death-elapsed 1d0))
   (setf (game-interior-p game) (and interior t))
   (game-set-view! game view head)
+  (when (eq view :map)
+    ;; the trajectory complete in the first frame (decision 125: Map in milestone 3)
+    (call-on-canvas-thread game (lambda ()
+                                  (prediction-run! (clock-prediction (game-clock game))
+                                                   (game-sim game)))))
   (setf (game-camera-fn game) camera-fn)
   (wait-for-frames game frames)
   (screenshot pathname :game game))

@@ -2022,11 +2022,12 @@ tangent unit."
          (median (nth (floor n 2) sorted)))
     (/ (/ (reduce #'+ top) (length top)) (max median 1e-5))))
 
-(defun console-checks (game png width height)
-  "Tape labels, placeholders and bezels from a few head poses at WIDTH x HEIGHT in
-Earth's shadow; each thing is read where the pose puts it."
+(defun console-checks (game png width height &key (sim (start-sim-at 180)) screens-only)
+  "Tape labels, the screens' text and bezels from a few head poses at WIDTH x HEIGHT
+(SIM: Earth's shadow unless given; SCREENS-ONLY: the screens' text alone); each thing
+is read where the pose puts it."
   (with-canvas-values (game (lis::*bloom-strength* 0.0))
-    (let ((sim (start-sim-at 180)) (shots '()))
+    (let ((shots '()))
       (flet ((shot (pose)
                (or (cdr (assoc pose shots :test #'equal))
                    (let ((got (multiple-value-list
@@ -2049,7 +2050,7 @@ Earth's shadow; each thing is read where the pose puts it."
                                  pose)))))))
           ;; Tape labels: the text's box centred on its strip, the brightest fifth of
           ;; its pixels against the tape's median, at least 4.5:1.
-          (dolist (label lis::*cockpit-labels*)
+          (dolist (label (unless screens-only lis::*cockpit-labels*))
             (multiple-value-bind (centre) (lis::label-frame label)
               (multiple-value-bind (cap advance) (lis::label-metrics label)
                 ;; A pose may hide the label behind a panel: the best pose that holds it.
@@ -2062,18 +2063,25 @@ Earth's shadow; each thing is read where the pose puts it."
                   (true seen "tape label ~S in no pose's frame" (getf label :text))
                   (when seen
                     (true (>= ratio 4.5) "tape label ~S: contrast ~,1F" (getf label :text) ratio))))))
-          ;; Placeholders: the text's box on each screen's face, at least 7:1.
-          (let* ((panel (lis::cockpit-panel :attitude)) (cap (lis::panel-grid-cap panel))
-                 (origin (lis::panel-grid-origin panel cap))
-                 (centre (multiple-value-bind (c n r u) (lis::panel-frame panel)
-                           (declare (ignore c n))
-                           (lis::vlin origin (* 0.5 (length lis::*placeholder-text*) lis::+text-cell-width+ cap) r
-                                      (* 0.5 cap) u))))
-            (multiple-value-bind (ratio pose)
-                (ink-contrast centre cap (* (length lis::*placeholder-text*) lis::+text-cell-width+ cap))
-              (true pose "ATTITUDE's placeholder in no frame")
-              (when pose
-                (true (>= ratio 7) "placeholder on the ATTITUDE face: contrast ~,1F" ratio))))
+          ;; The screens: the first columns of the first line against the face's median,
+          ;; at least 7:1 (decision 127; docs/design.md "Readability at 1280 x 800").
+          (dolist (name lis::*cockpit-text-screens*)
+            (let* ((panel (lis::cockpit-panel name)) (cap (lis::panel-grid-cap panel))
+                   (origin (lis::panel-grid-origin panel cap))
+                   (columns (if (eq name :autopilot) 22 4))
+                   ;; AUTOPILOT's start state is its orbit plot: the ring's rows, the middle
+                   (row (if (eq name :autopilot) 3 0))
+                   (centre (multiple-value-bind (c n r u) (lis::panel-frame panel)
+                             (declare (ignore c n))
+                             (lis::vlin origin (* 0.5 columns lis::+text-cell-width+ cap) r
+                                        (- (* 0.5 cap) (* row lis::+text-cell-height+ cap)) u))))
+              (multiple-value-bind (ratio pose)
+                  (ink-contrast centre cap (* columns lis::+text-cell-width+ cap))
+                (true pose "~A's first line in no frame" name)
+                (when pose
+                  ;; the plot's thin ring is lines, not text: 3:1 (its menu's text is checked in autopilot-checks)
+                  (true (>= ratio (if (eq name :autopilot) 3 7)) "~A's text: contrast ~,1F" name ratio)))))
+          (when screens-only (return-from console-checks nil))
           ;; The beige bezel's pixels are warmer than the black ones.
           (flet ((warmth (point)
                    (multiple-value-bind (x y per pose) (pose-pixel point width height)
@@ -2493,6 +2501,7 @@ Earth's shadow; each thing is read where the pose puts it."
            (lis::wait-for-frames game 3)
            (readout-checks game png 1280 800)
            (console-checks game png 1280 800)
+           (console-checks game png 1280 800 :sim (sun-sim 60 30) :screens-only t)
            (lost-checks game png 1280 800)
            (fly-screenshot-checks game)))))))
 

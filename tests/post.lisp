@@ -87,7 +87,7 @@
   ;; Entering the map snaps to its exposure, leaving to the outside target
   ;; (decision 83), however little real time passes.
   (let* ((sim (lis::new-game-sim))
-         (game (make-instance 'lis::game :sim sim :clock (lis::new-clock sim)))
+         (game (make-instance 'lis::game :view :outside :sim sim :clock (lis::new-clock sim)))
          (state (lis::game-render-state game))
          (extent '(1280 800)))
     (lis::render-state-update! state (lis::game-clock game) (lis::game-sim game))
@@ -113,7 +113,7 @@
 (define-test exposure-snaps
   ;; The first frame and captures (elapsed nil) take the target; later
   ;; frames ease.
-  (let* ((game (make-instance 'lis::game))
+  (let* ((game (make-instance 'lis::game :view :outside))
          (state (lis::game-render-state game))
          (extent '(1280 800)))
     (lis::render-state-update! state (lis::new-clock (start-sim-at 180)) (start-sim-at 180))

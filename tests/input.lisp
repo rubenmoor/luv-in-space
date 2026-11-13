@@ -6,7 +6,7 @@
 
 (defun input-game ()
   (let ((sim (lis::new-game-sim)))
-    (make-instance 'lis::game :sim sim :clock (lis::new-clock sim)
+    (make-instance 'lis::game :view :outside :sim sim :clock (lis::new-clock sim)
                               :start-checkpoint (lis::take-checkpoint sim))))
 
 (defun key-event (game kind key &key modifiers repeat)
@@ -268,7 +268,7 @@
     (input-tap game :m)
     (is eq :map (lis::game-view game))
     (input-tap game :m)
-    (is eq :outside (lis::game-view game))
+    (is eq :cockpit (lis::game-view game))
     (lis::flight-stop :game game)
     (false (lis::flight-running-p game))
     (false (lis::clock-hook (input-clock game)))
@@ -446,7 +446,7 @@ digits inside the 1–6 range, the rest by name."
   (let* ((orbit (dive-orbit (- *earth-crash-radius* 50d3)))
          (impact (lis::orbit-radius-crossings orbit *earth-crash-radius* (lis::start-t)))
          (sim (orbit-sim orbit (lis::grid-ceiling (- impact 5))))
-         (game (make-instance 'lis::game :sim sim :clock (lis::new-clock sim)
+         (game (make-instance 'lis::game :view :outside :sim sim :clock (lis::new-clock sim)
                                          :start-checkpoint (lis::take-checkpoint
                                                             (lis::new-game-sim)))))
     (lis::toggle-map! game)
@@ -486,7 +486,7 @@ digits inside the 1–6 range, the rest by name."
     (true (equalp (lis::game-sim game) (lis::new-game-sim)))
     (is = 1 (lis::clock-level (lis::game-clock game)))
     (false (lis::clock-paused (lis::game-clock game)))
-    (is eq :outside (lis::game-view game))
+    (is eq :cockpit (lis::game-view game))
     (is equalp (lis::new-outside-view) (outside-view game))
     (false (lis::input-held (lis::game-input game)))
     (false (lis::input-drag (lis::game-input game)))
@@ -848,7 +848,7 @@ digits inside the 1–6 range, the rest by name."
   (let ((game (input-game)))
     (lis::fly "burn" :game game)
     (input-tap game :v)
-    (is eq :cockpit (lis::game-view game))
+    (is eq :outside (lis::game-view game))
     (lis::flight-stop :game game)))
 
 (define-test input-cockpit-pointer
@@ -875,7 +875,7 @@ digits inside the 1–6 range, the rest by name."
 
 (define-test cockpit-view-exposure-snaps
   (let* ((sim (lis::new-game-sim))
-         (game (make-instance 'lis::game :sim sim :clock (lis::new-clock sim)))
+         (game (make-instance 'lis::game :view :outside :sim sim :clock (lis::new-clock sim)))
          (extent '(1280 800)))
     (lis::update-view! game nil)
     (is = lis::*exposure-sunlit* (lis::update-exposure! game extent nil))

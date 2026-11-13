@@ -1157,6 +1157,44 @@ KEY (decision 122)."
                    (clock-message-list clock)))
   (mapcar #'second (clock-message-list clock)))
 
+;;; The screen state (decision 131: Flight screenshots and live runs in
+;;; milestone 3): what the screens read of the clock, as a copy that shares
+;;; nothing with it.
+
+(defstruct (clock-screen (:copier nil))
+  (level-index 0 :type fixnum)                  ; the nominal warp level
+  (messages nil :type list)                     ; the live messages, (key text), oldest first
+  (log nil :type list)                          ; the SHIP log, (t key text), newest first
+  (log-read nil)                                ; the read mark's place in LOG, or nil
+  (autopilot nil))                              ; a copy of the autopilot model
+
+(defun clock-screen-snapshot (clock)
+  "A fresh clock-screen of CLOCK: the warp level, the live messages, the SHIP
+log with its read mark and a copy of the autopilot model."
+  (clock-messages clock)
+  (let ((log (mapcar #'copy-list (clock-log clock))))
+    (make-clock-screen
+     :level-index (clock-level-index clock)
+     :messages (mapcar (lambda (m) (list (first m) (second m))) (clock-message-list clock))
+     :log log
+     :log-read (position (clock-log-read clock) (clock-log clock) :test #'eq)
+     :autopilot (autopilot-model-snapshot (clock-autopilot clock)))))
+
+(defun clock-screen-load! (clock screen)
+  "A copy of SCREEN written into CLOCK: its messages fresh at the clock's
+real time, the rest as it was. CLOCK."
+  (let ((log (mapcar #'copy-list (clock-screen-log screen)))
+        (now (clock-real-time clock)))
+    (setf (clock-level-index clock) (clock-screen-level-index screen)
+          (clock-message-list clock) (mapcar (lambda (m) (list (first m) (second m) now))
+                                             (clock-screen-messages screen))
+          (clock-message-stamps clock) (mapcar (lambda (m) (cons (first m) now))
+                                               (clock-screen-messages screen))
+          (clock-log clock) log
+          (clock-log-read clock) (let ((i (clock-screen-log-read screen))) (and i (nth i log))))
+    (autopilot-model-load! (clock-autopilot clock) (clock-screen-autopilot screen))
+    clock))
+
 ;;; Warp rules (decision 19: Time-warp rules, decision 31, decision 73)
 
 (defparameter *thrust-warp-limit* 10 "Manual throttle's highest level; decision 31.")

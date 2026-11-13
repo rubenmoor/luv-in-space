@@ -4115,6 +4115,44 @@ cut's t). Pure; conses only its result."
           :next-duration (- (planned-burn-cut-t burn) (planned-burn-start burn))
           :arrival (planned-burn-cut-t (svref burns (1- (length burns)))))))
 
+(defun autopilot-model-snapshot (model)
+  "A copy of MODEL for a screen (decision 131): no planning jobs; the plans,
+immutable, shared, the map's shot copied."
+  (let ((copy (make-autopilot-model)))
+    (autopilot-model-load! copy model)
+    (setf (autopilot-model-job copy) nil
+          (autopilot-model-replan-job copy) nil)
+    copy))
+
+(defun autopilot-model-load! (model from)
+  "MODEL's state and plans := FROM's (copies), its planning jobs kept. MODEL."
+  (setf (autopilot-model-open model) (autopilot-model-open from)
+        (autopilot-model-rows model) (copy-list (autopilot-model-rows from))
+        (autopilot-model-selection model) (autopilot-model-selection from)
+        (autopilot-model-values model) (copy-alist (autopilot-model-values from))
+        (autopilot-model-replan model) (autopilot-model-replan from)
+        (autopilot-model-replan-t model) (autopilot-model-replan-t from)
+        (autopilot-model-row model) (autopilot-model-row from)
+        (autopilot-model-preset model) (autopilot-model-preset from)
+        (autopilot-model-goal model) (copy-tree (autopilot-model-goal from))
+        (autopilot-model-plan model) (autopilot-model-plan from)
+        (autopilot-model-flown model) (autopilot-model-flown from)
+        (autopilot-model-shot-plan model) (autopilot-model-shot-plan from)
+        (autopilot-model-engage model) (autopilot-model-engage from)
+        (autopilot-model-engaged model) (autopilot-model-engaged from)
+        (autopilot-model-state model) (autopilot-model-state from)
+        (autopilot-model-text model) (autopilot-model-text from)
+        (autopilot-model-held model) (autopilot-model-held from)
+        (autopilot-model-held-time model) (autopilot-model-held-time from)
+        (autopilot-model-held-steps model) (autopilot-model-held-steps from))
+  (let ((shot (autopilot-model-shot from)))
+    (if shot
+        (prediction-keep! (or (autopilot-model-shot model)
+                              (setf (autopilot-model-shot model) (new-prediction)))
+                          shot)
+        (setf (autopilot-model-shot model) nil)))
+  model)
+
 (defun autopilot-reset! (model)
   "MODEL as new (clock-restart!): closed, no plan or job running, the values
 and the job's buffers kept."

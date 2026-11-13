@@ -867,8 +867,8 @@ record sim-at-the-end frames-planning)."
 (define-test flights-reader-approach
   (destructuring-bind (plain options)
       (lis::read-flight "((:approach :k-17) (:approach (:fulmar-depot :a) :speed 0.05 :tries 1))")
-    (is equal '((:k-17 0) 0.1d0 3) (lis::flight-step-args plain))
-    (is equal '((:fulmar-depot 0) 0.05d0 1) (lis::flight-step-args options)))
+    (is equal '((:k-17 0) 0.1d0 3 ()) (lis::flight-step-args plain))
+    (is equal '((:fulmar-depot 0) 0.05d0 1 ()) (lis::flight-step-args options)))
   (loop for (source text) in '(("((:approach))" "WRITE (:APPROACH")
                                ("((:approach :skua-yard))" "HAS NO FIXTURE")
                                ("((:approach :k-17 :speed 0.3))" ":SPEED 0.02 TO 0.25")
@@ -986,3 +986,99 @@ sim before each step. (values record end-sim clock)."
   (is equal "(:APPROACH): (:RELEASE) FIRST"
       (failure-text (lis::run-flight "((:start :state (:berthed (:tern-station :berth)))
  (:approach (:tern-station :berth)))"))))
+
+;;; The screenshot waits and the screen state (decision 131: Flight
+;;; screenshots and live runs in milestone 3).
+
+(defparameter *burn-script*
+  "((:autopilot :set-ap 500e3) (:warp :coast) (:wait :in-burn :apsis) (:screenshot \"burn\")
+ (:wait :autopilot-done :within 20000))")
+
+(define-test flights-wait-in-burn
+  (multiple-value-bind (record sim) (lis::run-flight *burn-script* :model :point)
+    (true (lis::flight-record-passed-p record) "~A" (script-record-lines record))
+    (let* ((burn (first (plan-burn-entries record)))
+           (entry (shot record "burn"))
+           (screen (lis::flight-entry-screen entry)))
+      (true (<= (lis::flight-entry-start burn) (lis::flight-entry-t entry) (lis::flight-entry-t burn)))
+      (true screen)
+      (true (<= (nth (lis::clock-screen-level-index screen) lis::*warp-levels*) 100))
+      (true (lis::clock-screen-log screen) "the burn's lead lowered the warp: a notice")
+      (true (lis::autopilot-model-engaged (lis::clock-screen-autopilot screen)))
+      ;; The script rule: without the screenshot step and its wait, the same states.
+      (multiple-value-bind (plain plain-sim)
+          (lis::run-flight "((:autopilot :set-ap 500e3) (:warp :coast) (:wait :autopilot-done :within 20000))"
+                           :model :point)
+        (true (equalp sim plain-sim))
+        (true (record-equal (remove :screenshot record :key #'lis::flight-entry-kind) plain))))))
+
+(defun target-range (sim)
+  (let ((r (lis::make-vec3)) (v (lis::make-vec3)))
+    (lis::target-state-into! r v sim)
+    (lis::vec3-norm (lis::vec3-sub r (lis::ship-state-r (lis::sim-ship sim))))))
+
+(define-test flights-wait-range-below
+  (let* ((sim (lis::stated-sim '(:orbit (:near :tern-station :behind 1500))))
+         (source "((:target :tern-station) (:warp 1) (:wait :range-below 1000) (:screenshot \"in\"))")
+         (last-t nil) (last-range nil))
+    ;; 1 m/s closing along the line to the target
+    (setf (lis::sim-target sim) :tern-station)
+    (let* ((r (lis::make-vec3)) (v (lis::make-vec3)))
+      (lis::target-state-into! r v sim)
+      (let* ((ship (lis::sim-ship sim))
+             (d (lis::vec3-sub r (lis::ship-state-r ship)))
+             (n (lis::vec3-norm d)))
+        (lis::vec3-add! (lis::ship-state-v ship) (lis::ship-state-v ship) (lis::vec3-scale d (/ 1d0 n)))))
+    (setf (lis::sim-target sim) nil)
+    ;; The watcher sees each state the hook let a step run from: all of them
+    ;; still out at 1,000 m; the shot's is the first under.
+    (let ((record (fly-watching source sim
+                                (lambda (sim)
+                                  (when (lis::sim-target sim)
+                                    (setf last-t (lis::sim-t sim) last-range (target-range sim)))))))
+      (true (lis::flight-record-passed-p record) "~A" (script-record-lines record))
+      (true (>= last-range 1000d0))
+      (true (< (target-range (lis::flight-entry-sim (shot record "in"))) 1000d0))
+      (is = (+ last-t (/ 1d0 64)) (shot-t record "in"))))
+  (is equal "(:WAIT RANGE-BELOW): NO TARGET"
+      (failure-text (lis::run-flight "((:wait :range-below 1000))")))
+  (is equal '(nil) (entry-pass (lis::run-flight "((:expect :range-below 1000))") "RANGE-BELOW")))
+
+(define-test flights-approach-screenshots
+  (let* ((start (lis::stated-sim '(:orbit (:on-axis :k-17 25))))
+         (with "((:approach :k-17 :screenshots (:cockpit :outside)) (:expect :latched :k-17))")
+         (without "((:approach :k-17) (:expect :latched :k-17))"))
+    (multiple-value-bind (record sim) (lis::run-flight with :sim start)
+      (true (lis::flight-record-passed-p record) "~A" (script-record-lines record))
+      (let ((cockpit (shot record "approach-20m-cockpit"))
+            (outside (shot record "approach-20m-outside")))
+        (true (and cockpit outside))
+        (is eq :cockpit (lis::flight-entry-view cockpit))
+        (is eq :outside (lis::flight-entry-view outside))
+        (is = (lis::flight-entry-t cockpit) (lis::flight-entry-t outside))
+        (true (lis::flight-entry-screen cockpit))
+        ;; the hold's limits at that moment
+        (let ((reading (lis::make-grapple-reading))
+              (copy (lis::flight-entry-sim cockpit)))
+          (lis::grapple-range-into! reading copy)
+          (true (< (abs (- (lis::grapple-reading-range reading) lis::*approach-hold-range*))
+                   lis::*approach-hold-window*))
+          (true (< (lis::grapple-reading-angle reading) lis::*approach-go-angle*))))
+      (multiple-value-bind (plain plain-sim) (lis::run-flight without :sim start)
+        (true (equalp sim plain-sim))
+        (true (record-equal (remove :screenshot record :key #'lis::flight-entry-kind) plain))))))
+
+(define-test flights-reader-screenshot-waits
+  (let ((steps (lis::read-flight "((:wait :in-burn :departure :within 100) (:wait :terminal)
+ (:wait :range-below 1000) (:expect :range-below 5) (:approach :k-17 :screenshots (:map :cockpit)))")))
+    (is eq :in-burn (lis::flight-step-name (first steps)))
+    (is equal '(:departure) (lis::flight-step-args (first steps)))
+    (is eq :terminal (lis::flight-step-name (second steps)))
+    (is equal '(1000d0) (lis::flight-step-args (third steps)))
+    (is eq :expect (lis::flight-step-kind (fourth steps)))
+    (is equal '(:map :cockpit) (fourth (lis::flight-step-args (fifth steps)))))
+  (loop for (source text) in '(("((:wait :in-burn))" "WANTS 1 ARGUMENT")
+                               ("((:wait :in-burn :middle))" "UNKNOWN BURN")
+                               ("((:wait :range-below -5))" "DISTANCE OF 0 OR MORE")
+                               ("((:approach :k-17 :screenshots (:sideways)))" ":SCREENSHOTS"))
+        do (true (search text (or (script-error-text source) "")) "~A: ~A" source (script-error-text source))))

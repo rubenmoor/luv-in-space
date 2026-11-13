@@ -12,18 +12,23 @@
 (declaim (notinline make-instance))
 
 (defun without-screenshots (steps)
-  "STEPS less the :screenshot actions and the waits added for them (:in-burn,
-:terminal, :range-below; decision 131)."
-  (remove-if (lambda (step)
-               (or (eq (lis::flight-step-name step) :screenshot)
+  "STEPS less the :screenshot actions, the waits added for them (:in-burn,
+:terminal, :range-below) and :approach's :screenshots (decision 131)."
+  (loop for step in steps
+        unless (or (eq (lis::flight-step-name step) :screenshot)
                    (and (eq (lis::flight-step-kind step) :wait)
-                        (member (lis::flight-step-name step) '(:in-burn :terminal :range-below)))))
-             steps))
+                        (member (lis::flight-step-name step) '(:in-burn :terminal :range-below))))
+          collect (if (eq (lis::flight-step-name step) :approach)
+                      (let ((copy (copy-structure step)))
+                        (setf (lis::flight-step-args copy)
+                              (append (subseq (lis::flight-step-args step) 0 3) (list nil)))
+                        copy)
+                      step)))
 
 (defun fly-script (name &key labels)
   "Fly flights/NAME.sexp twice: passed, the end sims equalp and the records
 equal. Prints its line: game time, steps, wall time, PASSED or FAILED.
-Returns the record and the end sim. With LABELS (the screenshot labels in
+Returns the record (less its screenshots), the end sim and the screenshot entries. With LABELS (the screenshot labels in
 order) the script has screenshots: the second run flies it without them and
 their waits, and its record equals the first's less the :screenshot entries
 (decision 131: the script rule)."
@@ -49,19 +54,21 @@ their waits, and its record equals the first's less the :screenshot entries
                   (/ (- (get-internal-real-time) wall) internal-time-units-per-second)
                   passed)
           (finish-output)
-          (values record sim))))))
+          (values record sim shots))))))
 
 ;;; The approach and rendezvous scripts (docs/architecture.md "Scripts by
 ;;; milestone").
 
 (define-test approach-tern
-  (multiple-value-bind (record sim) (fly-script "approach-tern")
+  (multiple-value-bind (record sim) (fly-script "approach-tern"
+                                          :labels '("start" "start-outside" "approach-20m-cockpit" "approach-20m-outside" "berthed" "berthed-outside"))
     (declare (ignore record))
     (true (lis::sim-berthed sim))))
 
 (define-test approach-k-17
   ;; The stack's mass is the ship's plus K-17's 2,500 kg exactly.
-  (multiple-value-bind (record sim) (fly-script "approach-k-17")
+  (multiple-value-bind (record sim) (fly-script "approach-k-17"
+                                          :labels '("start" "start-outside" "approach-20m-cockpit" "approach-20m-outside" "latched" "latched-outside"))
     (declare (ignore record))
     (is = (+ (lis::mass-properties-mass
               (lis::ship-mass-properties (lis::ship-state-m-p (lis::sim-ship sim)) nil))
@@ -70,13 +77,32 @@ their waits, and its record equals the first's less the :screenshot entries
           (lis::mass-properties-mass properties)))))
 
 (define-test rendezvous-fulmar-phasing
-  (fly-script "rendezvous-fulmar-phasing"))
+  (fly-script "rendezvous-fulmar-phasing"
+              :labels '("start" "plan" "departure" "arrival" "on-station" "on-station-cockpit")))
 
 (define-test rendezvous-skua-yard
-  (fly-script "rendezvous-skua-yard"))
+  (fly-script "rendezvous-skua-yard"
+              :labels '("berthed" "released" "plan" "departure" "terminal" "on-station" "on-station-map")))
 
 (define-test skua-yard-apogee-approach
-  (fly-script "skua-yard-apogee-approach"))
+  (fly-script "skua-yard-apogee-approach"
+              :labels '("start" "plan" "terminal" "on-station")))
+
+(define-test cockpit-k-17
+  ;; Rendezvous and capture in the cockpit view (decision 131): latched, the
+  ;; stack's mass the ship's plus K-17's 2,500 kg, every shot a cockpit one.
+  (multiple-value-bind (record sim shots)
+      (fly-script "cockpit-k-17"
+                  :labels '("start" "plan" "departure" "arrival" "terminal" "on-station"
+                            "approach-20m-cockpit" "latched"))
+    (declare (ignore record))
+    (is eq :latched (lis::grapple-state (lis::sim-grapple sim)))
+    (is = (+ (lis::mass-properties-mass
+              (lis::ship-mass-properties (lis::ship-state-m-p (lis::sim-ship sim)) nil))
+             2500d0)
+        (lis::with-stack-properties (properties sim)
+          (lis::mass-properties-mass properties)))
+    (true (every (lambda (entry) (eq (lis::flight-entry-view entry) :cockpit)) shots))))
 
 ;;; plan 27's runs marked for the slow command (tests/autopilot.lisp).
 

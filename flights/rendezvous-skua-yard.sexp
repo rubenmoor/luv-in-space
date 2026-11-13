@@ -13,14 +13,33 @@
 ;;; (decision 59), one expectation each. Not Highport: the engage comes 360 s
 ;;; after the release at 0.2 m/s, ~72 m from the plant (the end-to-end test
 ;;; rendezvous-end-to-end-skua-yard-5 holds it clear from the first burn on).
+;;;
+;;; Screenshots (scripts/fly; PNGs not committed, decision 87; decision 131),
+;;; each after a step or a condition wait, so the states equal the script's without them:
+;;; - berthed (outside): the ship at Highport's plant.
+;;; - released (outside): the ship clear of the plant after the 0.2 m/s push.
+;;; - plan (map, engaged): the trajectory, the yard's orbit, burn markers.
+;;; - departure (outside, in the departure burn).
+;;; - terminal (cockpit): the yard's rocks in their nets through the window.
+;;; - on-station (outside): Skua Yard 5 beside the ship.
+;;; - on-station-map (map): the ship at the yard.
 ((:start :state (:date (:periapsis :highport :before 3600)
                  :berthed (:highport :plant)))
+ (:screenshot "berthed")
  (:release)
  (:translate :aft :dv 0.2)
+ (:screenshot "released")
  (:after 300)
  (:autopilot :rendezvous :skua-yard-5)
  (:warp :coast)
+ (:screenshot "plan" :view :map)
+ (:wait :in-burn :departure)
+ (:screenshot "departure")
+ (:wait :terminal)
+ (:screenshot "terminal" :view :cockpit)
  (:wait :autopilot-done :within 259200)
+ (:screenshot "on-station")
+ (:screenshot "on-station-map" :view :map)
  (:expect :on-station :skua-yard-5)
  (:expect :elapsed-below 93600)
  (:expect :dv-below 21)

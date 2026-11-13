@@ -322,12 +322,14 @@ last, then the labels in *marker-label-colour*, rows centred on the marker
           (format nil "~A~D.~v,'0D" sign whole decimals fraction)))))
 
 (defun format-significant (x digits)
-  "Positive X to DIGITS significant digits, no exponent."
-  (let ((decimals (- digits 1 (floor (log x 10)))))
-    (if (<= decimals 0)
-        (let ((scale (expt 10 (- decimals))))
-          (format nil "~D" (* scale (round x scale))))
-        (format-fixed x decimals))))
+  "X to DIGITS significant digits, no exponent; zero or less shows as zero."
+  (if (<= x 0)
+      (format-fixed 0d0 (1- digits))
+      (let ((decimals (- digits 1 (floor (log x 10)))))
+        (if (<= decimals 0)
+            (let ((scale (expt 10 (- decimals))))
+              (format nil "~D" (* scale (round x scale))))
+            (format-fixed x decimals)))))
 
 (defun format-speed (speed)
   "m/s with one decimal below 1,000 m/s, else km/s with three; decision 85."

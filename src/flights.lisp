@@ -1275,6 +1275,16 @@ apoapsis."
     (and (eq (grapple-state grapple) :latched) (grapple-object grapple)
          (svref (sim-objects sim) (grapple-object grapple)))))
 
+(defun station-point-fixture (sim station)
+  "The fixture of STATION's stop point: the engaged rendezvous plan's when it
+is for STATION, else rendezvous-fixture's (decision 176: the drop point may
+clear after the plan chose the front)."
+  (let* ((plan (sim-plan sim))
+         (part (and plan (burn-plan-rendezvous plan))))
+    (if (and part (eq (rendezvous-part-target part) station))
+        (rendezvous-part-fixture part)
+        (rendezvous-fixture sim station))))
+
 (defun on-station-measure (sim station)
   "(values distance speed) of docs/story.md's \"On station at F\" for
 STATION (a fixture as state-fixture reads it): the grapple's tip from the
@@ -1287,7 +1297,7 @@ without a fixture (Skua Yard) the stack's CoM against its stop point
          (time (sim-t sim)))
     (if (station-point-p station)
         (let ((p (make-vec3)) (u (make-vec3)))
-          (when (stop-point-into! p u sim station (rendezvous-fixture sim station) 0d0 time)
+          (when (stop-point-into! p u sim station (station-point-fixture sim station) 0d0 time)
             (values (vec3-norm (vec3-sub p r)) (vec3-norm (vec3-sub u v)))))
         (destructuring-bind (key index) (state-fixture station nil)
           (let ((fixture (nth index (object-def-fixtures (object-definition key))))

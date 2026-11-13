@@ -363,3 +363,16 @@ decimals below 100."
     (is equalp drop (object-com sim :skua-yard-3 apogee))
     (setf (lis::object-status (lis::sim-object sim :skua-yard-3)) :removed)
     (is eq :drop-point (lis::rendezvous-fixture sim :skua-yard))))
+
+(define-test stop-point-rails-velocity-is-position-rate
+  ;; decision 176: a point on rails moves at the rate of its position (J2's
+  ;; rates included), not at the Kepler velocity.
+  (let ((sim (lis::new-game-sim)) (time (+ (lis::start-t) 99400d0)))
+    (dolist (fixture '(:drop-point :front))
+      (let ((v (lis::make-vec3)) (r (lis::make-vec3))
+            (a (lis::make-vec3)) (b (lis::make-vec3)))
+        (lis::stop-point-into! r v sim :skua-yard fixture 0d0 time)
+        (lis::stop-point-into! a (lis::make-vec3) sim :skua-yard fixture 0d0 (- time 1d0))
+        (lis::stop-point-into! b (lis::make-vec3) sim :skua-yard fixture 0d0 (+ time 1d0))
+        (let ((err (lis::vec3-norm (lis::vec3-sub (lis::vec3-scale (lis::vec3-sub b a) 0.5d0) v))))
+          (true (< err 1d-3) "~A ~,4F m/s" fixture err))))))

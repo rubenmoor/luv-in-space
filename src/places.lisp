@@ -238,14 +238,18 @@ removed."
 (defun stop-target-state-into! (r v sim target fixture time)
   "The state at TIME of what the stop point of TARGET with FIXTURE moves
 with: the object's CoM, Skua Yard's drop point (FIXTURE :drop-point) or its
-front (:front, *yard-front-lead* s ahead on the same rails). True or nil."
+front (:front, *yard-front-lead* s ahead on the same rails), with the rate
+of the rails position as velocity (rails-rate-into!). True or nil."
   (declare (type vec3 r v) (type double-float time)
            (inline object-planning-state-into! rails-state-into!))
   (let ((object (target-object sim target)))
     (if object
         (object-planning-state-into! r v object sim time)
-        (let ((time (if (eq fixture :front) (+ time *yard-front-lead*) time)))
-          (rails-state-into! r v (rails-segment-at (place-rails (place target)) time) time)
+        (let* ((time (if (eq fixture :front) (+ time *yard-front-lead*) time))
+               (segment (rails-segment-at (place-rails (place target)) time)))
+          (rails-state-into! r v segment time)
+          ;; the position's rate, not the Kepler v (decision 176)
+          (rails-rate-into! v r segment)
           t))))
 
 (defun terminal-frame-into! (q w object r v time)

@@ -477,3 +477,101 @@ text block already filled; nothing for an empty batch."
     (luv:set-vertex-buffer pass 0 corners)
     (luv:set-vertex-buffer pass 1 (text-slot-instances slot))
     (luv:draw pass 6 (text-batch-count batch))))
+
+;;; The line batch: segments of the :cab-lines pipeline (shaders.lisp), in
+;;; regions like the text batch's: plot lines, inverted runs' blocks, outlines
+;;; (decision 127: Cockpit screens' contents in milestone 3: lines, modes,
+;;; plots, colours and updates). Drawn in the same bind group as the text.
+
+(defconstant +line-record-floats+ 10 "From xyz, to xyz, tint rgb and the width in metres.")
+(defparameter *line-max-records* 256)
+
+(defstruct (line-batch (:copier nil) (:constructor %make-line-batch))
+  (data nil :type (simple-array single-float (*)))
+  (count 0 :type fixnum)
+  (view nil))
+
+(defun make-line-batch (&optional (capacity *line-max-records*))
+  (let ((data (make-array (* capacity +line-record-floats+) :element-type 'single-float
+                                                            :initial-element 0f0)))
+    (%make-line-batch :data data
+                      :view (make-array (length data) :element-type 'single-float
+                                                      :displaced-to data :fill-pointer 0))))
+
+(defun line-batch-capacity (batch)
+  (floor (length (line-batch-data batch)) +line-record-floats+))
+
+(defstruct (line-region (:copier nil))
+  batch (start 0 :type fixnum) (capacity 0 :type fixnum))
+
+(defun line-batch-region (batch capacity)
+  (let ((start (line-batch-count batch)))
+    (when (> (+ start capacity) (line-batch-capacity batch))
+      (error "The line batch holds ~D segments; ~D asked for after ~D."
+             (line-batch-capacity batch) capacity start))
+    (setf (line-batch-count batch) (+ start capacity))
+    (make-line-region :batch batch :start start :capacity capacity)))
+
+(defun line-region-clear! (region &optional (from 0))
+  "Zero REGION's segments from index FROM: zero-width segments draw nothing."
+  (fill (line-batch-data (line-region-batch region)) 0f0
+        :start (* +line-record-floats+ (+ (line-region-start region) from))
+        :end (* +line-record-floats+ (+ (line-region-start region) (line-region-capacity region))))
+  region)
+
+(defun line-put! (region index ax ay az bx by bz colour width)
+  "Segment INDEX of REGION from A to B (body axes from the eye, metres), COLOUR a
+linear (single-float (3)) as the screen shows it, WIDTH metres across. Conses nothing."
+  (declare (type line-region region) (type fixnum index) (type single-float ax ay az bx by bz width)
+           (type (simple-array single-float (3)) colour))
+  (when (>= index (line-region-capacity region))
+    (error "The line region holds ~D segments." (line-region-capacity region)))
+  (let ((data (line-batch-data (line-region-batch region)))
+        (base (* +line-record-floats+ (+ (line-region-start region) index))))
+    (declare (type fixnum base))
+    (setf (aref data base) ax (aref data (+ base 1)) ay (aref data (+ base 2)) az
+          (aref data (+ base 3)) bx (aref data (+ base 4)) by (aref data (+ base 5)) bz
+          (aref data (+ base 6)) (aref colour 0) (aref data (+ base 7)) (aref colour 1)
+          (aref data (+ base 8)) (aref colour 2) (aref data (+ base 9)) width)
+    index))
+
+(defun line-batch-upload! (batch buffer)
+  (let ((view (line-batch-view batch)))
+    (setf (fill-pointer view) (* +line-record-floats+ (line-batch-count batch)))
+    (when (plusp (line-batch-count batch))
+      (luv:write-buffer buffer view))))
+
+(defun line-corners ()
+  "A segment's quad: along 0 or 1, across -1 or 1, six corners of two singles."
+  (coerce '(0.0 -1.0 1.0 -1.0 1.0 1.0 0.0 -1.0 1.0 1.0 0.0 1.0) '(simple-array single-float (*))))
+
+(defun lines-pipeline (renderer layout format)
+  "The :cab-lines live pipeline into FORMAT: premultiplied alpha, depth compared
+:greater, not written."
+  (live-pipeline renderer :cab-lines layout
+                 `((:array-stride 8
+                    :attributes ((:shader-location 0 :offset 0 :format :float32x2)))
+                   (:array-stride ,(* 4 +line-record-floats+) :step-mode :instance
+                    :attributes ((:shader-location 1 :offset 0 :format :float32x3)
+                                 (:shader-location 2 :offset 12 :format :float32x3)
+                                 (:shader-location 3 :offset 24 :format :float32x4))))
+                 :format format :blend :premultiplied-alpha
+                 :depth-stencil '(:format :depth32-float :depth-write-enabled nil
+                                  :depth-compare :greater)))
+
+(defun make-line-buffer (renderer capacity)
+  (luv:create (renderer-device renderer)
+              (luv:make-buffer-descriptor :label "line instances"
+                                          :size (* 4 +line-record-floats+ capacity)
+                                          :usage '(:vertex :copy-dst))))
+
+(defun encode-lines (pass renderer text-slot batch buffer corners)
+  "BATCH's segments into the open scene PASS (the block of TEXT-SLOT written
+before), through BUFFER; nothing for an empty batch."
+  (when (plusp (line-batch-count batch))
+    (line-batch-upload! batch buffer)
+    (luv:set-pipeline pass (renderer-pipeline renderer :cab-lines))
+    (luv:set-bind-group pass 0 (text-slot-bind-group text-slot))
+    (luv:set-vertex-buffer pass 0 corners)
+    (luv:set-vertex-buffer pass 1 buffer)
+    (luv:draw pass 6 (line-batch-count batch))))

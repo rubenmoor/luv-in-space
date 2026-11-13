@@ -30,6 +30,7 @@ height, the packed pixels and their colour format."
   "GAME's sim becomes a copy of SIM, its clock restarted on it (×1,
 unpaused); a frozen GAME (captures) takes no steps from it."
   (call-on-canvas-thread game (lambda ()
+                                (cockpit-state-invalidate! (game-cockpit-state game))
                                 (clock-restart! (game-clock game) (game-sim game) sim))))
 
 (defmacro with-capture-game ((game &key (width 1280) (height 800) sim (readout t)) &body body)

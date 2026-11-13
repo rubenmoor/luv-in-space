@@ -79,6 +79,10 @@ the AUTOPILOT-MODEL, the clock's by reference, which the map reads (decision
   (own (make-mass-properties) :type mass-properties) ; scratch: the Mule's own
   (com-valid nil)                       ; true once render-state-update! set COM
   (load-reach 0d0 :type double-float)   ; m: the latched load's CoM distance from COM + its bound, 0 none
+  (stack-mass 0d0 :type double-float)   ; kg: the Mule with its propellant and the latched load
+  (load-def nil :type (or null object-def)) ; the latched load's definition (not berthed)
+  (berth-def nil :type (or null object-def)) ; the berthed station's definition
+  (transfer nil :type boolean)          ; the propellant transfer is on (berthed at a depot)
   (stack-shift 0d0 :type double-float)  ; m: COM from the Mule's own CoM
   (claws-eased nil)                     ; true: the shown angle eases (render-state-ease-claws!)
   (state-a (make-ship-state (make-vec3) (make-vec3) (quat 1 0 0 0) (make-vec3) 0d0)
@@ -200,7 +204,11 @@ removed object not drawn. Conses nothing."
             (own (make-vec3)))
         (declare (dynamic-extent own))
         (replace (render-state-com out) com)
-        (setf (render-state-com-valid out) t)
+        (setf (render-state-com-valid out) t
+              (render-state-load-def out) (and load (stack-load-def load))
+              (render-state-berth-def out) (and berthed attached
+                                                (object-def-of (svref objects attached)))
+              (render-state-transfer out) (and (sim-transfer sim) t))
         (vec3-set! own 0d0 0d0 0d0)
         (setf (render-state-stack-shift out)
               (if load
@@ -327,6 +335,9 @@ not below t or the sim is lost; the target at the render time
         (render-grapple-update! (render-state-grapple out) sim (render-state-t out)
                                 (render-state-claws-eased out))))
     (setf (render-state-m-p out) (ship-state-m-p current)
+          (render-state-stack-mass out) (+ (the double-float *ship-dry-mass*) (ship-state-m-p current)
+                                           (let ((load (render-state-load-def out)))
+                                             (if load (object-def-mass load) 0d0)))
           (render-state-loss out) (sim-loss sim)
           (render-state-autopilot out) (and (sim-plan sim) t))
     (controls-assign! (render-state-controls out) (sim-controls sim))
@@ -724,9 +735,10 @@ sunlit patch). The static part stays. Conses nothing; the block."
              (* k k (the double-float (sun-visible-fraction eye (render-state-t state))))))
     out))
 
-(defun encode-cockpit (pass renderer gpu slot text-slot batch corners state camera extent exposure eye)
+(defun encode-cockpit (pass renderer gpu slot text-slot batch corners state camera extent exposure eye
+                       &optional lines line-buffer line-corners)
   "The cab's interior into the open scene PASS, after the scene (decision 126:
-the opaque meshes and instances, the cockpit's text, then the glass): its block (the
+the opaque meshes and instances, the lines, the cockpit's text, then the glass): its block (the
 head camera in body axes) written to SLOT and, with the text, to TEXT-SLOT.
 BATCH the text batch, CORNERS the glyph quad. Conses nothing."
   (let ((data (cab-block! gpu state camera extent exposure eye)))
@@ -742,6 +754,10 @@ BATCH the text batch, CORNERS the glyph quad. Conses nothing."
           do (luv:set-vertex-buffer pass 0 primitive)
              (luv:set-vertex-buffer pass 1 instances)
              (luv:draw pass vertices count))
+    (when lines
+      ;; The lines go before the text: an inverted run's block lies under its letters.
+      (luv:write-buffer (text-slot-buffer text-slot) data)
+      (encode-lines pass renderer text-slot lines line-buffer line-corners))
     (encode-text pass renderer text-slot batch data corners)
     (when *cab-glass*
       (luv:set-pipeline pass (renderer-pipeline renderer :cab-glass))
@@ -805,6 +821,11 @@ the tests' one decode for every canvas they open.")
    (text-corners :initarg :text-corners :reader frame-renderer-text-corners)
    (text-batch :initform (make-text-batch) :reader frame-renderer-text-batch
                :documentation "The text records of the frame: regions callers rewrite.")
+   (lines :initform (make-line-batch) :reader frame-renderer-lines
+          :documentation "The line records of the frame: regions callers rewrite.")
+   (line-corners :initarg :line-corners :reader frame-renderer-line-corners)
+   (screen-views :initform '() :accessor frame-renderer-screen-views
+                 :documentation "The cockpit's drawn screens (cockpit-screens.lisp).")
    (text-block :initform (make-array +text-block-floats+ :element-type 'single-float
                                                          :initial-element 0f0)
                :reader frame-renderer-text-block)
@@ -874,22 +895,27 @@ camera's clip rows (positions relative to the eye in ICRF axes).")
       (reinitialize-instance renderer
                              :text-atlas (make-text-atlas-for (renderer-device renderer))
                              :text-layout text-layout
-                             :text-corners (vertex-buffer renderer (text-corners) "text corners"))
-      (text-pipeline renderer text-layout +hdr-format+))
+                             :text-corners (vertex-buffer renderer (text-corners) "text corners")
+                             :line-corners (vertex-buffer renderer (line-corners) "line corners"))
+      (text-pipeline renderer text-layout +hdr-format+)
+      (lines-pipeline renderer text-layout +hdr-format+))
     (cockpit-text! (frame-renderer-text-atlas renderer) (frame-renderer-text-batch renderer))
+    (setf (frame-renderer-screen-views renderer)
+          (cockpit-screens-init! (frame-renderer-text-batch renderer) (frame-renderer-lines renderer)))
     renderer))
 
 (defstruct frame-slot
 "A target's frame block, its scene bind group, its ship-slot, its ribbon
 instance buffer, its overlay vertices, its text-slot, its cab-slot, and the bind groups sampling the
 post levels in POST-VIEWS."
-  buffer bind-group ship ribbon overlay text cab (post-views '()) (post-bind-groups '()))
+  buffer bind-group ship ribbon overlay text lines cab (post-views '()) (post-bind-groups '()))
 
 (defun release-frame-resources (slot)
   (release-ship-slot (frame-slot-ship slot))
   (luv:destroy (frame-slot-ribbon slot))
   (luv:destroy (frame-slot-overlay slot))
   (release-text-slot (frame-slot-text slot))
+  (luv:destroy (frame-slot-lines slot))
   (release-cab-slot (frame-slot-cab slot))
   (mapc #'luv:destroy (frame-slot-post-bind-groups slot))
   (luv:destroy (frame-slot-bind-group slot))
@@ -925,6 +951,7 @@ again once it is acquired (luv's canvas-frame-resource-cache)."
                 :ribbon (make-ribbon-buffer (renderer-device renderer)
                                             (frame-renderer-map-lines renderer))
                 :cab (make-cab-slot-for renderer (frame-renderer-cockpit renderer))
+                :lines (make-line-buffer renderer (line-batch-capacity (frame-renderer-lines renderer)))
                 :text (make-text-slot renderer (frame-renderer-text-layout renderer)
                                       (frame-renderer-text-atlas renderer)
                                       (text-batch-capacity (frame-renderer-text-batch renderer)))
@@ -1097,7 +1124,9 @@ cab's meshes, instances and text."
             (encode-cockpit pass renderer (frame-renderer-cockpit renderer) (frame-slot-cab slot)
                             (frame-slot-text slot) (frame-renderer-text-batch renderer)
                             (frame-renderer-text-corners renderer) state camera extent exposure
-                            (frame-renderer-eye renderer)))
+                            (frame-renderer-eye renderer)
+                            (frame-renderer-lines renderer) (frame-slot-lines slot)
+                            (frame-renderer-line-corners renderer)))
           (when (eq view :map)
             (encode-map-lines pass renderer bind-group (frame-renderer-map-lines renderer)
                               (frame-slot-ribbon slot) (frame-renderer-ribbon-corners renderer)

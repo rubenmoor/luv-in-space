@@ -32,6 +32,7 @@
                (:file "text")
                (:file "cockpit")
                (:file "render")
+               (:file "cockpit-screens")
                (:file "input")
                (:file "main")
                (:file "capture")))

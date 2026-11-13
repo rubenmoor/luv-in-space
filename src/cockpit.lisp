@@ -57,7 +57,15 @@
                 (0.45 0.45 0.47 0.15 16.0 0.0)     ; slotted channel, along x
                 (0.45 0.45 0.47 0.15 16.0 0.0)     ; slotted channel, along y
                 (0.45 0.45 0.47 0.15 16.0 0.0))))  ; slotted channel, along z
-    (make-array (list (length rows) 6) :element-type 'single-float :initial-contents rows))
+    (let ((table (make-array (list (length rows) 6) :element-type 'single-float
+                                                     :initial-contents rows))
+          (row (position :screen-face *cab-material-names*)))
+      ;; The screen faces' backlight: the albedo is the radiance that maps to
+      ;; #0A0C0C at the cockpit's exposure, the emission factor 1 (decision 127).
+      (multiple-value-bind (r g b) (emissive-for-srgb #x0A #x0C #x0C)
+        (setf (aref table row 0) (float r 1f0) (aref table row 1) (float g 1f0)
+              (aref table row 2) (float b 1f0) (aref table row 5) 1f0))
+      table))
   "Rows of *cab-material-names*: r g b, specular weight, exponent, emission; live.")
 
 (defun cab-material-id (name)
@@ -1170,6 +1178,9 @@ shaped advance, and its tape's length."
 (defun cockpit-text-region (key)
   (cdr (assoc key *cab-text-regions* :test #'equal)))
 
+(defparameter *cockpit-live-screens* '(:orbit :ship)
+  "The screens plan 32 has drawn so far (cockpit-screens.lisp); a placeholder stands on each other one.")
+
 (defparameter *placeholder-text* "PLACEHOLDER(166)")
 (defparameter *placeholder-ink* '(232 228 216) "Paper white (docs/design.md \"Readability\").")
 
@@ -1187,7 +1198,8 @@ shaped advance, and its tape's length."
 
 (defun cockpit-placeholders-text! (atlas batch)
   (dolist (panel *cockpit-panels*)
-    (when (getf panel :screen)
+    (when (and (getf panel :screen)
+               (not (member (getf panel :name) *cockpit-live-screens*)))
       (let* ((cap (panel-grid-cap panel)) (origin (panel-grid-origin panel cap))
              (region (text-batch-region batch (length *placeholder-text*))))
         (multiple-value-bind (c n r u) (panel-frame panel)

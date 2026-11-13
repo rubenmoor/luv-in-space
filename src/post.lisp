@@ -137,6 +137,32 @@ log2 with *exposure-time-constant*."
                       (* c 12.92d0)
                       (- (* 1.055d0 (expt c (/ 2.4d0))) 0.055d0))))))
 
+(defun inverse-tone-map (c)
+  "The radiance whose tone map (ACES, Narkowicz, before the sRGB encoding) is
+the linear value C of 0 to 1: the positive root of c (2.43 x² + 0.59 x + 0.14)
+= 2.51 x² + 0.03 x, C clamped to 1 (x about 7.24), which the curve reaches
+and does not pass. The CPU twin of shaders.lisp's shader function of the name,
+which does it per colour channel."
+  (let* ((c (max 0d0 (min 1d0 (float c 1d0))))
+         (a (- (* 2.43d0 c) 2.51d0))
+         (b (- (* 0.59d0 c) 0.03d0))
+         (d (* 0.14d0 c))
+         (s (sqrt (max 0d0 (- (* b b) (* 4d0 a d))))))
+    (/ (+ b s) (* -2d0 a))))
+
+(defun srgb-byte-linear (byte)
+  (let ((x (/ byte 255d0)))
+    (if (<= x 0.04045d0) (/ x 12.92d0) (expt (/ (+ x 0.055d0) 1.055d0) 2.4d0))))
+
+(defun emissive-for-srgb (red green blue &optional (exposure *exposure-cockpit*))
+  "(values r g b): the radiance whose tone map at EXPOSURE (tone-map-srgb) is
+the sRGB bytes RED GREEN BLUE (decision 127: Cockpit screens' contents in
+milestone 3: lines, modes, plots, colours and updates), so the pixel shows the
+design's hex. The inverse of tone-map-srgb, clamped below the curve's
+asymptote (a byte of 255 asks for x = 7.24 / EXPOSURE)."
+  (flet ((channel (byte) (/ (inverse-tone-map (srgb-byte-linear byte)) exposure)))
+    (values (channel red) (channel green) (channel blue))))
+
 ;;; The GPU side
 
 (defun post-vertices ()

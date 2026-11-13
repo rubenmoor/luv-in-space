@@ -24,6 +24,8 @@ instruments are drawn (task 166 flips it to :cockpit; decision 126).")
                  :documentation "The outside view's frame, angles and distance (camera.lisp); not in the sim.")
    (cockpit-view :initform (new-cockpit-view) :reader game-cockpit-view
                  :documentation "The head's yaw and pitch and the field of view (camera.lisp); kept across a restart, not in the sim.")
+   (cockpit-state :initform (make-cockpit-state) :reader game-cockpit-state
+                  :documentation "The screens' rebuild times and signatures (cockpit-screens.lisp); not in the sim, kept across a restart (MSTR, the marquee and the log cursor of plan 32's later pieces excepted).")
    (map-return-view :initform :outside :accessor game-map-return-view
                     :documentation "The view M's second press returns to: :outside or :cockpit.")
    (map-view :initform (new-map-view) :reader game-map-view
@@ -175,6 +177,7 @@ clock-restart! (×1, unpaused), the outside view at its default pose (the
 cockpit's head kept), the view *default-view*, the input cleared, the death record cleared, the exposure
 snapped. GAME."
   (clock-restart! (game-clock game) (game-sim game) checkpoint)
+  (cockpit-state-invalidate! (game-cockpit-state game))
   (outside-view-reset! (game-outside-view game))
   (when (input-drag (game-input game))
     (set-relative-pointer-mode game nil))
@@ -214,6 +217,11 @@ death-glow-radiance ÷ EXPOSURE, so it reads the same lit or in shadow."
 the outside view's distance."
   (update-view! game elapsed)
   (setf (game-extent game) extent)
+  (when (eq (game-view game) :cockpit)
+    (let ((renderer (game-renderer game)))
+      (cockpit-update! (game-cockpit-state game) (frame-renderer-screen-views renderer)
+                       (frame-renderer-text-atlas renderer) (game-render-state game)
+                       (game-clock game) (game-real-time game) (game-view game))))
   (let ((exposure (update-exposure! game extent elapsed)))
     (death-glow! game exposure)
     (encode-frame (game-renderer game) encoder target extent

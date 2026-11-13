@@ -791,6 +791,74 @@
          (lit (cab-irradiance body n strip-a strip-b light (swizzle params :z))))
     (set-output color (vec4 (* (* alpha 0.5) (* lit (vec3 0.85 1.0 0.9))) alpha))))
 
+;; The tone map's inverse per channel (src/post.lisp inverse-tone-map): the
+;; radiance x with ACES(x) = c, the positive root of the quadratic; c at most 1.
+(define-shader-function inverse-aces (c)
+  (let* ((k (clamp c 0.0 1.0))
+         (a (- (* 2.43 k) 2.51))
+         (b (- (* 0.59 k) 0.03))
+         (d (* 0.14 k))
+         (s (sqrt (max (- (* b b) (* 4.0 (* a d))) 0.0))))
+    (/ (+ b s) (- 0.0 (* 2.0 a)))))
+
+(define-shader-function inverse-tone-map (c)
+  (vec3 (inverse-aces (swizzle c :x)) (inverse-aces (swizzle c :y))
+        (inverse-aces (swizzle c :z))))
+
+;;; Lines on planes in the cab (src/cockpit-screens.lisp; decision 127): one
+;;; segment per instance, FROM and TO in body axes from the eye, a quad
+;;; TINT.w metres wide across the segment (perpendicular to it and to the
+;;; sight line) plus a 1 px fringe, flat ends. TINT.xyz is the colour as the
+;;; screen shows it (linear, before the tone map): the ink is its inverse
+;;; tone map over the exposure, so the pixel is that colour at any exposure.
+;;; ACROSS: pixels from the centre line.
+(define-shader cab-lines-vertex
+    (:stage :vertex
+     :inputs ((corner :vec2 :location 0)
+              (from :vec3 :location 1)
+              (to :vec3 :location 2)
+              (tint :vec4 :location 3))
+     :outputs ((clip-position :vec4 :built-in :position)
+               (across :float :location 0)
+               (shade :vec3 :location 1 :interpolation :flat)
+               (half-width :float :location 2 :interpolation :flat))
+     :resources ((text-block :uniform-block :binding 2
+                  :members #.*cab-block-members*)))
+  (let* ((p (mix from to (swizzle corner :x)))
+         (along (normalize (+ (- to from) (vec3 0.000001 0.0 0.0))))
+         (side (normalize (+ (vec3 (- (* (swizzle along :y) (swizzle p :z))
+                                      (* (swizzle along :z) (swizzle p :y)))
+                                   (- (* (swizzle along :z) (swizzle p :x))
+                                      (* (swizzle along :x) (swizzle p :z)))
+                                   (- (* (swizzle along :x) (swizzle p :y))
+                                      (* (swizzle along :y) (swizzle p :x))))
+                             (vec3 0.0 0.0 0.000001))))
+         (h (vec4 p 1.0))
+         (w0 (max (dot clip-w h) 0.001))
+         (nx (/ (dot clip-x h) w0))
+         (ny (/ (dot clip-y h) w0))
+         (se (vec4 side 0.0))
+         (rx (/ (- (dot clip-x se) (* nx (dot clip-w se))) (* w0 (swizzle screen :x))))
+         (ry (/ (- (dot clip-y se) (* ny (dot clip-w se))) (* w0 (swizzle screen :y))))
+         (pixels-per-metre (max (sqrt (+ (* rx rx) (* ry ry))) 0.001))
+         (half-px (* 0.5 (* (swizzle tint :w) pixels-per-metre)))
+         (reach (/ (+ half-px 1.0) pixels-per-metre))
+         (q (vec4 (+ p (* side (* (swizzle corner :y) reach))) 1.0)))
+    (set-output clip-position (vec4 (dot clip-x q) (dot clip-y q) (dot clip-z q) (dot clip-w q)))
+    (set-output across (* (swizzle corner :y) (+ half-px 1.0)))
+    (set-output shade (* (inverse-tone-map (swizzle tint :xyz)) (swizzle params :x)))
+    (set-output half-width half-px)))
+
+;; Premultiplied: the ink over the line's coverage, the fringe antialiasing the edge.
+(define-shader cab-lines-fragment
+    (:stage :fragment
+     :inputs ((across :float :location 0)
+              (shade :vec3 :location 1 :interpolation :flat)
+              (half-width :float :location 2 :interpolation :flat))
+     :outputs ((color :vec4 :location 0)))
+  (let* ((coverage (clamp (- (+ half-width 0.5) (abs across)) 0.0 1.0)))
+    (set-output color (vec4 (* shade coverage) coverage))))
+
 ;;; Slug text on planes (src/text.lisp; decision 126: Cockpit structure and
 ;;; view in milestone 3), after Luvcraft's :slug-world-text vertex stage
 ;;; (luvcraft/shaders.lisp, luv by Mikael Brockman): the glyph quad grows past
@@ -1138,6 +1206,10 @@ angle in degrees), weighted by a Gaussian of SIGMA texels, normalised."
   (cab-text-vertex))
 (defmethod shader-specification-for ((role (eql :cab-text)) (stage (eql :fragment)))
   (cab-text-fragment))
+(defmethod shader-specification-for ((role (eql :cab-lines)) (stage (eql :vertex)))
+  (cab-lines-vertex))
+(defmethod shader-specification-for ((role (eql :cab-lines)) (stage (eql :fragment)))
+  (cab-lines-fragment))
 (defmethod shader-specification-for ((role (eql :cab-glass)) (stage (eql :vertex)))
   (cab-mesh-vertex))
 (defmethod shader-specification-for ((role (eql :cab-glass)) (stage (eql :fragment)))

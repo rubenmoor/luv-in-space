@@ -197,3 +197,25 @@ from Earth and the Sun."
     (let ((view (lis::new-cockpit-view)))
       (lis::cockpit-camera-update! camera view state nil)
       (is = 4d0 (lis::exposure-target camera state :cockpit)))))
+
+;;; emissive-for-srgb: the inverse of the tone map (decision 127: Cockpit
+;;; screens' contents in milestone 3: lines, modes, plots, colours and updates).
+
+(define-test emissive-for-srgb-inverts-the-tone-map
+  (dolist (hex '(#x0A0C0C #x8A8A80 #xE8E4D8 #xFFB000 #xFF3030 #x40D040 #x40D0FF #xE040E0))
+    (multiple-value-bind (red green blue) (lis::srgb-hex-bytes hex)
+      (dolist (exposure (list lis::*exposure-cockpit* 1d0 16d0))
+        (multiple-value-bind (r g b) (lis::emissive-for-srgb red green blue exposure)
+          (loop for radiance in (list r g b) for byte in (list red green blue)
+                do (true (<= (abs (- (lis::tone-map-srgb radiance exposure) byte)) 1)
+                         "~6,'0X at exposure ~F: ~D for ~D" hex exposure
+                         (lis::tone-map-srgb radiance exposure) byte)))))))
+
+(define-test inverse-tone-map-twin
+  ;; ACES of the inverse is the value, to 1e-5; 1 is reached at 7.24 and clamped.
+  (flet ((aces (x) (/ (* x (+ (* x 2.51d0) 0.03d0)) (+ (* x (+ (* x 2.43d0) 0.59d0)) 0.14d0))))
+    (loop for c from 0d0 to 1d0 by 0.01d0
+          do (true (< (abs (- (aces (lis::inverse-tone-map c)) c)) 1d-5) "c ~F" c))
+    (true (< (abs (- (lis::inverse-tone-map 1d0) 7.2416d0)) 1d-3))
+    (is = (lis::inverse-tone-map 1d0) (lis::inverse-tone-map 1.5d0))
+    (is = 0d0 (lis::inverse-tone-map -0.2d0))))

@@ -2063,7 +2063,7 @@ Earth's shadow; each thing is read where the pose puts it."
                   (when seen
                     (true (>= ratio 4.5) "tape label ~S: contrast ~,1F" (getf label :text) ratio))))))
           ;; Placeholders: the text's box on each screen's face, at least 7:1.
-          (let* ((panel (lis::cockpit-panel :orbit)) (cap (lis::panel-grid-cap panel))
+          (let* ((panel (lis::cockpit-panel :attitude)) (cap (lis::panel-grid-cap panel))
                  (origin (lis::panel-grid-origin panel cap))
                  (centre (multiple-value-bind (c n r u) (lis::panel-frame panel)
                            (declare (ignore c n))
@@ -2071,9 +2071,9 @@ Earth's shadow; each thing is read where the pose puts it."
                                       (* 0.5 cap) u))))
             (multiple-value-bind (ratio pose)
                 (ink-contrast centre cap (* (length lis::*placeholder-text*) lis::+text-cell-width+ cap))
-              (true pose "ORBIT's placeholder in no frame")
+              (true pose "ATTITUDE's placeholder in no frame")
               (when pose
-                (true (>= ratio 7) "placeholder on the ORBIT face: contrast ~,1F" ratio))))
+                (true (>= ratio 7) "placeholder on the ATTITUDE face: contrast ~,1F" ratio))))
           ;; The beige bezel's pixels are warmer than the black ones.
           (flet ((warmth (point)
                    (multiple-value-bind (x y per pose) (pose-pixel point width height)
@@ -2100,6 +2100,39 @@ Earth's shadow; each thing is read where the pose puts it."
                 (true (> warm 10) "the beige bezel: red - blue = ~D" warm)
                 (true (> warm cold) "the beige bezel (~D) warmer than the black (~D)" warm cold)))))))
     (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))))
+
+;;; The screens (plan 32 piece 1; decision 127: Cockpit screens' contents in
+;;; milestone 3): ORBIT's glyphs and backlight in the tone-mapped bytes, and
+;;; the line pipeline's red block of a periapsis below the crash radius.
+
+(defun within-bytes-p (rgb target tolerance)
+  (every (lambda (byte wanted) (<= (abs (- byte wanted)) tolerance)) rgb target))
+
+(defun screen-checks (game png width height)
+  (with-canvas-values (game (lis::*bloom-strength* 0.0) (lis::*screen-flash-period* 1d6))
+    (let ((sim (start-sim-at 180)))
+      (flet ((shot (sim)
+               (multiple-value-bind (path w h pixels format)
+                   (lis::capture-game-state game png :sim sim :view :cockpit :readout nil :frames 3
+                                                     :head (list -25 27.5 12))
+                 (declare (ignore path w h))
+                 (loop for y below height
+                       append (loop for x below width collect (pixel-rgb pixels format width x y))))))
+        ;; ORBIT at the start state: glyph stems paper white, the face #0A0C0C.
+        (let* ((pixels (shot sim))
+               (sorted (loop for k below 3
+                             collect (let ((channel (sort (mapcar (lambda (p) (nth k p)) pixels) #'<)))
+                                       (nth (floor (length channel) 2) channel)))))
+          (true (within-bytes-p sorted '(#x0A #x0C #x0C) 4) "ORBIT's backlight: median ~A" sorted)
+          (true (find-if (lambda (p) (within-bytes-p p '(#xE8 #xE4 #xD8) 6)) pixels)
+                "no paper-white pixel on the ORBIT face"))
+        ;; A periapsis below the crash radius: the red block, #FF3030.
+        (let ((slow (lis::copy-sim sim)))
+          (lis::vec3-scale! (lis::ship-state-v (lis::sim-ship slow)) (lis::ship-state-v (lis::sim-ship slow)) 0.9d0)
+          (let* ((pixels (shot slow))
+                 (red (count-if (lambda (p) (within-bytes-p p '(#xFF #x30 #x30) 6)) pixels)))
+            (true (> red 800) "the inverted PE line: ~D red pixels of ~D" red (length pixels)))))))
+  (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream))))
 
 (define-test render-frames
   (let ((width 320) (height 200))
@@ -2256,6 +2289,7 @@ Earth's shadow; each thing is read where the pose puts it."
            (marker-checks game png width height)
            (text-checks game png width height)
            (cockpit-checks game png width height)
+           (screen-checks game png width height)
            (sun-patch-checks game png width height)
            (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))
            ;; Resizes replace the swapchain's textures; what the renderer kept

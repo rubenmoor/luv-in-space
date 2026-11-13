@@ -3706,6 +3706,8 @@ point (its offset from the target at the :arrival node), PASSES."
   (goal nil)
   (plan nil :type (or null burn-plan))          ; the plan shown
   (flown nil :type (or null burn-plan))         ; the plan last engaged: the map's, grey after
+  (shot nil :type (or null prediction))         ; the map's copy of the plan's final shot, made at the first
+  (shot-plan nil :type (or null burn-plan))     ; the plan SHOT belongs to
   (engage nil :type boolean)                    ; engage the job's plan once shown
   (engaged nil :type boolean)                   ; one of its plans in the sim (mirrored)
   (state :closed :type (member :closed :menu :planning :shown :refused :engaged :off))
@@ -3863,6 +3865,7 @@ job engaged once shown."
       (case (autopilot-job-stage job)
         (:done
          (setf (autopilot-model-plan model) (autopilot-job-plan job))
+         (autopilot-keep-shot! model (autopilot-model-plan model) (autopilot-job-shot job))
          (autopilot-set-state! model :shown)
          (when (autopilot-model-engage model)
            (setf (autopilot-model-engage model) nil)
@@ -3939,6 +3942,35 @@ DIRECTION or 0 ends the repeat."
                                               *menu-fast-factor*
                                               1))))))
   model)
+
+(defun autopilot-keep-shot! (model plan shot)
+  "MODEL keeps SHOT, the final shot of PLAN's job, for the map
+(decision 125: Map in milestone 3): copied once per plan into one prediction
+made at the first."
+  (when plan
+    (prediction-keep! (or (autopilot-model-shot model)
+                          (setf (autopilot-model-shot model) (new-prediction)))
+                      shot)
+    (setf (autopilot-model-shot-plan model) plan))
+  model)
+
+(defun autopilot-map-plan (model)
+  "What the map draws of MODEL's plan (decision 125): its plan, its kept shot
+(nil when it is not the plan's) and the mode, :shown (a plan shown, not yet
+engaged), :engaged (the plan in the sim) or :kept (after a disengage or an
+abort); nil without a plan to draw. Conses nothing."
+  (let* ((state (autopilot-model-state model))
+         (plan (cond ((eq state :shown) (autopilot-model-plan model))
+                     ((autopilot-model-engaged model) (autopilot-model-flown model))
+                     ((eq state :off) (autopilot-model-flown model))))
+         (mode (cond ((null plan) nil)
+                     ((eq state :shown) :shown)
+                     ((autopilot-model-engaged model) :engaged)
+                     (t :kept))))
+    (when plan
+      (values plan
+              (and (eq plan (autopilot-model-shot-plan model)) (autopilot-model-shot model))
+              mode))))
 
 (defun autopilot-engaged! (model plan)
   "PLAN engaged (autopilot-engage!): kept for the map, :engaged."
@@ -4029,6 +4061,7 @@ in the step), a refusal an abort with its reason; nil while it still runs."
                 (if plan
                     (progn (sim-install-plan! sim plan)
                            (setf (autopilot-model-flown model) plan)
+                           (autopilot-keep-shot! model plan (autopilot-job-shot job))
                            (clock-message! clock :autopilot "AUTOPILOT: REPLANNED"))
                     (setf (sim-plan-phase sim) :done))))
              (:refused (plan-abort! sim (autopilot-job-reason job))))
@@ -4087,6 +4120,7 @@ cut's t). Pure; conses only its result."
 and the job's buffers kept."
   (setf (autopilot-model-plan model) nil
         (autopilot-model-flown model) nil
+        (autopilot-model-shot-plan model) nil
         (autopilot-model-replan model) nil
         (autopilot-model-row model) nil
         (autopilot-model-engage model) nil

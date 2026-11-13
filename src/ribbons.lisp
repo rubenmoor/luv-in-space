@@ -250,7 +250,7 @@ Conses nothing."
                     (aref out (+ o 14)) width (aref out (+ o 15)) radiance))))))
     count))
 
-(defun dash-phases! (out start count points eye camera extent phase)
+(defun dash-phases! (out start count points eye camera extent phase &optional (first 0))
   "Dash the COUNT instances of OUT from segment START, which join the
 COUNT + 1 POINTS (x y z, double, relative to the same origin as EYE, the eye):
 each segment's phases are its start's phase (PHASE for the first, the running
@@ -259,8 +259,8 @@ that plus its own length, the projection that of CAMERA for a frame of EXTENT
 (width height) in double; a segment with an endpoint behind the eye has
 length 0, so dashes run on across segments at every zoom (decision 125: Map
 in milestone 3). Returns the phase at the end, to continue a ribbon. Conses
-nothing."
-  (declare (optimize speed) (type (simple-array single-float (*)) out) (type fixnum start count)
+nothing. FIRST: the index of the point the COUNT segments start at."
+  (declare (optimize speed) (type (simple-array single-float (*)) out) (type fixnum start count first)
            (type doubles points) (type vec3 eye) (type camera camera) (type list extent)
            (type double-float phase))
   (let* ((width (float (the fixnum (first extent)) 1d0))
@@ -279,9 +279,9 @@ nothing."
     (flet ((project (i)
              ;; the pixel of point I into PX, PY; VISIBLE when in front of the eye
              (declare (type fixnum i))
-             (let* ((dx (- (aref points (* 3 i)) (aref eye 0)))
-                    (dy (- (aref points (+ (* 3 i) 1)) (aref eye 1)))
-                    (dz (- (aref points (+ (* 3 i) 2)) (aref eye 2)))
+             (let* ((dx (- (aref points (* 3 (+ first i))) (aref eye 0)))
+                    (dy (- (aref points (+ (* 3 (+ first i)) 1)) (aref eye 1)))
+                    (dz (- (aref points (+ (* 3 (+ first i)) 2)) (aref eye 2)))
                     (w (+ (* dx (aref forward 0)) (* dy (aref forward 1)) (* dz (aref forward 2)))))
                (declare (type double-float dx dy dz w))
                (setf visible (> w 0d0))
@@ -344,7 +344,7 @@ nodes after it and a copy about Earth; else it draws the osculating orbit."
   (let ((loss (and (prediction-sim pred) (sim-loss (prediction-sim pred)))))
     (and loss (eq (loss-cause loss) :crash))))
 
-(defun trajectory-ribbon-points! (ribbon pred state eye focal-px)
+(defun trajectory-ribbon-points! (ribbon pred state eye focal-px &optional start-time start-r)
   "Fill RIBBON with the ship's trajectory from PRED for the eye EYE (relative
 to Earth's centre): the points (and their times) from the render STATE's r at
 t_r, then along the Hermite of the stored interval holding t_r (a chord when
@@ -360,11 +360,13 @@ doubled, until the pieces fit the budget. The mid-radii mark the piece that
 ends at an impact red. Returns the segment count, RIBBON-BOUND holding the
 worst piece error in px reached; nil, RIBBON untouched, when PRED has fewer
 than two nodes after t_r or is not about Earth (draw the osculating orbit).
-Conses nothing."
+START-TIME and START-R (relative to Earth's centre) replace t_r and the
+render state's r: a plan's shot is drawn from a burn's start. Conses nothing."
   (declare (optimize speed) (type ribbon ribbon) (type prediction pred)
-           (type render-state state) (type vec3 eye) (type double-float focal-px))
+           (type render-state state) (type vec3 eye) (type double-float focal-px)
+           (type (or null double-float) start-time) (type (or null vec3) start-r))
   (let* ((sim (prediction-sim pred))
-         (tr (the double-float (render-state-t state)))
+         (tr (the double-float (or start-time (render-state-t state))))
          (first (trajectory-first-node pred tr)))
     (declare (type double-float tr))
     (unless (and sim first (eq (sim-body sim) :earth))
@@ -372,7 +374,7 @@ Conses nothing."
     (let* ((first first)
            (nodes (prediction-nodes pred))
            (count (prediction-count pred))
-           (r (the vec3 (render-state-r state)))
+           (r (the vec3 (or start-r (render-state-r state))))
            (j (node-interval pred tr))
            (e-start (ribbon-e-start ribbon)) (e-length (ribbon-e-length ribbon))
            (e-k (ribbon-e-k ribbon)) (e-distance (ribbon-e-distance ribbon))
@@ -658,26 +660,29 @@ VIEW is INSTANCES seen up to the used part, for write-buffer."
 
 (defun map-lines-add-orbit! (lines ribbon eye-rel-body camera extent
                              &key (colour *ribbon-colour*) (crash-colour *ribbon-crash-colour*)
-                               (width *ribbon-width-px*) (radiance 1d0) dashed (phase 0d0))
+                               (width *ribbon-width-px*) (radiance 1d0) dashed (phase 0d0) (from 0))
   "Append RIBBON's segments (orbit-ribbon-points! done) to LINES through
 orbit-ribbon-instances! with COLOUR, CRASH-COLOUR, WIDTH and RADIANCE; DASHED:
-with dash phases from PHASE. Segments past the capacity are dropped. Returns
-the segment count appended. Conses nothing."
+with dash phases from PHASE, from the point FROM on (the segments before it
+stay solid). Segments past the capacity are dropped. Returns the segment
+count appended and the dash phase at the end. Conses nothing."
   (declare (type map-lines lines) (type ribbon ribbon))
   (let* ((start (map-lines-count lines))
          (n (min (- (map-lines-capacity lines) start) (ribbon-count ribbon)))
-         (kept (ribbon-count ribbon)))
+         (kept (ribbon-count ribbon))
+         (end phase))
+    (declare (type fixnum from))
     (when (plusp n)
       (setf (ribbon-count ribbon) n)
       (orbit-ribbon-instances! ribbon eye-rel-body :out (map-lines-instances lines) :start start
                                :colour colour :crash-colour crash-colour :width width
                                :radiance radiance)
-      (when dashed
-        (dash-phases! (map-lines-instances lines) start n (ribbon-points ribbon)
-                      eye-rel-body camera extent phase))
+      (when (and dashed (< from n))
+        (setf end (dash-phases! (map-lines-instances lines) (+ start from) (- n from)
+                                (ribbon-points ribbon) eye-rel-body camera extent phase from)))
       (setf (ribbon-count ribbon) kept)
       (incf (map-lines-count lines) n))
-    (max n 0)))
+    (values (max n 0) end)))
 
 (defun ribbon-corners ()
   "The 6-vertex quad: along 0 or 1, across ±1."
@@ -709,26 +714,92 @@ not written (decision 4: Depth strategy)."
   "R × v (into H) is not zero: the state has an orbit plane."
   (> (vec3-norm (vec3-cross! h r v)) (* 1d-9 (vec3-norm r) (vec3-norm v))))
 
+(defparameter *plan-kept-colour* #x8A8A80 "A kept plan's lines and burns, grey, sRGB; decision 125.")
+(defparameter *goal-orbit-width-px* 1d0 "The goal orbit's thin line; decision 125.")
+(declaim (type (unsigned-byte 24) *plan-kept-colour*) (type double-float *goal-orbit-width-px*))
+
+(defun ribbon-time-index (ribbon time)
+  "The first point of RIBBON (trajectory-ribbon-points!) at or after TIME
+(within a microsecond), its count when none."
+  (declare (optimize speed) (type ribbon ribbon) (type double-float time))
+  (let ((times (ribbon-times ribbon)) (n (ribbon-count ribbon)))
+    (declare (type fixnum n))
+    (or (loop for s of-type fixnum from 0 to n
+              when (>= (aref times s) (- time 1d-6)) return s)
+        n)))
+
+(defun plan-dash-start (plan time mode)
+  "The start of the burn where the plan's dashes begin (decision 125): the
+first one for a plan :shown, else the first not yet started at TIME; nil
+when none."
+  (declare (type burn-plan plan) (type double-float time))
+  (let ((burns (burn-plan-burns plan)))
+    (if (eq mode :shown)
+        (and (plusp (length burns)) (planned-burn-start (svref burns 0)))
+        (loop for burn across burns
+              when (> (planned-burn-start burn) time) return (planned-burn-start burn)))))
+
+(defun shot-first-time (shot)
+  (declare (type prediction shot))
+  (node-t (prediction-nodes shot) (prediction-head shot)))
+
 (defun map-lines-fill! (lines ribbon state camera eye extent)
   "LINES: the ship's predicted trajectory (cyan; trajectory-ribbon-points!)
 or, without two nodes of a prediction after t_r, its osculating orbit about
 Earth, and with a target its osculating orbit (magenta, *target-orbit-colour*),
 for the eye EYE (relative to Earth's centre) and a frame of EXTENT (width
-height). No orbit for a state without an orbit plane (r × v = 0). Conses nothing."
+height). No orbit for a state without an orbit plane (r × v = 0). The
+autopilot's plan (autopilot-map-plan, decision 125): its goal orbit thin and
+solid, its path dashed from the first burn not yet started, along the
+trajectory when the prediction flies the plan, else along its kept shot; grey
+for a kept plan. Conses nothing."
   (map-lines-clear! lines)
-  (let ((h (ribbon-scratch ribbon)) (focal (camera-focal-px camera (second extent))))
-    (flet ((orbit-of (r v colour)
-             (when (map-lines-conic-p r v h)
-               (orbit-ribbon-points! ribbon (state->orbit-into! (ribbon-orbit ribbon) r v +mu-earth+
-                                                                (render-state-t state))
-                                     eye focal)
-               (map-lines-add-orbit! lines ribbon eye camera extent :colour colour))))
-      (when (render-state-target state)
-        (orbit-of (render-state-target-r state) (render-state-target-v state) *target-orbit-colour*))
-      (let ((pred (render-state-prediction state)))
-        (if (and pred (trajectory-ribbon-points! ribbon pred state eye focal))
-            (map-lines-add-orbit! lines ribbon eye camera extent :colour *ribbon-colour*)
-            (orbit-of (render-state-r state) (render-state-v state) *ribbon-colour*))))
+  (let ((h (ribbon-scratch ribbon)) (focal (camera-focal-px camera (second extent)))
+        (tr (render-state-t state))
+        (model (render-state-autopilot-model state))
+        (p (make-vec3)))
+    (declare (dynamic-extent p) (type double-float tr))
+    (multiple-value-bind (plan shot mode) (if model (autopilot-map-plan model) (values nil nil nil))
+      (let* ((kept (eq mode :kept))
+             (colour (if kept *plan-kept-colour* *ribbon-colour*))
+             (dash-t (and plan (plan-dash-start plan tr mode)))
+             (end-t tr) (phase 0d0))
+        (declare (type double-float end-t phase))
+        (flet ((orbit-of (r v colour)
+                 (when (map-lines-conic-p r v h)
+                   (orbit-ribbon-points! ribbon (state->orbit-into! (ribbon-orbit ribbon) r v +mu-earth+
+                                                                    (render-state-t state))
+                                         eye focal)
+                   (map-lines-add-orbit! lines ribbon eye camera extent :colour colour))))
+          (when (render-state-target state)
+            (orbit-of (render-state-target-r state) (render-state-target-v state) *target-orbit-colour*))
+          (when (and plan (burn-plan-goal-orbit plan) (not (burn-plan-rendezvous plan)))
+            (orbit-ribbon-points! ribbon (burn-plan-goal-orbit plan) eye focal)
+            (map-lines-add-orbit! lines ribbon eye camera extent :colour colour :crash-colour colour
+                                  :width *goal-orbit-width-px*))
+          (let ((pred (render-state-prediction state)))
+            (if (and pred (trajectory-ribbon-points! ribbon pred state eye focal))
+                (let ((dash (and (eq mode :engaged) dash-t)))
+                  (multiple-value-bind (n end)
+                      (map-lines-add-orbit! lines ribbon eye camera extent :colour *ribbon-colour*
+                                            :dashed (and dash t)
+                                            :from (if dash (ribbon-time-index ribbon dash) 0))
+                    (declare (ignore n))
+                    (setf phase end
+                          end-t (aref (ribbon-times ribbon) (ribbon-count ribbon)))))
+                (orbit-of (render-state-r state) (render-state-v state) *ribbon-colour*)))
+          ;; the shot's dashes: from the first burn (shown, kept), or on from the prediction's end
+          (when (and shot dash-t)
+            (let* ((from (if (eq mode :engaged) (max end-t (shot-first-time shot)) (max dash-t (shot-first-time shot))))
+                   (from (if (eq mode :engaged) from (max from tr))))
+              (declare (type double-float from))
+              (when (and (< from (node-t (prediction-nodes shot) (1- (prediction-count shot))))
+                         (prediction-position! p shot from)
+                         (trajectory-ribbon-points! ribbon shot state eye focal from p))
+                (map-lines-add-orbit! lines ribbon eye camera extent :colour colour
+                                      :crash-colour (if kept colour *ribbon-crash-colour*)
+                                      :dashed t :phase phase
+                                      :from (if (> dash-t from) (ribbon-time-index ribbon dash-t) 0))))))))
     lines))
 
 (defun encode-map-lines (pass renderer bind-group lines buffer corners state camera eye extent)
@@ -795,6 +866,7 @@ edge LABEL-X."
   (label-x 0d0 :type double-float))
 
 (defconstant +map-marker-capacity+ 48)
+(defconstant +map-burn-labels+ 8 "Burn markers with their own label strings.")
 
 (defun label-buffer ()
   (make-array 32 :element-type 'character :fill-pointer 0))
@@ -810,6 +882,8 @@ strings and scratch vectors, preallocated."
   (closest-label (label-buffer) :type string)
   (ascending-label (label-buffer) :type string)
   (descending-label (label-buffer) :type string)
+  (burn-labels (coerce (loop repeat +map-burn-labels+ collect (label-buffer)) 'simple-vector)
+   :type simple-vector)
   (candidate-r (make-vec3) :type vec3)
   (candidate-v (make-vec3) :type vec3)
   (eye (make-vec3) :type vec3)
@@ -899,6 +973,18 @@ whole above, then \"°\" (decision 125)."
     (declare (type double-float deg))
     (push-fixed! out deg (cond ((< deg 0.995d0) 2) ((< deg 9.95d0) 1) (t 0))))
   (vector-push (code-char 176) out)
+  out)
+
+(defun write-burn-label! (out n dv)
+  "OUT: \"BURN N DV M/S\", DV (m/s) whole from 100, one decimal from 1, two
+below (decision 125: Map in milestone 3)."
+  (declare (type string out) (type fixnum n) (type double-float dv))
+  (setf (fill-pointer out) 0)
+  (loop for c across "BURN " do (vector-push c out))
+  (push-integer! out (max 0 (min 999 n)))
+  (vector-push #\Space out)
+  (push-fixed! out dv (cond ((< dv 0.995d0) 2) ((< dv 99.95d0) 1) (t 0)))
+  (loop for c across " M/S" do (vector-push c out))
   out)
 
 (defun drop-point-into! (r v place render-state)
@@ -1105,6 +1191,27 @@ OUT."
             (vec3-set! scratch (aref nodes (+ k 1)) (aref nodes (+ k 2)) (aref nodes (+ k 3)))
             (add :impact :cross *marker-impact-colour* "IMPACT" scratch :both
                  (loss-time (sim-loss (prediction-sim pred))))))
+        ;; the plan's burns, at their centre times on the drawn path
+        (let ((model (render-state-autopilot-model render-state)))
+          (when model
+            (multiple-value-bind (plan shot mode) (autopilot-map-plan model)
+              (when plan
+                (let ((burns (burn-plan-burns plan)) (tr (render-state-t render-state)))
+                  (declare (type double-float tr))
+                  (dotimes (i (min (length burns) +map-burn-labels+))
+                    (let* ((burn (svref burns i))
+                           (start (planned-burn-start burn))
+                           (time (* 0.5d0 (+ start (max start (planned-burn-cut-t burn))))))
+                      (declare (type double-float start time))
+                      (when (and (if (eq mode :kept) (> start tr) (> (max start (planned-burn-cut-t burn)) tr))
+                                 (if (eq mode :engaged)
+                                     (or (and pred (prediction-position! scratch pred time))
+                                         (and shot (prediction-position! scratch shot time)))
+                                     (and shot (prediction-position! scratch shot time))))
+                        (add :burn :plus (if (eq mode :kept) *plan-kept-colour* *marker-colour*)
+                             (write-burn-label! (svref (map-markers-burn-labels out) i) (1+ i)
+                                                (planned-burn-dv burn))
+                             scratch :both time)))))))))
         (let ((target (render-state-target render-state)))
           (when target
             (add :target :box *marker-target-colour* (target-name target)

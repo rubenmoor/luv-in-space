@@ -962,6 +962,97 @@ measured across the line."
           (true (< 0.8 one 1.3) "1 px line: ~,2F" one)
           (true (< 1.7 two 2.3) "2 px line: ~,2F" two))))))
 
+;; The plan on the map (decision 125: Map in milestone 3): a shown Hohmann
+;; plan 400 -> 5,000 km seen from above, its rings far enough apart in px.
+
+(defun plan-map-camera-fn (&optional (radius 14.3d6))
+  "A camera-fn: the map from above the orbit plane showing RADIUS m from the centre to the frame's edge."
+  (lambda (camera state)
+    (let ((view (lis::new-map-view)))
+      (lis::map-view-open! view state)
+      (lis::map-camera-update! camera view state nil)
+      (let ((distance (/ radius (tan (* 0.5d0 (lis::camera-field-of-view camera))))))
+        (setf (lis::map-view-elevation view) (deg 90)
+              (lis::map-view-distance view) distance (lis::map-view-target view) distance))
+      (lis::map-camera-update! camera view state nil))))
+
+(defun plan-checks (game png width height)
+  "A shown plan on the map: cyan solid pixels on the coast orbit, lit and dark
+runs alternating along the dashed transfer, the thin goal orbit cyan, the
+first burn's plus in the marker colour at its pixel."
+  (let* ((sim (model-sim :point))
+         (job (lis::new-autopilot-job sim))
+         (plan (plan-now sim :change-orbit '(5000d3) job))
+         (camera-fn (plan-map-camera-fn)))
+    (lis::game-load-state! game sim)
+    (lis::call-on-canvas-thread
+     game (lambda ()
+            (let ((model (lis::clock-autopilot (lis::game-clock game))))
+              (lis::autopilot-keep-shot! model plan (lis::autopilot-job-shot job))
+              (setf (lis::autopilot-model-plan model) plan)
+              (lis::autopilot-set-state! model :shown))))
+    (multiple-value-bind (path w h pixels format)
+        (lis::capture-game-state game png :view :map :frames 1 :camera-fn camera-fn)
+      (declare (ignore path w h))
+      (let* ((state (lis::game-render-state game))
+             (camera (posed-camera camera-fn state))
+             (eye (map-eye camera state))
+             (lines (lis::make-map-lines)))
+        (lis::map-lines-fill! lines (lis::make-ribbon) state camera eye (list width height))
+        (flet ((cyan-near (x y)
+                 (loop for dy from -1 to 1
+                         thereis (loop for dx from -1 to 1
+                                       thereis (let ((px (+ (floor x) dx)) (py (+ (floor y) dy)))
+                                                 (and (< -1 px width) (< -1 py height)
+                                                      (ribbon-pixel-p (pixel-rgb pixels format width px py)))))))
+               (pixel-of (segment k)
+                 (project camera (lis::vec3 (nth k segment) (nth (+ k 1) segment) (nth (+ k 2) segment))
+                          width height)))
+          ;; the coast orbit and the goal orbit
+          (dolist (orbit (list (lis::state->orbit (lis::render-state-r state) (lis::render-state-v state)
+                                                  lis::+mu-earth+ (lis::render-state-t state))
+                               (lis::burn-plan-goal-orbit plan)))
+            (let* ((points (conic-pixels-from orbit eye camera width height))
+                   (n (count-if (lambda (pt) (cyan-near (first pt) (second pt))) points)))
+              (true (> (length points) 100) "~D ring points in the frame" (length points))
+              ;; the first measured frame: 1,586 and 1,768 of 2,048 (lavapipe)
+              (true (>= n (* 0.7 (length points))) "cyan on ~D of ~D ring points" n (length points))))
+          ;; the dashes along the transfer, away from the solid lines
+          (let ((solid '()) (lit 0) (lit-ok 0) (dark 0) (dark-ok 0))
+            (dolist (segment (line-segments lines :dashed :solid))
+              (dolist (k '(0 4))
+                (push (multiple-value-list (pixel-of segment k)) solid)))
+            (dolist (segment (line-segments lines :width 2f0 :dashed t))
+              (multiple-value-bind (x0 y0) (pixel-of segment 0)
+                (multiple-value-bind (x1 y1) (pixel-of segment 4)
+                  (let ((length (sqrt (+ (expt (- x1 x0) 2) (expt (- y1 y0) 2)))))
+                    (loop for k from 0.5 below length by 1.0
+                          for s = (/ k length)
+                          for x = (+ x0 (* s (- x1 x0))) for y = (+ y0 (* s (- y1 y0)))
+                          for phase = (mod (+ (nth 12 segment) (* s (- (nth 13 segment) (nth 12 segment)))) 14)
+                          when (and (< -1 x width) (< -1 y height)
+                                    (notany (lambda (pt) (< (+ (expt (- (first pt) x) 2) (expt (- (second pt) y) 2)) 16))
+                                            solid))
+                            do (cond ((<= 1.5 phase 6.5)
+                                      (incf lit) (when (cyan-near x y) (incf lit-ok)))
+                                     ((<= 9.5 phase 12.5)
+                                      (incf dark)
+                                      (unless (ribbon-pixel-p (pixel-rgb pixels format width (floor x) (floor y)))
+                                        (incf dark-ok)))))))))
+            (true (and (>= lit 15) (>= dark 10)) "dash samples: ~D lit, ~D dark" lit dark)
+            (true (>= lit-ok (* 0.8 lit)) "~D of ~D lit samples lit" lit-ok lit)
+            (true (>= dark-ok (* 0.9 dark)) "~D of ~D dark samples dark" dark-ok dark)))
+        ;; the first burn's plus at its pixel
+        (let* ((markers (lis::map-markers state camera (list width height) (lis::make-map-markers)))
+               (burn (lis::map-marker-ref markers :burn)))
+          (true burn "the burn marker")
+          (when burn
+            (let ((pixel (pixel-rgb pixels format width (floor (lis::map-marker-x burn))
+                                    (floor (lis::map-marker-y burn)))))
+              (true (every (lambda (a b) (<= (abs (- a b)) 1)) (rgb-bytes #x40D0FF) pixel)
+                    "the burn plus: ~A" pixel)))))))
+  (lis::game-load-state! game (lis::new-game-sim)))
+
 ;; The map's markers (decision 84): exact colours after the tone map.
 
 (defun rgb-bytes (rgb)
@@ -2051,6 +2142,7 @@ Earth's shadow; each thing is read where the pose puts it."
            (ribbon-checks game png width height)
            (line-style-checks game png width height)
            (target-orbit-checks game png width height)
+           (plan-checks game png width height)
            (marker-checks game png width height)
            (text-checks game png width height)
            (cockpit-checks game png width height)

@@ -922,3 +922,209 @@ looking down from 80°, that shows every marker of KEYS (Earth hides some)."
                             (lis::map-markers state camera '(1280 800) markers)
                             (lis::map-marker-vertices! (lis::overlay-clear! out) markers)))
                5)))))
+
+;;; The plan on the map: the dashed path, the burn markers, the goal orbit
+;;; and the kept plan (decision 125: Map in milestone 3; the Hohmann 400 → 800
+;;; km plan of the autopilot's tests, :point).
+
+(defun plan-fixture (mode &key (goal 800d3) advance-to)
+  "(values state camera pred model plan job sim lines eye) with the Hohmann
+plan to GOAL m shown (:shown), engaged and flown to ADVANCE-TO if given
+(:engaged) or engaged and then disengaged (:kept); the lines filled."
+  (let* ((sim (model-sim :point))
+         (job (lis::new-autopilot-job sim))
+         (plan (plan-now sim :change-orbit (list goal) job)))
+    (when (member mode '(:engaged :kept))
+      (lis::sim-engage-plan! sim plan)
+      (when advance-to (step-sim sim 10000000 1000 advance-to)))
+    (let* ((clock (lis::new-clock sim))
+           (model (lis::clock-autopilot clock)))
+      (lis::autopilot-keep-shot! model plan (lis::autopilot-job-shot job))
+      (ecase mode
+        (:shown (setf (lis::autopilot-model-plan model) plan)
+         (lis::autopilot-set-state! model :shown))
+        (:engaged (lis::autopilot-engaged! model plan))
+        (:kept (lis::autopilot-engaged! model plan)
+         (lis::autopilot-stopped! model "AUTOPILOT: ABORT")))
+      (let* ((state (with-bodies (lis::render-state-update! (lis::make-render-state) clock sim)))
+             (pred (lis::clock-prediction clock)))
+        (lis::prediction-run! pred sim)
+        (let* ((view (opened-map state))
+               (camera (progn (setf (lis::map-view-elevation view) (deg 90)
+                                    (lis::map-view-distance view) 1d8 (lis::map-view-target view) 1d8)
+                              (lis::map-camera-update! (lis::make-camera) view state nil)))
+               (eye (map-eye camera state))
+               (lines (lis::make-map-lines)))
+          (lis::map-lines-fill! lines (lis::make-ribbon) state camera eye '(1280 800))
+          (values state camera pred model plan job sim lines eye))))))
+
+(defun line-segments (lines &key width dashed)
+  "The instances of LINES (as lists of their floats) of WIDTH px (default
+any), DASHED (true: a phase ≥ 0; :solid: −1; default any), in order."
+  (let ((out (lis::map-lines-instances lines)))
+    (loop for s below (lis::map-lines-count lines)
+          for o = (* s lis::+ribbon-instance-floats+)
+          for phase = (aref out (+ o 12))
+          when (and (or (null width) (= width (aref out (+ o 14))))
+                    (or (null dashed) (if (eq dashed :solid) (< phase 0) (>= phase 0))))
+            collect (loop for k below lis::+ribbon-instance-floats+ collect (aref out (+ o k))))))
+
+(defun segment-from (segment eye)
+  "The instance's from point relative to Earth's centre."
+  (lis::vec3-add (lis::vec3 (first segment) (second segment) (third segment)) eye))
+
+(defun plan-point-near-p (segment eye pred time)
+  "SEGMENT's from point lies on PRED's path at TIME (single precision at its distance from the eye)."
+  (let ((expected (lis::make-vec3)))
+    (and (lis::prediction-position! expected pred time)
+         (< (lis::vec3-norm (lis::vec3-sub (segment-from segment eye) expected))
+            (+ 1d0 (* 1d-6 (lis::vec3-norm (lis::vec3-sub expected eye))))))))
+
+(define-test autopilot-keeps-the-final-shot
+  (let* ((sim (model-sim :point))
+         (clock (lis::new-clock sim))
+         (model (lis::clock-autopilot clock)))
+    (is eq nil (lis::autopilot-map-plan model))
+    (lis::autopilot-start-job! model clock sim :change-orbit '(800d3) nil)
+    (lis::autopilot-job-work! (lis::autopilot-model-job model) most-positive-fixnum)
+    (lis::autopilot-job-poll! model clock sim)
+    (multiple-value-bind (plan shot mode) (lis::autopilot-map-plan model)
+      (is eq :shown mode)
+      (is eq plan (lis::autopilot-model-plan model))
+      (let ((job-shot (lis::autopilot-job-shot (lis::autopilot-model-job model))))
+        (true shot)
+        (false (eq shot job-shot))
+        (is = (lis::prediction-count job-shot) (lis::prediction-count shot))
+        (true (equalp (subseq (lis::prediction-nodes job-shot) 0 (* lis::+node-size+ (lis::prediction-count job-shot)))
+                      (subseq (lis::prediction-nodes shot) 0 (* lis::+node-size+ (lis::prediction-count shot)))))
+        (is = (lis::prediction-end job-shot) (lis::prediction-end shot))
+        (is = (lis::prediction-cut-count job-shot) (lis::prediction-cut-count shot))))
+    (lis::autopilot-engage-shown! model clock sim)
+    (is eq :engaged (nth-value 2 (lis::autopilot-map-plan model)))
+    (lis::autopilot-stopped! model "AUTOPILOT: ABORT")
+    (is eq :kept (nth-value 2 (lis::autopilot-map-plan model)))
+    (lis::autopilot-reset! model)
+    (is eq nil (lis::autopilot-map-plan model))))
+
+(define-test map-plan-shown
+  (multiple-value-bind (state camera pred model plan job sim lines eye) (plan-fixture :shown)
+    (declare (ignore camera sim))
+    (is eq :shown (nth-value 2 (lis::autopilot-map-plan model)))
+    (let* ((burns (lis::burn-plan-burns plan))
+           (solid (line-segments lines :width 2f0 :dashed :solid))
+           (dashed (line-segments lines :dashed t))
+           (shot (lis::autopilot-job-shot job)))
+      (true solid) (true dashed)
+      ;; the solid line is the coast prediction to its horizon, the dashes start on the shot at the first burn
+      (true (< (lis::vec3-norm (lis::vec3-sub (segment-from (first solid) eye) (lis::render-state-r state)))
+               (+ 1d0 (* 1d-6 (lis::vec3-norm (lis::vec3-sub (lis::render-state-r state) eye))))))
+      (is = 0 (length (line-segments lines :width 1f0 :dashed t)))
+      (let ((first-dash (first dashed)))
+        (true (plan-point-near-p first-dash eye shot (lis::planned-burn-start (svref burns 0)))
+              "the first dash at the first burn's start"))
+      (is = 0f0 (nth 12 (first dashed)))
+      ;; the thin goal orbit, solid
+      (true (line-segments lines :width 1f0 :dashed :solid)))))
+
+(define-test map-plan-engaged
+  (multiple-value-bind (state camera pred model plan job sim lines eye) (plan-fixture :engaged)
+    (declare (ignore state camera model job sim))
+    (let* ((burns (lis::burn-plan-burns plan))
+           (dashed (line-segments lines :width 2f0 :dashed t)))
+      (true dashed)
+      (true (plan-point-near-p (first dashed) eye pred (lis::planned-burn-start (svref burns 0)))
+            "the dashes start at the next burn's start"))))
+
+(define-test map-plan-after-the-first-cut
+  (let* ((probe (let ((sim (model-sim :point)))
+                  (plan-now sim :change-orbit '(800d3))))
+         (burns (lis::burn-plan-burns probe))
+         (between (* 0.5d0 (+ (lis::planned-burn-cut-t (svref burns 0))
+                              (lis::planned-burn-start (svref burns 1))))))
+    (multiple-value-bind (state camera pred model plan job sim lines eye)
+        (plan-fixture :engaged :advance-to between)
+      (declare (ignore camera model job sim))
+      (let ((dashed (line-segments lines :width 2f0 :dashed t)))
+        (true (<= (lis::planned-burn-cut-t (svref (lis::burn-plan-burns plan) 0))
+                  (lis::render-state-t state)))
+        (true dashed)
+        (true (plan-point-near-p (first dashed) eye pred
+                                 (lis::planned-burn-start (svref (lis::burn-plan-burns plan) 1)))
+              "solid to the second burn")))))
+
+(define-test map-plan-kept-is-grey
+  (multiple-value-bind (state camera pred model plan job sim lines eye) (plan-fixture :kept)
+    (declare (ignore pred model plan job sim eye state camera))
+    (let ((grey (coerce (lis::srgb-channel-linear lis::*plan-kept-colour* 16) 'single-float))
+          (dashed (line-segments lines :dashed t)))
+      (true dashed)
+      (true (every (lambda (segment) (= grey (nth 8 segment))) dashed) "every kept dash is grey")
+      (true (every (lambda (segment) (= grey (nth 8 segment))) (line-segments lines :width 1f0))
+            "the kept goal orbit is grey"))))
+
+(defun plan-burn-markers (mode &rest args)
+  "(values burn markers, plan, pred, shot, state) of a plan-fixture."
+  (multiple-value-bind (state camera pred model plan job) (apply #'plan-fixture mode args)
+    (declare (ignore job))
+    (let ((markers (lis::map-markers state camera '(1280 800) (lis::make-map-markers))))
+      (values (loop for i below (lis::map-markers-count markers)
+                    for m = (svref (lis::map-markers-items markers) i)
+                    when (eq (lis::map-marker-key m) :burn) collect m)
+              plan pred (nth-value 1 (lis::autopilot-map-plan model)) state))))
+
+(defun dv-label (n dv)
+  (format nil "BURN ~D ~A M/S" n
+          (cond ((>= dv 99.5d0) (format nil "~D" (round dv)))
+                ((>= dv 0.995d0) (format nil "~,1F" dv))
+                (t (format nil "~,2F" dv)))))
+
+(define-test map-markers-burns
+  ;; The camera looks from above, the markers on the far side of Earth are hidden.
+  (flet ((check (mode &rest args)
+           (multiple-value-bind (markers plan pred shot) (apply #'plan-burn-markers mode args)
+             (let ((burns (lis::burn-plan-burns plan)) (point (lis::make-vec3)))
+               (true markers)
+               (dolist (marker markers)
+                 (let* ((n (position (lis::map-marker-time marker) burns
+                                     :key (lambda (b) (* 0.5d0 (+ (lis::planned-burn-start b)
+                                                                  (lis::planned-burn-cut-t b))))))
+                        (burn (svref burns n)))
+                   (true n)
+                   (true (or (and (eq mode :engaged) (lis::prediction-position! point pred (lis::map-marker-time marker)))
+                             (lis::prediction-position! point shot (lis::map-marker-time marker))))
+                   (true (< (lis::vec3-norm (lis::vec3-sub point (lis::map-marker-point marker))) 1d-6))
+                   (is string= (dv-label (1+ n) (lis::planned-burn-dv burn)) (lis::map-marker-label marker))
+                   (is = (if (eq mode :kept) lis::*plan-kept-colour* lis::*marker-colour*)
+                       (lis::map-marker-colour marker))
+                   (is eq :plus (lis::map-marker-kind marker))))
+               (length markers)))))
+    (is = 2 (check :shown))
+    (is = 2 (check :engaged))
+    (is = 2 (check :kept))
+    (let* ((probe (plan-now (model-sim :point) :change-orbit '(800d3)))
+           (burns (lis::burn-plan-burns probe))
+           (between (* 0.5d0 (+ (lis::planned-burn-cut-t (svref burns 0))
+                                (lis::planned-burn-start (svref burns 1))))))
+      (is = 1 (check :engaged :advance-to between)))))
+
+(define-test map-goal-orbit-at-the-goal-altitude
+  (multiple-value-bind (state camera pred model plan) (plan-fixture :shown)
+    (declare (ignore pred model))
+    (let* ((ribbon (lis::make-ribbon))
+           (eye (map-eye camera state)))
+      (lis::orbit-ribbon-points! ribbon (lis::burn-plan-goal-orbit plan) eye
+                                 (lis::camera-focal-px camera 800))
+      (let ((worst 0d0))
+        (dotimes (s (1+ (lis::ribbon-count ribbon)))
+          (setf worst (max worst (abs (- (lis::vec3-norm (ribbon-point ribbon s))
+                                         (+ lis::+radius-earth+ 800d3))))))
+        (true (< worst 100d0) "goal orbit off the 800 km altitude by ~,3F m" worst)))))
+
+(define-test map-lines-plan-cons-nothing
+  (multiple-value-bind (state camera pred model plan job sim lines eye) (plan-fixture :shown)
+    (declare (ignore pred model plan job sim))
+    (let ((ribbon (lis::make-ribbon)))
+      (lis::map-lines-fill! lines ribbon state camera eye '(1280 800))
+      (is = 0 (least-bytes-consed
+               (lambda () (dotimes (i 20) (lis::map-lines-fill! lines ribbon state camera eye '(1280 800))))
+               5)))))

@@ -678,7 +678,7 @@
 (defparameter *cab-shader-material-rows*
   '(:lining :steel-angle :tread :eclss :red :tape :marker :black-plastic :grey-plastic
     :green-surplus :beige :aluminium :screen-face :cable-black :cable-grey :cable-red
-    :cable-yellow :kapton :cardboard :sheet-metal :led :fabric :seat :hatch))
+    :cable-yellow :kapton :cardboard :sheet-metal :led :fabric :seat :hatch :plate))
 
 ;; One fragment for both pipelines. The lining (row 0) is cut where the window
 ;; and the portholes open it; the tread plate (row 2) gets its diamonds from
@@ -710,6 +710,28 @@
     (when (> cut 0.5)
       (discard))
     (set-output color (vec4 (+ (* paint lit) (* (swizzle m0 :xyz) (swizzle m1 :y))) 1.0))))
+
+;; The glass of the window and the portholes (src/cockpit.lisp
+;; cab-glass-colour): SURFACE x is the kind (0 window, 1 porthole), y and z the
+;; position across it from -1 to 1. Premultiplied: alpha = 1 - transmission
+;; (0.95 at the centre to 0.88 at the edge), the colour the reflection of the
+;; cab light, tinted a faint green.
+(define-cab-shader cab-glass-fragment
+    (:stage :fragment
+     :inputs ((body :vec3 :location 0)
+              (body-normal :vec3 :location 1)
+              (surface :vec3 :location 2))
+     :outputs ((color :vec4 :location 0)))
+  (let* ((u (swizzle surface :y))
+         (v (swizzle surface :z))
+         (edge (min 1.0 (if (< (swizzle surface :x) 0.5)
+                            (max (abs u) (abs v))
+                            (sqrt (+ (* u u) (* v v))))))
+         (alpha (+ 0.05 (* 0.07 edge)))
+         (flat (normalize body-normal))
+         (n (* flat (if (> (dot flat body) 0.0) -1.0 1.0)))
+         (lit (cab-irradiance body n strip-a strip-b light (swizzle params :z))))
+    (set-output color (vec4 (* (* alpha 0.5) (* lit (vec3 0.85 1.0 0.9))) alpha))))
 
 ;;; Slug text on planes (src/text.lisp; decision 126: Cockpit structure and
 ;;; view in milestone 3), after Luvcraft's :slug-world-text vertex stage
@@ -962,6 +984,10 @@ angle in degrees), weighted by a Gaussian of SIGMA texels, normalised."
   (cab-text-vertex))
 (defmethod shader-specification-for ((role (eql :cab-text)) (stage (eql :fragment)))
   (luv.slug:slug-atlas-fragment-specification))
+(defmethod shader-specification-for ((role (eql :cab-glass)) (stage (eql :vertex)))
+  (cab-mesh-vertex))
+(defmethod shader-specification-for ((role (eql :cab-glass)) (stage (eql :fragment)))
+  (cab-glass-fragment))
 (defmethod shader-specification-for ((role (eql :cab-mesh)) (stage (eql :vertex)))
   (cab-mesh-vertex))
 (defmethod shader-specification-for ((role (eql :cab-mesh)) (stage (eql :fragment)))

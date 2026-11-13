@@ -716,7 +716,7 @@ sunlit patch). The static part stays. Conses nothing; the block."
 
 (defun encode-cockpit (pass renderer gpu slot text-slot batch corners state camera extent exposure eye)
   "The cab's interior into the open scene PASS, after the scene (decision 126:
-the opaque meshes and instances, then the cockpit's text): its block (the
+the opaque meshes and instances, the cockpit's text, then the glass): its block (the
 head camera in body axes) written to SLOT and, with the text, to TEXT-SLOT.
 BATCH the text batch, CORNERS the glyph quad. Conses nothing."
   (let ((data (cab-block! gpu state camera extent exposure eye)))
@@ -732,7 +732,12 @@ BATCH the text batch, CORNERS the glyph quad. Conses nothing."
           do (luv:set-vertex-buffer pass 0 primitive)
              (luv:set-vertex-buffer pass 1 instances)
              (luv:draw pass vertices count))
-    (encode-text pass renderer text-slot batch data corners)))
+    (encode-text pass renderer text-slot batch data corners)
+    (when *cab-glass*
+      (luv:set-pipeline pass (renderer-pipeline renderer :cab-glass))
+      (luv:set-bind-group pass 0 (cab-slot-bind-group slot))
+      (luv:set-vertex-buffer pass 0 (cockpit-gpu-glass gpu))
+      (luv:draw pass (cockpit-gpu-glass-count gpu)))))
 
 (defun single-floats (list)
   (map '(simple-array single-float (*)) (lambda (x) (coerce x 'single-float)) list))
@@ -857,6 +862,7 @@ camera's clip rows (positions relative to the eye in ICRF axes).")
                              :text-layout text-layout
                              :text-corners (vertex-buffer renderer (text-corners) "text corners"))
       (text-pipeline renderer text-layout +hdr-format+))
+    (cockpit-text! (frame-renderer-text-atlas renderer) (frame-renderer-text-batch renderer))
     renderer))
 
 (defstruct frame-slot

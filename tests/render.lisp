@@ -1511,13 +1511,15 @@ body axes) on the lining cylinder, the normal inward."
     ;; The head on the nose: the window's centre shows the scene (space), not lining.
     (let* ((pixels (nth-value 3 (lis::capture-game-state game png :view :cockpit
                                                                   :head '(0 0 70) :frames 2)))
-           (centre (pixel-luminance pixels width (floor width 2) (floor height 2))))
-      (true (< centre 40) "the window's centre: luminance ~D" centre))
+           ;; Off the boresight cross, which is white tape at the centre.
+           (centre (pixel-luminance pixels width (+ (floor width 2) 30) (- (floor height 2) 20))))
+      (true (< centre 40) "the window beside the cross: luminance ~D" centre))
     ;; Lit text: an "H" (kind 1) on a plane facing the eye, its crossbar at
     ;; the image's centre, takes the cab's irradiance at its glyph's corner.
     (let* ((renderer (lis::game-renderer game))
            (atlas (lis::frame-renderer-text-atlas renderer))
            (batch (lis::frame-renderer-text-batch renderer))
+           (plate-count (lis::text-batch-count batch))
            (pitch (deg 30)) (distance 0.7d0) (cap 0.2d0)
            (direction (lis::vec3 (cos pitch) 0d0 (sin pitch)))
            (up (lis::vec3 (sin pitch) 0d0 (- (cos pitch))))
@@ -1531,7 +1533,7 @@ body axes) on the lining cylinder, the normal inward."
                                   (lis::vec3-add (lis::vec3-scale right (* middle-x scale))
                                                  (lis::vec3-scale up (* middle-y scale)))))
            pixels format)
-      (setf (lis::text-batch-count batch) 0)
+      (setf (lis::text-batch-count batch) plate-count)
       (lis::grid-run! atlas (lis::text-batch-region batch 4) 0
                       (lis::make-text-plane :origin (coerce origin 'list) :right (coerce right 'list)
                                             :up (coerce up 'list))
@@ -1541,8 +1543,8 @@ body axes) on the lining cylinder, the normal inward."
                (lis::capture-game-state game png :view :cockpit :head '(0 30 70) :frames 2)
              (declare (ignore path w h))
              (setf pixels got format pixel-format))
-        (let ((record (record-floats batch 0)))
-          (setf (lis::text-batch-count batch) 0)
+        (let ((record (record-floats batch plate-count)))
+          (setf (lis::text-batch-count batch) plate-count)
           (let* ((corner (lis::vec3 (nth 0 record) (nth 1 record) (nth 2 record)))
                  (exposure (lis::game-exposure game))
                  (got (pixel-rgb pixels format width (floor width 2) (floor height 2))))
@@ -1551,6 +1553,63 @@ body axes) on the lining cylinder, the normal inward."
                     do (let ((expected (lis::tone-map-srgb x exposure)))
                          (true (<= (abs (- byte expected)) 4)
                                "lit text pixel ~A, tone map of the twin ~D" got expected))))))))
+
+    ;; The glass: the window's pixel with and without it. Off the cross, along a
+    ;; ray through (0.9, 0.3, 0.15), the scene is space (black) and the glass
+    ;; adds its premultiplied reflection of the cab light, the twin's.
+    (let* ((point (lis::vec3 0.9d0 0.3d0 0.15d0))
+           (distance (lis::vec3-norm point))
+           (yaw (atan 0.3d0 0.9d0)) (pitch (asin (/ 0.15d0 distance)))
+           (head (list (/ (* yaw 180) pi) (/ (* pitch 180) pi) 70))
+           (without (let ((lis::*cab-glass* nil))
+                      (nth-value 3 (lis::capture-game-state game png :view :cockpit :head head :frames 2))))
+           (fmt nil)
+           (with (multiple-value-bind (path w h pixels pixel-format)
+                     (lis::capture-game-state game png :view :cockpit :head head :frames 2)
+                   (declare (ignore path w h))
+                   (setf fmt pixel-format)
+                   pixels))
+           (exposure (lis::game-exposure game))
+           (dark (pixel-rgb without fmt width (floor width 2) (floor height 2)))
+           (got (pixel-rgb with fmt width (floor width 2) (floor height 2))))
+      (true (every (lambda (byte) (< byte 12)) dark) "window without the glass: ~A" dark)
+      (multiple-value-bind (r g b) (lis::cab-glass-colour point (lis::vec3 -1d0 0d0 0d0)
+                                                          (max (/ 0.3d0 0.6d0) (/ 0.15d0 0.3d0)))
+        (loop for byte in got for x in (list r g b) for base in dark
+              do (let ((expected (lis::tone-map-srgb x exposure)))
+                   (true (<= (abs (- byte expected)) 3)
+                         "glass pixel ~A, tone map of the twin ~D (without ~A)" got expected dark)))))
+    ;; The porthole: head yaw +90, pitch 40, the starboard porthole's centre
+    ;; pixel is Earth, brighter than the lining beside it, and its centre is
+    ;; the image's within 1 px.
+    (multiple-value-bind (centre axis) (lis::cab-porthole-geometry 1)
+      (declare (ignore axis))
+      (let* ((yaw (deg 90)) (pitch (deg 40))
+             (look (lis::vec3 (* (cos pitch) (cos yaw)) (* (cos pitch) (sin yaw)) (sin pitch)))
+             (angle (acos (min 1d0 (lis::vec3-dot look (lis::vec3-normalize centre)))))
+             (pixels-per-radian (/ (/ height 2) (tan (deg 35)))))
+        (true (< (* angle pixels-per-radian) 1) "the porthole's centre ~,2F px off the image's"
+              (* angle pixels-per-radian)))
+      (let ((pixels (nth-value 3 (lis::capture-game-state game png :view :cockpit
+                                                                    :head '(90 40 70) :frames 2)))
+            (scene (nth-value 3 (lis::capture-game-state game png :view :cockpit :interior nil
+                                                                   :head '(90 40 70) :frames 2))))
+        (let ((got (pixel-luminance pixels width (floor width 2) (floor height 2)))
+              (earth (pixel-luminance scene width (floor width 2) (floor height 2))))
+          (true (> earth 20) "Earth through the porthole: ~D" earth)
+          (true (<= (abs (- got earth)) 6) "porthole centre ~D, the scene alone ~D" got earth))))
+    ;; The plate: its letters at least 3:1 darker than the steel (linear).
+    (let* ((pitch (/ (* (atan 0.43d0 0.89d0) 180) pi))
+           (pixels (nth-value 3 (lis::capture-game-state game png :view :cockpit
+                                                                  :head (list 0 (- pitch) 20) :frames 2)))
+           (values (sort (loop for y from (- (floor height 2) 12) to (+ (floor height 2) 12)
+                               append (loop for x from (- (floor width 2) 90) to (+ (floor width 2) 90)
+                                            collect (let ((byte (/ (pixel-luminance pixels width x y) 255.0)))
+                                                      (expt (/ (+ byte 0.055) 1.055) 2.4))))
+                         #'<))
+           (letters (nth (floor (length values) 50) values))
+           (steel (nth (floor (length values) 2) values)))
+      (true (>= steel (* 3 letters)) "plate ~,5F, letters ~,5F" steel letters))
     (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))))
 
 (define-test render-frames

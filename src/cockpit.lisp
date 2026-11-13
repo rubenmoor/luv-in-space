@@ -24,7 +24,7 @@
 (defparameter *cab-material-names*
   '(:lining :steel-angle :tread :eclss :red :tape :marker :black-plastic :grey-plastic
     :green-surplus :beige :aluminium :screen-face :cable-black :cable-grey :cable-red
-    :cable-yellow :kapton :cardboard :sheet-metal :led :fabric :seat :hatch)
+    :cable-yellow :kapton :cardboard :sheet-metal :led :fabric :seat :hatch :plate)
   "Row order of *cab-materials*; a vertex's material id is the row.")
 
 (defparameter *cab-materials*
@@ -51,7 +51,8 @@
                 (1.00 0.85 0.65 0.00 8.0 0.5)      ; LED strip face, emissive
                 (0.30 0.32 0.22 0.05 8.0 0.0)      ; net, bags
                 (0.12 0.12 0.14 0.05 8.0 0.0)      ; seat
-                (0.70 0.70 0.68 0.05 8.0 0.0))))   ; hatch paint
+                (0.70 0.70 0.68 0.05 8.0 0.0)      ; hatch paint
+                (0.40 0.40 0.42 0.15 16.0 0.0))))  ; name plate, steel
     (make-array (list (length rows) 6) :element-type 'single-float :initial-contents rows))
   "Rows of *cab-material-names*: r g b, specular weight, exponent, emission; live.")
 
@@ -88,6 +89,29 @@ by 1.2 m around, corners r 0.2, a handwheel Ø 0.4 (decision 126).")
   "|y|, z of a porthole's inside opening centre from the eye (decision 126); x 0.")
 (defparameter *cab-porthole-radius* 0.175d0 "m: Ø 0.35.")
 (defparameter *cab-porthole-depth* 0.15d0 "m: half the opening's cylinder along its axis.")
+;;; The window's frame and glass, the boresight cross, the porthole rings, the plate.
+
+(defparameter *cab-window-frame*
+  '(:inner-width 1.20d0 :inner-height 0.60d0 :outer-width 1.30d0 :outer-height 0.70d0
+    :depth 0.05d0 :bolt-diameter 0.012d0 :bolt-pitch 0.1d0)
+  "The steel angle round the window: inner 1.20 x 0.60 m, outer 1.30 x 0.70 m,
+standing 50 mm off the front wall; bolts Ø 12 mm every 0.1 m.")
+(defparameter *cab-cross* '(:length 0.10d0 :width 0.012d0)
+  "The boresight cross: two strips of white tape on the glass.")
+(defparameter *cab-glass-transmission* '(0.95d0 0.88d0)
+  "The glass's transmission at the centre and at the edges.")
+(defparameter *cab-glass-tint* '(0.85d0 1.0d0 0.9d0)
+  "The faint green of the glass's reflection of the cab light.")
+(defparameter *cab-glass-reflectance* 0.5d0
+  "The radiance of the cab the glass reflects, as a share of the light at it.")
+(defparameter *cab-porthole-ring* '(:width 0.03d0 :standoff 0.035d0)
+  "The porthole's frame ring: 30 mm wide, standing 35 mm off the lining plane, clear of the lining's curve.")
+(defparameter *cab-plate* '(:centre (0.89d0 0d0 -0.43d0) :width 0.40d0 :height 0.07d0
+                            :thickness 0.02d0 :cap 0.030d0 :text "M-07  PATIENCE")
+  "The name plate above the window (decision 126), its text in Monaspace Neon Bold.")
+(defparameter *cab-plate-ink* '(40 40 40) "Black paint, sRGB.")
+(defparameter *cab-glass* t "Whether encode-cockpit draws the glass (tests turn it off).")
+
 (defparameter *cab-strip-x* '(-3.4d0 0.7d0) "m: the LED strips' ends (x 10.7 to 14.8).")
 (defparameter *cab-strip-y* 0.40d0 "m: each strip's |y|.")
 (defparameter *cab-strip-z* -1.21d0 "m: the strips' z (1.40 m lining, decision 126).")
@@ -345,6 +369,167 @@ to 14.8 (m from the eye -3.4 to 0.7)."
                       (cab-box! b (vec3 centre (* side *cab-strip-y*) *cab-strip-z*)
                                 (list length 0.05d0 0.012d0) :led))))))
 
+;;; Window frame, glass, cross, porthole rings, name plate
+
+(defun cab-window-bolt-positions ()
+  "The 36 bolts of the window frame as (y z) from the eye: 13 along each of the
+top and bottom bars and 5 more along each side bar between them."
+  (let* ((pitch (getf *cab-window-frame* :bolt-pitch))
+         (outer-w (getf *cab-window-frame* :outer-width)) (outer-h (getf *cab-window-frame* :outer-height))
+         (inner-w (getf *cab-window-frame* :inner-width)) (inner-h (getf *cab-window-frame* :inner-height))
+         (bar-y (* 0.25d0 (+ outer-w inner-w))) (bar-z (* 0.25d0 (+ outer-h inner-h)))
+         (across (round (* 0.5d0 inner-w) pitch)) (down (round (* 0.5d0 inner-h) pitch))
+         (positions '()))
+    (loop for z in (list (- bar-z) bar-z)
+          do (loop for k from (- across) to across do (push (list (* k pitch) z) positions)))
+    (loop for y in (list (- bar-y) bar-y)
+          do (loop for k from (- (1- down)) to (1- down) do (push (list y (* k pitch)) positions)))
+    (nreverse positions)))
+
+(defun cab-window-frame! (b)
+  "The window's frame: four bars of steel angle in front of the wall's opening
+and its 36 bolt heads, in the part \"window-frame\" and \"window-bolts\"."
+  (destructuring-bind (&key inner-width inner-height outer-width outer-height depth bolt-diameter
+                         &allow-other-keys) *cab-window-frame*
+    (let* ((x (- (getf *cab-window* :x) (* 0.5d0 depth)))
+           (bar-w (* 0.5d0 (- outer-width inner-width))) (bar-h (* 0.5d0 (- outer-height inner-height))))
+      (builder-part b "window-frame" :box
+                    (lambda ()
+                      (dolist (side '(-1 1))
+                        (cab-box! b (vec3 x 0d0 (* side (+ (* 0.5d0 inner-height) (* 0.5d0 bar-h))))
+                                  (list depth outer-width bar-h) :steel-angle)
+                        (cab-box! b (vec3 x (* side (+ (* 0.5d0 inner-width) (* 0.5d0 bar-w))) 0d0)
+                                  (list depth bar-w inner-height) :steel-angle))))
+      (builder-part b "window-bolts" :tube
+                    (lambda ()
+                      (loop for (y z) in (cab-window-bolt-positions)
+                            do (builder-add b :tube (tube-instance (vec3 (- x (* 0.5d0 depth)) y z)
+                                                                   (vec3 (- x (* 0.5d0 depth) 0.008d0) y z)
+                                                                   (* 0.5d0 bolt-diameter)
+                                                                   (cab-material-id :steel-angle)))))))))
+
+(defun cab-boresight-cross! (b)
+  "The boresight cross: two white tape strips 0.10 x 0.012 m on the glass at the
+window's centre, a 2 mm off it."
+  (builder-part b "cross" :box
+                (lambda ()
+                  (let ((x (- (getf *cab-window* :x) 0.003d0))
+                        (long (getf *cab-cross* :length)) (wide (getf *cab-cross* :width)))
+                    (cab-box! b (vec3 x 0d0 0d0) (list 0.002d0 long wide) :marker)
+                    (cab-box! b (vec3 x 0d0 0d0) (list 0.002d0 wide long) :marker)))))
+
+(defun cab-porthole-basis (side)
+  "(values centre axis u v): the porthole's inside centre, its outward axis and
+two unit vectors across it."
+  (multiple-value-bind (centre axis) (cab-porthole-geometry side)
+    (let* ((u (vec3 1d0 0d0 0d0))
+           (v (vec3-normalize (vec3-cross axis u))))
+      (values centre axis u v))))
+
+(defun cab-porthole-rings! (b)
+  "Each porthole's frame ring: twelve steel angle segments round the opening,
+standing off the lining."
+  (builder-part b "porthole-rings" :box
+                (lambda ()
+                  (let* ((width (getf *cab-porthole-ring* :width))
+                         (standoff (getf *cab-porthole-ring* :standoff))
+                         (radius (+ *cab-porthole-radius* (* 0.5d0 width)))
+                         (length (* 2 radius (sin (/ pi 12)) 1.05d0)))
+                    (dolist (side '(-1 1))
+                      (multiple-value-bind (centre axis u v) (cab-porthole-basis side)
+                        (dotimes (k 12)
+                          (let* ((a (ring-angle k 12))
+                                 (radial (vec3-add (vec3-scale u (cos a)) (vec3-scale v (sin a))))
+                                 (tangent (vec3-sub (vec3-scale v (cos a)) (vec3-scale u (sin a)))))
+                            (cab-box! b (vec3-sub (vec3-add centre (vec3-scale radial radius))
+                                                  (vec3-scale axis standoff))
+                                      (list length width width) :steel-angle
+                                      :x tangent :y radial)))))))))
+
+(defun cab-plate-geometry ()
+  "(values plane-origin cell-width columns): the name plate's text plane (body
+axes from the eye, 3 mm in front of the face: 1 mm z-fights with the face at
+1 m in the depth buffer), centring the run."
+  (destructuring-bind (&key centre width height thickness cap text &allow-other-keys) *cab-plate*
+    (declare (ignore width height))
+    (let* ((cell (* +text-cell-width+ cap)) (columns (length text))
+           (x (- (first centre) (* 0.5d0 thickness) 0.003d0)))
+      (values (list x (- (* 0.5d0 columns cell)) (+ (third centre) (* 0.5d0 cap)))
+              cell columns))))
+
+(defun cab-plate! (b)
+  (builder-part b "plate" :box
+                (lambda ()
+                  (destructuring-bind (&key centre width height thickness &allow-other-keys) *cab-plate*
+                    (cab-box! b (vec3 (first centre) (second centre) (third centre))
+                              (list thickness width height) :plate)))))
+
+(defun cab-glass-corner (x y z nx ny nz kind u v)
+  (list x y z nx ny nz kind u v))
+
+(defun build-cab-glass ()
+  "The glass as hull vertices (material = kind, 0 window, 1 porthole; the two
+parameters the position across it, -1 to 1): the window's quad in its opening
+and a disc of 24 triangles in each porthole."
+  (let* ((b (make-builder)) (hull (builder-hull b)) (xf (xform '(0 0 0)))
+         (x (getf *cab-window* :x)) (w (getf *cab-window* :half-width)) (h (getf *cab-window* :half-height)))
+    (flet ((corner (y z u v) (list x y z -1 0 0 u v)))
+      (builder-part b "window-glass" :hull
+                    (lambda ()
+                      (quad! hull xf 0 (corner (- w) (- h) -1 -1) (corner (- w) h -1 1)
+                             (corner w h 1 1) (corner w (- h) 1 -1)))))
+    (dolist (side '(-1 1))
+      (builder-part b (format nil "porthole-glass-~D" side) :hull
+                    (lambda ()
+                      (multiple-value-bind (centre axis u v) (cab-porthole-basis side)
+                        (let ((n (vec3-scale axis -1d0)) (r *cab-porthole-radius*))
+                          (flet ((rim (k)
+                                   (let* ((a (ring-angle k 24)) (c (cos a)) (s (sin a))
+                                          (p (vec3-add centre (vec3-add (vec3-scale u (* r c))
+                                                                        (vec3-scale v (* r s))))))
+                                     (list (aref p 0) (aref p 1) (aref p 2) (aref n 0) (aref n 1) (aref n 2)
+                                           c s))))
+                            (dotimes (k 24)
+                              (triangle! hull xf 1
+                                         (list (aref centre 0) (aref centre 1) (aref centre 2)
+                                               (aref n 0) (aref n 1) (aref n 2) 0 0)
+                                         (rim k) (rim (1+ k))))))))))
+    (builder-model b)))
+
+(defvar *cab-glass-model* nil)
+
+(defun cab-glass-model ()
+  (or *cab-glass-model* (setf *cab-glass-model* (build-cab-glass))))
+
+(defun cab-glass-transmission (edge)
+  "The glass's transmission at EDGE, 0 at the centre to 1 at the border."
+  (destructuring-bind (centre border) *cab-glass-transmission*
+    (- centre (* (- centre border) (min 1d0 edge)))))
+
+(defun cab-glass-colour (p n edge)
+  "The glass at body point P with unit normal N turned to the eye, EDGE its
+position across it (0 centre, 1 border), as (values r g b alpha) premultiplied:
+alpha = 1 - transmission, the colour its reflection of the cab light, tinted
+green. The twin of cab-glass-fragment."
+  (let ((alpha (- 1d0 (cab-glass-transmission edge))))
+    (multiple-value-bind (r g b) (cab-irradiance p n)
+      (let ((k (* alpha *cab-glass-reflectance*)))
+        (values (* k r (first *cab-glass-tint*)) (* k g (second *cab-glass-tint*))
+                (* k b (third *cab-glass-tint*)) alpha)))))
+
+(defparameter *cab-plate-region* nil "The text batch's region holding the name plate.")
+
+(defun cockpit-text! (atlas batch)
+  "Write the cockpit's static text (so far the name plate) into a region of BATCH."
+  (let* ((text (getf *cab-plate* :text))
+         (region (text-batch-region batch (length text))))
+    (multiple-value-bind (origin) (cab-plate-geometry)
+      (grid-run! atlas region 0
+                 (make-text-plane :origin origin :right '(0 1 0) :up '(0 0 -1))
+                 text :font :mono-bold :cap (float (getf *cab-plate* :cap) 1f0) :kind :lit
+                      :colour (apply #'text-colour *cab-plate-ink*)))
+    (setf *cab-plate-region* region)))
+
 (defun build-cab-model ()
   "The cab's shell and fittings as a model (meshes.lisp's builder): hull
 vertices for the lining, walls and hatch, instanced boxes and tubes for the
@@ -371,6 +556,10 @@ rest, in body axes from the eye."
     (cab-aft-fittings! b)
     (cab-seat! b)
     (cab-strips! b)
+    (cab-window-frame! b)
+    (cab-boresight-cross! b)
+    (cab-porthole-rings! b)
+    (cab-plate! b)
     (builder-model b)))
 
 (defvar *cab-model* nil "The cab's model, made once.")
@@ -399,6 +588,7 @@ rest, in body axes from the eye."
 the block's data (the static part filled once), the scratch camera and the
 materials' data."
   model layout hull (hull-count 0 :type fixnum)
+  glass (glass-count 0 :type fixnum)    ; the glass's vertex buffer and count
   groups                                ; (primitive vertices instances count)
   (block (make-array +cab-block-floats+ :element-type 'single-float :initial-element 0f0))
   (camera (make-camera))
@@ -440,8 +630,14 @@ the window and the portholes."
                                                                    :depth-stencil depth)
     (live-pipeline renderer :cab-instanced layout (ship-vertex-buffers t) :format format
                                                                           :depth-stencil depth)
+    (live-pipeline renderer :cab-glass layout (ship-vertex-buffers) :format format
+                   :blend :premultiplied-alpha
+                   :depth-stencil '(:format :depth32-float :depth-write-enabled nil
+                                    :depth-compare :greater))
     (let ((gpu (%make-cockpit-gpu
                 :model model :layout layout
+                :glass (vertex-buffer renderer (model-vertices (cab-glass-model)) "cab glass")
+                :glass-count (cab-vertex-count (cab-glass-model))
                 :hull (vertex-buffer renderer (model-vertices model) "cab hull")
                 :hull-count (cab-vertex-count model)
                 :groups (loop for g in (model-groups model)

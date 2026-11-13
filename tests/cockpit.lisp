@@ -218,3 +218,111 @@
       (dotimes (i n) (lis::cab-block! gpu state camera extent 4d0 eye))
       (let ((ms (/ (* 1000d0 (- (get-internal-real-time) start)) internal-time-units-per-second n)))
         (true (< ms 0.1d0) "~,4F ms per block" ms)))))
+
+;;; Window frame, glass, cross, porthole rings and name plate (decision 126).
+
+(defun part-extent (name axis)
+  "(values min max) of the part NAME's vertices along AXIS."
+  (let ((values (mapcar (lambda (p) (aref p axis)) (lis::model-part-positions (lis::cab-model) name))))
+    (values (reduce #'min values) (reduce #'max values))))
+
+(define-test cab-window-frame-dimensions
+  ;; Inner 1.20 x 0.60, outer 1.30 x 0.70 within 1 mm, standing 50 mm off the wall.
+  (multiple-value-bind (y0 y1) (part-extent "window-frame" 1)
+    (true (< (abs (- (- y1 y0) 1.30d0)) 1d-3) "outer width ~F" (- y1 y0)))
+  (multiple-value-bind (z0 z1) (part-extent "window-frame" 2)
+    (true (< (abs (- (- z1 z0) 0.70d0)) 1d-3) "outer height ~F" (- z1 z0)))
+  (multiple-value-bind (x0 x1) (part-extent "window-frame" 0)
+    (true (< (abs (- x1 0.90d0)) 1d-3))
+    (true (< (abs (- x0 0.85d0)) 1d-3)))
+  ;; The opening: no vertex of the frame inside 1.20 x 0.60 (but on its edge).
+  (dolist (p (lis::model-part-positions (lis::cab-model) "window-frame"))
+    (true (or (>= (abs (aref p 1)) (- 0.60d0 1d-3)) (>= (abs (aref p 2)) (- 0.30d0 1d-3)))
+          "~A inside the opening" p)))
+
+(define-test cab-window-bolts
+  (let ((bolts (lis::cab-window-bolt-positions)))
+    (is = 36 (length bolts))
+    (is = 36 (multiple-value-bind (where start end) (lis::model-part (lis::cab-model) "window-bolts")
+               (declare (ignore where))
+               (- end start)))
+    ;; Along the top bar: 0.1 m apart.
+    (let ((top (sort (loop for (y z) in bolts when (< z -0.3d0) collect y) #'<)))
+      (is = 13 (length top))
+      (loop for (a b) on top while b do (true (< (abs (- (- b a) 0.1d0)) 1d-9))))))
+
+(define-test cab-boresight-cross-centre
+  ;; Two strips 0.10 x 0.012 m, crossing at the window's centre on the nose line.
+  (multiple-value-bind (y0 y1) (part-extent "cross" 1)
+    (true (< (abs (+ y0 y1)) 1d-6)) (true (< (abs (- (- y1 y0) 0.10d0)) 1d-6)))
+  (multiple-value-bind (z0 z1) (part-extent "cross" 2)
+    (true (< (abs (+ z0 z1)) 1d-6)) (true (< (abs (- (- z1 z0) 0.10d0)) 1d-6)))
+  (multiple-value-bind (x0 x1) (part-extent "cross" 0)
+    (declare (ignore x0))
+    (true (< x1 0.90d0))))
+
+(define-test cab-porthole-rings-on-the-axes
+  ;; Each ring is centred on the porthole's inside centre (within 1 mm) and
+  ;; stands in the plane across the porthole's axis.
+  (let ((positions (lis::model-part-positions (lis::cab-model) "porthole-rings")))
+    (dolist (side '(-1 1))
+      (multiple-value-bind (centre axis) (lis::cab-porthole-geometry side)
+        (let ((mine (remove-if-not (lambda (p) (plusp (* side (aref p 1)))) positions))
+              (sum (lis::vec3 0d0 0d0 0d0)))
+          (is = (* 12 36) (length mine))
+          (dolist (p mine) (setf sum (lis::vec3-add sum p)))
+          (let* ((mean (lis::vec3-scale sum (/ 1d0 (length mine))))
+                 (off (lis::vec3-sub mean centre))
+                 (along (lis::vec3-dot off axis)))
+            ;; The mean is the ring's centre pushed 35 mm in along the axis.
+            (true (< (abs (+ along 0.035d0)) 1d-3) "along the axis ~F" along)
+            (true (< (lis::vec3-norm (lis::vec3-sub off (lis::vec3-scale axis along))) 1d-3)
+                  "off the axis ~A" off)))))))
+
+(define-test cab-glass-twin
+  ;; Transmission 0.95 at the centre falling to 0.88 at the edges; the colour
+  ;; is premultiplied (the reflection scaled by alpha) and faintly green.
+  (is = 0.95d0 (lis::cab-glass-transmission 0d0))
+  (true (< (abs (- (lis::cab-glass-transmission 1d0) 0.88d0)) 1d-12))
+  (true (< (abs (- (lis::cab-glass-transmission 3d0) 0.88d0)) 1d-12) "clamped")
+  (multiple-value-bind (r g b a)
+      (lis::cab-glass-colour (lis::vec3 0.9d0 0.3d0 0.15d0) (lis::vec3 -1d0 0d0 0d0) 0d0)
+    (true (< (abs (- a 0.05d0)) 1d-12))
+    (true (< 0 r)) (true (< 0 b))
+    ;; Warm light, faint green tint: green over red relative to the light's own.
+    (multiple-value-bind (lr lg) (lis::cab-irradiance (lis::vec3 0.9d0 0.3d0 0.15d0) (lis::vec3 -1d0 0d0 0d0))
+      (true (> (/ g r) (/ lg lr))))
+    (true (< b g))))
+
+(define-test cab-glass-covers-the-openings
+  ;; The glass's vertices: the window quad in the front wall's plane and
+  ;; two discs of the portholes' radius.
+  (let* ((model (lis::cab-glass-model)) (hull (lis::model-vertices model)))
+    (is = (+ 6 (* 2 24 3)) (lis::cab-vertex-count model))
+    (loop for o from 0 below (* 6 lis::+vertex-floats+) by lis::+vertex-floats+
+          do (true (< (abs (- (aref hull o) 0.9)) 1e-6))
+             (true (<= (abs (aref hull (+ o 1))) 0.6001))
+             (true (<= (abs (aref hull (+ o 2))) 0.3001)))
+    (dolist (side '(-1 1))
+      (multiple-value-bind (centre axis) (lis::cab-porthole-geometry side)
+        (dolist (p (lis::model-part-positions model (format nil "porthole-glass-~D" side)))
+          (let ((d (lis::vec3-sub p centre)))
+            (true (< (abs (lis::vec3-dot d axis)) 1d-5))
+            (true (<= (lis::vec3-norm d) (+ lis::*cab-porthole-radius* 1d-5)))))))))
+
+(define-test cab-plate-text-centred
+  ;; The run's cells are centred on the plate (within 1 mm) at cap 30 mm; the
+  ;; plate is the steel box 0.40 x 0.07 m centred (0.89, 0, -0.43).
+  (multiple-value-bind (origin cell columns) (lis::cab-plate-geometry)
+    (is = 14 columns)
+    (let ((middle-y (+ (second origin) (* 0.5d0 columns cell)))
+          (middle-z (- (third origin) (* 0.5d0 (getf lis::*cab-plate* :cap)))))
+      (true (< (abs middle-y) 1d-3) "run centre y ~F" middle-y)
+      (true (< (abs (- middle-z -0.43d0)) 1d-3) "run centre z ~F" middle-z))
+    (true (< (* columns cell) 0.40d0) "the run fits the plate")
+    (true (< (first origin) 0.88d0) "in front of the plate's face"))
+  (multiple-value-bind (y0 y1) (part-extent "plate" 1)
+    (true (< (abs (- (- y1 y0) 0.40d0)) 1d-3)))
+  (multiple-value-bind (z0 z1) (part-extent "plate" 2)
+    (true (< (abs (- (+ z0 z1) -0.86d0)) 1d-3))
+    (true (< (abs (- (- z1 z0) 0.07d0)) 1d-3))))

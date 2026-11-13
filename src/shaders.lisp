@@ -562,6 +562,155 @@
   (let* ((coverage (clamp (- (+ (* 0.5 (swizzle screen :z)) 0.5) (abs across)) 0.0 1.0)))
     (set-output color (vec4 (* shade (/ (* (swizzle screen :w) coverage) (swizzle post :x))) 0.0))))
 
+;;; The cab's light and openings (src/cockpit.lisp; decision 126: Cockpit
+;;; structure and view in milestone 3), and the cab block: clip rows of the head
+;;; camera in body axes from the eye, screen (clip units per pixel x, y), params
+;;; (1 / exposure, the lit text's constant factor, the ambient), the Sun's
+;;; direction in body axes (w: (1 AU / d)^2 x sun-fraction, for the sunlit
+;;; patch), the two LED strips (x of the first sample, the step, y, z; eight
+;;; samples each), the light (tint, level), the window (x, half width, half
+;;; height, slack), and the portholes (centre and radius; axis and half depth).
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defparameter *cab-block-members*
+    '((clip-x :vec4) (clip-y :vec4) (clip-z :vec4) (clip-w :vec4)
+      (screen :vec4) (params :vec4) (sun :vec4) (strip-a :vec4) (strip-b :vec4)
+      (light :vec4) (window :vec4) (hole-a :vec4) (hole-a-axis :vec4)
+      (hole-b :vec4) (hole-b-axis :vec4)))
+
+  (defun strip-sum-form (strip)
+    "The sum over a strip's eight point samples of the Lambert term at P with normal N."
+    `(+ ,@(loop for k below 8
+                collect `(cab-point-term p n (vec3 (+ (swizzle ,strip :x)
+                                                      (* ,(float k) (swizzle ,strip :y)))
+                                                   (swizzle ,strip :z) (swizzle ,strip :w)))))))
+
+;; One point light: n . l / d^2, l the unit direction to the sample S.
+(define-shader-function cab-point-term (p n s)
+  (let* ((d (- s p))
+         (r2 (max (dot d d) 0.0004)))
+    (/ (max (dot n d) 0.0) (* r2 (sqrt r2)))))
+
+;; The radiance factor at P with unit normal N: the strips' samples x the
+;; level x the tint, plus the ambient (src/cockpit.lisp cab-irradiance).
+(define-shader-function cab-irradiance (p n strip-a strip-b light ambient)
+  (let* ((sum #.`(+ ,(strip-sum-form 'strip-a) ,(strip-sum-form 'strip-b))))
+    (+ (* (swizzle light :xyz) (* (swizzle light :w) sum))
+       (vec3 ambient ambient ambient))))
+
+;; 1.0 where P is in the window's rectangle (in the front wall's plane) or a
+;; porthole's cylinder, else 0.0 (src/cockpit.lisp cab-opening-p).
+(define-shader-function cab-opening-cut (p window hole-a axis-a hole-b axis-b)
+  (let* ((in-window (and (< (abs (- (swizzle p :x) (swizzle window :x))) (swizzle window :w))
+                         (< (abs (swizzle p :y)) (swizzle window :y))
+                         (< (abs (swizzle p :z)) (swizzle window :z))))
+         (da (- p (swizzle hole-a :xyz)))
+         (along-a (dot da (swizzle axis-a :xyz)))
+         (in-a (and (< (abs along-a) (swizzle axis-a :w))
+                    (< (- (dot da da) (* along-a along-a))
+                       (* (swizzle hole-a :w) (swizzle hole-a :w)))))
+         (db (- p (swizzle hole-b :xyz)))
+         (along-b (dot db (swizzle axis-b :xyz)))
+         (in-b (and (< (abs along-b) (swizzle axis-b :w))
+                    (< (- (dot db db) (* along-b along-b))
+                       (* (swizzle hole-b :w) (swizzle hole-b :w))))))
+    (if (or in-window in-a in-b) 1.0 0.0)))
+
+;; The cab's meshes and instances: positions in body axes from the eye, the
+;; clip rows of the cab block (the world camera's projection in body axes, so
+;; depth agrees with the scene's). SURFACE: material, two parameters.
+;; MATERIALS: two vec4s per row of *cab-materials* (r g b specular weight;
+;; exponent emission).
+(defmacro define-cab-shader (name (&rest options) &body body)
+  `(define-shader ,name
+       (,@options
+        :resources ((cab :uniform-block :binding 0 :members #.*cab-block-members*)
+                    (materials :storage-buffer :binding 1 :element :vec4)))
+     ,@body))
+
+(define-shader-function cab-clip (p rx ry rz rw)
+  (let* ((point (vec4 p 1.0)))
+    (vec4 (dot rx point) (dot ry point) (dot rz point) (dot rw point))))
+
+(define-cab-shader cab-mesh-vertex
+    (:stage :vertex
+     :inputs ((position :vec3 :location 0)
+              (normal :vec3 :location 1)
+              (params :vec3 :location 2))
+     :outputs ((clip-position :vec4 :built-in :position)
+               (body :vec3 :location 0)
+               (body-normal :vec3 :location 1)
+               (surface :vec3 :location 2)))
+  (let* ((p position))
+    (set-output clip-position (cab-clip p clip-x clip-y clip-z clip-w))
+    (set-output body p)
+    (set-output body-normal normal)
+    (set-output surface params)))
+
+(define-cab-shader cab-instanced-vertex
+    (:stage :vertex
+     :inputs ((position :vec3 :location 0)
+              (normal :vec3 :location 1)
+              (params :vec3 :location 2)
+              (origin :vec3 :location 3)
+              (axis-x :vec3 :location 4)
+              (axis-y :vec3 :location 5)
+              (axis-z :vec3 :location 6)
+              (scale :vec4 :location 7))
+     :outputs ((clip-position :vec4 :built-in :position)
+               (body :vec3 :location 0)
+               (body-normal :vec3 :location 1)
+               (surface :vec3 :location 2)))
+  (let* ((s (swizzle scale :xyz))
+         (local (* position s))
+         (p (+ origin (* axis-x (swizzle local :x)) (* axis-y (swizzle local :y))
+               (* axis-z (swizzle local :z))))
+         (m (/ normal s))
+         (n (normalize (+ (* axis-x (swizzle m :x)) (* axis-y (swizzle m :y))
+                          (* axis-z (swizzle m :z))))))
+    (set-output clip-position (cab-clip p clip-x clip-y clip-z clip-w))
+    (set-output body p)
+    (set-output body-normal n)
+    (set-output surface (vec3 (swizzle scale :w) (* (swizzle params :y) (swizzle s :x))
+                              (* (swizzle params :z) (swizzle s :x))))))
+
+;; The rows the fragment names, in row order: the test checks them against
+;; *cab-material-names*.
+(defparameter *cab-shader-material-rows*
+  '(:lining :steel-angle :tread :eclss :red :tape :marker :black-plastic :grey-plastic
+    :green-surplus :beige :aluminium :screen-face :cable-black :cable-grey :cable-red
+    :cable-yellow :kapton :cardboard :sheet-metal :led :fabric :seat :hatch))
+
+;; One fragment for both pipelines. The lining (row 0) is cut where the window
+;; and the portholes open it; the tread plate (row 2) gets its diamonds from
+;; the position (2.5 cm along x, 5 cm along y, factor 0.72 between them).
+;; Light: the strips and the ambient at the fragment (cab-irradiance), the
+;; normal turned to the eye; the material's emission added.
+(define-cab-shader cab-fragment
+    (:stage :fragment
+     :inputs ((body :vec3 :location 0)
+              (body-normal :vec3 :location 1)
+              (surface :vec3 :location 2))
+     :outputs ((color :vec4 :location 0)))
+  (let* ((id (uint (+ (swizzle surface :x) 0.5)))
+         (cut (if (= id (uint 0.0))
+                  (cab-opening-cut body window hole-a hole-a-axis hole-b hole-b-axis)
+                  0.0))
+         (m0 (buffer-element materials (* id (uint 2.0))))
+         (m1 (buffer-element materials (+ (* id (uint 2.0)) (uint 1.0))))
+         (diamond (if (= id (uint 2.0))
+                      (if (< (+ (abs (- (fract (* (swizzle body :x) 40.0)) 0.5))
+                                (abs (- (fract (* (swizzle body :y) 20.0)) 0.5)))
+                             0.38)
+                          1.0 0.72)
+                      1.0))
+         (flat (normalize body-normal))
+         (n (* flat (if (> (dot flat body) 0.0) -1.0 1.0)))
+         (paint (* (swizzle m0 :xyz) diamond))
+         (lit (cab-irradiance body n strip-a strip-b light (swizzle params :z))))
+    (when (> cut 0.5)
+      (discard))
+    (set-output color (vec4 (+ (* paint lit) (* (swizzle m0 :xyz) (swizzle m1 :y))) 1.0))))
+
 ;;; Slug text on planes (src/text.lisp; decision 126: Cockpit structure and
 ;;; view in milestone 3), after Luvcraft's :slug-world-text vertex stage
 ;;; (luvcraft/shaders.lisp, luv by Mikael Brockman): the glyph quad grows past
@@ -570,7 +719,8 @@
 ;;; block the caller fills (the frame the records are in), reversed-Z, w the
 ;;; depth. LOOK: kind (0 emissive, 1 lit), factor. The ink in the record's
 ;;; spare lanes is the colour: emissive ink x factor / exposure, lit ink x
-;;; the block's irradiance factor. The fragment stage is luv's.
+;;; (the block's constant factor + the cab's irradiance at the glyph's origin
+;;; on its plane, turned to the eye). The fragment stage is luv's.
 (define-shader cab-text-vertex
     (:stage :vertex
      :inputs ((corner :vec3 :location 0)
@@ -590,8 +740,7 @@
                (render-band-counts :vec2 :location 3)
                (render-color :vec4 :location 4))
      :resources ((text-block :uniform-block :binding 2
-                  :members ((clip-x :vec4) (clip-y :vec4) (clip-z :vec4) (clip-w :vec4)
-                            (screen :vec4) (params :vec4)))))
+                  :members #.*cab-block-members*)))
   (let* ((c (swizzle corner :xy))
          (h0 (vec4 (+ origin (* right-edge (swizzle c :x)) (* up-edge (swizzle c :y))) 1.0))
          (w0 (max (dot clip-w h0) 0.001))
@@ -611,9 +760,18 @@
                            (/ dilation (max up-pixels 0.001))))))
          (h (vec4 (+ origin (* right-edge (swizzle dc :x)) (* up-edge (swizzle dc :y))) 1.0))
          (ink (vec3 (swizzle atlas-input :z) (swizzle band-low :z) (swizzle band-high :z)))
+         (plane (vec3 (- (* (swizzle right-edge :y) (swizzle up-edge :z))
+                         (* (swizzle right-edge :z) (swizzle up-edge :y)))
+                      (- (* (swizzle right-edge :z) (swizzle up-edge :x))
+                         (* (swizzle right-edge :x) (swizzle up-edge :z)))
+                      (- (* (swizzle right-edge :x) (swizzle up-edge :y))
+                         (* (swizzle right-edge :y) (swizzle up-edge :x)))))
+         (flat (normalize (+ plane (vec3 0.0 0.0 0.000001))))
+         (n (* flat (if (> (dot flat origin) 0.0) -1.0 1.0)))
+         (lit (cab-irradiance origin n strip-a strip-b light (swizzle params :z)))
          (shade (if (< (swizzle look :x) 0.5)
                     (* ink (* (swizzle look :y) (swizzle params :x)))
-                    (* ink (swizzle params :y)))))
+                    (* ink (+ lit (vec3 (swizzle params :y) (swizzle params :y) (swizzle params :y)))))))
     (set-output clip-position (vec4 (dot clip-x h) (dot clip-y h) (dot clip-z h) (dot clip-w h)))
     (set-output render-coordinate
                 (+ (swizzle outline-low :xy)
@@ -804,6 +962,14 @@ angle in degrees), weighted by a Gaussian of SIGMA texels, normalised."
   (cab-text-vertex))
 (defmethod shader-specification-for ((role (eql :cab-text)) (stage (eql :fragment)))
   (luv.slug:slug-atlas-fragment-specification))
+(defmethod shader-specification-for ((role (eql :cab-mesh)) (stage (eql :vertex)))
+  (cab-mesh-vertex))
+(defmethod shader-specification-for ((role (eql :cab-mesh)) (stage (eql :fragment)))
+  (cab-fragment))
+(defmethod shader-specification-for ((role (eql :cab-instanced)) (stage (eql :vertex)))
+  (cab-instanced-vertex))
+(defmethod shader-specification-for ((role (eql :cab-instanced)) (stage (eql :fragment)))
+  (cab-fragment))
 (defmethod shader-specification-for ((role (eql :quads)) (stage (eql :vertex)))
   (overlay-vertex))
 (defmethod shader-specification-for ((role (eql :quads)) (stage (eql :fragment)))

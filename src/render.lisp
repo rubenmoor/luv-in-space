@@ -675,6 +675,65 @@ the hull, the engine if any, the instance groups, then its glows through
         (luv:set-vertex-buffer pass 1 (ship-slot-spot slot))
         (luv:draw pass 6 1))))
 
+;;; The cockpit's draws (cockpit.lisp holds its model and buffers); here to
+;;; inline the render state's accessors.
+
+(defun cab-block! (gpu state camera extent exposure eye)
+  "The cab block of GPU for the frame: the clip rows of the head camera in body
+axes (CAMERA's orientation without the ship's rotation, its field of view),
+the target's EXTENT, 1 / EXPOSURE, the ambient, and the Sun's direction in
+body axes with (1 AU / d)^2 x the Sun's visible fraction at EYE (for the
+sunlit patch). The static part stays. Conses nothing; the block."
+  (declare (type cockpit-gpu gpu) (type render-state state) (type camera camera) (type list extent)
+           (type double-float exposure) (type vec3 eye))
+  (let* ((out (cockpit-gpu-block gpu))
+         (scratch (cockpit-gpu-camera gpu))
+         (inverse (make-quat)) (sun (make-vec3)) (body (make-vec3)))
+    (declare (dynamic-extent inverse sun body)
+             (type (simple-array single-float (60)) out))
+    (quat-conjugate! inverse (render-state-q state))
+    (quat-mul! (camera-orientation scratch) inverse (camera-orientation camera))
+    (setf (camera-field-of-view scratch) (camera-field-of-view camera)
+          (camera-near scratch) (camera-near camera))
+    (camera-clip-rows! out scratch (/ (float (the fixnum (first extent)) 1d0)
+                                      (float (the fixnum (second extent)) 1d0)))
+    (setf (aref out 16) (coerce (/ 2d0 (the fixnum (first extent))) 'single-float)
+          (aref out 17) (coerce (/ 2d0 (the fixnum (second extent))) 'single-float)
+          (aref out 18) 0f0 (aref out 19) 0f0
+          (aref out 20) (coerce (/ 1d0 exposure) 'single-float)
+          (aref out 21) 0f0
+          (aref out 22) (coerce (the double-float *cab-ambient*) 'single-float)
+          (aref out 23) 0f0)
+    (vec3-sub! sun (render-state-sun state) (render-state-r state))
+    (let* ((d (vec3-norm sun))
+           (k (/ +au+ d)))
+      (declare (type double-float d k))
+      (vec3-scale! sun sun (/ 1d0 d))
+      (quat-rotate! body inverse sun)
+      (put4! out 24 (aref body 0) (aref body 1) (aref body 2)
+             (* k k (the double-float (sun-visible-fraction eye (render-state-t state))))))
+    out))
+
+(defun encode-cockpit (pass renderer gpu slot text-slot batch corners state camera extent exposure eye)
+  "The cab's interior into the open scene PASS, after the scene (decision 126:
+the opaque meshes and instances, then the cockpit's text): its block (the
+head camera in body axes) written to SLOT and, with the text, to TEXT-SLOT.
+BATCH the text batch, CORNERS the glyph quad. Conses nothing."
+  (let ((data (cab-block! gpu state camera extent exposure eye)))
+    (luv:write-buffer (cab-slot-buffer slot) data)
+    (luv:write-buffer (cab-slot-materials slot) (cab-materials! (cockpit-gpu-materials gpu)))
+    (luv:set-pipeline pass (renderer-pipeline renderer :cab-mesh))
+    (luv:set-bind-group pass 0 (cab-slot-bind-group slot))
+    (luv:set-vertex-buffer pass 0 (cockpit-gpu-hull gpu))
+    (luv:draw pass (cockpit-gpu-hull-count gpu))
+    (luv:set-pipeline pass (renderer-pipeline renderer :cab-instanced))
+    (luv:set-bind-group pass 0 (cab-slot-bind-group slot))
+    (loop for (primitive vertices instances count) in (cockpit-gpu-groups gpu)
+          do (luv:set-vertex-buffer pass 0 primitive)
+             (luv:set-vertex-buffer pass 1 instances)
+             (luv:draw pass vertices count))
+    (encode-text pass renderer text-slot batch data corners)))
+
 (defun single-floats (list)
   (map '(simple-array single-float (*)) (lambda (x) (coerce x 'single-float)) list))
 
@@ -719,6 +778,8 @@ the tests' one decode for every canvas they open.")
    (post-sampler :initarg :post-sampler :reader frame-renderer-post-sampler)
    (test-quads :initform nil :accessor frame-renderer-test-quads
                :documentation "Tests only: nil or (buffer . count), drawn as stars.")
+   (cockpit :initarg :cockpit :reader frame-renderer-cockpit
+            :documentation "The cab's static resources (src/cockpit.lisp).")
    (text-atlas :initarg :text-atlas :reader frame-renderer-text-atlas
                :documentation "The glyphs of all three fonts (src/text.lisp).")
    (text-layout :initarg :text-layout :reader frame-renderer-text-layout)
@@ -783,6 +844,7 @@ camera's clip rows (positions relative to the eye in ICRF axes).")
     (stars-pipeline renderer layout +hdr-format+)
     (impostor-pipelines renderer layout +hdr-format+)
     (reinitialize-instance renderer :ship (make-ship-gpu renderer +hdr-format+))
+    (reinitialize-instance renderer :cockpit (make-cockpit-gpu renderer +hdr-format+))
     (ribbon-pipeline renderer layout +hdr-format+)
     (live-pipeline renderer :quads layout (overlay-vertex-buffers) :format +hdr-format+
                    :depth-stencil '(:format :depth32-float :depth-write-enabled nil
@@ -799,15 +861,16 @@ camera's clip rows (positions relative to the eye in ICRF axes).")
 
 (defstruct frame-slot
 "A target's frame block, its scene bind group, its ship-slot, its ribbon
-instance buffer, its overlay vertices, its text-slot, and the bind groups sampling the
+instance buffer, its overlay vertices, its text-slot, its cab-slot, and the bind groups sampling the
 post levels in POST-VIEWS."
-  buffer bind-group ship ribbon overlay text (post-views '()) (post-bind-groups '()))
+  buffer bind-group ship ribbon overlay text cab (post-views '()) (post-bind-groups '()))
 
 (defun release-frame-resources (slot)
   (release-ship-slot (frame-slot-ship slot))
   (luv:destroy (frame-slot-ribbon slot))
   (luv:destroy (frame-slot-overlay slot))
   (release-text-slot (frame-slot-text slot))
+  (release-cab-slot (frame-slot-cab slot))
   (mapc #'luv:destroy (frame-slot-post-bind-groups slot))
   (luv:destroy (frame-slot-bind-group slot))
   (luv:destroy (frame-slot-buffer slot)))
@@ -841,6 +904,7 @@ again once it is acquired (luv's canvas-frame-resource-cache)."
                 :ship (make-ship-target-slot renderer (frame-renderer-ship renderer) buffer)
                 :ribbon (make-ribbon-buffer (renderer-device renderer)
                                             (frame-renderer-ribbon renderer))
+                :cab (make-cab-slot-for renderer (frame-renderer-cockpit renderer))
                 :text (make-text-slot renderer (frame-renderer-text-layout renderer)
                                       (frame-renderer-text-atlas renderer)
                                       (text-batch-capacity (frame-renderer-text-batch renderer)))
@@ -967,8 +1031,8 @@ Mule without its cab exterior, the eye being inside the cab; decision 126:
 Cockpit structure and view in milestone 3: frames, draw order, Slug text, head
 look, exposure, cab light, portholes, bezels, tape labels) or :map. INTERIOR
 nil leaves the cab's interior out of :cockpit (for tests and the grapple
-camera); the interior itself comes with plan 31's later pieces."
-  (declare (ignorable interior))
+camera); with it, after the objects and the test text, encode-cockpit draws the
+cab's meshes, instances and text."
   (let* ((slot (frame-resources renderer target))
          (views (post-views renderer extent))
          (bind-groups (post-bind-groups renderer slot views))
@@ -1009,6 +1073,11 @@ camera); the interior itself comes with plan 31's later pieces."
               (encode-text pass renderer (frame-slot-text slot) text
                            (text-block! (frame-renderer-text-block renderer) data extent exposure)
                            (frame-renderer-text-corners renderer))))
+          (when (and interior (eq view :cockpit))
+            (encode-cockpit pass renderer (frame-renderer-cockpit renderer) (frame-slot-cab slot)
+                            (frame-slot-text slot) (frame-renderer-text-batch renderer)
+                            (frame-renderer-text-corners renderer) state camera extent exposure
+                            (frame-renderer-eye renderer)))
           (when (eq view :map)
             (encode-ribbon pass renderer bind-group (frame-renderer-ribbon renderer)
                            (frame-slot-ribbon slot) (frame-renderer-ribbon-corners renderer)

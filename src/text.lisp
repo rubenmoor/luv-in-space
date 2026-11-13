@@ -388,13 +388,16 @@ substitution the repertoire lacks) is an error."
 ;;; (render.lisp), each frame-slot a block, a bind group and an instance
 ;;; buffer.
 
-(defconstant +text-block-floats+ 24
-  "The :cab-text shaders' block: clip rows (16), screen (clip units per pixel
-x, y), params (1 / exposure, the lit text's irradiance factor).")
+(defconstant +text-block-floats+ 60
+  "The :cab-text shaders' block, the cab block of cockpit.lisp: clip rows
+(16), screen (clip units per pixel x, y), params (1 / exposure, the lit
+text's constant factor, the cab's ambient), then what only the cab fills (the
+Sun, the LED strips, the openings: 36 floats, zero in a text-block!).")
 
 (defparameter *text-lit-factor* 0.04f0
-  "The lit text's radiance factor (ink x this) until the cab's light
-(irradiance at the glyph, decision 126) replaces it.")
+  "The lit text's constant radiance factor (ink x this) outside the cockpit,
+where the cab's strips are not in the block; the cab block's is 0 and the
+glyph's irradiance from the strips (cab-irradiance, decision 126) lights it.")
 
 (defun text-corners ()
   "The glyph quad's six corners as three singles each."
@@ -454,6 +457,7 @@ instance; premultiplied alpha, depth compared :greater, not written."
 target's EXTENT and EXPOSURE."
   (declare (type (simple-array single-float (*)) data rows))
   (replace data rows :end2 16)
+  (fill data 0f0 :start 24)
   (setf (aref data 16) (float (/ 2 (first extent)) 1f0)
         (aref data 17) (float (/ 2 (second extent)) 1f0)
         (aref data 18) 0f0 (aref data 19) 0f0

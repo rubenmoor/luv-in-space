@@ -1470,6 +1470,89 @@ a horizontal line a quarter of the cap height up (all its segments are lines)."
             (true (<= (abs (- byte expected)) 3) "stem centre ~A, tone map ~D" centre expected))))
       (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream))))))
 
+;;; The cab's shell and light (decision 126: Cockpit structure and view in
+;;; milestone 3; src/cockpit.lisp): a lining pixel against the CPU twin of the
+;;; light, the window showing the scene.
+
+(defun cab-lining-hit (direction)
+  "(values point normal) of the ray from the eye along DIRECTION (a unit vec3 in
+body axes) on the lining cylinder, the normal inward."
+  (let* ((dy (aref direction 1)) (dz (aref direction 2))
+         (r lis::*cab-lining-radius*) (a (second lis::*cab-axis-offset*))
+         (qa (+ (* dy dy) (* dz dz)))
+         (qb (* -2 a dz)) (qc (- (* a a) (* r r)))
+         (tt (/ (+ (- qb) (sqrt (- (* qb qb) (* 4 qa qc)))) (* 2 qa)))
+         (p (lis::vec3-scale direction tt)))
+    (values p (lis::vec3-scale (lis::vec3 0d0 (aref p 1) (- (aref p 2) a)) (/ -1 r)))))
+
+(defun cockpit-checks (game png width height)
+  (with-canvas-values (game (lis::*bloom-strength* 0.0))
+    ;; The head turned right and up: the centre pixel is lining, lit by the
+    ;; strips; its byte is the tone map of exposure x the twin's radiance.
+    (let* ((yaw (deg 90)) (pitch (deg -35))
+           (format nil)
+           (pixels (multiple-value-bind (path w h pixels pixel-format)
+                       (lis::capture-game-state game png :view :cockpit :head (list 90 -35 70)
+                                                         :frames 2)
+                     (declare (ignore path w h))
+                     (setf format pixel-format)
+                     pixels))
+           (exposure (lis::game-exposure game))
+           (direction (lis::vec3 (* (cos pitch) (cos yaw)) (* (cos pitch) (sin yaw)) (sin pitch))))
+      (is = 4.0 exposure)
+      (multiple-value-bind (p n) (cab-lining-hit direction)
+        (multiple-value-bind (r g b) (lis::cab-irradiance p n)
+          (let ((got (pixel-rgb pixels format width (floor width 2) (floor height 2)))
+                (albedo (aref lis::*cab-materials* 0 0)))
+            (loop for byte in got for x in (list r g b)
+                  do (let ((expected (lis::tone-map-srgb (* albedo x) exposure)))
+                       (true (<= (abs (- byte expected)) 4)
+                             "lining pixel ~A, tone map of 4.0 x the twin ~D" got expected)))))))
+    ;; The head on the nose: the window's centre shows the scene (space), not lining.
+    (let* ((pixels (nth-value 3 (lis::capture-game-state game png :view :cockpit
+                                                                  :head '(0 0 70) :frames 2)))
+           (centre (pixel-luminance pixels width (floor width 2) (floor height 2))))
+      (true (< centre 40) "the window's centre: luminance ~D" centre))
+    ;; Lit text: an "H" (kind 1) on a plane facing the eye, its crossbar at
+    ;; the image's centre, takes the cab's irradiance at its glyph's corner.
+    (let* ((renderer (lis::game-renderer game))
+           (atlas (lis::frame-renderer-text-atlas renderer))
+           (batch (lis::frame-renderer-text-batch renderer))
+           (pitch (deg 30)) (distance 0.7d0) (cap 0.2d0)
+           (direction (lis::vec3 (cos pitch) 0d0 (sin pitch)))
+           (up (lis::vec3 (sin pitch) 0d0 (- (cos pitch))))
+           (right (lis::vec3 0d0 1d0 0d0))
+           (font (lis::text-font-of atlas :mono))
+           (scale (/ cap (lis::text-font-cap-em font)))
+           (glyph (lis::text-glyph-for atlas :mono #\H))
+           (middle-x (* 0.5 (+ (lis::text-glyph-min-x glyph) (lis::text-glyph-max-x glyph))))
+           (middle-y (* 0.5 (+ (lis::text-glyph-min-y glyph) (lis::text-glyph-max-y glyph))))
+           (origin (lis::vec3-sub (lis::vec3-scale direction distance)
+                                  (lis::vec3-add (lis::vec3-scale right (* middle-x scale))
+                                                 (lis::vec3-scale up (* middle-y scale)))))
+           pixels format)
+      (setf (lis::text-batch-count batch) 0)
+      (lis::grid-run! atlas (lis::text-batch-region batch 4) 0
+                      (lis::make-text-plane :origin (coerce origin 'list) :right (coerce right 'list)
+                                            :up (coerce up 'list))
+                      "H" :cap (float cap 1f0) :kind :lit)
+      (unwind-protect
+           (multiple-value-bind (path w h got pixel-format)
+               (lis::capture-game-state game png :view :cockpit :head '(0 30 70) :frames 2)
+             (declare (ignore path w h))
+             (setf pixels got format pixel-format))
+        (let ((record (record-floats batch 0)))
+          (setf (lis::text-batch-count batch) 0)
+          (let* ((corner (lis::vec3 (nth 0 record) (nth 1 record) (nth 2 record)))
+                 (exposure (lis::game-exposure game))
+                 (got (pixel-rgb pixels format width (floor width 2) (floor height 2))))
+            (multiple-value-bind (r g b) (lis::cab-irradiance corner (lis::vec3-scale direction -1d0))
+              (loop for byte in got for x in (list r g b)
+                    do (let ((expected (lis::tone-map-srgb x exposure)))
+                         (true (<= (abs (- byte expected)) 4)
+                               "lit text pixel ~A, tone map of the twin ~D" got expected))))))))
+    (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))))
+
 (define-test render-frames
   (let ((width 320) (height 200))
     ;; offscreen-frame decodes the Blue Marble on its canvas; this one shares
@@ -1620,6 +1703,7 @@ a horizontal line a quarter of the cap height up (all its segments are lines)."
            (ribbon-checks game png width height)
            (marker-checks game png width height)
            (text-checks game png width height)
+           (cockpit-checks game png width height)
            (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))
            ;; Resizes replace the swapchain's textures; what the renderer kept
            ;; for the old ones goes, so its per-target state stays bounded.

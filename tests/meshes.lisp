@@ -100,7 +100,8 @@
       (is = 88 (count-of "truss"))
       (is = 8 (count-of "RCS blocks"))
       (is = 24 (count-of "RCS nozzles"))
-      (is = 3 (count-of "claws")))
+      ;; The claws are drawn per frame, not baked (task 223).
+      (fail (lis::model-part model "claws") error))
     (multiple-value-bind (lo hi) (lis::positions-box (lis::model-positions model))
       (true (box-within lo hi '(-2.2 -8.3 -5.0) '(16.6 8.3 3.3)) "model box ~A ~A" lo hi))
     (multiple-value-bind (lo hi) (part-box "cab")
@@ -595,3 +596,25 @@ vertices of the \"plate\" parts, by part."
     (true (< (abs (- (lis::shapes-quarter-area rock)
                      (* pi (expt (lis::shape-radius (first (lis::object-def-shapes rock))) 2))))
              1d-9))))
+
+;;; The claws (decision 124: Meshes of the places: models, scenery liveries,
+;;; lights, far dots, the grapple's claws, floodlight and range finder; task 223).
+
+(define-test claw-tips
+  ;; Hinged at x 16.0 on radius 0.85, 0.6 m long, turned about the tangent:
+  ;; the tip at the hinge + 0.6 (cos a x + sin a u), u the claw's radial direction.
+  (let ((out (make-array (* 3 lis::+instance-floats+) :element-type 'single-float)))
+    (dolist (angle '(0 30 -8))
+      (lis::ship-claw-instances! out angle)
+      (dotimes (k 3)
+        (let* ((a (degrees-to-rad (* 120 k)))
+               (u (lis::vec3 0 (sin a) (- (cos a))))
+               (theta (degrees-to-rad angle))
+               (expected (lis::vec3 (+ 16d0 (* 0.6d0 (cos theta)))
+                                    (* (aref u 1) (+ 0.85d0 (* 0.6d0 (sin theta))))
+                                    (* (aref u 2) (+ 0.85d0 (* 0.6d0 (sin theta))))))
+               (tip (lis::claw-tip out k)))
+          (true (close-to tip expected 1d-5) "claw ~D at ~D deg: ~A against ~A" k angle tip expected))))
+    ;; Stowed: where the static claws stood (16.6, 0.85 sin, -0.85 cos).
+    (lis::ship-claw-instances! out 0)
+    (true (close-to (lis::claw-tip out 0) (lis::vec3 16.6d0 0d0 -0.85d0) 1d-5))))

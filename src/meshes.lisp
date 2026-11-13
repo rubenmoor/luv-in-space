@@ -464,12 +464,12 @@ diagonals per bay. The Mule's are 15 m and 10 bays."
 (defun truss-ship-model (&key (length 15d0) (bays 10) tanks (tank-radius 1.6d0)
                            cab decal (nose :grapple) (engine-x -0.6d0) (engine-z -0.5d0)
                            (rcs-x '(0.5d0 14.5d0)) (wings t) (radiators t) (equipment t)
-                           (structure t) (rcs t) (engine-p t) (decal-u 1d0) lights)
+                           (structure t) (rcs t) (engine-p t) (decal-u 1d0) (claws t) lights)
   "A ship on a truss of LENGTH m in BAYS bays along +x from x 0: TANKS
 ((name x0 x1 material) …) with hemispherical domes of TANK-RADIUS; CAB nil or
 (x0 x1), the cab on top with its struts, window, portholes and hatch, and
 DECAL nil or the decal material on its sides; NOSE :grapple (the Mule's, with
-its claws) or (:fixture x) for a fixture plate with its pin at x; the engine
+its claws, unless CLAWS is nil: the Mule's own are drawn per frame, `ship-claw-instances!`) or (:fixture x) for a fixture plate with its pin at x; the engine
 at zero trim, its bell's rim at ENGINE-X on the axis at z ENGINE-Z; RCS blocks
 at the x in RCS-X (four each, with the Mule's thruster triples; blocks past
 x 7 move with the nose); WINGS, RADIATORS, EQUIPMENT (the gas conditioning
@@ -543,7 +543,7 @@ is one case (`mule-model`), a tanker another."
                            (centre (rcs-position i)))
                       (add :cone (instance (vec3-add-scaled centre exhaust face) exhaust nil
                                            '(0.12d0 0.08d0 0.08d0) (id :nozzle)))))))))
-      (when (eq nose :grapple)
+      (when (and claws (eq nose :grapple))
         (part "claws" :box
               (lambda ()
                 (dotimes (k 3)
@@ -650,10 +650,12 @@ is one case (`mule-model`), a tanker another."
         (dolist (beacon (light-beacons lights)) (push beacon (builder-beacons b)))
         (builder-model b lights)))))
 
-(defun mule-model (&key (decal :decal))
+(defun mule-model (&key (decal :decal) claws)
   "The Mule: the baked hull, the instance groups, the engine, the lights;
-DECAL the material of its registration (:decal M-07, :decal-m04, :decal-m05)."
-  (truss-ship-model
+DECAL the material of its registration (:decal M-07, :decal-m04, :decal-m05).
+The player's Mule has no static claws (the frame writes them from the shown
+angle); a scenery Mule has them, CLAWS true."
+  (truss-ship-model :claws claws
    :tanks '(("LH2 tank" 0.50d0 9.36d0 :lh2-foil) ("LOX tank" 9.76d0 13.48d0 :lox-foil))
    :cab '(10.5d0 15.0d0) :decal decal
    ;; The navigation lights on brackets 0.15 m out from the truss's top
@@ -983,7 +985,7 @@ STUBBORN (M-04) and THISTLE (M-05) berthed at the arms, nose on the pin, their
             do (let ((pin (fixture-pin (find name (object-def-fixtures def) :key #'fixture-name
                                                                             :test #'string=))))
                  (setf lights (append lights
-                                      (bake-ship! b (mule-model :decal decal) (vec3-add pin (vec3 0 0 -16.6d0))
+                                      (bake-ship! b (mule-model :decal decal :claws t) (vec3-add pin (vec3 0 0 -16.6d0))
                                                   :x '(0 0 1) :y '(0 1 0))))))
       (finish-place-model b lights))))
 
@@ -1129,7 +1131,53 @@ points go to g + R (p − g)."
 (defparameter *light-pull* 1d0 "A navigation light's or the strobe's pull, in radii.")
 
 (defconstant +glow-floats+ 8 "Centre relative to the eye, radius; radiance, pull.")
-(defconstant +glow-count+ 4 "Red, green, the strobe, the engine.")
+(defconstant +glow-count+ 6
+  "Red, green, the strobe, the engine, the floodlight's lamp, the range finder's aperture.")
+
+;;; The grapple at work (decision 124: Meshes of the places: models, scenery
+;;; liveries, lights, far dots, the grapple's claws, floodlight and range
+;;; finder). Every number live.
+
+(defparameter *claw-hinge-x* 16.0d0 "m: the claws' hinges, body axes from R.")
+(defparameter *claw-hinge-radius* 0.85d0 "m: their distance from the axis.")
+(defparameter *claw-length* 0.6d0 "m.")
+(defparameter *floodlight-position* (vec3 15.45d0 0 -0.32d0) "m: the lamp on the grapple cylinder's top.")
+(defparameter *floodlight-intensity* 4d0
+  "Radiance on a white face-on surface 1 m (at least 2 m) off: x / max(d, 2 m)².")
+(defparameter *floodlight-glow-radius* 0.06d0 "m.")
+(defparameter *floodlight-glow-radiance* 10d0)
+(defparameter *range-finder-position* (vec3 15.45d0 0 0.32d0) "m: the aperture.")
+(defparameter *range-finder-glow-radius* 0.02d0 "m.")
+(defparameter *range-finder-glow-radiance* 10d0)
+(defparameter *range-finder-colour* '(1d0 0d0 0d0))
+(defparameter *range-spot-radius* 0.03d0 "m.")
+(defparameter *range-spot-pull* 0.05d0 "m: the spot pulled towards the ship.")
+(defparameter *range-finder-max* 500d0 "m: the ray's reach.")
+(declaim (type vec3 *floodlight-position* *range-finder-position*))
+
+(defun claw-instance (k angle)
+  "The instance of claw K (0 to 2) at ANGLE degrees (30 armed, 0 stowed, −8
+latched): a box *claw-length* long hinged at x *claw-hinge-x* on the radius
+*claw-hinge-radius* at 120° K, turned about the tangent so its free end moves
+outward at positive ANGLE."
+  (let* ((a (degrees-to-radians (* 120 k)))
+         (u (vec3 0 (sin a) (- (cos a))))
+         (hinge (vec3 *claw-hinge-x* (* *claw-hinge-radius* (aref u 1)) (* *claw-hinge-radius* (aref u 2))))
+         (theta (degrees-to-radians angle))
+         (x (vec3-add (vec3 (cos theta) 0 0) (vec3-scale u (sin theta))))
+         (y (vec3-sub (vec3-scale u (cos theta)) (vec3 (sin theta) 0 0))))
+    (instance (vec3-add-scaled hinge x (* 0.5d0 *claw-length*)) x y
+              (list *claw-length* 0.1d0 0.1d0) (material-id :steel))))
+
+(defun ship-claw-instances! (out angle)
+  "The three claws at ANGLE degrees into OUT, 3 x +instance-floats+ singles."
+  (dotimes (k 3 out)
+    (replace out (claw-instance k angle) :start1 (* k +instance-floats+))))
+
+(defun claw-tip (instances k)
+  "The free end of claw K in the claw INSTANCES, body axes from R."
+  (let ((xf (instance-xform instances k)))
+    (xform-point xf 0.5d0 0d0 0d0)))
 
 (defun strobe-on-p (time)
   "Whether the strobe is lit at TIME s of the lights' clock: its phase,
@@ -1175,7 +1223,31 @@ exit's centre while it fires."
         (when (plusp radiance)
           (glow (engine-exit-position model (render-state-m-p state)) *engine-glow-radius*
                 radiance *engine-glow-colour* 0d0)))
+      ;; The grapple's lamp, the range finder's aperture and its spot.
+      (let ((grapple (render-state-grapple state)))
+        (when (render-grapple-floodlight grapple)
+          (glow *floodlight-position* *floodlight-glow-radius* *floodlight-glow-radiance*
+                '(1d0 1d0 1d0) (* *light-pull* *floodlight-glow-radius*)))
+        (when (render-grapple-range-finder grapple)
+          (glow *range-finder-position* *range-finder-glow-radius* *range-finder-glow-radiance*
+                *range-finder-colour* (* *light-pull* *range-finder-glow-radius*))))
       n)))
+
+(defun ship-spot-glow! (out state eye)
+  "The range finder's spot as one glow (+glow-floats+) into OUT, red, where the
+ray from the grapple's tip meets a drawn object (range-finder-spot); 1, or 0
+with none. The frame draws it after the objects, which would cover it before."
+  (let ((spot (make-vec3)))
+    (if (and (render-grapple-range-finder (render-state-grapple state))
+             (range-finder-spot spot state))
+        (let ((centre (vec3-sub spot eye)))
+          (loop for i below 3 for c in *range-finder-colour*
+                do (setf (aref out i) (coerce (aref centre i) 'single-float)
+                         (aref out (+ 4 i)) (coerce (* *range-finder-glow-radiance* c) 'single-float)))
+          (setf (aref out 3) (coerce *range-spot-radius* 'single-float)
+                (aref out 7) 0f0)
+          1)
+        0)))
 
 ;;; The stack's bounding radius (decision 80)
 
@@ -1338,7 +1410,7 @@ texture-from-pixels; alpha 0 off the cairn and the letters."
 (defparameter *earthshine-tint* '(0.85d0 0.92d0 1.0d0) "Live.")
 (defparameter *ship-ambient* 0.0005d0 "Live.")
 
-(defconstant +ship-uniform-floats+ 52 "shaders.lisp's ship block: 13 vec4s.")
+(defconstant +ship-uniform-floats+ 60 "shaders.lisp's ship block: 15 vec4s.")
 
 (defstruct (ship-gpu (:constructor %make-ship-gpu))
   "The static resources of the Mule's draws and the bind group layout."
@@ -1351,6 +1423,9 @@ texture-from-pixels; alpha 0 off the cairn and the letters."
   (object-uniforms (make-array +ship-uniform-floats+ :element-type 'single-float
                                                      :initial-element 0f0))
   (scratch (make-mass-properties) :type mass-properties)
+  (spot (make-array +glow-floats+ :element-type 'single-float :initial-element 0f0))
+  claw-primitive (claw-vertices 0 :type fixnum) ; the box group's primitive, the claws' mesh
+  (claws (make-array (* 3 +instance-floats+) :element-type 'single-float :initial-element 0f0))
   (glows (make-array (* +glow-floats+ +glow-count+) :element-type 'single-float
                                                     :initial-element 0f0))
   (uniforms (make-array +ship-uniform-floats+ :element-type 'single-float :initial-element 0f0))
@@ -1415,13 +1490,16 @@ written, compare :greater; and :ship-glow: additive, depth tested, not written."
                                      (count-of (instance-group-instances g) +instance-floats+)))
          :decal-view view :decal-sampler sampler
          :corners (vertex-buffer renderer (star-corners) "glow corners"))))
+          (let ((box (position :box (model-groups model) :key #'instance-group-kind)))
+            (setf (ship-gpu-claw-primitive gpu) (first (nth box (ship-gpu-groups gpu)))
+                  (ship-gpu-claw-vertices gpu) (second (nth box (ship-gpu-groups gpu)))))
           (make-object-gpus! gpu renderer)
           gpu)))))
 
 (defstruct ship-slot
   "A target's ship block, material table, bind group and glow instances, and
 its OBJECTS: an object-slot per entry of *objects* (decision 124)."
-  buffer materials bind-group glows (objects (vector)))
+  buffer materials bind-group glows claws spot (objects (vector)))
 
 (defstruct object-slot
   "One object's ship block, bind group (the frame block, the shared decal and
@@ -1441,6 +1519,12 @@ material table, its own block) and glow instances in a target."
     (make-ship-slot
      :objects (make-object-slots renderer ship frame-buffer materials)
      :buffer buffer :materials materials
+     :spot (luv:create device (luv:make-buffer-descriptor
+                              :label "range finder spot" :size (* 4 +glow-floats+)
+                              :usage '(:vertex :copy-dst)))
+     :claws (luv:create device (luv:make-buffer-descriptor
+                                :label "claws" :size (* 4 3 +instance-floats+)
+                                :usage '(:vertex :copy-dst)))
      :glows (luv:create device (luv:make-buffer-descriptor
                                 :label "ship glows"
                                 :size (* 4 (length (ship-gpu-glows ship)))
@@ -1459,6 +1543,8 @@ material table, its own block) and glow instances in a target."
            (luv:destroy (object-slot-bind-group o))
            (luv:destroy (object-slot-buffer o)))
   (luv:destroy (ship-slot-glows slot))
+  (luv:destroy (ship-slot-claws slot))
+  (luv:destroy (ship-slot-spot slot))
   (luv:destroy (ship-slot-bind-group slot))
   (luv:destroy (ship-slot-materials slot))
   (luv:destroy (ship-slot-buffer slot)))
@@ -1504,7 +1590,7 @@ the CoM COM in body axes: the rows of q, R relative to the eye (decision 5:
 Precision of positions) with the glows' least sigma in pixels, the gimbal and the trim rotation at m_p, then in
 body axes the Sun's direction with (1 AU / d)^2 x sun-fraction, the
 direction to Earth with the earthshine, the tint and ambient, the eye with
-the lights-on flag, the emissive colour."
+the lights-on flag, the emissive colour, the floodlight's lamp and axis."
   (let* ((q (render-state-q state))
          (rows (mat3-from-quat q))
          (inverse (quat-conjugate q))
@@ -1540,7 +1626,13 @@ the lights-on flag, the emissive colour."
           (put 40 tr tg tb *ship-ambient*))
         (put 44 (aref eye-body 0) (aref eye-body 1) (aref eye-body 2)
              (if (render-state-ship-lights-on state) 1 0))
-        (put 48 (aref emissive 0) (aref emissive 1) (aref emissive 2) 0)))
+        (put 48 (aref emissive 0) (aref emissive 1) (aref emissive 2) 0))
+      ;; The floodlight in the hull's own axes: zero while stowed.
+      (if (render-grapple-floodlight (render-state-grapple state))
+          (progn (put 52 (aref *floodlight-position* 0) (aref *floodlight-position* 1)
+                      (aref *floodlight-position* 2) *floodlight-intensity*)
+                 (put 56 1 0 0 0))
+          (progn (put 52 0 0 0 0) (put 56 0 0 0 0))))
     out))
 
 (defun encode-ship (pass renderer ship slot state eye)
@@ -1567,6 +1659,13 @@ the hull, the instance groups, then the engine as instance 1 of
           do (luv:set-vertex-buffer pass 0 primitive)
              (luv:set-vertex-buffer pass 1 instances)
              (luv:draw pass vertices count))
+    ;; The claws at the shown angle, with the box group's primitive.
+    (luv:write-buffer (ship-slot-claws slot)
+                      (ship-claw-instances! (ship-gpu-claws ship)
+                                            (render-grapple-angle (render-state-grapple state))))
+    (luv:set-vertex-buffer pass 0 (ship-gpu-claw-primitive ship))
+    (luv:set-vertex-buffer pass 1 (ship-slot-claws slot))
+    (luv:draw pass (ship-gpu-claw-vertices ship) 3)
     (let ((glows (ship-glows! (ship-gpu-glows ship) (ship-gpu-model ship) state eye com)))
       (when (plusp glows)
         (luv:write-buffer (ship-slot-glows slot) (ship-gpu-glows ship))

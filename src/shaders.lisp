@@ -272,7 +272,9 @@
 ;;; the engine's trim rotation, then the light in body axes: the Sun's
 ;;; direction (w: (1 AU / d)^2 x sun-fraction),
 ;;; the direction to Earth (w: earthshine), the earthshine tint (w: ambient),
-;;; the eye (w: lights on), the emissive colour. MATERIALS: two vec4s per
+;;; the eye (w: lights on), the emissive colour, then the floodlight: its lamp
+;; position (w: its intensity, 0 when off) and beam axis in body axes
+;; (decision 124). MATERIALS: two vec4s per
 ;;; row of *ship-materials* (r g b specular weight; exponent emission).
 (defmacro define-ship-shader (name (&rest options) &body body)
   `(define-frame-shader ,name
@@ -283,7 +285,8 @@
                      :members ((ship-x :vec4) (ship-y :vec4) (ship-z :vec4) (ship-origin :vec4)
                                (gimbal :vec4) (trim-x :vec4) (trim-y :vec4) (trim-z :vec4)
                                (ship-sun :vec4) (ship-earth :vec4) (ship-tint :vec4)
-                               (ship-eye :vec4) (ship-emissive :vec4)))
+                               (ship-eye :vec4) (ship-emissive :vec4)
+                               (flood-position :vec4) (flood-axis :vec4)))
                     (materials :storage-buffer :binding 4 :element :vec4)))
      ,@body))
 
@@ -403,7 +406,9 @@
 ;; scorched steel's streaks of value noise along x; the peeling foil's patches
 ;; where the noise exceeds 0.55 showing scorched steel; the fixture's black
 ;; cross from the plate's centre coordinates (decision 124).
-;; Light: the Sun, earthshine tinted, ambient; Blinn-Phong in the Sun.
+;; Light: the Sun, earthshine tinted, ambient; Blinn-Phong in the Sun; the
+;; floodlight: intensity / max(d, 2 m)² x the cosine on the face x a cone,
+;; smoothstep of the beam's cosine from 25° (0.9063) to 15° (0.9659).
 (define-ship-shader ship-fragment
     (:stage :fragment
      :inputs ((body :vec3 :location 0)
@@ -453,8 +458,18 @@
          (h (normalize (+ s v)))
          (sun (* (max (dot n s) 0.0) (swizzle ship-sun :w)))
          (earth (* (max (dot n (swizzle ship-earth :xyz)) 0.0) (swizzle ship-earth :w)))
+         (to-lamp (- (swizzle flood-position :xyz) body))
+         (lamp-distance (max (sqrt (dot to-lamp to-lamp)) 0.001))
+         (lamp-direction (/ to-lamp lamp-distance))
+         (beam (- 0.0 (dot lamp-direction (swizzle flood-axis :xyz))))
+         (fade (max 0.0 (min 1.0 (/ (- beam 0.9063) 0.0596))))
+         (cone (* fade fade (- 3.0 (* 2.0 fade))))
+         (reach (max lamp-distance 2.0))
+         (flood (/ (* (max (dot n lamp-direction) 0.0) cone (swizzle flood-position :w))
+                   (* reach reach)))
          (light (+ (* (vec3 1.0 1.0 1.0) sun) (* (swizzle ship-tint :xyz) earth)
-                   (* (vec3 1.0 1.0 1.0) (swizzle ship-tint :w))))
+                   (* (vec3 1.0 1.0 1.0) (swizzle ship-tint :w))
+                   (* (vec3 1.0 1.0 1.0) flood)))
          (specular (* (swizzle m0 :w) (expt (max (dot n h) 0.0) (swizzle m1 :x)) sun))
          (glow (* (swizzle m1 :y) (swizzle ship-eye :w))))
     (set-output color (vec4 (+ (* albedo light) (* (vec3 1.0 1.0 1.0) (+ specular glow))

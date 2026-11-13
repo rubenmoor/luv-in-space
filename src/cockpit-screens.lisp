@@ -66,44 +66,10 @@ followed by the text of its run."
                                    (:red *screen-red*) (:cyan *screen-cyan*)
                                    (:magenta *screen-magenta*)))))
 
-(defun screen-line-length (line)
-  (loop for run in line sum (length (run-text run))))
-
-(defun screen-fit-line (line columns)
-  "LINE cut to COLUMNS characters, \"…\" last when anything went."
-  (if (<= (screen-line-length line) columns)
-      line
-      (let ((left columns) (out '()))
-        (dolist (run line)
-          (let ((text (run-text run)))
-            (cond ((<= (length text) left)
-                   (push run out) (decf left (length text)))
-                  ((zerop left)
-                   (let ((last (first out)))
-                     (when last
-                       (setf (first out)
-                             (list (concatenate 'string (subseq (run-text last) 0 (1- (length (run-text last)))) "…")
-                                   (run-colour last) (run-style last) (run-flash last)))))
-                   (return))
-                  (t (push (list (concatenate 'string (subseq text 0 (max 0 (1- left))) "…")
-                                 (run-colour run) (run-style run) (run-flash run))
-                           out)
-                     (setf left 0)
-                     (return)))))
-        (nreverse out))))
 
 ;;; Formats shared with the readout (overlay.lisp, units.lisp).
 
 (defun format-thousands (n) (format nil "~:D" (round n)))
-
-(defun format-clock-time (seconds)
-  "SECONDS (to a future event) as T-mm:ss, T-h:mm:ss above an hour."
-  (let ((total (max 0 (round seconds))))
-    (multiple-value-bind (minutes second) (floor total 60)
-      (multiple-value-bind (hours minute) (floor minutes 60)
-        (if (plusp hours)
-            (format nil "T-~D:~2,'0D:~2,'0D" hours minute second)
-            (format nil "T-~2,'0D:~2,'0D" minute second))))))
 
 (defun signed-fixed (x decimals)
   "X with its sign always: +0.0, -1.5."
@@ -307,31 +273,6 @@ the mode on row 8."
 
 (defparameter *autopilot-screen-rows* 7 "Rows over the plot or the menu's window; row 8 is the hint.")
 
-(defun format-arrival (seconds)
-  "SECONDS ahead as mm:ss, h:mm:ss above an hour."
-  (subseq (format-clock-time seconds) 2))
-
-(defun autopilot-plan-screen-lines (plan sim)
-  "The plan's four lines (decision 127) from autopilot-plan-summary: burn n/m
-and when, its Δv and duration, the total Δv and propellant, what is left and
-the arrival; nil when the plan's cursor has no burn left."
-  (let ((burns (burn-plan-burns plan)))
-    (unless (and (eq (sim-plan sim) plan) (>= (sim-plan-index sim) (length burns)))
-      (let ((summary (autopilot-plan-summary plan sim)))
-        (list
-         (screen-line :grey "BURN " :white (format nil "~D/~D" (1+ (getf summary :index)) (getf summary :burns))
-                      :white " " :white (format-clock-time (getf summary :next-in)))
-         (screen-line :grey "DV " :white (format-fixed (getf summary :next-dv) 1)
-                      :grey " m/s  " :white (format nil "~D" (round (getf summary :next-duration))) :grey " s")
-         (screen-line :grey "TOTAL " :white (format nil "~D" (round (getf summary :total-dv)))
-                      :grey " m/s " :white (format nil "~D" (round (getf summary :propellant))) :grey " kg")
-         (screen-line :grey "LEFT " :white (format-fixed (/ (getf summary :left) 1000d0) 1)
-                      :grey " t  ARR " :white (format-arrival (- (getf summary :arrival) (sim-t sim)))))))))
-
-(defun menu-window-start (count selected rows)
-  "The first of the ROWS menu rows shown of COUNT, keeping SELECTED in sight."
-  (max 0 (min (- count rows) (- (or selected 0) (floor rows 2)))))
-
 (defun autopilot-menu-window (model sim)
   "The menu's rows, seven of them keeping the selection in sight, the
 selected one inverted over the width of the grid."
@@ -372,7 +313,7 @@ selected one inverted over the width of the grid."
                (:planning (list (screen-line :white "PLANNING…")))
                ((:shown :engaged)
                 (let ((plan (autopilot-map-plan model)))
-                  (or (and plan (autopilot-plan-screen-lines plan sim))
+                  (or (and plan (autopilot-plan-lines plan sim))
                       (list (or (rendezvous-phase-line state) '())))))
                ((:closed :off) '())))))
     (when model

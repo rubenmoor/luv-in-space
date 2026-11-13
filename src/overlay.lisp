@@ -607,6 +607,205 @@ centred horizontally, its bottom *readout-margin-px* above the frame's bottom."
       (values (max 0 (floor (- width box-width) 2))
               (max 0 (- height *readout-margin-px* box-height))))))
 
+;;; The autopilot panel (decision 129): the preset menu, the plan and its burns,
+;;; the engaged state, as lines in the readout's format. The plan's four lines
+;;; are shared with the cockpit's AUTOPILOT screen (decision 127).
+
+(defparameter *autopilot-panel-chars* 30 "The panel's width in cells, a longer line is cut; decision 129.")
+(defparameter *autopilot-panel-menu-rows* 8 "Menu rows shown at most; decision 129.")
+(defparameter *autopilot-panel-burns* 6 "Burn rows shown at most; decision 129.")
+(defparameter *readout-ok-colour* #x40D040 "Engaged, in tolerance, green, sRGB; decision 127.")
+
+(defun format-clock-time (seconds)
+  "SECONDS (to a future event) as T-mm:ss, T-h:mm:ss above an hour."
+  (let ((total (max 0 (round seconds))))
+    (multiple-value-bind (minutes second) (floor total 60)
+      (multiple-value-bind (hours minute) (floor minutes 60)
+        (if (plusp hours)
+            (format nil "T-~D:~2,'0D:~2,'0D" hours minute second)
+            (format nil "T-~2,'0D:~2,'0D" minute second))))))
+
+(defun format-arrival (seconds)
+  "SECONDS ahead as mm:ss, h:mm:ss above an hour."
+  (subseq (format-clock-time seconds) 2))
+
+(defun menu-window-start (count selected rows)
+  "The first of the ROWS menu rows shown of COUNT, keeping SELECTED in sight."
+  (max 0 (min (- count rows) (- (or selected 0) (floor rows 2)))))
+
+(defun screen-line-length (line)
+  (loop for run in line sum (length (run-text run))))
+
+(defun screen-fit-line (line columns)
+  "LINE cut to COLUMNS characters, \"…\" last when anything went."
+  (if (<= (screen-line-length line) columns)
+      line
+      (let ((left columns) (out '()))
+        (dolist (run line)
+          (let ((text (run-text run)))
+            (cond ((<= (length text) left)
+                   (push run out) (decf left (length text)))
+                  ((zerop left)
+                   (let ((last (first out)))
+                     (when last
+                       (setf (first out)
+                             (list (concatenate 'string (subseq (run-text last) 0 (1- (length (run-text last)))) "…")
+                                   (run-colour last) (run-style last) (run-flash last)))))
+                   (return))
+                  (t (push (list (concatenate 'string (subseq text 0 (max 0 (1- left))) "…")
+                                 (run-colour run) (run-style run) (run-flash run))
+                           out)
+                     (setf left 0)
+                     (return)))))
+        (nreverse out))))
+
+(defun autopilot-abort-unread-p (clock model)
+  "Whether the engaged plan ended in an abort (the model :off with its text)
+whose log entry Y has not marked read."
+  (and model (eq (autopilot-model-state model) :off)
+       (let ((text (autopilot-model-text model)))
+         (and text (search "ABORT" text)
+              (let ((mark (clock-log-read clock)))
+                (loop for entry in (clock-log clock)
+                      until (eq entry mark)
+                      thereis (and (eq (second entry) :autopilot) (search "ABORT" (third entry)) t)))))
+       t))
+
+(defun plain-runs (&rest parts)
+  "A line of plain runs from PARTS: a colour (sRGB integer) then its text, as written."
+  (loop for (colour text) on parts by #'cddr collect (list text colour :plain nil)))
+
+(defun autopilot-plan-lines (plan sim)
+  "The plan's four lines (decision 127) from autopilot-plan-summary: burn n/m
+and when, its Δv and duration, the total Δv and propellant, what is left and
+the arrival; nil when the plan's cursor has no burn left. Mixed case: the
+screen shows it as it is, the panel upcases."
+  (let ((burns (burn-plan-burns plan))
+        (label *readout-label-colour*) (value *readout-value-colour*))
+    (unless (and (eq (sim-plan sim) plan) (>= (sim-plan-index sim) (length burns)))
+      (let ((summary (autopilot-plan-summary plan sim)))
+        (list
+         (plain-runs label "BURN " value (format nil "~D/~D" (1+ (getf summary :index)) (getf summary :burns))
+                     value " " value (format-clock-time (getf summary :next-in)))
+         (plain-runs label "DV " value (format-fixed (getf summary :next-dv) 1)
+                     label " m/s  " value (format nil "~D" (round (getf summary :next-duration))) label " s")
+         (plain-runs label "TOTAL " value (format nil "~D" (round (getf summary :total-dv)))
+                     label " m/s " value (format nil "~D" (round (getf summary :propellant))) label " kg")
+         (plain-runs label "LEFT " value (format-fixed (/ (getf summary :left) 1000d0) 1)
+                     label " t  ARR " value (format-arrival (- (getf summary :arrival) (sim-t sim)))))))))
+
+(defun panel-line (&rest parts)
+  "A readout line from PARTS, colour then text, the texts upcased."
+  (loop for (colour text) on parts by #'cddr collect (readout-run text colour)))
+
+(defun upcase-line (line)
+  (mapcar (lambda (run) (list (string-upcase (run-text run)) (run-colour run) (run-style run) (run-flash run)))
+          line))
+
+(defun burn-dv-text (dv)
+  "A burn's Δv as the map's burn markers show it: whole from 100, one decimal from 1, two below."
+  (format-fixed dv (cond ((< dv 0.995d0) 2) ((< dv 99.95d0) 1) (t 0))))
+
+(defun burn-duration-text (seconds)
+  (if (< seconds 100d0)
+      (format nil "~D S" (round seconds))
+      (multiple-value-bind (minutes second) (floor (round seconds) 60)
+        (format nil "~D:~2,'0D" minutes second))))
+
+(defun flash-phase (real-time)
+  (if (< (mod real-time *readout-flash-period*) (* 0.5d0 *readout-flash-period*)) :on :off))
+
+(defun panel-burn-rows (plan sim mode)
+  "Up to *autopilot-panel-burns* rows \"<n> <LABEL> <dv> M/S <duration>\" of PLAN:
+done burns grey, the current one \">\"-marked and paper white, later ones white;
+MODE :engaged marks the sim's cursor, :kept greys them all, :shown none done."
+  (let* ((burns (burn-plan-burns plan))
+         (count (length burns))
+         (index (case mode (:engaged (sim-plan-index sim)) (:kept count) (t -1)))
+         (start (menu-window-start count (max 0 index) *autopilot-panel-burns*)))
+    (loop for i from start below (min count (+ start *autopilot-panel-burns*))
+          for burn = (svref burns i)
+          collect (panel-line (cond ((< i index) *readout-label-colour*) (t *readout-value-colour*))
+                              (format nil "~A~D ~A ~A M/S ~A" (if (= i index) "> " "  ") (1+ i)
+                                      (symbol-name (planned-burn-label burn))
+                                      (burn-dv-text (planned-burn-dv burn))
+                                      (burn-duration-text (- (planned-burn-cut-t burn)
+                                                             (planned-burn-start burn))))))))
+
+(defun panel-phase-line (sim)
+  "A rendezvous plan's :terminal or :station phase in green, else nil."
+  (let ((plan (sim-plan sim)))
+    (when plan
+      (case (sim-plan-phase sim)
+        (:terminal (panel-line *readout-ok-colour* "TERMINAL"))
+        (:station (let ((part (burn-plan-rendezvous plan)))
+                    (panel-line *readout-ok-colour*
+                                (format nil "ON STATION ~D M"
+                                        (round (if part (rendezvous-part-range part) 0d0))))))))))
+
+(defun panel-menu-rows (model sim)
+  "The menu's window of at most *autopilot-panel-menu-rows* rows keeping the
+selection in sight, the selection paper white inverted over the box's width."
+  (multiple-value-bind (texts selected) (autopilot-menu-lines model sim)
+    (let* ((count (length texts))
+           (start (menu-window-start count selected *autopilot-panel-menu-rows*)))
+      (loop for i from start below (min count (+ start *autopilot-panel-menu-rows*))
+            for text = (subseq (nth i texts) 2)
+            collect (if (eql i selected)
+                        (list (readout-run (format nil "~VA" *autopilot-panel-chars* text)
+                                           *readout-value-colour* :inverted))
+                        (panel-line *readout-value-colour* text))))))
+
+(defun panel-abort-text (text)
+  "The abort's reason as \"ABORT: <REASON>\"."
+  (let ((reason (cond ((eql 0 (search "AUTOPILOT ABORT: " text)) (subseq text 17))
+                      ((eql 0 (search "AUTOPILOT: " text)) (subseq text 11))
+                      (t text))))
+    (if (search "ABORT" reason) reason (format nil "ABORT: ~A" reason))))
+
+(defun autopilot-panel-lines (model sim render-state clock real-time)
+  "The autopilot panel's lines (decision 129): nil while MODEL is :closed, else
+\"AUTOPILOT\" and the state word, then the state's rows and its hint, each cut
+at *autopilot-panel-chars*. RENDER-STATE is unused for now."
+  (declare (ignore render-state))
+  (let ((state (autopilot-model-state model)))
+    (unless (eq state :closed)
+      (let* ((grey *readout-label-colour*) (white *readout-value-colour*)
+             (green *readout-ok-colour*))
+        (multiple-value-bind (plan shot mode) (autopilot-map-plan model)
+          (declare (ignore shot))
+          (mapcar
+           (lambda (line) (screen-fit-line line *autopilot-panel-chars*))
+           (append
+            (list (if (eq state :engaged)
+                      (panel-line grey "AUTOPILOT " green "ENGAGED")
+                      (panel-line grey "AUTOPILOT "
+                                  white (ecase state
+                                          (:menu "MENU") (:refused "REFUSED") (:planning "PLANNING…")
+                                          (:shown "PLAN") (:off "OFF")))))
+            (ecase state
+              ((:menu :refused)
+               (append (panel-menu-rows model sim)
+                       (list (if (eq state :refused)
+                                 (panel-line *readout-caution-colour*
+                                             (format nil "! ~A" (or (autopilot-model-text model) "REFUSED")))
+                                 (panel-line grey "PLAN [RET]  CLOSE [O]")))))
+              (:planning '())
+              ((:shown :engaged)
+               (append (when plan (mapcar #'upcase-line (autopilot-plan-lines plan sim)))
+                       (let ((phase (panel-phase-line sim))) (when phase (list phase)))
+                       (when plan (panel-burn-rows plan sim mode))
+                       (list (if (eq state :engaged)
+                                 (panel-line green "ENGAGED  OFF [BKSP]")
+                                 (panel-line grey "ENGAGE [RET]  DROP [BKSP]")))))
+              (:off
+               (append (when plan (panel-burn-rows plan sim :kept))
+                       (list (if (autopilot-abort-unread-p clock model)
+                                 (list (readout-run (panel-abort-text (autopilot-model-text model))
+                                                    *readout-danger-colour* :inverted
+                                                    (flash-phase real-time)))
+                                 (panel-line grey "OFF  RE-PLAN [RET]  CLOSE [O]"))))))))))))) 
+
 ;;; The LOST panel (decision 86: Death view, LOST panel and restart in
 ;;; milestone 2): lines in the readout's format, a pure function of the loss.
 

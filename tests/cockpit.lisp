@@ -2206,3 +2206,11 @@ the window's plane and of a porthole's plane."
         (loop for line = (read-line in nil) while line
               when (search "PLACEHOLDER(166)" line) do (push (file-namestring file) hits))))
     (false hits "PLACEHOLDER(166) in ~{~A~^ ~}" hits)))
+
+(define-test autopilot-screen-shares-plan-lines
+  ;; decision 129: the panel and the screen call the same autopilot-plan-lines
+  (let ((sim (lis::new-game-sim)))
+    (multiple-value-bind (texts lines state clock model) (autopilot-screen-of sim #'shown-plan!)
+      (declare (ignore lines state clock))
+      (is equal (mapcar #'lis::line-text (lis::autopilot-plan-lines (lis::autopilot-model-plan model) sim))
+          (subseq texts 0 4)))))

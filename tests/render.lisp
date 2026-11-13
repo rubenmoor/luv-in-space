@@ -2134,6 +2134,29 @@ Earth's shadow; each thing is read where the pose puts it."
             (true (> red 800) "the inverted PE line: ~D red pixels of ~D" red (length pixels)))))))
   (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream))))
 
+;;; The dot-matrix strip (plan 32 piece 2; decision 128): the head aimed at one
+;;; dot, a lit one amber and an unlit one dim.
+
+(defun strip-checks (game png width height)
+  (with-canvas-values (game (lis::*bloom-strength* 0.0))
+    (let ((sim (start-sim-at 180)))
+      (flet ((dot-pixel (gx gy)
+               (let* ((p (lis::strip-dot-point gx gy))
+                      (yaw (lis::rad->deg (atan (aref p 1) (aref p 0))))
+                      (pitch (lis::rad->deg (asin (/ (aref p 2) (lis::vec3-norm p))))))
+                 (multiple-value-bind (path w h pixels format)
+                     (lis::capture-game-state game png :sim sim :view :cockpit :readout nil :frames 3
+                                                       :head (list yaw pitch 6))
+                   (declare (ignore path w h))
+                   (pixel-rgb pixels format width (floor width 2) (floor height 2))))))
+        ;; "2040-01-01 …": the 2's top row lights its columns 1 to 3, column 0 stays dark.
+        (let ((lit (dot-pixel 2 0)) (unlit (dot-pixel 0 0)))
+          (true (and (> (first lit) 200) (< (third lit) 60)) "a lit dot: ~A" lit)
+          (flet ((luminance (rgb) (reduce #'+ (mapcar #'byte-linear rgb))))
+            (true (< (luminance unlit) (/ (luminance lit) 5))
+                  "an unlit dot ~A against a lit one ~A" unlit lit))))))
+  (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream))))
+
 (define-test render-frames
   (let ((width 320) (height 200))
     ;; offscreen-frame decodes the Blue Marble on its canvas; this one shares
@@ -2290,6 +2313,7 @@ Earth's shadow; each thing is read where the pose puts it."
            (text-checks game png width height)
            (cockpit-checks game png width height)
            (screen-checks game png width height)
+           (strip-checks game png width height)
            (sun-patch-checks game png width height)
            (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))
            ;; Resizes replace the swapchain's textures; what the renderer kept

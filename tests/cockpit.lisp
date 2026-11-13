@@ -778,22 +778,22 @@ the window's plane and of a porthole's plane."
     (multiple-value-bind (state clock) (screen-state sim)
       (flet ((update (real-time)
                (lis::cockpit-update! cockpit views (text-test-atlas) state clock real-time :cockpit)))
-        (is = 2 (update 0d0))
+        (is = 3 (update 0d0))
         (is = 0 (update 0.04d0))
         (is = 0 (update 0.09d0))
-        (is = 2 (update 0.11d0))
+        (is = 3 (update 0.11d0))
         (is = 0 (update 0.15d0))
         ;; a hold change at once, between the 10 Hz rebuilds
         (setf (lis::controls-hold (lis::render-state-controls state)) :retrograde)
-        (is = 2 (update 0.16d0))
+        (is = 3 (update 0.16d0))
         (is = 0 (update 0.17d0))
         (setf (lis::clock-paused clock) t)
-        (is = 2 (update 0.18d0))
-        (is = 2 (update 0.29d0))
+        (is = 3 (update 0.18d0))
+        (is = 3 (update 0.29d0))
         ;; a view change at once; a restart rebuilds
-        (is = 2 (lis::cockpit-update! cockpit views (text-test-atlas) state clock 0.30d0 :map))
+        (is = 3 (lis::cockpit-update! cockpit views (text-test-atlas) state clock 0.30d0 :map))
         (lis::cockpit-state-invalidate! cockpit)
-        (is = 2 (update 0.31d0))))))
+        (is = 3 (update 0.31d0))))))
 
 (define-test cockpit-rebuild-conses-little
   (let ((sim (lis::new-game-sim)) (cockpit (lis::make-cockpit-state)) (views (test-screen-views))
@@ -861,3 +861,238 @@ the window's plane and of a porthole's plane."
                 (dolist (line place)
                   (true (<= 1 line rows) "~S: line ~D of ~D" name line rows)))
               (true (keywordp place))))))))
+
+;;; The dot-matrix strip and COMMS (plan 32 piece 2; decision 128: Cockpit
+;;; devices, buttons, picking, the grapple camera and messages in milestone 3).
+
+(defun strip-test-view ()
+  (lis::make-strip-view (lis::make-dot-batch)))
+
+(defun strip-lit (view line row gx)
+  "Whether the LED of VIEW at LINE (0 to 2), ROW (0 to 6) and dot column GX is lit."
+  (= 1f0 (aref (lis::strip-view-data view)
+               (+ 7 (* lis::+dot-record-floats+
+                       (+ (lis::strip-view-start view)
+                          (* (+ (* line 7) row) lis::+strip-dot-columns+) gx))))))
+
+(define-test strip-line-1-and-2
+  (is string= "2040-01-01 00:00:00" (lis::strip-line-1 (lis::start-t)))
+  (is string= "2040-01-01 01:01:01" (lis::strip-line-1 (+ (lis::start-t) 3661.5d0)))
+  (is string= "WARP ×1" (lis::strip-line-2 1 1d0 nil))
+  (is string= "WARP ×1" (lis::strip-line-2 1 nil nil))
+  (is string= "WARP ×1000 ACT ×490" (lis::strip-line-2 1000 490d0 nil))
+  (is string= "WARP ×1000" (lis::strip-line-2 1000 950d0 nil) "no ACT within 90 %")
+  (is string= "WARP ×1000000 ×490K" (lis::strip-line-2 1000000 490000d0 nil))
+  (is string= "PAUSED" (lis::strip-line-2 1000 490d0 t))
+  (dolist (line (list (lis::strip-line-1 (lis::start-t)) (lis::strip-line-2 1000000 490000d0 nil)
+                      (lis::strip-line-2 100000 49d0 nil)))
+    (true (<= (length line) lis::+strip-columns+) "~S" line)
+    (false (lis::glyph-missing line) "~S" line)))
+
+(define-test strip-dots-follow-the-glyph-table
+  (let ((view (strip-test-view)))
+    (lis::strip-dots! view "H" "" "")
+    (let ((rows (lis::glyph #\H)))
+      (dotimes (row 7)
+        (dotimes (column 6)
+          (is eq (and (< column 5) (char= #\# (char (nth row rows) column)) t)
+              (and (strip-lit view 0 row column) t) "H row ~D dot ~D" row column))))
+    (dotimes (row 7)
+      (true (notany (lambda (gx) (strip-lit view 1 row gx)) (loop for g below 114 collect g))))
+    ;; Line 3 shifted right by 7 dots: the glyph's column 0 on dot 7.
+    (lis::strip-dots! view "" "" "H" 7)
+    (true (strip-lit view 2 0 7)) (false (strip-lit view 2 0 6)) (true (strip-lit view 2 3 7))
+    ;; Left of the edge: cut off.
+    (lis::strip-dots! view "" "" "H" -3)
+    (true (strip-lit view 2 0 1)) (false (strip-lit view 2 0 0))))
+
+(define-test strip-dots-conses-nothing
+  (let ((view (strip-test-view)) (a "2040-01-01 00:00:00") (b "WARP ×1000 ACT ×490") (c "AUTOPILOT: PLAN COMPLETE"))
+    (lis::strip-dots! view a b c 40)
+    (is = 0 (least-bytes-consed (lambda () (dotimes (i 200) (lis::strip-dots! view a b c (- 40 (mod i 3)))))))))
+
+(defun strip-test-setup ()
+  "(values cockpit strip clock state)"
+  (multiple-value-bind (state clock) (screen-state (lis::new-game-sim) :run nil)
+    (values (lis::make-cockpit-state) (strip-test-view) clock state)))
+
+(defun strip-line-3 (view)
+  (lis::strip-view-line-3 view))
+
+(define-test strip-marquee-timing
+  (multiple-value-bind (cockpit view clock state) (strip-test-setup)
+    (flet ((tick (time) (lis::strip-update! cockpit view state clock time nil)))
+      (tick 0d0)
+      (is string= "" (strip-line-3 view))
+      ;; 12 characters: static for 3 s, then gone.
+      (lis::clock-message! clock :target "TARGET LOST!")
+      (tick 1d0)
+      (is string= "TARGET LOST!" (strip-line-3 view))
+      (is = 0 (lis::strip-view-shift view))
+      (tick 3.9d0)
+      (is string= "TARGET LOST!" (strip-line-3 view))
+      (tick 4.05d0)
+      (is string= "" (strip-line-3 view))
+      ;; 40 characters: from the right edge at 12 characters a second.
+      (let ((text "AUTOPILOT ABORT: PROPELLANT LOW FOR PLAN"))
+        (is = 40 (length text))
+        (lis::clock-message! clock :autopilot text)
+        (tick 10d0)
+        (is string= text (strip-line-3 view))
+        (is = 114 (lis::strip-view-shift view))
+        (tick 11d0)
+        (is = (- 114 72) (lis::strip-view-shift view))
+        (let ((time (+ 10d0 (/ 19d0 12))))
+          (tick time)
+          (true (<= (abs (lis::strip-view-shift view)) 1) "first character at the left edge: ~D" (lis::strip-view-shift view)))
+        (tick (+ 10d0 (/ 58d0 12)))
+        (is string= text (strip-line-3 view))
+        (tick (+ 10d0 (/ 59d0 12) 0.01d0))
+        (is string= "" (strip-line-3 view))))))
+
+(define-test strip-marquee-queue
+  (multiple-value-bind (cockpit view clock state) (strip-test-setup)
+    (flet ((tick (time) (lis::strip-update! cockpit view state clock time nil)))
+      (tick 0d0)
+      (dolist (text '("ONE" "TWO" "THREE"))
+        (lis::clock-message! clock :target text))
+      (tick 1d0)
+      (is string= "ONE" (strip-line-3 view))
+      (tick 3.5d0) (is string= "ONE" (strip-line-3 view))
+      (tick 4.1d0) (is string= "TWO" (strip-line-3 view))
+      (tick 7.2d0) (is string= "THREE" (strip-line-3 view))
+      (tick 10.3d0) (is string= "" (strip-line-3 view))
+    ;; Nine at once: the oldest dropped, eight remain in order.
+    (let ((seen '()) (time 20d0))
+      (dotimes (i 9) (lis::clock-message! clock :target (format nil "MSG ~D" (1+ i))))
+      (dotimes (i 40)
+        (tick time)
+        (pushnew (strip-line-3 view) seen :test #'string=)
+        (incf time 1d0))
+      (is equal '("MSG 2" "MSG 3" "MSG 4" "MSG 5" "MSG 6" "MSG 7" "MSG 8" "MSG 9")
+          (remove "" (reverse seen) :test #'string=))))))
+
+(define-test strip-idle-line-shows-the-hovered-key
+  (multiple-value-bind (cockpit view clock state) (strip-test-setup)
+    (setf (lis::cockpit-state-strip-hover cockpit) "PRO [1]")
+    (lis::strip-update! cockpit view state clock 0d0 nil)
+    (is string= "PRO [1]" (strip-line-3 view))
+    (lis::clock-message! clock :target "A MESSAGE")
+    (lis::strip-update! cockpit view state clock 0.1d0 nil)
+    (is string= "A MESSAGE" (strip-line-3 view))))
+
+(define-test strip-snap-shows-the-latest-message-static
+  (multiple-value-bind (cockpit view clock state) (strip-test-setup)
+    (lis::clock-message! clock :target "AUTOPILOT: PLAN COMPLETE")
+    (lis::strip-update! cockpit view state clock 100d0 t)
+    (is string= "AUTOPILOT: PLAN COM" (strip-line-3 view))
+    (is = 0 (lis::strip-view-shift view))
+    (lis::strip-update! cockpit view state clock 200d0 t)
+    (is string= "AUTOPILOT: PLAN COM" (strip-line-3 view))))
+
+(defun comms-test-setup (&key (entries 0))
+  (multiple-value-bind (state clock) (screen-state (lis::new-game-sim) :run nil)
+    (declare (ignore state))
+    (dotimes (i entries) (lis::clock-message! clock :target (format nil "ENTRY ~D" (1+ i))))
+    (values (lis::make-cockpit-state) clock)))
+
+(defun comms-log-texts (clock cockpit)
+  (mapcar #'lis::line-text (nthcdr 4 (lis::comms-lines clock cockpit))))
+
+(define-test comms-lines-job-card-and-rule
+  (multiple-value-bind (cockpit clock) (comms-test-setup)
+    (let ((lines (lis::comms-lines clock cockpit)))
+      (is string= "JOB" (lis::line-text (first lines)))
+      (is string= "NONE" (lis::line-text (second lines)))
+      (is string= (make-string 26 :initial-element #\-) (lis::line-text (fourth lines)))
+      (is equal (list (string lis::*comms-cursor*)) (comms-log-texts clock cockpit)))
+    (dolist (name '(:comms))
+      (let ((lines (lis::screen-lines name (screen-state (lis::new-game-sim) :run nil) clock 0d0 cockpit)))
+        (true (<= (length lines) 11))))))
+
+(define-test comms-log-types-at-60-characters-a-second
+  (multiple-value-bind (cockpit clock) (comms-test-setup :entries 3)
+    (lis::comms-type! cockpit clock 0d0 nil)
+    (is equal (list (string lis::*comms-cursor*)) (comms-log-texts clock cockpit))
+    (lis::comms-type! cockpit clock 0.1d0 nil)         ; 6 characters
+    (is equal (list (format nil "00:00 ~A" lis::*comms-cursor*)) (comms-log-texts clock cockpit))
+    ;; At 0.5 s: 30 characters. The log's order is arrival order: "00:00 ENTRY 1" is 13
+    ;; characters, the second 13, the third's first 4.
+    (lis::comms-type! cockpit clock 0.5d0 nil)
+    (is equal (list "00:00 ENTRY 1" "00:00 ENTRY 2" (format nil "00:0~A" lis::*comms-cursor*))
+        (comms-log-texts clock cockpit))
+    ;; At 1 s all three, the cursor after the last.
+    (lis::comms-type! cockpit clock 1d0 nil)
+    (is equal (list "00:00 ENTRY 1" "00:00 ENTRY 2" (format nil "00:00 ENTRY 3~A" lis::*comms-cursor*))
+        (comms-log-texts clock cockpit))
+    ;; No time passing: nothing more, and a later entry types after.
+    (lis::clock-message! clock :target "ENTRY 4")
+    (lis::comms-type! cockpit clock 1.05d0 nil)
+    (is = 4 (length (comms-log-texts clock cockpit)))
+    (is equal (format nil "00:~A" lis::*comms-cursor*) (car (last (comms-log-texts clock cockpit))))))
+
+(define-test comms-log-snap-types-everything
+  (multiple-value-bind (cockpit clock) (comms-test-setup :entries 5)
+    (lis::comms-type! cockpit clock 0d0 t)
+    (is = 5 (length (comms-log-texts clock cockpit)))))
+
+(define-test comms-log-wraps-with-a-continuation-indent
+  (multiple-value-bind (cockpit clock) (comms-test-setup)
+    (let ((text "AUTOPILOT ABORT: PROPELLANT LOW FOR PLAN"))
+      (lis::clock-message! clock :autopilot text)
+      (lis::comms-type! cockpit clock 0d0 t)
+      (let ((lines (comms-log-texts clock cockpit)))
+        (true (> (length lines) 1))
+        (dolist (line lines) (true (<= (length line) 26) "~S" line))
+        (is string= "00:00 AUTOPILOT ABORT:" (first lines))
+        (dolist (line (rest lines))
+          (is string= "      " (subseq line 0 6) "~S" line))
+        (is string= (format nil "00:00 ~A~A" text lis::*comms-cursor*)
+            (format nil "~{~A~^ ~}" (cons (first lines) (mapcar (lambda (l) (string-left-trim " " l)) (rest lines)))))))
+    ;; A word longer than the line breaks hard.
+    (is equal '("ABCDEFGHIJKLMNOPQRSTUVWXYZ" "      ABCD")
+        (lis::wrap-log-text "ABCDEFGHIJKLMNOPQRSTUVWXYZABCD"))))
+
+(define-test comms-log-keeps-200-entries
+  (multiple-value-bind (cockpit clock) (comms-test-setup :entries 210)
+    (is = 200 (length (lis::clock-log clock)))
+    (lis::comms-type! cockpit clock 0d0 t)
+    (let ((lines (lis::comms-lines clock cockpit)))
+      (is = 11 (length lines))
+      (is string= (format nil "00:00 ENTRY 210~A" lis::*comms-cursor*) (lis::line-text (car (last lines)))))
+    (lis::comms-scroll! cockpit 1000)
+    (let ((lines (lis::comms-lines clock cockpit)))
+      (is string= "00:00 ENTRY 11" (lis::line-text (nth 4 lines)) "the oldest kept is 11")
+      (is = 193 (cockpit-scroll-of cockpit)))))
+
+(defun cockpit-scroll-of (cockpit) (lis::cockpit-state-scroll cockpit))
+
+(define-test comms-scroll-holds-while-entries-arrive
+  (multiple-value-bind (cockpit clock) (comms-test-setup :entries 20)
+    (lis::comms-type! cockpit clock 0d0 t)
+    (lis::comms-lines clock cockpit)
+    (lis::comms-scroll! cockpit 3)
+    (let ((before (comms-log-texts clock cockpit)))
+      (is string= "00:00 ENTRY 17" (car (last before)) "three lines up")
+      (lis::clock-message! clock :target "ENTRY 21")
+      (lis::clock-message! clock :target "ENTRY 22")
+      (lis::comms-type! cockpit clock 0d0 t)
+      (is equal before (comms-log-texts clock cockpit) "the view stays put")
+      (is = 5 (cockpit-scroll-of cockpit)))
+    ;; Back at the bottom it follows.
+    (lis::comms-scroll! cockpit -100)
+    (lis::clock-message! clock :target "ENTRY 23")
+    (lis::comms-type! cockpit clock 0d0 t)
+    (is string= (format nil "00:00 ENTRY 23~A" lis::*comms-cursor*) (car (last (comms-log-texts clock cockpit))))))
+
+(define-test comms-rebuilds-while-typing
+  (multiple-value-bind (state clock) (screen-state (lis::new-game-sim) :run nil)
+    (let ((cockpit (lis::make-cockpit-state)) (views (test-screen-views)) (atlas (text-test-atlas)))
+      (flet ((update (time) (lis::cockpit-update! cockpit views atlas state clock time :cockpit)))
+        (update 0d0)
+        (lis::clock-message! clock :target "A MESSAGE TYPING OUT")
+        (update 0.02d0)              ; the log's length changed: all screens
+        (is = 1 (update 0.04d0) "COMMS alone, typing")
+        (is = 1 (update 0.06d0))
+        (update 2d0)
+        (is = 0 (update 2.01d0) "typed out: nothing between the 10 Hz rebuilds")))))

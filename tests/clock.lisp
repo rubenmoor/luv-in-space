@@ -1776,3 +1776,20 @@ nose prograde, in :station (decision 175) so the :target hold's slew comes first
     (let ((consed (least-bytes-consed (lambda () (step-sim sim 10000 4)) 1)))
       (true (< consed 1024) "~D bytes" consed))
     (is eq :station (lis::sim-plan-phase sim))))
+
+(define-test clock-message-stamp-outlives-the-message
+  ;; The WARP and GRPL lamps' flashes read the stamp of a key's last message
+  ;; (decision 128), after the message itself expired.
+  (let* ((sim (lis::new-game-sim)) (clock (lis::new-clock sim)))
+    (false (lis::clock-message-stamp clock :refused))
+    (setf (lis::clock-real-time clock) 10d0)
+    (lis::clock-message! clock :refused "WARP REFUSED: ROTATING, SET A HOLD")
+    (is = 10d0 (lis::clock-message-stamp clock :refused))
+    (false (lis::clock-message-stamp clock :grapple))
+    (setf (lis::clock-real-time clock) 14d0)
+    (is = 0 (length (lis::clock-messages clock)) "the message is gone after 3 s")
+    (is = 10d0 (lis::clock-message-stamp clock :refused))
+    (lis::clock-message! clock :refused "WARP REFUSED: ROTATING, SET A HOLD")
+    (is = 14d0 (lis::clock-message-stamp clock :refused) "a new message of the key restamps")
+    (lis::clock-restart! clock sim (lis::take-checkpoint sim))
+    (false (lis::clock-message-stamp clock :refused) "a restart clears the stamps")))

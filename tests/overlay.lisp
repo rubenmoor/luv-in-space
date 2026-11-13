@@ -525,3 +525,35 @@ top, or nil."
                         "WARP REFUSED: BURN IN 20 S"))
       (false (lis::glyph-missing text) "~S" text))
     (is string= "WARP ×1,000: BURN IN 2 MIN 5 S" (lis::dropout-message 1000 125d0 :burn))))
+
+(defun source-message-texts ()
+  "Every string literal of the message-writing sources that reads as a message: capitals
+only (format directives made letters), outside the docstrings of definitions."
+  (let ((texts '()) (*package* (find-package '#:luv-in-space)) (*read-eval* nil))
+    (labels ((walk (form)
+               (cond ((stringp form) (push form texts))
+                     ((consp form) (walk (car form)) (walk (cdr form))))))
+      (dolist (file '("hazards" "input" "places" "clock" "autopilot" "prediction" "controls"))
+        (with-open-file (in (asdf:system-relative-pathname "luv-in-space" (format nil "src/~A.lisp" file)))
+          (loop for form = (read in nil :eof)
+                until (eq form :eof)
+                do (if (and (consp form) (member (first form) '(defun defmacro)))
+                       (walk (cdddr form))
+                       (unless (and (consp form) (member (first form) '(defstruct declaim define-test)))
+                         (walk form)))))))
+    (remove-if-not (lambda (text)
+                     (and (> (length text) 2) (some #'alpha-char-p text) (notany #'lower-case-p text)))
+                   (remove-duplicates texts :test #'string=))))
+
+(define-test message-texts-have-glyphs
+  ;; The strip scrolls every SHIP message (decision 128): plan 24 to plan 27's texts,
+  ;; found in their sources, the objects' and places' names, all in the glyph table.
+  (let ((texts (source-message-texts)))
+    (true (> (length texts) 50) "~D texts found" (length texts))
+    (dolist (text texts)
+      (false (lis::glyph-missing (substitute #\X #\~ text)) "~S" text))
+    (dolist (def lis::*objects*)
+      (false (lis::glyph-missing (lis::object-def-name def)) "~S" (lis::object-def-name def)))
+    (dolist (place lis::*places*)
+      (false (lis::glyph-missing (lis::place-name place)) "~S" place)))
+  (false (lis::glyph-missing "TARGET LOST: <TERN STATION> [A=B] 'X' ? ; _ # * · Δ −")))

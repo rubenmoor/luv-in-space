@@ -177,7 +177,7 @@ clock-restart! (×1, unpaused), the outside view at its default pose (the
 cockpit's head kept), the view *default-view*, the input cleared, the death record cleared, the exposure
 snapped. GAME."
   (clock-restart! (game-clock game) (game-sim game) checkpoint)
-  (cockpit-state-invalidate! (game-cockpit-state game))
+  (cockpit-state-restart! (game-cockpit-state game) (game-clock game))
   (outside-view-reset! (game-outside-view game))
   (when (input-drag (game-input game))
     (set-relative-pointer-mode game nil))
@@ -221,7 +221,8 @@ the outside view's distance."
     (let ((renderer (game-renderer game)))
       (cockpit-update! (game-cockpit-state game) (frame-renderer-screen-views renderer)
                        (frame-renderer-text-atlas renderer) (game-render-state game)
-                       (game-clock game) (game-real-time game) (game-view game))))
+                       (game-clock game) (game-real-time game) (game-view game)
+                       :strip (frame-renderer-strip-view renderer) :snap (null elapsed))))
   (let ((exposure (update-exposure! game extent elapsed)))
     (death-glow! game exposure)
     (encode-frame (game-renderer game) encoder target extent

@@ -202,6 +202,107 @@
     (is = (reduce #'max splits) (aref splits nearest))
     (true (plusp (aref splits nearest)))))
 
+;;; Line styles and the one buffer (decision 125: Map in milestone 3).
+
+(defun double-pixel (camera eye p width height)
+  "The pixel of P (relative to the same origin as EYE) in double, or nil behind the eye."
+  (let* ((d (lis::vec3-sub p eye))
+         (q (lis::camera-orientation camera))
+         (f (/ (tan (* 0.5d0 (lis::camera-field-of-view camera)))))
+         (forward (lis::quat-rotate q (lis::vec3 1 0 0)))
+         (right (lis::quat-rotate q (lis::vec3 0 1 0)))
+         (down (lis::quat-rotate q (lis::vec3 0 0 1)))
+         (w (lis::vec3-dot d forward)))
+    (when (plusp w)
+      (list (* 0.5d0 width (+ 1 (/ (* f (/ height width) (lis::vec3-dot d right)) w)))
+            (* 0.5d0 height (+ 1 (/ (* lis::+clip-y-sign+ f (lis::vec3-dot d down)) w)))))))
+
+(define-test ribbon-instance-style
+  (let* ((state (start-map-state))
+         (ribbon (filled-ribbon (start-orbit) (nth-value 1 (opened-map state)) state))
+         (out (lis::ribbon-instances ribbon)))
+    (is = 16 lis::+ribbon-instance-floats+)
+    (dotimes (s (lis::ribbon-count ribbon))
+      (let ((o (* s lis::+ribbon-instance-floats+)))
+        (is = -1f0 (aref out (+ o 12)))
+        (is = -1f0 (aref out (+ o 13)))
+        (is = 2f0 (aref out (+ o 14)))
+        (is = 1f0 (aref out (+ o 15)))))))
+
+(define-test ribbon-endpoints-bit-for-bit
+  ;; the milestone-2 endpoints: point − eye in double, then single
+  (let* ((state (start-map-state))
+         (camera (nth-value 1 (opened-map state)))
+         (ribbon (filled-ribbon (start-orbit) camera state))
+         (eye (map-eye camera state))
+         (out (lis::ribbon-instances ribbon))
+         (expected (make-array 3 :element-type 'single-float)))
+    (dotimes (s (lis::ribbon-count ribbon))
+      (dotimes (end 2)
+        (lis::eye-relative-single (ribbon-point ribbon (+ s end)) eye expected 0)
+        (dotimes (i 3)
+          (is = (aref expected i) (aref out (+ (* s lis::+ribbon-instance-floats+) (* 4 end) i))))))))
+
+(define-test ribbon-dash-phases
+  (let* ((state (start-map-state))
+         (camera (nth-value 1 (opened-map state)))
+         (extent '(1280 800))
+         (ribbon (filled-ribbon (start-orbit) camera state))
+         (eye (map-eye camera state))
+         (out (lis::ribbon-instances ribbon))
+         (count (lis::ribbon-count ribbon))
+         (end (lis::dash-phases! out 0 count (lis::ribbon-points ribbon) eye camera extent 3d0))
+         (total 3d0) (worst 0d0))
+    (is = 3f0 (aref out 12))
+    (dotimes (s count)
+      (let* ((o (* s lis::+ribbon-instance-floats+))
+             (a (double-pixel camera eye (ribbon-point ribbon s) 1280 800))
+             (b (double-pixel camera eye (ribbon-point ribbon (1+ s)) 1280 800))
+             (length (if (and a b) (sqrt (+ (expt (- (first a) (first b)) 2)
+                                           (expt (- (second a) (second b)) 2)))
+                         0d0))
+             (period lis::*dash-period-px*))
+        (setf worst (max worst (abs (- (- (aref out (+ o 13)) (aref out (+ o 12))) length))))
+        ;; continues across segments, modulo the period
+        (when (< (1+ s) count)
+          (let ((gap (abs (- (aref out (+ o 13)) (aref out (+ o 12 lis::+ribbon-instance-floats+))))))
+            (setf worst (max worst (min (mod gap period) (- period (mod gap period)))))))
+        (incf total length)))
+    (true (< worst 1d-3) "worst ~A px" worst)
+    (true (< (abs (- end (mod total lis::*dash-period-px*))) 1d-3))))
+
+(define-test ribbon-dash-behind-the-eye
+  ;; an endpoint behind the eye adds nothing: phases stand still
+  (let* ((state (start-map-state))
+         (camera (nth-value 1 (ship-focus-map state)))
+         (ribbon (filled-ribbon (start-orbit) camera state))
+         (eye (map-eye camera state))
+         (out (lis::ribbon-instances ribbon)))
+    (lis::dash-phases! out 0 (lis::ribbon-count ribbon) (lis::ribbon-points ribbon) eye camera
+                       '(1280 800) 0d0)
+    (true (loop for s below (lis::ribbon-count ribbon)
+                for o = (* s lis::+ribbon-instance-floats+)
+                for a = (double-pixel camera eye (ribbon-point ribbon s) 1280 800)
+                for b = (double-pixel camera eye (ribbon-point ribbon (1+ s)) 1280 800)
+                always (or (and a b) (= (aref out (+ o 12)) (aref out (+ o 13))))))))
+
+(define-test map-lines-fill-conses-nothing
+  (let* ((state (start-map-state))
+         (camera (nth-value 1 (ship-focus-map state)))
+         (ribbon (lis::make-ribbon))
+         (lines (lis::make-map-lines))
+         (orbit (start-orbit))
+         (eye (map-eye camera state))
+         (focal (lis::camera-focal-px camera 800)))
+    (flet ((fill-all ()
+             (lis::map-lines-clear! lines)
+             (lis::orbit-ribbon-points! ribbon orbit eye focal)
+             (loop while (< (lis::map-lines-count lines) (lis::map-lines-capacity lines))
+                   do (lis::map-lines-add-orbit! lines ribbon eye camera '(1280 800) :dashed t))))
+      (fill-all)
+      (is = (lis::map-lines-capacity lines) (lis::map-lines-count lines))
+      (is = 0 (least-bytes-consed #'fill-all)))))
+
 ;;; The map's markers (decision 84).
 
 (defun with-bodies (state)

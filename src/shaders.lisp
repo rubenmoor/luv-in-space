@@ -519,48 +519,74 @@
 
 ;;; The map's ribbon (src/ribbons.lisp; decision 84: Map ribbons and
 ;;; markers: osculating orbit, adaptive segments, overlay markers and
-;;; visibility): one segment per instance, FROM and TO relative to the eye,
-;;; a 6-vertex quad (CORNER: along 0 or 1, across ±1) SCREEN.z px wide plus
-;;; a 1 px fringe; an endpoint behind the near plane moved along the segment
-;;; to it, a segment wholly behind collapsed. ACROSS: pixels from the centre line.
+;;; visibility; decision 125: Map in milestone 3: the trajectory line, line
+;;; styles, ...): one segment per instance, FROM and TO relative to the eye,
+;;; a 6-vertex quad (CORNER: along 0 or 1, across ±1) STYLE.z px wide plus a
+;;; 1 px fringe; an endpoint behind the near plane moved along the segment
+;;; to it, a segment wholly behind collapsed. STYLE: dash phase in px at FROM
+;;; (−1: solid), at TO, width in px, radiance factor. The phase is made
+;;; linear in screen space (varyings phase × w and w: their perspective
+;;; interpolation divides back to Σλ phase) so dashes keep their pixel
+;;; length. ACROSS: pixels from the centre line.
 (define-frame-shader ribbon-vertex
     (:stage :vertex
      :inputs ((corner :vec2 :location 0)
               (from :vec4 :location 1)
               (to :vec4 :location 2)
-              (tint :vec4 :location 3))
+              (tint :vec4 :location 3)
+              (style :vec4 :location 4))
      :outputs ((clip-position :vec4 :built-in :position)
                (across :float :location 0)
-               (shade :vec3 :location 1)))
+               (shade :vec3 :location 1)
+               (phase-w :float :location 2)
+               (clip-w :float :location 3)
+               (half-width :float :location 4)))
   (let* ((a0 (vec4 (dot clip-x from) (dot clip-y from) (dot clip-z from) (dot clip-w from)))
          (b0 (vec4 (dot clip-x to) (dot clip-y to) (dot clip-z to) (dot clip-w to)))
          (limit (* (swizzle clip-z :w) 1.001))
          (wa (swizzle a0 :w)) (wb (swizzle b0 :w))
-         (a (if (< wa limit) (mix a0 b0 (/ (- limit wa) (- wb wa))) a0))
-         (b (if (< wb limit) (mix b0 a0 (/ (- limit wb) (- wa wb))) b0))
+         (ta (if (< wa limit) (/ (- limit wa) (- wb wa)) 0.0))
+         (tb (if (< wb limit) (/ (- limit wb) (- wa wb)) 0.0))
+         (a (mix a0 b0 ta))
+         (b (mix b0 a0 tb))
          (pixels (swizzle screen :xy))
          (sa (/ (/ (swizzle a :xy) (swizzle a :w)) pixels))
          (sb (/ (/ (swizzle b :xy) (swizzle b :w)) pixels))
          (along (normalize (+ (- sb sa) (vec2 1e-6 0.0))))
          (normal (vec2 (- 0.0 (swizzle along :y)) (swizzle along :x)))
-         (half (+ (* 0.5 (swizzle screen :z)) 0.5))
+         (half (+ (* 0.5 (swizzle style :z)) 0.5))
          (p (mix a b (swizzle corner :x)))
+         (phase-a (mix (swizzle style :x) (swizzle style :y) ta))
+         (phase-b (mix (swizzle style :y) (swizzle style :x) tb))
+         (phase (mix phase-a phase-b (swizzle corner :x)))
          (offset (* normal (* (swizzle corner :y) half (swizzle p :w)) pixels))
          (visible (if (and (< wa limit) (< wb limit)) 0.0 1.0)))
     (set-output clip-position (* (vec4 (+ (swizzle p :xy) offset) (swizzle p :zw)) visible))
     (set-output across (* (swizzle corner :y) half))
-    (set-output shade (swizzle tint :xyz))))
+    (set-output shade (* (swizzle tint :xyz) (swizzle style :w)))
+    (set-output phase-w (* phase (swizzle p :w)))
+    (set-output clip-w (swizzle p :w))
+    (set-output half-width half)))
 
 ;; Additive through premultiplied alpha: alpha 0. Radiance SHADE x SCREEN.w
 ;; over the exposure, so the line reads the same at any exposure; the
-;; fringe's coverage antialiases the edges.
+;; fringe's coverage antialiases the edges. A dashed line (phase >= 0) is on
+;; for 8 px of every 14, each end softened over 1 px.
 (define-frame-shader ribbon-fragment
     (:stage :fragment
      :inputs ((across :float :location 0)
-              (shade :vec3 :location 1))
+              (shade :vec3 :location 1)
+              (phase-w :float :location 2)
+              (clip-w :float :location 3)
+              (half-width :float :location 4))
      :outputs ((color :vec4 :location 0)))
-  (let* ((coverage (clamp (- (+ (* 0.5 (swizzle screen :z)) 0.5) (abs across)) 0.0 1.0)))
-    (set-output color (vec4 (* shade (/ (* (swizzle screen :w) coverage) (swizzle post :x))) 0.0))))
+  (let* ((coverage (clamp (- half-width (abs across)) 0.0 1.0))
+         (phase (/ phase-w clip-w))
+         (m (- phase (* 14.0 (floor (/ phase 14.0)))))
+         (dash (if (< phase -0.5)
+                   1.0
+                   (min (clamp (+ m 0.5) 0.0 1.0) (clamp (- 8.5 m) 0.0 1.0)))))
+    (set-output color (vec4 (* shade (/ (* (swizzle screen :w) coverage dash) (swizzle post :x))) 0.0))))
 
 ;;; The cab's light and openings (src/cockpit.lisp; decision 126: Cockpit
 ;;; structure and view in milestone 3), and the cab block: clip rows of the head

@@ -1153,3 +1153,23 @@ seconds dv): seconds from SIM's t, dv spent."
       (true (<= seconds 86400d0) "~,1F h" (/ seconds 3600))
       (is = 1 (count "ON STATION: TERN STATION" (log-texts clock) :test #'string=))
       (true (lis::clock-checkpoint clock)))))
+
+(define-test coast-lambert-converges-or-fails
+  ;; task 280: an arc whose end is still off its aim after the last
+  ;; iteration is no solution (it was returned as one).
+  (let* ((sim (highport-phase-sim 0))
+         (r-d (lis::vec3-copy (lis::ship-state-r (lis::sim-ship sim))))
+         (v-d (lis::vec3-copy (lis::ship-state-v (lis::sim-ship sim))))
+         (t-d (lis::sim-t sim))
+         (group (lis::make-coast-group (lis::coast-rails r-d v-d t-d)))
+         (normal (lis::vec3-normalize (lis::vec3-cross r-d v-d)))
+         (r-a (lis::vec3-scale (lis::rotate-about (lis::vec3-normalize r-d) normal (lis::deg->rad 60d0))
+                               (+ lis::+radius-earth+ 600d3)))
+         (v1 (lis::make-vec3)) (v2 (lis::make-vec3)))
+    (let ((lis::*coast-lambert-iterations* 8))
+      (true (lis::coast-lambert-into! v1 v2 r-d t-d r-a 1500d0 normal group)))
+    (let ((r (lis::make-vec3)) (v (lis::make-vec3)))
+      (lis::rails-state-into! r v (first (lis::coast-rails r-d v1 t-d)) (+ t-d 1500d0))
+      (true (< (lis::vec3-norm (lis::vec3-sub r-a r)) lis::*coast-lambert-tolerance*)))
+    (let ((lis::*coast-lambert-iterations* 1))
+      (false (lis::coast-lambert-into! v1 v2 r-d t-d r-a 1500d0 normal group)))))

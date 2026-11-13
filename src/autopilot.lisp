@@ -2188,14 +2188,15 @@ solve to the grid's aim point, kept in the pool by its total Δv; its units."
 ;;; Exact evaluations and their scans
 
 (defparameter *coast-lambert-tolerance* 1d-3 "m: coast-lambert-into!'s end against its aim.")
-(defparameter *coast-lambert-iterations* 4)
+(defparameter *coast-lambert-iterations* 8)
 
 (defun coast-lambert-into! (v1 v2 r-d t-d r-a tof normal group)
   "V1 at R-D (T-D) of the conic whose rails (coast-rails) reach R-A TOF s
 later, V2 their velocity there: Lambert to R-A set back by GROUP's drift,
 again by the arc's where that differs (arc-drift-due-p), then the end's miss
 on the rails added to the aim, *coast-lambert-iterations* times at most;
-true, or nil (no solution, or the arc below the floor)."
+true, or nil (no solution, the arc below the floor, or the end still more
+than *coast-lambert-tolerance* off its aim after the last iteration)."
   (let ((aim (make-vec3)) (r (make-vec3)) (miss (make-vec3))
         (drift (search-group-drift group)) (node-drift (search-group-node-drift group)))
     (drift-into! aim r-a normal (- (* drift tof)) (- (* node-drift tof)))
@@ -2203,7 +2204,7 @@ true, or nil (no solution, or the arc below the floor)."
       (multiple-value-bind (du dnode) (conic-drift-rates r-d v1)
         (when (arc-drift-due-p du dnode drift node-drift tof)
           (drift-into! aim r-a normal (- (* du tof)) (- (* dnode tof))))))
-    (dotimes (i *coast-lambert-iterations* t)
+    (dotimes (i *coast-lambert-iterations* nil)
       (unless (and (lambert-into! v1 v2 r-d aim tof +mu-earth+ normal)
                    (not (arc-below-p r-d v1 aim v2 (search-floor))))
         (return nil))

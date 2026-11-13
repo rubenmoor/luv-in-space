@@ -719,6 +719,18 @@ the tests' one decode for every canvas they open.")
    (post-sampler :initarg :post-sampler :reader frame-renderer-post-sampler)
    (test-quads :initform nil :accessor frame-renderer-test-quads
                :documentation "Tests only: nil or (buffer . count), drawn as stars.")
+   (text-atlas :initarg :text-atlas :reader frame-renderer-text-atlas
+               :documentation "The glyphs of all three fonts (src/text.lisp).")
+   (text-layout :initarg :text-layout :reader frame-renderer-text-layout)
+   (text-corners :initarg :text-corners :reader frame-renderer-text-corners)
+   (text-batch :initform (make-text-batch) :reader frame-renderer-text-batch
+               :documentation "The text records of the frame: regions callers rewrite.")
+   (text-block :initform (make-array +text-block-floats+ :element-type 'single-float
+                                                         :initial-element 0f0)
+               :reader frame-renderer-text-block)
+   (test-text :initform nil :accessor frame-renderer-test-text
+              :documentation "Tests only: nil or a text-batch drawn in the scene by the world
+camera's clip rows (positions relative to the eye in ICRF axes).")
    (frames :initform (luv:make-canvas-frame-resource-cache) :reader frame-renderer-frames
            :documentation "Per target: its frame-slot.")
    (swapchain-extent :initform nil :accessor frame-renderer-swapchain-extent)
@@ -777,18 +789,25 @@ the tests' one decode for every canvas they open.")
                                     :depth-compare :always))
     (post-pipelines renderer layout)
     (overlay-pipeline renderer layout)
+    (let ((text-layout (text-layout renderer)))
+      (reinitialize-instance renderer
+                             :text-atlas (make-text-atlas-for (renderer-device renderer))
+                             :text-layout text-layout
+                             :text-corners (vertex-buffer renderer (text-corners) "text corners"))
+      (text-pipeline renderer text-layout +hdr-format+))
     renderer))
 
 (defstruct frame-slot
 "A target's frame block, its scene bind group, its ship-slot, its ribbon
-instance buffer, its overlay vertices, and the bind groups sampling the
+instance buffer, its overlay vertices, its text-slot, and the bind groups sampling the
 post levels in POST-VIEWS."
-  buffer bind-group ship ribbon overlay (post-views '()) (post-bind-groups '()))
+  buffer bind-group ship ribbon overlay text (post-views '()) (post-bind-groups '()))
 
 (defun release-frame-resources (slot)
   (release-ship-slot (frame-slot-ship slot))
   (luv:destroy (frame-slot-ribbon slot))
   (luv:destroy (frame-slot-overlay slot))
+  (release-text-slot (frame-slot-text slot))
   (mapc #'luv:destroy (frame-slot-post-bind-groups slot))
   (luv:destroy (frame-slot-bind-group slot))
   (luv:destroy (frame-slot-buffer slot)))
@@ -822,6 +841,9 @@ again once it is acquired (luv's canvas-frame-resource-cache)."
                 :ship (make-ship-target-slot renderer (frame-renderer-ship renderer) buffer)
                 :ribbon (make-ribbon-buffer (renderer-device renderer)
                                             (frame-renderer-ribbon renderer))
+                :text (make-text-slot renderer (frame-renderer-text-layout renderer)
+                                      (frame-renderer-text-atlas renderer)
+                                      (text-batch-capacity (frame-renderer-text-batch renderer)))
                 :overlay (luv:create (renderer-device renderer)
                                      (luv:make-buffer-descriptor
                                       :label "overlay"
@@ -869,6 +891,7 @@ means luv rebuilt the swapchain: forget its old textures first."
 (defun destroy-frame-renderer (renderer)
   (luv:destroy-canvas-frame-resource-cache (frame-renderer-frames renderer)
                                            #'release-frame-resources)
+  (release-text-atlas (frame-renderer-text-atlas renderer))
   (destroy-renderer renderer))
 
 (defun srgb-target-p (renderer)
@@ -975,6 +998,11 @@ or nil, then the LOST PANEL's lines or nil). VIEW: :outside or :map."
                        state (frame-renderer-eye renderer))
           (encode-objects pass renderer (frame-renderer-ship renderer) (frame-slot-ship slot)
                           state camera extent (frame-renderer-eye renderer))
+          (let ((text (frame-renderer-test-text renderer)))
+            (when text
+              (encode-text pass renderer (frame-slot-text slot) text
+                           (text-block! (frame-renderer-text-block renderer) data extent exposure)
+                           (frame-renderer-text-corners renderer))))
           (when (eq view :map)
             (encode-ribbon pass renderer bind-group (frame-renderer-ribbon renderer)
                            (frame-slot-ribbon slot) (frame-renderer-ribbon-corners renderer)

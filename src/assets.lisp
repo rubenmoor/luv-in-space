@@ -19,6 +19,17 @@ under the assets root; an error naming it when the file is missing."
 or the system's assets/)." relative (uiop:native-namestring path)))
     path))
 
+(defun font-path (key)
+  "The pathname of the font KEY under the assets root (decision 126: Cockpit
+structure and view in milestone 3: frames, draw order, Slug text, head look,
+exposure, cab light, portholes, bezels, tape labels): :mono Monaspace Neon
+Regular (screens), :mono-bold Monaspace Neon Bold (the name plate), :label
+Iosevka Aile Bold (tape labels and engravings)."
+  (asset-path (ecase key
+                (:mono "fonts/MonaspaceNeon-Regular.ttf")
+                (:mono-bold "fonts/MonaspaceNeon-Bold.ttf")
+                (:label "fonts/IosevkaAile-Bold.ttf"))))
+
 (defun copy-surface-pixels (pixels width height pitch)
   "A rank-2 (unsigned-byte 32) array HEIGHT x WIDTH of the 32-bit words at PIXELS."
   (declare (optimize speed) (type sb-sys:system-area-pointer pixels)

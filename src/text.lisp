@@ -520,7 +520,7 @@ text block already filled; nothing for an empty batch."
 ;;; plots, colours and updates). Drawn in the same bind group as the text.
 
 (defconstant +line-record-floats+ 10 "From xyz, to xyz, tint rgb and the width in metres.")
-(defparameter *line-max-records* 512)
+(defparameter *line-max-records* 1024)
 
 (defstruct (line-batch (:copier nil) (:constructor %make-line-batch))
   (data nil :type (simple-array single-float (*)))

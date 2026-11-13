@@ -748,7 +748,7 @@ the window's plane and of a porthole's plane."
   (dolist (sim (list (lis::new-game-sim)
                      (lis::stated-sim '(:berthed (:fulmar-depot :a)))
                      (lis::stated-sim '(:date "2040-01-19" :orbit (:near :pod-14 :at-slot) :grappled :pod-14))))
-    (dolist (name '(:orbit :ship))
+    (dolist (name '(:orbit :ship :target :autopilot))
       (destructuring-bind (columns rows) (getf (lis::cockpit-panel name) :grid)
         (multiple-value-bind (texts) (screen-lines-of name sim)
           (true (<= (length texts) rows))
@@ -778,22 +778,22 @@ the window's plane and of a porthole's plane."
     (multiple-value-bind (state clock) (screen-state sim)
       (flet ((update (real-time)
                (lis::cockpit-update! cockpit views (text-test-atlas) state clock real-time :cockpit)))
-        (is = 4 (update 0d0))
+        (is = 6 (update 0d0))
         (is = 0 (update 0.04d0))
         (is = 0 (update 0.09d0))
-        (is = 4 (update 0.11d0))
+        (is = 6 (update 0.11d0))
         (is = 0 (update 0.15d0))
         ;; a hold change at once, between the 10 Hz rebuilds
         (setf (lis::controls-hold (lis::render-state-controls state)) :retrograde)
-        (is = 4 (update 0.16d0))
+        (is = 6 (update 0.16d0))
         (is = 0 (update 0.17d0))
         (setf (lis::clock-paused clock) t)
-        (is = 4 (update 0.18d0))
-        (is = 4 (update 0.29d0))
+        (is = 6 (update 0.18d0))
+        (is = 6 (update 0.29d0))
         ;; a view change at once; a restart rebuilds
-        (is = 4 (lis::cockpit-update! cockpit views (text-test-atlas) state clock 0.30d0 :map))
+        (is = 6 (lis::cockpit-update! cockpit views (text-test-atlas) state clock 0.30d0 :map))
         (lis::cockpit-state-invalidate! cockpit)
-        (is = 4 (update 0.31d0))))))
+        (is = 6 (update 0.31d0))))))
 
 (define-test cockpit-rebuild-conses-little
   (let ((sim (lis::new-game-sim)) (cockpit (lis::make-cockpit-state)) (views (test-screen-views))
@@ -1658,3 +1658,258 @@ the window's plane and of a porthole's plane."
   (true (member :attitude lis::*cockpit-text-screens*))
   (let ((names (mapcar #'lis::screen-view-name (test-screen-views))))
     (true (member :attitude names))))
+
+;;; TARGET and AUTOPILOT (plan 32 piece 5; decision 127)
+
+(defun targeted-sim (key)
+  (let ((sim (lis::new-game-sim)))
+    (lis::sim-set-target! sim key)
+    sim))
+
+(defun format-range-expected (metres)
+  (if (>= metres 1000d0) (format nil "~,3F km" (/ metres 1000)) (format nil "~,1F m" metres)))
+
+(define-test target-screen-with-target
+  (let ((sim (targeted-sim :tern-station)))
+    (multiple-value-bind (state clock) (screen-state sim)
+      (let* ((texts (mapcar #'lis::line-text (lis::screen-lines :target state clock 0d0)))
+             (rel (lis::render-state-target-relative state)))
+        (is string= "TERN STATION" (nth 0 texts))
+        (is eq lis::*screen-magenta* (lis::run-colour (first (first (lis::screen-lines :target state clock 0d0)))))
+        (is string= (format nil "RNG ~A" (format-range-expected (aref rel 0))) (nth 1 texts))
+        (true (eql 0 (search "CLS " (nth 2 texts))) "~S" (nth 2 texts))
+        (is string= (format nil "CLS ~A m/s" (lis::signed-fixed (aref rel 1) (if (< (abs (aref rel 1)) 1) 2 1)))
+            (nth 2 texts))
+        (true (eql 0 (search "F " (nth 3 texts))) "~S" (nth 3 texts))
+        (true (search " R " (nth 3 texts)))
+        (true (search " D " (nth 3 texts)))
+        (multiple-value-bind (time distance) (lis::prediction-closest-approach (lis::clock-prediction clock))
+          (if time
+              (is string= (format nil "CA ~A ~A" (lis::format-clock-time (- time (lis::render-state-t state)))
+                                  (format-range-expected distance))
+                  (nth 4 texts))
+              (is string= "CA --" (nth 4 texts))))
+        (is string= "" (nth 5 texts))
+        (is string= "TGT ] NEXT [ PREV" (nth 7 texts))))))
+
+(define-test target-screen-ranges-and-phase
+  (let ((sim (targeted-sim :tern-station)))
+    (multiple-value-bind (state clock) (screen-state sim)
+      (setf (aref (lis::render-state-target-relative state) 0) 340.24d0
+            (aref (lis::render-state-target-relative state) 1) 0.5d0)
+      (let ((texts (mapcar #'lis::line-text (lis::screen-lines :target state clock 0d0))))
+        (is string= "RNG 340.2 m" (nth 1 texts))
+        (is string= "CLS +0.50 m/s" (nth 2 texts)))
+      (setf (aref (lis::render-state-target-relative state) 0) 12345d0)
+      (is string= "RNG 12.345 km" (nth 1 (mapcar #'lis::line-text (lis::screen-lines :target state clock 0d0))))
+      ;; station-keeping and the terminal phase, from a plan with a rendezvous part
+      (setf (lis::sim-plan sim)
+            (lis::make-burn-plan #() :rendezvous (lis::make-rendezvous-part :tern-station nil 100d0 1 1
+                                                                            (lis::make-vec3) 0d0 '()))
+            (lis::sim-plan-phase sim) :terminal)
+      (lis::render-state-update! state clock sim)
+      (is string= "TERMINAL" (nth 5 (mapcar #'lis::line-text (lis::screen-lines :target state clock 0d0))))
+      (setf (lis::sim-plan-phase sim) :station)
+      (is string= "ON STATION 100 m" (nth 5 (mapcar #'lis::line-text (lis::screen-lines :target state clock 0d0)))))))
+
+(define-test target-screen-without-target
+  (multiple-value-bind (texts) (screen-lines-of :target (lis::new-game-sim))
+    (is string= "NO TARGET" (nth 0 texts))
+    (is string= "PICK ] [  OR MAP CLICK" (nth 2 texts))
+    (false (nth 3 texts))))
+
+(defun autopilot-screen-of (sim &optional setup (real-time 0d0))
+  "(values texts lines state clock model) of AUTOPILOT; SETUP a function of the clock, sim and model."
+  (let* ((clock (lis::new-clock sim)) (model (lis::clock-autopilot clock)))
+    (when setup (funcall setup clock sim model))
+    (let* ((state (lis::render-state-update! (lis::make-render-state) clock sim))
+           (lines (lis::screen-lines :autopilot state clock real-time)))
+      (values (mapcar #'lis::line-text lines) lines state clock model))))
+
+(defun shown-plan! (clock sim model)
+  "MODEL shows a 400 -> 800 km plan with its shot."
+  (declare (ignorable clock))
+  (let* ((job (lis::new-autopilot-job sim)))
+    (lis::autopilot-plan-now sim :change-orbit '(800000d0) job)
+    (setf (lis::autopilot-model-plan model) (lis::autopilot-job-plan job)
+          (lis::autopilot-model-job model) job)
+    (lis::autopilot-keep-shot! model (lis::autopilot-job-plan job) (lis::autopilot-job-shot job))
+    (lis::autopilot-set-state! model :shown)))
+
+(define-test autopilot-screen-modes
+  (let ((sim (lis::new-game-sim)))
+    ;; closed: the plot's rows empty, the presets hint on row 8
+    (let ((texts (autopilot-screen-of sim)))
+      (is = 8 (length texts))
+      (is string= "PRESETS [O]" (nth 7 texts))
+      (true (every (lambda (text) (string= "" text)) (subseq texts 0 7))))
+    ;; the menu: seven rows, the selection inverted over the grid's width
+    (multiple-value-bind (texts lines) (autopilot-screen-of sim (lambda (clock sim model)
+                                                                 (lis::autopilot-key! model clock sim :open)))
+      (true (eql 0 (search "CIRCULARISE" (nth 0 texts))))
+      (is eq :inverted (lis::run-style (first (nth 0 lines))))
+      (is = 22 (length (nth 0 texts)))
+      (is string= "PLAN [RET]  CLOSE [O]" (nth 7 texts))
+      (is = 0 (count-if (lambda (line) (and line (eq :inverted (lis::run-style (first line))))) (subseq lines 1))))
+    ;; the window keeps a far selection visible
+    (multiple-value-bind (texts lines)
+        (autopilot-screen-of sim (lambda (clock sim model)
+                                   (lis::autopilot-key! model clock sim :open)
+                                   (dotimes (i 9) (lis::autopilot-key! model clock sim :down))))
+      (let ((row (position-if (lambda (line) (and line (eq :inverted (lis::run-style (first line))))) lines)))
+        (true row)
+        (true (< row 7))
+        (true (eql 0 (search "RDV " (nth row texts))) "~S" (nth row texts))
+        (dolist (text texts) (false (search "…" text) "~S" text))))
+    ;; a refusal, planning
+    (multiple-value-bind (texts lines)
+        (autopilot-screen-of sim (lambda (clock sim model)
+                                   (lis::autopilot-key! model clock sim :open)
+                                   (lis::autopilot-set-state! model :refused "BELOW 150 KM")))
+      (is string= "! BELOW 150 KM" (nth 7 texts))
+      (is = lis::*screen-amber* (lis::run-colour (first (nth 7 lines)))))
+    (let ((texts (autopilot-screen-of sim (lambda (clock sim model)
+                                            (declare (ignore clock sim))
+                                            (lis::autopilot-set-state! model :planning "PLANNING…")))))
+      (is string= "PLANNING…" (nth 0 texts)))))
+
+(define-test autopilot-screen-plan-and-states
+  (let ((sim (lis::new-game-sim)))
+    (multiple-value-bind (texts lines state clock model) (autopilot-screen-of sim #'shown-plan!)
+      (declare (ignore lines))
+      (let ((summary (lis::autopilot-plan-summary (lis::autopilot-model-plan model) sim)))
+        (is string= (format nil "BURN 1/~D ~A" (getf summary :burns) (lis::format-clock-time (getf summary :next-in)))
+            (nth 0 texts))
+        (is string= (format nil "DV ~,1F m/s  ~D s" (getf summary :next-dv) (round (getf summary :next-duration)))
+            (nth 1 texts))
+        (is string= (format nil "TOTAL ~D m/s ~D kg" (round (getf summary :total-dv)) (round (getf summary :propellant)))
+            (nth 2 texts))
+        (true (eql 0 (search (format nil "LEFT ~,1F t  ARR " (/ (getf summary :left) 1000)) (nth 3 texts)))
+              "~S" (nth 3 texts)))
+      (is string= "RET ENGAGE  BKSP DROP" (nth 7 texts))
+      (dolist (text texts) (true (<= (length text) 22) "~S" text))
+      ;; engaged
+      (lis::autopilot-set-state! model :engaged)
+      (setf (lis::autopilot-model-engaged model) t
+            (lis::autopilot-model-flown model) (lis::autopilot-model-plan model))
+      (let ((texts (mapcar #'lis::line-text (lis::screen-lines :autopilot state clock 0d0))))
+        (is string= "ENGAGED  OFF [BKSP]" (nth 7 texts))))))
+
+(define-test autopilot-screen-abort
+  (let ((sim (lis::new-game-sim)))
+    (flet ((setup (clock sim model)
+             (declare (ignore sim))
+             (lis::clock-message! clock :autopilot "AUTOPILOT: ABORT: LOW PROPELLANT")
+             (lis::autopilot-set-state! model :off "AUTOPILOT: ABORT: LOW PROPELLANT")))
+      (multiple-value-bind (texts lines state clock) (autopilot-screen-of sim #'setup)
+        (is string= "ABORT: LOW PROPELLANT" (nth 7 texts))
+        (is = lis::*screen-red* (lis::run-colour (first (nth 7 lines))))
+        (is eq :inverted (lis::run-style (first (nth 7 lines))))
+        (lis::clock-acknowledge! clock)
+        (is string= "PRESETS [O]"
+            (nth 7 (mapcar #'lis::line-text (lis::screen-lines :autopilot state clock 0d0))))))))
+
+;;; The orbit plot
+
+(defun plot-segment-face (plot index)
+  "(values a0 b0 a1 b1 width) of segment INDEX of PLOT in the face's right and up metres."
+  (let* ((region (lis::autopilot-plot-region plot)) (frame (lis::autopilot-plot-frame plot))
+         (data (lis::line-batch-data (lis::line-region-batch region)))
+         (base (* lis::+line-record-floats+ (+ (lis::line-region-start region) index)))
+         (c (lis::plane-frame-centre frame)) (r (lis::plane-frame-r frame)) (u (lis::plane-frame-u frame)))
+    (flet ((coord (offset axis)
+             (loop for k below 3 sum (* (- (aref data (+ base offset k)) (aref c k)) (aref axis k)))))
+      (values (coord 0 r) (coord 0 u) (coord 3 r) (coord 3 u) (aref data (+ base 9))))))
+
+(defun plot-of (sim &optional setup)
+  "(values plot state clock model) with the plot drawn for SIM."
+  (let* ((clock (lis::new-clock sim)) (model (lis::clock-autopilot clock))
+         (plot (lis::make-autopilot-plot (lis::make-line-batch))))
+    (lis::prediction-run! (lis::clock-prediction clock) sim)
+    (when setup (funcall setup clock sim model))
+    (let ((state (lis::render-state-update! (lis::make-render-state) clock sim)))
+      (lis::autopilot-plot-segments! plot state)
+      (values plot state clock model))))
+
+(define-test autopilot-plot-start-orbit
+  (multiple-value-bind (plot) (plot-of (lis::new-game-sim))
+    (let* ((unit (lis::autopilot-plot-unit plot)) (hh (lis::autopilot-plot-hh plot))
+           (radius (+ lis::+radius-earth+ 400000d0)))
+      (is = 1 (lis::autopilot-plot-runs plot))
+      (true (< (abs (- (* 0.9d0 hh) (* unit radius))) 1d-6))
+      ;; every point of the path on the circle at 90 % of the half-height
+      (loop for i from (aref (lis::autopilot-plot-run-start plot) 0) below (aref (lis::autopilot-plot-run-end plot) 0)
+            do (let ((d (* unit (sqrt (+ (expt (aref (lis::autopilot-plot-px plot) i) 2)
+                                          (expt (aref (lis::autopilot-plot-py plot) i) 2))))))
+                 (true (< (abs (- d (* 0.9d0 hh))) 0.0005d0) "point ~D: ~F against ~F" i d (* 0.9d0 hh))))
+      ;; every segment inside the plot's rectangle
+      (dotimes (k (lis::autopilot-plot-segments plot))
+        (multiple-value-bind (a0 b0 a1 b1) (plot-segment-face plot k)
+          (dolist (pair (list (cons a0 b0) (cons a1 b1)))
+            (true (<= (abs (- (car pair) (lis::autopilot-plot-cx plot))) (+ (lis::autopilot-plot-hw plot) 1e-5)))
+            (true (<= (abs (- (cdr pair) (lis::autopilot-plot-cy plot))) (+ (lis::autopilot-plot-hh plot) 1e-5))))))
+      ;; a circular orbit has no apsides to mark
+      (false (lis::autopilot-plot-mark-p plot)))))
+
+(define-test autopilot-plot-eccentric-orbit-and-target
+  (let ((sim (lis::new-game-sim)))
+    ;; 400 x 1000 km: speed up at the start radius
+    (let* ((r (lis::sim-ship sim))
+           (mu lis::+mu-earth+) (rr (lis::vec3-norm (lis::ship-state-r r)))
+           (a (/ (+ rr (+ lis::+radius-earth+ 1000000d0)) 2))
+           (speed (sqrt (* mu (- (/ 2 rr) (/ 1 a))))))
+      (lis::vec3-scale! (lis::ship-state-v r) (lis::ship-state-v r)
+                        (/ speed (lis::vec3-norm (lis::ship-state-v r))))
+      (multiple-value-bind (plot) (plot-of sim)
+        (is eq :both (lis::autopilot-plot-mark-p plot))
+        (let* ((m (lis::autopilot-plot-marks plot))
+               (ap (sqrt (+ (expt (aref m 0) 2) (expt (aref m 1) 2))))
+               (pe (sqrt (+ (expt (aref m 2) 2) (expt (aref m 3) 2)))))
+          (true (< (abs (- ap (+ lis::+radius-earth+ 1000000d0))) 1d-3) "Ap ~F" ap)
+          (true (< (abs (- pe (+ lis::+radius-earth+ 400000d0))) 1d-3) "Pe ~F" pe)
+          ;; on the major axis, opposite each other
+          (true (< (abs (- (* (aref m 0) (aref m 3)) (* (aref m 1) (aref m 2)))) 1d-3)))))
+    ;; the target's orbit projected into the plane, magenta, apart from the scale
+    (let ((target-sim (targeted-sim :tern-station)))
+      (multiple-value-bind (plot state) (plot-of target-sim)
+        (is = 2 (lis::autopilot-plot-runs plot))
+        (is eq :target (svref (lis::autopilot-plot-run-kind plot) 1))
+        (let* ((i (aref (lis::autopilot-plot-run-start plot) 1))
+               (px (aref (lis::autopilot-plot-px plot) i)) (py (aref (lis::autopilot-plot-py plot) i))
+               (target-r (lis::render-state-target-r state))
+               (out (lis::vec3-dot target-r (lis::autopilot-plot-eh plot))))
+          (declare (ignorable out))
+          ;; its distance from the plane's centre is the target orbit's own radius, less the normal part
+          (true (<= (sqrt (+ (* px px) (* py py))) (+ 1d-6 (* 1.5d0 (lis::vec3-norm target-r))))))))))
+
+(define-test autopilot-plot-plan-and-menu
+  (multiple-value-bind (plot) (plot-of (lis::new-game-sim) #'shown-plan!)
+    (is eq :third (lis::autopilot-plot-mode plot))
+    (true (plusp (lis::autopilot-plot-ticks plot)) "the burns' ticks")
+    ;; the dashed run after the first burn
+    (true (find :dashed (lis::autopilot-plot-run-kind plot) :end (lis::autopilot-plot-runs plot)))
+    ;; the plot fills only the third: rows 5 to 7
+    (dotimes (k (lis::autopilot-plot-segments plot))
+      (multiple-value-bind (a0 b0 a1 b1) (plot-segment-face plot k)
+        (declare (ignore a0 a1))
+        (true (<= (abs (- b0 (lis::autopilot-plot-cy plot))) (+ (lis::autopilot-plot-hh plot) 1e-5)))
+        (true (<= (abs (- b1 (lis::autopilot-plot-cy plot))) (+ (lis::autopilot-plot-hh plot) 1e-5))))))
+  (multiple-value-bind (plot) (plot-of (lis::new-game-sim)
+                                       (lambda (clock sim model) (lis::autopilot-key! model clock sim :open)))
+    (is eq nil (lis::autopilot-plot-mode plot))
+    (is = 0 (lis::autopilot-plot-segments plot))))
+
+(define-test autopilot-rebuild-conses-little
+  (let* ((sim (targeted-sim :tern-station))
+         (clock (lis::new-clock sim)) (batch (lis::make-text-batch)) (lines (lis::make-line-batch))
+         (atlas (text-test-atlas))
+         (view (lis::make-screen-view :autopilot batch lines))
+         (state (lis::render-state-update! (lis::make-render-state) clock sim)))
+    (lis::prediction-run! (lis::clock-prediction clock) sim)
+    (flet ((rebuild ()
+             (lis::screen-view-draw! view atlas (lis::screen-lines :autopilot state clock 0d0))
+             (lis::autopilot-plot-update! (lis::screen-view-plot view) state)))
+      (rebuild) (rebuild)
+      (let ((before (sb-ext:get-bytes-consed)))
+        (rebuild)
+        (true (< (- (sb-ext:get-bytes-consed) before) 16384) "~D bytes" (- (sb-ext:get-bytes-consed) before))))))

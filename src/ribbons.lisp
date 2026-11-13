@@ -52,12 +52,30 @@ and an index order for the budget; ORBIT, the frame's osculating orbit."
   (p-axis (make-vec3) :type vec3)
   (q-axis (make-vec3) :type vec3)
   (scratch (make-vec3) :type vec3)
-  (orbit (make-orbit 0d0 0d0 0d0 0d0 0d0 0d0 0d0) :type orbit))
+  (orbit (make-orbit 0d0 0d0 0d0 0d0 0d0 0d0 0d0) :type orbit)
+  ;; The predicted trajectory's work (trajectory-ribbon-points!): each
+  ;; point's TIMES, the elements (a run of nodes, or one interval in 2^k
+  ;; pieces): first node, node intervals, k, eye distance and base error in
+  ;; px; the BREAKS (times); BOUND, the worst piece error reached in px.
+  (times nil :type doubles)
+  (e-start nil :type (simple-array fixnum (*)))
+  (e-length nil :type (simple-array fixnum (*)))
+  (e-k nil :type (simple-array fixnum (*)))
+  (e-distance nil :type doubles)
+  (e-error nil :type doubles)
+  (breaks nil :type doubles)
+  (bound 0d0 :type double-float))
 
-(defun make-ribbon (&key (capacity *ribbon-max-segments*) (base *ribbon-base-segments*))
+(defun make-ribbon (&key (capacity *ribbon-max-segments*) (base *ribbon-base-segments*)
+                      (elements *prediction-capacity*))
   (flet ((doubles (n) (make-array n :element-type 'double-float :initial-element 0d0))
          (fixnums (n) (make-array n :element-type 'fixnum :initial-element 0)))
     (%make-ribbon :capacity capacity
+                  :times (doubles (1+ capacity))
+                  :e-start (fixnums (+ 2 elements)) :e-length (fixnums (+ 2 elements))
+                  :e-k (fixnums (+ 2 elements)) :e-distance (doubles (+ 2 elements))
+                  :e-error (doubles (+ 2 elements))
+                  :breaks (doubles (+ 8 16 *prediction-event-capacity*))
                   :points (doubles (* 3 (1+ capacity)))
                   :radii (doubles (1+ capacity))
                   :anomalies (doubles (1+ capacity))
@@ -292,6 +310,329 @@ nothing."
                   prev-x px prev-y py prev-visible visible)))
         phase))))
 
+;;; The ship's line from the clock's prediction (decision 125: Map in
+;;; milestone 3): the render state's r at t_r, then the stored path to each
+;;; node after it, merged in aligned runs where the nodes are dense and split
+;;; into Hermite pieces where they are sparse, all within a pixel budget.
+
+(defparameter *ribbon-run-max* 64 "Nodes in the longest merged run (a power of two); decision 125.")
+(defparameter *ribbon-merge-tries* 40 "Times the merge tolerance doubles at most for the budget.")
+(declaim (type fixnum *ribbon-run-max* *ribbon-merge-tries*))
+
+(defun trajectory-first-node (pred time)
+  "The index of the first node of PRED stored after TIME when at least two
+follow it, else nil: the trajectory is drawn from them, otherwise the
+osculating orbit is. Conses nothing."
+  (declare (optimize speed) (type prediction pred) (type double-float time))
+  (let* ((count (prediction-count pred)) (head (prediction-head pred))
+         (j (node-interval pred time))
+         (first (cond (j (1+ j))
+                      ((and (< head count) (< time (node-t (prediction-nodes pred) head))) head))))
+    (declare (type fixnum count head))
+    (and first (>= (- count (the fixnum first)) 2) first)))
+
+(defun trajectory-drawn-p (pred time)
+  "True when the map draws PRED's trajectory at the render time TIME: two
+nodes after it and a copy about Earth; else it draws the osculating orbit."
+  (declare (type prediction pred) (type double-float time))
+  (let ((sim (prediction-sim pred)))
+    (and sim (eq (sim-body sim) :earth) (trajectory-first-node pred time) t)))
+
+(defun trajectory-impact-p (pred)
+  "True when PRED's copy was lost by a crash: its last node is the impact."
+  (let ((loss (and (prediction-sim pred) (sim-loss (prediction-sim pred)))))
+    (and loss (eq (loss-cause loss) :crash))))
+
+(defun trajectory-ribbon-points! (ribbon pred state eye focal-px)
+  "Fill RIBBON with the ship's trajectory from PRED for the eye EYE (relative
+to Earth's centre): the points (and their times) from the render STATE's r at
+t_r, then along the Hermite of the stored interval holding t_r (a chord when
+none does) to each stored node after it, to the horizon or the impact. Node
+intervals merge in aligned runs of at most *ribbon-run-max* nodes while the
+run's sagitta chord² / 8ρ (ρ = |v|³ / |v × a|, point-mass a at its first
+node) and its middle node's distance from the chord, seen from the eye, stay
+within the merge tolerance (*ribbon-max-error-px*) and no break (a burn's
+start or cut, the last interval before an impact) falls inside; a single
+interval splits into 2^k Hermite pieces (k ≤ *ribbon-max-split*) by the
+bound of its curvature; k is lowered farthest first, then the tolerance
+doubled, until the pieces fit the budget. The mid-radii mark the piece that
+ends at an impact red. Returns the segment count, RIBBON-BOUND holding the
+worst piece error in px reached; nil, RIBBON untouched, when PRED has fewer
+than two nodes after t_r or is not about Earth (draw the osculating orbit).
+Conses nothing."
+  (declare (optimize speed) (type ribbon ribbon) (type prediction pred)
+           (type render-state state) (type vec3 eye) (type double-float focal-px))
+  (let* ((sim (prediction-sim pred))
+         (tr (the double-float (render-state-t state)))
+         (first (trajectory-first-node pred tr)))
+    (declare (type double-float tr))
+    (unless (and sim first (eq (sim-body sim) :earth))
+      (return-from trajectory-ribbon-points! nil))
+    (let* ((first first)
+           (nodes (prediction-nodes pred))
+           (count (prediction-count pred))
+           (r (the vec3 (render-state-r state)))
+           (j (node-interval pred tr))
+           (e-start (ribbon-e-start ribbon)) (e-length (ribbon-e-length ribbon))
+           (e-k (ribbon-e-k ribbon)) (e-distance (ribbon-e-distance ribbon))
+           (e-error (ribbon-e-error ribbon))
+           (points (ribbon-points ribbon)) (times (ribbon-times ribbon))
+           (mid-radii (ribbon-mid-radii ribbon))
+           (breaks (ribbon-breaks ribbon))
+           (budget (min *ribbon-max-segments* (ribbon-capacity ribbon)))
+           (max-split (max 0 (min 20 *ribbon-max-split*)))
+           (run-max (max 1 *ribbon-run-max*))
+           (impact (trajectory-impact-p pred))
+           (last-interval (min (- count 2) (+ first (- (length e-start) 4))))
+           (ex (aref eye 0)) (ey (aref eye 1)) (ez (aref eye 2))
+           (rx (aref r 0)) (ry (aref r 1)) (rz (aref r 2))
+           (s0 0d0) (hsag 0d0) (nb 0) (n 0) (total 0)
+           (tol *ribbon-max-error-px*)
+           (c (make-array 12 :element-type 'double-float :initial-element 0d0)))
+      (declare (type fixnum first count last-interval budget max-split run-max nb n total)
+               (type (simple-array double-float (*)) nodes) (type double-float ex ey ez rx ry rz s0 hsag tol)
+               (type hermite c) (dynamic-extent c))
+      (when (and impact (< last-interval (- count 2))) (setf impact nil))
+      ;; the partial interval's start s0 and its curvature bound
+      (when j
+        (let ((h (interval-hermite! c pred j)))
+          (declare (ignore h))
+          (setf s0 (/ (- tr (node-t nodes j)) (- (node-t nodes (1+ j)) (node-t nodes j)))
+                hsag (let ((a 0d0) (b 0d0))
+                       (declare (type (double-float 0d0) a b))
+                       (dotimes (i 3)
+                         (let ((c2 (aref c (+ 6 i))) (c3 (aref c (+ 9 i))))
+                           (incf a (* c2 c2)) (incf b (expt (+ c2 (* 3 c3)) 2))))
+                       (* 0.25d0 (sqrt (max a b)))))))
+      ;; the breaks, sorted
+      (flet ((add-break (time)
+               (declare (type double-float time))
+               (when (and (> time tr) (< nb (length breaks)))
+                 (let ((m nb))
+                   (declare (type fixnum m))
+                   (loop while (and (> m 0) (> (aref breaks (1- m)) time))
+                         do (setf (aref breaks m) (aref breaks (1- m))) (decf m))
+                   (setf (aref breaks m) time)
+                   (incf nb)))))
+        (declare (inline add-break))
+        (let ((times (prediction-event-times pred)) (kinds (prediction-event-kinds pred)))
+          (dotimes (i (prediction-event-count pred))
+            (when (eq (svref kinds i) :burn-start) (add-break (aref times i)))))
+        (dotimes (i (prediction-cut-count pred))
+          (add-break (aref (prediction-cut-times pred) i)))
+        (when (and impact (>= (- count 2) first))
+          (add-break (node-t nodes (- count 2)))))
+      (labels ((px-error (sag distance)
+                 (declare (type double-float sag distance))
+                 (/ (* sag focal-px) (max 1d-3 (- distance sag))))
+               (chord (ax ay az bx by bz)
+                 ;; the eye's distance to the chord A–B, and |B − A|²
+                 (declare (type double-float ax ay az bx by bz))
+                 (let* ((qx (- ax ex)) (qy (- ay ey)) (qz (- az ez))
+                        (dx (- bx ax)) (dy (- by ay)) (dz (- bz az))
+                        (dd (+ (* dx dx) (* dy dy) (* dz dz)))
+                        (s (if (> dd 0d0)
+                               (max 0d0 (min 1d0 (/ (- (+ (* qx dx) (* qy dy) (* qz dz))) dd)))
+                               0d0))
+                        (cx (+ qx (* s dx))) (cy (+ qy (* s dy))) (cz (+ qz (* s dz))))
+                   (values (sqrt (+ (* cx cx) (* cy cy) (* cz cz))) dd)))
+               (node (i k)
+                 (declare (type (integer 0 1000000) i) (type (integer 0 2) k))
+                 (aref nodes (+ (* +node-size+ i) 1 k)))
+               (velocity (i k)
+                 (declare (type (integer 0 1000000) i) (type (integer 0 2) k))
+                 (aref nodes (+ (* +node-size+ i) 4 k)))
+               (split-for (error-px)
+                 (declare (type double-float error-px))
+                 (let ((k 0))
+                   (declare (type fixnum k))
+                   (loop while (and (> error-px tol) (< k max-split))
+                         do (setf error-px (* 0.25d0 error-px)) (incf k))
+                   k))
+               (run-error (i len)
+                 ;; the run of LEN intervals from node I: its px error and eye distance
+                 (declare (type fixnum i len))
+                 (let ((ax (node i 0)) (ay (node i 1)) (az (node i 2))
+                       (bx (node (+ i len) 0)) (by (node (+ i len) 1)) (bz (node (+ i len) 2))
+                       (vx (velocity i 0)) (vy (velocity i 1)) (vz (velocity i 2)))
+                   (declare (type double-float ax ay az bx by bz vx vy vz))
+                   (multiple-value-bind (distance chord2) (chord ax ay az bx by bz)
+                     (declare (type double-float distance chord2))
+                     (let* ((rn2 (+ (* ax ax) (* ay ay) (* az az)))
+                            (rn3 (* rn2 (sqrt rn2)))
+                            (cx (- (* vy az) (* vz ay))) (cy (- (* vz ax) (* vx az)))
+                            (cz (- (* vx ay) (* vy ax)))
+                            (vcross (sqrt (+ (* cx cx) (* cy cy) (* cz cz))))
+                            (v2 (+ (* vx vx) (* vy vy) (* vz vz)))
+                            (v3 (* v2 (sqrt v2)))
+                            (sag (if (and (> v3 0d0) (> rn3 0d0))
+                                     (/ (* chord2 (/ (* +mu-earth+ vcross) rn3)) (* 8d0 v3))
+                                     0d0))
+                            (error-px (px-error sag distance)))
+                       (declare (type double-float rn2 rn3 cx cy cz vcross v2 v3 sag error-px))
+                       (when (> len 1)
+                         ;; the middle node's distance from the chord
+                         (let* ((m (+ i (ash len -1)))
+                                (dx (- bx ax)) (dy (- by ay)) (dz (- bz az))
+                                (mx (- (node m 0) ax)) (my (- (node m 1) ay)) (mz (- (node m 2) az))
+                                (ux (- (* my dz) (* mz dy))) (uy (- (* mz dx) (* mx dz)))
+                                (uz (- (* mx dy) (* my dx)))
+                                (dd (+ (* dx dx) (* dy dy) (* dz dz)))
+                                (off (if (> dd 0d0)
+                                         (/ (sqrt (+ (* ux ux) (* uy uy) (* uz uz))) (sqrt dd))
+                                         0d0)))
+                           (declare (type double-float dx dy dz mx my mz ux uy uz dd off))
+                           (setf error-px (max error-px (px-error off distance)))))
+                       (values error-px distance)))))
+               (build (tol-now)
+                 ;; the elements at the merge tolerance TOL-NOW; the pieces in all
+                 (declare (type double-float tol-now))
+                 (setf tol tol-now)
+                 (let ((i first) (bp 0) (pieces 0))
+                   (declare (type fixnum i bp pieces))
+                   ;; element 0: from r to the first node after t_r
+                   (multiple-value-bind (distance chord2)
+                       (chord rx ry rz (node first 0) (node first 1) (node first 2))
+                     (declare (type double-float distance chord2) (ignorable chord2))
+                     (let* ((span (- 1d0 s0))
+                            (error-px (if j (px-error (* hsag span span) distance) 0d0))
+                            (k (split-for error-px)))
+                       (setf (aref e-start 0) (if j j -1) (aref e-length 0) 1 (aref e-k 0) k
+                             (aref e-distance 0) distance (aref e-error 0) error-px)
+                       (incf pieces (ash 1 (the (integer 0 30) k)))))
+                   (setf n 1)
+                   (loop while (and (<= i last-interval) (< n (- (length e-start) 1)))
+                         do (let ((ti (node-t nodes i)) (len 1))
+                              (declare (type double-float ti) (type fixnum len))
+                              (loop while (and (< bp nb) (<= (aref breaks bp) ti)) do (incf bp))
+                              (let ((try run-max))
+                                (declare (type fixnum try))
+                                (loop while (> try 1)
+                                      do (when (and (zerop (mod i try)) (<= (+ i try -1) last-interval)
+                                                    (or (>= bp nb)
+                                                        (>= (aref breaks bp) (node-t nodes (+ i try)))))
+                                           (multiple-value-bind (error-px distance) (run-error i try)
+                                             (declare (type double-float error-px distance))
+                                             (when (<= error-px tol)
+                                               (setf len try
+                                                     (aref e-distance n) distance
+                                                     (aref e-error n) error-px)
+                                               (return))))
+                                         (setf try (ash try -1))))
+                              (setf (aref e-start n) i (aref e-length n) len)
+                              (cond ((> len 1)
+                                     (setf (aref e-k n) 0)
+                                     (incf pieces))
+                                    (t
+                                     (let ((h (interval-hermite! c pred i)))
+                                       (declare (ignore h))
+                                       (multiple-value-bind (distance chord2)
+                                           (chord (node i 0) (node i 1) (node i 2)
+                                                  (node (1+ i) 0) (node (1+ i) 1) (node (1+ i) 2))
+                                         (declare (type double-float distance) (ignore chord2))
+                                         (let* ((a 0d0) (b 0d0))
+                                           (declare (type (double-float 0d0) a b))
+                                           (dotimes (q 3)
+                                             (let ((c2 (aref c (+ 6 q))) (c3 (aref c (+ 9 q))))
+                                               (incf a (* c2 c2)) (incf b (expt (+ c2 (* 3 c3)) 2))))
+                                           (let* ((sag (* 0.25d0 (sqrt (max a b))))
+                                                  (error-px (px-error sag distance))
+                                                  (k (split-for error-px)))
+                                             (setf (aref e-k n) k (aref e-distance n) distance
+                                                   (aref e-error n) error-px)
+                                             (incf pieces (ash 1 k))))))))
+                              (incf n)
+                              (incf i len)))
+                   pieces))
+               (lower (excess)
+                 ;; lower k by one on the farthest elements until EXCESS pieces are saved;
+                 ;; the pieces saved, 0 when no element is split
+                 (declare (type fixnum excess))
+                 (flet ((saving (cutoff)
+                          (declare (type double-float cutoff) (values fixnum &optional))
+                          (let ((sum 0))
+                            (declare (type fixnum sum))
+                            (dotimes (e n sum)
+                              (when (and (> (aref e-k e) 0) (>= (aref e-distance e) cutoff))
+                                (incf sum (ash 1 (the (integer 0 29) (1- (aref e-k e))))))))))
+                   (let ((lo 0d0) (hi 0d0))
+                     (declare (type double-float lo hi))
+                     (dotimes (e n) (setf hi (max hi (aref e-distance e))))
+                     (cond ((zerop (saving 0d0)) 0)
+                           ((< (saving 0d0) excess)
+                            (dotimes (e n) (when (> (aref e-k e) 0) (decf (aref e-k e))))
+                            (saving 0d0))
+                           (t
+                            ;; the largest cutoff whose saving is still enough
+                            (setf hi (* 1.000001d0 hi))
+                            (dotimes (iteration 40)
+                              (let ((mid (* 0.5d0 (+ lo hi))))
+                                (if (>= (saving mid) excess) (setf lo mid) (setf hi mid))))
+                            (let ((saved (saving lo)))
+                              (dotimes (e n)
+                                (when (and (> (aref e-k e) 0) (>= (aref e-distance e) lo))
+                                  (decf (aref e-k e))))
+                              saved)))))))
+        (declare (inline px-error chord node velocity split-for))
+        ;; elements within the budget
+        (setf total (build *ribbon-max-error-px*))
+        (let ((tries 0))
+          (declare (type fixnum tries))
+          (loop while (> total budget)
+                do (let ((saved (lower (- total budget))))
+                     (declare (type fixnum saved))
+                     (decf total saved)
+                     (when (and (> total budget) (zerop saved))
+                       (when (>= (incf tries) *ribbon-merge-tries*) (return))
+                       (setf total (build (* 2d0 tol)))))))
+        ;; the points
+        (let ((p 0) (bound 0d0))
+          (declare (type fixnum p) (type double-float bound))
+          (flet ((put (x y z time)
+                   (declare (type double-float x y z time))
+                   (when (< p (ribbon-capacity ribbon))
+                     (setf (aref points (* 3 p)) x (aref points (+ (* 3 p) 1)) y
+                           (aref points (+ (* 3 p) 2)) z (aref times p) time))
+                   (incf p)))
+            (declare (inline put))
+            (put rx ry rz tr)
+            (dotimes (e n)
+              (let* ((start (aref e-start e)) (len (aref e-length e)) (k (aref e-k e)))
+                (declare (type fixnum start len k))
+                (setf bound (max bound (* (aref e-error e) (scale-float 1d0 (* -2 (the (integer 0 30) k))))))
+                (cond ((> len 1)
+                       (let ((end (+ start len)))
+                         (put (node end 0) (node end 1) (node end 2) (node-t nodes end))))
+                      ((< start 0)
+                       (put (node first 0) (node first 1) (node first 2) (node-t nodes first)))
+                      (t
+                       (let* ((pieces (ash 1 k))
+                              (h (interval-hermite! c pred start))
+                              (t0 (node-t nodes start))
+                              (from (if (= e 0) s0 0d0))
+                              (dp (make-vec3)) (out (make-vec3)))
+                         (declare (type fixnum pieces) (type double-float h t0 from)
+                                  (dynamic-extent dp out))
+                         (loop for m of-type fixnum from 1 below pieces
+                               do (let ((s (+ from (/ (* (- 1d0 from) m) pieces))))
+                                    (declare (type double-float s))
+                                    (hermite-point! out dp c s)
+                                    (put (aref out 0) (aref out 1) (aref out 2) (+ t0 (* s h)))))
+                         (let ((end (1+ start)))
+                           (put (node end 0) (node end 1) (node end 2) (node-t nodes end)))))))))
+          (let ((segments (max 0 (1- (min p (1+ (ribbon-capacity ribbon)))))))
+            (declare (type fixnum segments))
+            (dotimes (s segments)
+              (let ((x (* 0.5d0 (+ (aref points (* 3 s)) (aref points (+ (* 3 s) 3)))))
+                    (y (* 0.5d0 (+ (aref points (+ (* 3 s) 1)) (aref points (+ (* 3 s) 4)))))
+                    (z (* 0.5d0 (+ (aref points (+ (* 3 s) 2)) (aref points (+ (* 3 s) 5))))))
+                (setf (aref mid-radii s) (sqrt (+ (* x x) (* y y) (* z z))))))
+            (when (and impact (> segments 0))
+              (setf (aref mid-radii (1- segments)) 0d0))
+            (setf (ribbon-count ribbon) segments
+                  (ribbon-bound ribbon) bound)
+            segments))))))
+
 ;;; The one line buffer of the map (decision 125): every ribbon appends its
 ;;; segments here and one draw covers them.
 
@@ -368,10 +709,11 @@ not written (decision 4: Depth strategy)."
   (> (vec3-norm (vec3-cross! h r v)) (* 1d-9 (vec3-norm r) (vec3-norm v))))
 
 (defun map-lines-fill! (lines ribbon state camera eye extent)
-  "LINES: the ship's osculating orbit about Earth (cyan) and, with a target,
-its osculating orbit (magenta, *target-orbit-colour*), for the eye EYE (relative
-to Earth's centre) and a frame of EXTENT (width height). Nothing for a state
-without an orbit plane (r × v = 0). Conses nothing."
+  "LINES: the ship's predicted trajectory (cyan; trajectory-ribbon-points!)
+or, without two nodes of a prediction after t_r, its osculating orbit about
+Earth, and with a target its osculating orbit (magenta, *target-orbit-colour*),
+for the eye EYE (relative to Earth's centre) and a frame of EXTENT (width
+height). No orbit for a state without an orbit plane (r × v = 0). Conses nothing."
   (map-lines-clear! lines)
   (let ((h (ribbon-scratch ribbon)) (focal (camera-focal-px camera (second extent))))
     (flet ((orbit-of (r v colour)
@@ -382,7 +724,10 @@ without an orbit plane (r × v = 0). Conses nothing."
                (map-lines-add-orbit! lines ribbon eye camera extent :colour colour))))
       (when (render-state-target state)
         (orbit-of (render-state-target-r state) (render-state-target-v state) *target-orbit-colour*))
-      (orbit-of (render-state-r state) (render-state-v state) *ribbon-colour*))
+      (let ((pred (render-state-prediction state)))
+        (if (and pred (trajectory-ribbon-points! ribbon pred state eye focal))
+            (map-lines-add-orbit! lines ribbon eye camera extent :colour *ribbon-colour*)
+            (orbit-of (render-state-r state) (render-state-v state) *ribbon-colour*))))
     lines))
 
 (defun encode-map-lines (pass renderer bind-group lines buffer corners state camera eye extent)
@@ -490,8 +835,9 @@ strings and scratch vectors, preallocated."
   "The frame's markers into OUT (decision 84: Map ribbons and markers:
 osculating orbit, adaptive segments, overlay markers and visibility) for
 CAMERA and EXTENT (width height): the ship's ring, always; apoapsis (not
-on a hyperbola) and periapsis diamonds; the impact cross at the osculating
-orbit's next inbound crossing of the crash radius; dots for Earth, the Moon
+on a hyperbola) and periapsis diamonds; the impact cross at the end of the
+drawn trajectory (the prediction's last node, decision 125) or, with none, at the
+osculating orbit's next inbound crossing of the crash radius; dots for Earth, the Moon
 and the Sun below *marker-body-px*. Markers behind the eye go; markers other
 than the ship's whose sight line meets Earth or the Moon go. Conses nothing;
 OUT."
@@ -509,6 +855,8 @@ OUT."
          (items (map-markers-items out))
          (moon (render-state-moon render-state))
          (r (render-state-r render-state)) (v (render-state-v render-state))
+         (pred (render-state-prediction render-state))
+         (trajectory (and pred (trajectory-drawn-p pred (render-state-t render-state))))
          (count 0))
     (declare (type double-float width height f fx fy) (type fixnum count) (type vec3 moon r v))
     (camera-eye camera (camera-anchor-position! eye camera render-state) eye)
@@ -595,9 +943,10 @@ OUT."
                      (write-altitude-label! (map-markers-apoapsis-label out) "AP " apoapsis)
                      scratch :both)))
             ;; the next inbound crossing of the crash radius after t_r
-            (when (if (< e 1d0)
-                      (and (>= e circular) (<= q crash (/ p (- 1d0 e))))
-                      (>= crash q))
+            (when (and (not trajectory)
+                       (if (< e 1d0)
+                           (and (>= e circular) (<= q crash (/ p (- 1d0 e))))
+                           (>= crash q)))
               (let* ((theta (- (acos (the (double-float -1d0 1d0)
                                              (max -1d0 (min 1d0 (/ (- (/ p crash) 1d0) e)))))))
                      (ship-theta (atan (vec3-dot r qv) (vec3-dot r pv)))
@@ -624,6 +973,12 @@ OUT."
                       (put-on-conic crash theta)
                       (add :impact :cross *marker-impact-colour* "IMPACT" scratch :both
                            (+ (render-state-t render-state) (/ dm n))))))))))
+        ;; the prediction's impact: its last node, where the line ends
+        (when (and trajectory (trajectory-impact-p pred))
+          (let* ((nodes (prediction-nodes pred)) (k (* +node-size+ (1- (prediction-count pred)))))
+            (vec3-set! scratch (aref nodes (+ k 1)) (aref nodes (+ k 2)) (aref nodes (+ k 3)))
+            (add :impact :cross *marker-impact-colour* "IMPACT" scratch :both
+                 (loss-time (sim-loss (prediction-sim pred))))))
         (vec3-set! scratch 0d0 0d0 0d0)
         (body-marker :earth "EARTH" scratch +radius-earth+ :moon)
         (body-marker :moon "MOON" moon +radius-moon+ :earth)

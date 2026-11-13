@@ -498,3 +498,226 @@ view first; also the camera."
                               (lis::map-markers state camera extent markers)
                               (lis::map-marker-vertices! (lis::overlay-clear! out) markers)))
                  5))))))
+
+;;; The predicted trajectory (decision 125: Map in milestone 3; decision
+;;; 116: Prediction in milestone 3: horizon, target nodes, closest approach,
+;;; relative nodes, budget).
+
+(defun trajectory-fixture (sim &key (height 800))
+  "(values state camera pred ribbon eye focal) for SIM at its start: the
+clock's prediction run to its horizon, the map opened on the render state."
+  (let* ((clock (lis::new-clock sim))
+         (state (with-bodies (lis::render-state-update! (lis::make-render-state) clock sim)))
+         (pred (lis::clock-prediction clock)))
+    (lis::prediction-run! pred sim)
+    (let ((camera (nth-value 1 (opened-map state)))
+          (ribbon (lis::make-ribbon)))
+      (let ((eye (map-eye camera state)))
+        (lis::trajectory-ribbon-points! ribbon pred state eye (lis::camera-focal-px camera height))
+        (values state camera pred ribbon eye (lis::camera-focal-px camera height))))))
+
+(defun ribbon-times (ribbon)
+  (loop for s to (lis::ribbon-count ribbon) collect (aref (lis::ribbon-times ribbon) s)))
+
+(define-test trajectory-points-on-the-prediction
+  (multiple-value-bind (state camera pred ribbon) (trajectory-fixture (lis::new-game-sim))
+    (declare (ignore camera))
+    (true (plusp (lis::ribbon-count ribbon)))
+    (true (equalp (ribbon-point ribbon 0) (lis::render-state-r state)))
+    (is = (lis::render-state-t state) (aref (lis::ribbon-times ribbon) 0))
+    (let ((out (lis::make-vec3)) (worst 0d0))
+      (loop for s from 1 to (lis::ribbon-count ribbon)
+            for time = (aref (lis::ribbon-times ribbon) s)
+            do (true (lis::prediction-position! out pred time) "outside at ~F" time)
+               (setf worst (max worst (/ (lis::vec3-norm (lis::vec3-sub out (ribbon-point ribbon s)))
+                                         (lis::vec3-norm out)))))
+      (true (< worst 1d-6) "worst relative ~A" worst))
+    ;; the times rise, from t_r to the prediction's horizon
+    (let ((times (ribbon-times ribbon)))
+      (true (apply #'< times))
+      (true (>= (car (last times)) (- (lis::prediction-end pred) 10))))))
+
+(define-test trajectory-from-between-nodes
+  ;; t_r between two stored nodes: r first, then the Hermite's own points
+  (let* ((sim (lis::new-game-sim))
+         (clock (lis::new-clock sim))
+         (state (with-bodies (lis::render-state-update! (lis::make-render-state) clock sim)))
+         (pred (lis::clock-prediction clock)))
+    (lis::prediction-run! pred sim)
+    (let ((time (+ (lis::start-t) 700.37d0)))
+      (setf (lis::render-state-t state) time)
+      (lis::prediction-position! (lis::render-state-r state) pred time)
+      (let* ((camera (nth-value 1 (opened-map state)))
+             (ribbon (lis::make-ribbon))
+             (eye (map-eye camera state)))
+        (true (lis::trajectory-ribbon-points! ribbon pred state eye (lis::camera-focal-px camera 800)))
+        (true (equalp (ribbon-point ribbon 0) (lis::render-state-r state)))
+        (let ((times (ribbon-times ribbon)) (out (lis::make-vec3)))
+          (is = time (first times))
+          (true (apply #'< times))
+          (loop for s from 1 to (lis::ribbon-count ribbon)
+                do (lis::prediction-position! out pred (nth s times))
+                   (true (< (lis::vec3-norm (lis::vec3-sub out (ribbon-point ribbon s))) 1d-3))))))))
+
+(defun piece-error-px (pred ribbon s eye focal)
+  "The worst distance, in px from EYE, of the prediction's path between ribbon
+points S and S + 1 from their chord, at 8 times."
+  (let* ((a (ribbon-point ribbon s)) (b (ribbon-point ribbon (1+ s)))
+         (t0 (aref (lis::ribbon-times ribbon) s)) (t1 (aref (lis::ribbon-times ribbon) (1+ s)))
+         (d (lis::vec3-sub b a)) (dd (lis::vec3-dot d d)) (worst 0d0) (p (lis::make-vec3)))
+    (loop for m from 1 to 8
+          do (lis::prediction-position! p pred (+ t0 (* (- t1 t0) (/ m 9d0))))
+             (let* ((u (max 0d0 (min 1d0 (/ (lis::vec3-dot (lis::vec3-sub p a) d) dd))))
+                    (off (lis::vec3-norm (lis::vec3-sub p (lis::vec3-add-scaled a d u)))))
+               (setf worst (max worst (/ (* off focal) (lis::vec3-norm (lis::vec3-sub p eye)))))))
+    worst))
+
+(define-test trajectory-piece-error
+  ;; Every piece within 0.25 px of the stored path unless the budget lowered it
+  (dolist (sim (list (lis::new-game-sim)
+                     (orbit-sim (apsides-orbit 300d3 2000d3))))
+    (multiple-value-bind (state camera pred ribbon eye focal) (trajectory-fixture sim)
+      (declare (ignore state camera))
+      (let ((limit (max 0.25d0 (lis::ribbon-bound ribbon))) (worst 0d0))
+        (loop for s from 1 below (lis::ribbon-count ribbon)
+              do (setf worst (max worst (piece-error-px pred ribbon s eye focal))))
+        (true (<= worst (* 1.02d0 limit)) "worst ~,3F px, bound ~,3F" worst limit)))))
+
+(define-test trajectory-merges-and-splits
+  ;; Far away the dense nodes merge into runs; up close single intervals split.
+  (multiple-value-bind (state camera pred ribbon eye focal) (trajectory-fixture (lis::new-game-sim))
+    (declare (ignore camera eye focal))
+    (true (< (lis::ribbon-count ribbon) (/ (lis::prediction-count pred) 4))
+          "~D segments for ~D nodes" (lis::ribbon-count ribbon) (lis::prediction-count pred))
+    (multiple-value-bind (view camera) (ship-focus-map state)
+      (declare (ignore view))
+      (let ((close (lis::make-ribbon)))
+        (lis::trajectory-ribbon-points! close pred state (map-eye camera state)
+                                        (lis::camera-focal-px camera 800))
+        (true (> (lis::ribbon-count close) (lis::ribbon-count ribbon))
+              "~D segments close, ~D far" (lis::ribbon-count close) (lis::ribbon-count ribbon))
+        (true (<= (lis::ribbon-count close) 8192))))))
+
+(define-test trajectory-budget
+  ;; 20,000 nodes fit 8,192 segments; a small budget raises the bound
+  (let* ((sim (lis::new-game-sim))
+         (state (with-bodies (lis::render-state-update! (lis::make-render-state)
+                                                         (lis::new-clock sim) sim)))
+         (pred (lis::new-prediction :until (+ (lis::start-t) (* 9 (lis::osculating-period sim))))))
+    (lis::prediction-run! pred sim)
+    (setf (lis::render-state-prediction state) pred)
+    (progn
+      (is = lis::*prediction-capacity* (lis::prediction-count pred))
+      (let ((ribbon (lis::make-ribbon)))
+        (multiple-value-bind (view camera) (opened-map state)
+          (declare (ignore view))
+          (lis::trajectory-ribbon-points! ribbon pred state (map-eye camera state)
+                                          (lis::camera-focal-px camera 800)))
+        (true (<= 1 (lis::ribbon-count ribbon) 8192)))
+      (multiple-value-bind (view camera) (ship-focus-map state)
+        (declare (ignore view))
+        (let ((close (lis::make-ribbon)) (eye (map-eye camera state))
+              (focal (lis::camera-focal-px camera 800)))
+          (true (lis::trajectory-ribbon-points! close pred state eye focal))
+          (true (<= (lis::ribbon-count close) 8192))
+          (let ((tight (let ((lis::*ribbon-max-segments* 200))
+                         (lis::make-ribbon :capacity 200))))
+            (true (lis::trajectory-ribbon-points! tight pred state eye focal))
+            (true (<= (lis::ribbon-count tight) 200))
+            (true (> (lis::ribbon-bound tight) lis::*ribbon-max-error-px*))
+            (let ((worst 0d0))
+              (loop for s from 1 below (lis::ribbon-count tight)
+                    do (setf worst (max worst (piece-error-px pred tight s eye focal))))
+              (true (<= worst (* 1.02d0 (lis::ribbon-bound tight)))
+                    "worst ~,3F px, bound ~,3F" worst (lis::ribbon-bound tight)))))))))
+
+(defun deorbit-trajectory-sim ()
+  "The deorbit's dive at its apoapsis: periapsis 50 km below the crash radius."
+  (orbit-sim (dive-orbit (- *earth-crash-radius* 50d3))))
+
+(define-test trajectory-ends-red-at-the-impact
+  (let ((sim (deorbit-trajectory-sim)))
+    (multiple-value-bind (state camera pred ribbon eye) (trajectory-fixture sim)
+      (declare (ignore camera))
+      (true (lis::prediction-impact pred))
+      (let* ((count (lis::ribbon-count ribbon))
+             (end (ribbon-point ribbon count))
+             (loss-r (lis::ship-state-r (lis::sim-ship (lis::prediction-sim pred)))))
+        (true (< (lis::vec3-norm (lis::vec3-sub end loss-r)) 1d-6))
+        (is = (lis::loss-time (lis::prediction-impact pred))
+            (aref (lis::ribbon-times ribbon) count))
+        ;; the piece that ends at the crash radius is red, the others cyan
+        (let ((lines (lis::make-map-lines)))
+          (lis::orbit-ribbon-instances! ribbon eye :out (lis::map-lines-instances lines))
+          (let* ((out (lis::map-lines-instances lines))
+                 (red (lis::srgb-channel-linear lis::*ribbon-crash-colour* 16))
+                 (cyan-red (lis::srgb-channel-linear lis::*ribbon-colour* 16)))
+            (is = (coerce red 'single-float) (aref out (+ (* (1- count) 16) 8)))
+            (loop for s below (1- count)
+                  do (is = (coerce cyan-red 'single-float) (aref out (+ (* s 16) 8))))))
+        ;; the marker at the loss point, where the map can see it
+        (let ((found nil))
+          (loop for az from 0 below 360 by 30
+                until found
+                do (multiple-value-bind (view camera) (opened-map state)
+                     (declare (ignore camera))
+                     (setf (lis::map-view-azimuth view) (deg az))
+                     (let ((camera (lis::map-camera-update! (lis::make-camera) view state nil)))
+                       (setf found (marker (lis::map-markers state camera '(1280 800)
+                                                              (lis::make-map-markers))
+                                           :impact)))))
+          (true found)
+          (when found
+            (true (< (lis::vec3-norm (lis::vec3-sub (lis::map-marker-point found) loss-r)) 1d0))
+            (is = (lis::loss-time (lis::prediction-impact pred)) (lis::map-marker-time found))))))))
+
+(define-test trajectory-fallback-to-the-osculating-orbit
+  (let* ((sim (lis::new-game-sim))
+         (state (with-bodies (lis::render-state-update! (lis::make-render-state)
+                                                         (lis::new-clock sim) sim)))
+         (camera (nth-value 1 (opened-map state)))
+         (ribbon (lis::make-ribbon)) (lines (lis::make-map-lines))
+         (eye (map-eye camera state)) (extent '(1280 800)))
+    ;; the clock's prediction has its first node only: no trajectory
+    (false (lis::trajectory-ribbon-points! ribbon (lis::new-prediction) state eye 1000d0))
+    (setf (lis::render-state-prediction state) (lis::new-prediction))
+    (lis::map-lines-fill! lines ribbon state camera eye extent)
+    (let ((osculating (filled-ribbon (start-orbit) camera state)))
+      (is = (lis::ribbon-count osculating) (lis::map-lines-count lines)))
+    ;; and without a reference at all
+    (setf (lis::render-state-prediction state) nil)
+    (lis::map-lines-fill! lines ribbon state camera eye extent)
+    (true (>= (lis::map-lines-count lines) 256))
+    ;; the osculating impact marker stays where no trajectory is drawn
+    (let ((impact-state (orbit-render-state (apsides-orbit 50d3 400d3) (+ (lis::start-t) 600))))
+      (true (marker (opened-markers impact-state) :impact)))))
+
+(define-test trajectory-conses-nothing
+  (multiple-value-bind (state camera pred ribbon eye focal) (trajectory-fixture (lis::new-game-sim))
+    (let ((lines (lis::make-map-lines)))
+      (setf (lis::render-state-prediction state) pred)
+      (lis::map-lines-fill! lines ribbon state camera eye '(1280 800))
+      (is = 0 (least-bytes-consed
+               (lambda () (dotimes (i 20)
+                            (lis::trajectory-ribbon-points! ribbon pred state eye focal)))
+               5))
+      (is = 0 (least-bytes-consed
+               (lambda () (dotimes (i 20)
+                            (lis::map-lines-fill! lines ribbon state camera eye '(1280 800))))
+               5)))))
+
+#+(or)
+(progn
+  ;; The worst case per frame, outside scripts/test: 20,000 nodes, the eye
+  ;; near the ship (many splits). Evaluate in the test package.
+  (let* ((sim (lis::new-game-sim))
+         (state (with-bodies (lis::render-state-update! (lis::make-render-state)
+                                                         (lis::new-clock sim) sim)))
+         (pred (lis::new-prediction :until (+ (lis::start-t) (* 9 (lis::osculating-period sim))))))
+    (lis::prediction-run! pred sim)
+    (setf (lis::render-state-prediction state) pred)
+    (multiple-value-bind (view camera) (ship-focus-map state)
+      (declare (ignore view))
+      (let ((ribbon (lis::make-ribbon)) (eye (map-eye camera state))
+            (focal (lis::camera-focal-px camera 800)))
+        (time (dotimes (i 1000) (lis::trajectory-ribbon-points! ribbon pred state eye focal)))))))

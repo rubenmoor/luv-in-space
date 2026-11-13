@@ -804,6 +804,12 @@ check looks from el 10 deg, where the far half lies apart."
           (multiple-value-bind (pixels format) (capture camera-fn)
             (let ((n (cyan pixels format on-ring)))
               (true (>= n 315) "ribbon: ~D cyan pixels on the ring" n)))
+          ;; the line is the predicted trajectory (decision 125), run to completion
+          (let* ((render-state (lis::game-render-state game))
+                 (pred (lis::render-state-prediction render-state)))
+            (true (and pred (lis::prediction-complete-p pred)
+                       (lis::trajectory-drawn-p pred (lis::render-state-t render-state)))
+                  "ribbon: the trajectory is drawn"))
           (multiple-value-bind (pixels format)
               (with-canvas-values (game (lis::*ribbon-radiance* 0d0)
                                         (lis::*marker-colour* #x8A8A80))

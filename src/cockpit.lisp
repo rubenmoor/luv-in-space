@@ -649,7 +649,7 @@ rest, in body axes from the eye."
      :bezel (:material :aluminium :border 0.012d0 :depth 0.03d0)
      :cables (:cable-grey))
     (:name :buttons :centre (0.46d0 0d0 0.52d0) :direction (0d0 48.5d0)
-     :size (0.26d0 0.13d0)
+     :size (0.26d0 0.13d0) :cable-drop 0.58d0
      :bezel (:material :black-plastic :border 0.015d0 :depth 0.04d0)
      :cables (:cable-yellow :cable-black :cable-grey))
     (:name :autopilot :centre (0.42d0 -0.30d0 0.50d0) :direction (-35.5d0 45d0)
@@ -677,7 +677,8 @@ rest, in body axes from the eye."
 (informative: the face turns to the eye from its centre), :size (w h) m of the
 face, :grid (columns rows) of its text, :screen (a Slug screen, PLACEHOLDER(166)
 until plan 32 draws it), :turn (the lamp columns' 30 degrees on the wall),
-:wall (fixed to the front wall), :round, :face (its material), :bezel (material,
+:wall (fixed to the front wall), :cable-drop (the cables' start below the centre, in
+heights of the face, default 0.3: the buttons' are below the lenses), :round, :face (its material), :bezel (material,
 border, chin, depth, bolts), :hood, :cables (their colours).")
 
 (defparameter *cockpit-bezel-front* 0.004d0 "m: a bezel stands this far in front of its face.")
@@ -992,7 +993,7 @@ wall, member :wall)."
         (let ((spread (* (- k (* 0.5d0 (1- count))) 0.03d0)))
           (if (getf panel :wall)
               (vlin c (- (+ (* 0.5d0 h) bottom 0.02d0)) u spread r 0.015d0 n)
-              (vlin c (- depth radius) n (* -0.3d0 h) u spread r)))))))
+              (vlin c (- depth radius) n (* (- (or (getf panel :cable-drop) 0.3d0)) h) u spread r)))))))
 
 (defun cockpit-cables ()
   "Every panel's cables as (panel material radius points): from its back to the tray."

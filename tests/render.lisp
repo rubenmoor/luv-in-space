@@ -2274,6 +2274,40 @@ Earth's shadow; each thing is read where the pose puts it."
                   "an unlit dot ~A against a lit one ~A" unlit lit))))))
   (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream))))
 
+;;; The hover outline (plan 32 piece 6; decision 128): the head aimed at PRO with
+;;; the pointer on it, the outline's ring paper white around the lens.
+
+(defun buttons-checks (game png width height)
+  (with-canvas-values (game (lis::*bloom-strength* 0.0))
+    (let* ((sim (start-sim-at 180)) (c (lis::clickable-for :pro))
+           (centre (lis::clickable-centre c)) (right (lis::clickable-right c))
+           (yaw (lis::rad->deg (atan (aref centre 1) (aref centre 0))))
+           (pitch (lis::rad->deg (asin (/ (aref centre 2) (lis::vec3-norm centre)))))
+           (fov 10))
+      (flet ((shot (pointer)
+               (multiple-value-bind (path w h pixels format)
+                   (lis::capture-game-state game png :sim sim :view :cockpit :readout nil :frames 3
+                                                     :head (list yaw pitch fov) :pointer pointer)
+                 (declare (ignore path w h))
+                 (lambda (point)
+                   (multiple-value-bind (x y) (head-projection point yaw pitch)
+                     (let ((per (/ (/ height 2) (tan (lis::deg->rad (/ fov 2))))))
+                       ;; the brightest of the 3 x 3 pixels there: the line's edge is smoothed
+                       (let ((cx (round (+ (/ width 2) (* x per)))) (cy (round (+ (/ height 2) (* y per)))) (best nil))
+                         (loop for dy from -1 to 1
+                               do (loop for dx from -1 to 1
+                                        do (let ((rgb (pixel-rgb pixels format width (+ cx dx) (+ cy dy))))
+                                             (when (or (null best) (> (reduce #'+ rgb) (reduce #'+ best)))
+                                               (setf best rgb)))))
+                         best)))))))
+        (let* ((width-m (* 2 (lis::vec3-norm centre) (/ (* 2 (tan (lis::deg->rad (/ fov 2)))) height)))
+               (ring (lis::vlin centre (+ (lis::clickable-half-width c) lis::*outline-gap* (* 0.5 width-m)) right))
+               (hovered (funcall (shot (list (/ width 2) (/ height 2))) ring))
+               (plain (funcall (shot nil) ring)))
+          (true (within-bytes-p hovered '(#xE8 #xE4 #xD8) 6) "the outline's ring: ~A" hovered)
+          (true (not (within-bytes-p plain '(#xE8 #xE4 #xD8) 30)) "no outline without the pointer: ~A" plain)))))
+  (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream))))
+
 (define-test render-frames
   (let ((width 320) (height 200))
     ;; offscreen-frame decodes the Blue Marble on its canvas; this one shares
@@ -2431,6 +2465,7 @@ Earth's shadow; each thing is read where the pose puts it."
            (cockpit-checks game png width height)
            (screen-checks game png width height)
            (strip-checks game png width height)
+           (buttons-checks game png width height)
            (lamp-checks game png width height)
            (attitude-checks game png width height)
            (autopilot-checks game png width height)

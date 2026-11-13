@@ -326,13 +326,17 @@ the arrival; nil when the plan's cursor has no burn left."
          (screen-line :grey "LEFT " :white (format-fixed (/ (getf summary :left) 1000d0) 1)
                       :grey " t  ARR " :white (format-arrival (- (getf summary :arrival) (sim-t sim)))))))))
 
+(defun menu-window-start (count selected rows)
+  "The first of the ROWS menu rows shown of COUNT, keeping SELECTED in sight."
+  (max 0 (min (- count rows) (- (or selected 0) (floor rows 2)))))
+
 (defun autopilot-menu-window (model sim)
   "The menu's rows, seven of them keeping the selection in sight, the
 selected one inverted over the width of the grid."
   (multiple-value-bind (texts selected) (autopilot-menu-lines model sim)
     (let* ((count (length texts))
            (rows *autopilot-screen-rows*)
-           (start (max 0 (min (- count rows) (- (or selected 0) (floor rows 2))))))
+           (start (menu-window-start count selected rows)))
       ;; the marker column goes: the inverted row says which is selected
       (loop for text in (subseq texts start (min count (+ start rows)))
             for i from start
@@ -477,6 +481,12 @@ region under dark text; the rest zeroed."
   (strip-line-1 "" :type string)
   (strip-line-2 "" :type string)
   (strip-hover nil)                   ; the hovered button's "<NAME> [<KEY>]" (plan 32 piece 6)
+  (hover-id nil)                      ; what the pointer is on: a clickable's id (cockpit-buttons.lisp)
+  (hover-index 0 :type fixnum)        ; a menu row's index
+  (pixel-scale 0d0 :type double-float) ; metres a pixel spans at 1 m
+  (outline-lit nil)
+  (press-times (make-array 18 :element-type 'double-float :initial-element -1d9)
+   :type (simple-array double-float (18))) ; per button: the real time of its last press
   ;; COMMS: the log's typing, its scroll (lines up from the bottom).
   (typed nil)                         ; the newest log entry typed out
   (typing 0d0 :type double-float)     ; characters typed of the next entry
@@ -567,7 +577,7 @@ the berth, the transfer, the log's length. Conses nothing."
   (logand (+ (* 7 (cockpit-state-typing-serial cockpit)) (cockpit-state-scroll cockpit))
           most-positive-fixnum))
 
-(defun cockpit-update! (cockpit views atlas state clock real-time view &key strip devices attitude snap)
+(defun cockpit-update! (cockpit views atlas state clock real-time view &key strip devices buttons attitude snap)
   "Rebuild the text of each of VIEWS (screen-views) whose last rebuild is 0.1 s
 of REAL-TIME old, or was made under another cockpit-signature (COMMS also
 while it types); COCKPIT the game's cockpit-state. The log's typing and the
@@ -582,6 +592,8 @@ of screens rebuilt."
     (declare (type fixnum signature built))
     (when devices
       (cockpit-devices-update! devices cockpit state clock real-time signature snap))
+    (when buttons
+      (cockpit-buttons-draw! buttons cockpit state clock real-time))
     (loop for screen in views
           for i of-type fixnum from 0
           do (let ((signature (if (eq (screen-view-name screen) :comms)

@@ -12,7 +12,9 @@
   (drag nil :type boolean)              ; right button down
   (pointer-dx 0d0 :type double-float)   ; summed since the last frame
   (pointer-dy 0d0 :type double-float)
-  (wheel 0d0 :type double-float))       ; notches, up positive
+  (wheel 0d0 :type double-float)        ; notches, up positive
+  (pointer-x nil)                       ; the pointer's last pixel, or nil (plan 32 piece 6)
+  (pointer-y nil))
 
 (defun input-frame-keys (input)
   "The held keys plus each key pressed and released since the last frame
@@ -29,7 +31,9 @@
         (input-drag input) nil
         (input-pointer-dx input) 0d0
         (input-pointer-dy input) 0d0
-        (input-wheel input) 0d0)
+        (input-wheel input) 0d0
+        (input-pointer-x input) nil
+        (input-pointer-y input) nil)
   input)
 
 (defun quit-key-p (event)
@@ -207,6 +211,7 @@ autopilot's otherwise), the locked engine's message for an engine or RCS key
 while berthed, or the RCS-off message for a flight key above ×4. A pilot's
 key that acts disengages an engaged autopilot first (decision 118)."
   (let ((command (cdr (assoc key *key-map*))))
+    (button-press! (game-cockpit-state game) key (game-real-time game))
     (when (and (eq command :restart) (not (sim-lost-p (game-sim game))))
       (setf command :autopilot-return))
     (when (and (member command *lost-commands*) (not (sim-lost-p (game-sim game))))
@@ -241,8 +246,14 @@ key that acts disengages an engaged autopilot first (decision 118)."
   "Luv in Space · WASD QE turn · HN IK JL move · Shift/Ctrl throttle · Z/X full/cut · T damp · R 1–6 hold · 7–0 target holds · F fine · . , / warp · P pause · V view · C/Home camera · M map · O autopilot · G grapple · B refuel · Y ack · [ ] \\ target · Esc quit")
 
 ;; Runs on the canvas thread: only flag the quit; STOP runs on the caller's.
+(defun note-pointer! (input event)
+  (setf (input-pointer-x input) (float (luv:canvas-pointer-event-x event) 1d0)
+        (input-pointer-y input) (float (luv:canvas-pointer-event-y event) 1d0)))
+
 (defun handle-event (game event)
   (let ((input (game-input game)))
+    (when (typep event 'luv:canvas-pointer-event)
+      (note-pointer! input event))
     (typecase event
       (luv:canvas-key-press-event
        (let ((key (luv:canvas-key-event-key-name event)))
@@ -260,10 +271,11 @@ key that acts disengages an engaged autopilot first (decision 118)."
        (case (luv:canvas-pointer-event-button event)
          (:right (setf (input-drag input) t)
           (set-relative-pointer-mode game t))
-         (:left (when (map-p game)
-                  (map-click! game (luv:canvas-pointer-event-x event)
-                              (luv:canvas-pointer-event-y event)
-                              (luv:canvas-pointer-event-clicks event))))))
+         (:left (case (game-view game)
+                  (:map (map-click! game (luv:canvas-pointer-event-x event)
+                                    (luv:canvas-pointer-event-y event)
+                                    (luv:canvas-pointer-event-clicks event)))
+                  (:cockpit (cockpit-click! game (input-pointer-x input) (input-pointer-y input)))))))
       (luv:canvas-pointer-button-release-event
        (when (and (eq :right (luv:canvas-pointer-event-button event)) (input-drag input))
          (setf (input-drag input) nil)
@@ -339,7 +351,9 @@ below 0.1 off (controls-set-throttle)."
          (unless (and (= dx 0d0) (= dy 0d0))
            (cockpit-view-drag! view dx dy))
          (unless (= notches 0d0)
-           (cockpit-view-zoom! view notches))))
+           (if (cockpit-comms-under-pointer-p game)
+               (comms-scroll! (game-cockpit-state game) (round (* *comms-wheel-lines* notches)))
+               (cockpit-view-zoom! view notches)))))
       (:map
        (let ((view (game-map-view game)))
          (unless (and (= dx 0d0) (= dy 0d0))

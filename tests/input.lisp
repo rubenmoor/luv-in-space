@@ -1036,3 +1036,140 @@ TARGET key, when given); the marker."
           (lis::sim-loss (lis::game-sim game)) (lis::make-loss :crash :earth 0d0 100d0 0d0 0d0))
     (input-tap game :y)
     (is eq :red (lis::cockpit-state-mstr cockpit))))
+
+;;; The left click in the cockpit and the wheel over COMMS (plan 32 piece 6;
+;;; decision 128: Cockpit devices, buttons, picking, the grapple camera and
+;;; messages in milestone 3).
+
+(defun pointer-at (game class x y &rest initargs)
+  (lis::handle-event game (apply #'make-instance class :timestamp 0 :x (float x 1d0) :y (float y 1d0)
+                                 initargs)))
+
+(defun cockpit-click-at (game x y)
+  (pointer-at game 'luv:canvas-pointer-button-press-event x y :button :left)
+  (pointer-at game 'luv:canvas-pointer-button-release-event x y :button :left))
+
+(defun click-on (game id &optional (index 0))
+  (multiple-value-bind (x y) (clickable-pixel id (lis::game-cockpit-view game) 1280 800 index)
+    (cockpit-click-at game x y)))
+
+(defun cockpit-game ()
+  (let ((game (input-game)))
+    (input-tap game :v)
+    game))
+
+(define-test cockpit-click-runs-the-keys-command
+  (let ((game (cockpit-game)))
+    (is equal '(:hold :prograde) (input-attitude game))
+    (click-on game :nml)
+    (is equal '(:hold :normal) (input-attitude game))
+    (click-on game :pro)
+    (is equal '(:hold :prograde) (input-attitude game) "PRO as 1")
+    (click-on game :damp)
+    (is eq :rate-damping (lis::controls-attitude-mode (game-controls game)))
+    (click-on game :fine)
+    (true (lis::controls-fine (game-controls game)))
+    (click-on game :wrp+)
+    (is = 4 (lis::clock-level (input-clock game)))
+    (click-on game :wrp-)
+    (is = 1 (lis::clock-level (input-clock game)))))
+
+(define-test cockpit-click-presses-flash-the-lens
+  (let ((game (cockpit-game)) (lis::*frame-step-time-limit* nil))
+    (setf (lis::game-real-time game) 5d0)
+    (click-on game :fine)
+    (is = 5d0 (aref (lis::cockpit-state-press-times (lis::game-cockpit-state game))
+                    (lis::button-index-for-key :f)))
+    (input-tap game :return)
+    (is = 5d0 (aref (lis::cockpit-state-press-times (lis::game-cockpit-state game))
+                    (lis::button-index-for-key :o)) "AP's Return flashes AP")))
+
+(define-test cockpit-click-gating
+  (let ((game (cockpit-game)))
+    (setf (lis::clock-paused (input-clock game)) t)
+    (click-on game :retr)
+    (is equal '(:hold :prograde) (input-attitude game) "RETR paused is ignored as 2 is")
+    (setf (lis::clock-paused (input-clock game)) nil)
+    (pointer-at game 'luv:canvas-pointer-button-press-event 0 0 :button :right)
+    (click-on game :retr)
+    (is equal '(:hold :prograde) (input-attitude game) "right button held")
+    (pointer-at game 'luv:canvas-pointer-button-release-event 0 0 :button :right)
+    (input-tap game :v)
+    (cockpit-click-at game 640 400)
+    (is eq :outside (lis::game-view game))
+    (input-tap game :v)
+    (lis::fly "burn" :game game)
+    (click-on game :wrp+)
+    (is = 1 (lis::clock-level (input-clock game)) "a flight runs")
+    (click-on game :ap)
+    (false (lis::autopilot-model-open (lis::clock-autopilot (input-clock game))))))
+
+(define-test cockpit-click-while-lost-does-nothing
+  (let ((game (deorbit-game)) (lis::*frame-step-time-limit* nil))
+    (lis::toggle-map! game)
+    (input-tap game :v)
+    (loop repeat 600 until (lis::sim-lost-p (lis::game-sim game)) do (game-frames game 1))
+    (true (lis::sim-lost-p (lis::game-sim game)))
+    (setf (lis::game-view game) :cockpit)
+    (click-on game :ap)
+    (true (lis::sim-lost-p (lis::game-sim game)) "a click on AP is not a restart")))
+
+(define-test cockpit-ap-click-meanings
+  (let ((game (cockpit-game)))
+    (is eq :o (lis::ap-click-key game))
+    (click-on game :ap)
+    (true (lis::autopilot-model-open (lis::clock-autopilot (input-clock game))) "AP opens the menu")
+    (setf (lis::autopilot-model-state (lis::clock-autopilot (input-clock game))) :shown)
+    (is eq :return (lis::ap-click-key game))
+    (setf (lis::sim-plan (lis::game-sim game)) (make-instance 'lis::burn-plan))
+    (is eq :backspace (lis::ap-click-key game))))
+
+(define-test cockpit-menu-row-click-selects-it
+  (let ((game (cockpit-game)))
+    (click-on game :ap)
+    (let* ((model (lis::clock-autopilot (input-clock game)))
+           (rows (lis::autopilot-offered-rows model (lis::game-sim game))))
+      (is = 7 (lis::game-menu-rows game))
+      (click-on game :menu-row 3)
+      (is eq (lis::autopilot-row-key (nth 3 rows)) (lis::autopilot-model-selection model)))))
+
+(define-test cockpit-mstr-click-acknowledges
+  (let ((game (cockpit-game)))
+    (setf (lis::cockpit-state-mstr (lis::game-cockpit-state game)) :red)
+    (click-on game :mstr)
+    (is eq nil (lis::cockpit-state-mstr (lis::game-cockpit-state game)))))
+
+(define-test cockpit-comms-click-marks-the-log-read
+  (let ((game (cockpit-game)))
+    (lis::clock-message! (input-clock game) :test "HELLO")
+    (false (eq (lis::clock-log-read (input-clock game)) (first (lis::clock-log (input-clock game)))))
+    (click-on game :comms)
+    (is eq (first (lis::clock-log (input-clock game))) (lis::clock-log-read (input-clock game)))))
+
+(define-test cockpit-wheel-over-comms-scrolls-the-log
+  (let ((game (cockpit-game)))
+    (multiple-value-bind (x y) (clickable-pixel :comms (lis::game-cockpit-view game) 1280 800)
+      (let ((fov (lis::cockpit-view-target-fov (cockpit-of game))))
+        (pointer-at game 'luv:canvas-pointer-wheel-event x y :scroll-y 1.0)
+        (input-frame game)
+        (is = 3 (lis::cockpit-state-scroll (lis::game-cockpit-state game)))
+        (is = fov (lis::cockpit-view-target-fov (cockpit-of game)))
+        (pointer-at game 'luv:canvas-pointer-wheel-event x y :scroll-y -1.0)
+        (input-frame game)
+        (is = 0 (lis::cockpit-state-scroll (lis::game-cockpit-state game)))))
+    (pointer-at game 'luv:canvas-pointer-wheel-event 5 5 :scroll-y 1.0)
+    (input-frame game)
+    (true (< (lis::cockpit-view-target-fov (cockpit-of game)) (lis::degrees-to-radians 70)) "elsewhere zooms")
+    (is = 0 (lis::cockpit-state-scroll (lis::game-cockpit-state game)))))
+
+(define-test cockpit-hover-shows-the-key-on-the-strip
+  (let ((game (cockpit-game)))
+    (multiple-value-bind (x y) (clickable-pixel :pro (lis::game-cockpit-view game) 1280 800)
+      (pointer-at game 'luv:canvas-pointer-motion-event x y)
+      (lis::cockpit-hover-update! game)
+      (is eq :pro (lis::cockpit-state-hover-id (lis::game-cockpit-state game)))
+      (is string= "PRO [1]" (lis::cockpit-state-strip-hover (lis::game-cockpit-state game))))
+    (pointer-at game 'luv:canvas-pointer-motion-event 5 5)
+    (lis::cockpit-hover-update! game)
+    (is eq nil (lis::cockpit-state-hover-id (lis::game-cockpit-state game)))
+    (is eq nil (lis::cockpit-state-strip-hover (lis::game-cockpit-state game)))))

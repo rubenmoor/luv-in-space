@@ -836,6 +836,8 @@ the tests' one decode for every canvas they open.")
    (strip-view :initform nil :accessor frame-renderer-strip-view)
    (devices :initform nil :accessor frame-renderer-devices
             :documentation "The lamps, gauges and lever (cockpit-devices.lisp).")
+   (buttons :initform nil :accessor frame-renderer-buttons
+            :documentation "The 18 buttons' lenses and the hover outline (cockpit-buttons.lisp).")
    (screen-views :initform '() :accessor frame-renderer-screen-views
                  :documentation "The cockpit's drawn screens (cockpit-screens.lisp).")
    (text-block :initform (make-array +text-block-floats+ :element-type 'single-float
@@ -922,6 +924,9 @@ camera's clip rows (positions relative to the eye in ICRF axes).")
                               (frame-renderer-plots renderer)))
     (setf (frame-renderer-devices renderer)
           (make-cockpit-devices (frame-renderer-text-atlas renderer) (frame-renderer-text-batch renderer)
+                                (frame-renderer-lines renderer)))
+    (setf (frame-renderer-buttons renderer)
+          (make-cockpit-buttons (frame-renderer-text-atlas renderer) (frame-renderer-text-batch renderer)
                                 (frame-renderer-lines renderer)))
     renderer))
 

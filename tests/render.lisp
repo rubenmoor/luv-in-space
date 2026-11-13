@@ -1387,6 +1387,89 @@ after it."
     (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))
     (lis::game-load-state! game (lis::new-game-sim))))
 
+;;; Slug text (src/text.lisp; decision 126: Cockpit structure and view in
+;;; milestone 3): a white emissive H on a plane facing the camera.
+
+(defun h-stem-em ()
+  "Monaspace Neon's H left stem width in em, from its outline's crossings of
+a horizontal line a quarter of the cap height up (all its segments are lines)."
+  (let* ((loader (luv.slug:slug-font-loader (lis::font-path :mono)))
+         (outline (luv.slug:slug-glyph-outline (luv.slug:load-slug-glyph #\H loader)))
+         (y (* 0.25d0 (luv.slug:slug-font-cap-height loader)))
+         (xs '()))
+    (dolist (contour (luv.slug::slug-outline-contours outline))
+      (dolist (curve contour)
+        (let* ((a (luv.slug::slug-quadratic-start curve)) (b (luv.slug::slug-quadratic-end curve))
+               (ya (luv.slug::slug-point-y a)) (yb (luv.slug::slug-point-y b)))
+          (when (< (min ya yb) y (max ya yb))
+            (push (+ (luv.slug::slug-point-x a)
+                     (* (- (luv.slug::slug-point-x b) (luv.slug::slug-point-x a))
+                        (/ (- y ya) (- yb ya))))
+                  xs)))))
+    (setf xs (sort xs #'<))
+    (/ (- (second xs) (first xs)) (zpb-ttf:units/em loader))))
+
+(defun text-checks (game png width height)
+  (let* ((renderer (lis::game-renderer game))
+         (atlas (lis::frame-renderer-text-atlas renderer))
+         (batch (lis::frame-renderer-text-batch renderer))
+         (fov (deg 40)) (distance 2d0)
+         (cap-px 40)
+         (pixels-per-metre (/ height (* 2 distance (tan (/ fov 2)))))
+         (cap (/ cap-px pixels-per-metre))
+         (font (lis::text-font-of atlas :mono))
+         (scale (/ cap (lis::text-font-cap-em font)))
+         (glyph (lis::text-glyph-for atlas :mono #\H))
+         (factor 1.0)
+         (camera-fn
+           (lambda (camera state)
+             (away-camera camera state)
+             (setf (lis::camera-field-of-view camera) fov)
+             (let* ((q (lis::camera-orientation camera))
+                    (forward (lis::quat-rotate q (lis::vec3 1 0 0)))
+                    (right (lis::quat-rotate q (lis::vec3 0 1 0)))
+                    (up (lis::vec3-scale (lis::quat-rotate q (lis::vec3 0 0 1)) -1d0))
+                    (middle-x (* 0.5 (+ (lis::text-glyph-min-x glyph) (lis::text-glyph-max-x glyph))))
+                    (middle-y (* 0.5 (+ (lis::text-glyph-min-y glyph) (lis::text-glyph-max-y glyph))))
+                    (origin (lis::vec3-add (lis::vec3-scale forward distance)
+                                           (lis::vec3-add (lis::vec3-scale right (- (* middle-x scale)))
+                                                          (lis::vec3-scale up (- (* middle-y scale)))))))
+               (setf (lis::text-batch-count batch) 0)
+               (lis::grid-run! atlas (lis::text-batch-region batch 4) 0
+                               (lis::make-text-plane :origin (coerce origin 'list)
+                                                     :right (coerce right 'list) :up (coerce up 'list))
+                               "H" :cap (float cap 1f0) :factor factor))))
+         pixels exposure)
+    (with-canvas-values (game (lis::*bloom-strength* 0.0) (lis::*star-radiance-limit* 0.0))
+      (lis::call-on-canvas-thread game (lambda () (setf (lis::frame-renderer-test-text renderer) batch)))
+      (unwind-protect
+           (setf pixels (nth-value 3 (lis::capture-game-state game png :frames 1 :camera-fn camera-fn))
+                 exposure (lis::game-exposure game))
+        (lis::call-on-canvas-thread game (lambda () (setf (lis::frame-renderer-test-text renderer) nil
+                                                          (lis::text-batch-count batch) 0)))))
+    (let* ((box-width (* (- (lis::text-glyph-max-x glyph) (lis::text-glyph-min-x glyph)) scale pixels-per-metre))
+           (x0 (- (/ width 2) (/ box-width 2))) (x1 (+ x0 box-width))
+           (y0 (- (/ height 2) (/ cap-px 2))) (y1 (+ y0 cap-px))
+           (lit 0)
+           (stem (* (h-stem-em) scale pixels-per-metre))
+           (row (floor (+ (/ height 2) (* 0.25 cap-px)))))
+      (dotimes (y height)
+        (dotimes (x width)
+          (when (> (pixel-luminance pixels width x y) 128)
+            (incf lit)
+            (true (and (<= (- x0 2) x (+ x1 2)) (<= (- y0 2) y (+ y1 2)))
+                  "lit pixel ~D, ~D outside the H's box ~F-~F, ~F-~F" x y x0 x1 y0 y1))))
+      (true (> lit (* 2 stem cap-px 0.8)) "~D lit pixels" lit)
+      (let* ((start (position-if (lambda (x) (> (pixel-luminance pixels width x row) 128)) (loop for i below width collect i)))
+             (run (and start (loop for x from start below width
+                                   while (> (pixel-luminance pixels width x row) 128) count t))))
+        (true (and run (<= (abs (- run stem)) 1)) "stem lit ~A px, outline ~,2F px" run stem)
+        (let ((expected (lis::tone-map-srgb (/ factor exposure) exposure))
+              (centre (pixel-colour pixels width (floor (+ x0 (/ stem 2))) row)))
+          (dolist (byte centre)
+            (true (<= (abs (- byte expected)) 3) "stem centre ~A, tone map ~D" centre expected))))
+      (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream))))))
+
 (define-test render-frames
   (let ((width 320) (height 200))
     ;; offscreen-frame decodes the Blue Marble on its canvas; this one shares
@@ -1536,6 +1619,7 @@ after it."
            (map-checks game png width height)
            (ribbon-checks game png width height)
            (marker-checks game png width height)
+           (text-checks game png width height)
            (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))
            ;; Resizes replace the swapchain's textures; what the renderer kept
            ;; for the old ones goes, so its per-target state stays bounded.

@@ -562,6 +562,67 @@
   (let* ((coverage (clamp (- (+ (* 0.5 (swizzle screen :z)) 0.5) (abs across)) 0.0 1.0)))
     (set-output color (vec4 (* shade (/ (* (swizzle screen :w) coverage) (swizzle post :x))) 0.0))))
 
+;;; Slug text on planes (src/text.lisp; decision 126: Cockpit structure and
+;;; view in milestone 3), after Luvcraft's :slug-world-text vertex stage
+;;; (luvcraft/shaders.lisp, luv by Mikael Brockman): the glyph quad grows past
+;;; its outline by a fixed number of pixels per corner, so Slug's pixel
+;;; filter is always inside it; positions go through the clip rows of the
+;;; block the caller fills (the frame the records are in), reversed-Z, w the
+;;; depth. LOOK: kind (0 emissive, 1 lit), factor. The ink in the record's
+;;; spare lanes is the colour: emissive ink x factor / exposure, lit ink x
+;;; the block's irradiance factor. The fragment stage is luv's.
+(define-shader cab-text-vertex
+    (:stage :vertex
+     :inputs ((corner :vec3 :location 0)
+              (origin :vec3 :location 1)
+              (right-edge :vec3 :location 2)
+              (up-edge :vec3 :location 3)
+              (outline-low :vec3 :location 4)
+              (outline-high :vec3 :location 5)
+              (atlas-input :vec3 :location 6)
+              (band-low :vec3 :location 7)
+              (band-high :vec3 :location 8)
+              (look :vec3 :location 9))
+     :outputs ((clip-position :vec4 :built-in :position)
+               (render-coordinate :vec2 :location 0)
+               (render-atlas-base :vec2 :location 1)
+               (render-band-bounds :vec4 :location 2)
+               (render-band-counts :vec2 :location 3)
+               (render-color :vec4 :location 4))
+     :resources ((text-block :uniform-block :binding 2
+                  :members ((clip-x :vec4) (clip-y :vec4) (clip-z :vec4) (clip-w :vec4)
+                            (screen :vec4) (params :vec4)))))
+  (let* ((c (swizzle corner :xy))
+         (h0 (vec4 (+ origin (* right-edge (swizzle c :x)) (* up-edge (swizzle c :y))) 1.0))
+         (w0 (max (dot clip-w h0) 0.001))
+         (nx (/ (dot clip-x h0) w0))
+         (ny (/ (dot clip-y h0) w0))
+         (re (vec4 right-edge 0.0))
+         (ue (vec4 up-edge 0.0))
+         (rx (/ (- (dot clip-x re) (* nx (dot clip-w re))) (* w0 (swizzle screen :x))))
+         (ry (/ (- (dot clip-y re) (* ny (dot clip-w re))) (* w0 (swizzle screen :y))))
+         (ux (/ (- (dot clip-x ue) (* nx (dot clip-w ue))) (* w0 (swizzle screen :x))))
+         (uy (/ (- (dot clip-y ue) (* ny (dot clip-w ue))) (* w0 (swizzle screen :y))))
+         (right-pixels (sqrt (+ (* rx rx) (* ry ry))))
+         (up-pixels (sqrt (+ (* ux ux) (* uy uy))))
+         (dilation (* luv.slug:slug-dilation-pixels luv.slug:slug-filter-width))
+         (dc (+ c (* (- (* c 2.0) (vec2 1.0 1.0))
+                     (vec2 (/ dilation (max right-pixels 0.001))
+                           (/ dilation (max up-pixels 0.001))))))
+         (h (vec4 (+ origin (* right-edge (swizzle dc :x)) (* up-edge (swizzle dc :y))) 1.0))
+         (ink (vec3 (swizzle atlas-input :z) (swizzle band-low :z) (swizzle band-high :z)))
+         (shade (if (< (swizzle look :x) 0.5)
+                    (* ink (* (swizzle look :y) (swizzle params :x)))
+                    (* ink (swizzle params :y)))))
+    (set-output clip-position (vec4 (dot clip-x h) (dot clip-y h) (dot clip-z h) (dot clip-w h)))
+    (set-output render-coordinate
+                (+ (swizzle outline-low :xy)
+                   (* (- (swizzle outline-high :xy) (swizzle outline-low :xy)) dc)))
+    (set-output render-atlas-base (swizzle atlas-input :xy))
+    (set-output render-band-bounds (vec4 (swizzle band-low :xy) (swizzle band-high :xy)))
+    (set-output render-band-counts (vec2 (swizzle outline-low :z) (swizzle outline-high :z)))
+    (set-output render-color (vec4 shade 1.0))))
+
 ;; ANCHOR is a point in clip space, OFFSET a displacement in pixels.
 (define-frame-shader overlay-vertex
     (:stage :vertex
@@ -739,6 +800,10 @@ angle in degrees), weighted by a Gaussian of SIGMA texels, normalised."
   (ribbon-vertex))
 (defmethod shader-specification-for ((role (eql :ribbon)) (stage (eql :fragment)))
   (ribbon-fragment))
+(defmethod shader-specification-for ((role (eql :cab-text)) (stage (eql :vertex)))
+  (cab-text-vertex))
+(defmethod shader-specification-for ((role (eql :cab-text)) (stage (eql :fragment)))
+  (luv.slug:slug-atlas-fragment-specification))
 (defmethod shader-specification-for ((role (eql :quads)) (stage (eql :vertex)))
   (overlay-vertex))
 (defmethod shader-specification-for ((role (eql :quads)) (stage (eql :fragment)))

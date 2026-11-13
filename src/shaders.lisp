@@ -789,10 +789,10 @@
               (look :vec3 :location 9))
      :outputs ((clip-position :vec4 :built-in :position)
                (render-coordinate :vec2 :location 0)
-               (render-atlas-base :vec2 :location 1)
-               (render-band-bounds :vec4 :location 2)
-               (render-band-counts :vec2 :location 3)
-               (render-color :vec4 :location 4))
+               (render-atlas-base :vec2 :location 1 :interpolation :flat)
+               (render-band-bounds :vec4 :location 2 :interpolation :flat)
+               (render-band-counts :vec2 :location 3 :interpolation :flat)
+               (render-color :vec4 :location 4 :interpolation :flat))
      :resources ((text-block :uniform-block :binding 2
                   :members #.*cab-block-members*)))
   (let* ((c (swizzle corner :xy))
@@ -834,6 +834,102 @@
     (set-output render-band-bounds (vec4 (swizzle band-low :xy) (swizzle band-high :xy)))
     (set-output render-band-counts (vec2 (swizzle outline-low :z) (swizzle outline-high :z)))
     (set-output render-color (vec4 shade 1.0))))
+
+;; luv's slug-atlas-fragment-specification with the atlas address and the
+;; band counts flat: smooth interpolation of the large integer-valued floats
+;; drifts by an ulp across a quad, so uint() floored them one too low per
+;; pixel (horizontal gaps in the strokes, task 281). Else as luv's.
+(define-shader cab-text-fragment
+    (:stage :fragment
+     :inputs ((render-coordinate :vec2 :location 0)
+              (atlas-base :vec2 :location 1 :interpolation :flat)
+              (band-bounds :vec4 :location 2 :interpolation :flat)
+              (band-counts :vec2 :location 3 :interpolation :flat)
+              (render-color :vec4 :location 4 :interpolation :flat))
+     :resources ((band-data :uint-texture-2d :binding 0)
+                 (curve-data :texture-2d :binding 1))
+     :outputs ((color-output :vec4 :location 0)))
+  (let* ((one (luv.shader:uint 1.0))
+         (width (luv.shader:uint 4096.0))
+         (band-base (luv.shader:uint (+ (swizzle atlas-base :x) 0.5)))
+         (curve-base (luv.shader:uint (+ (swizzle atlas-base :y) 0.5)))
+         (horizontal-band-count (luv.shader:uint (+ (swizzle band-counts :x) 0.5)))
+         (vertical-band-count (luv.shader:uint (+ (swizzle band-counts :y) 0.5)))
+         (pixels-per-em (luv.slug::slug-pixels-per-em render-coordinate))
+         (horizontal-position
+           (clamp (/ (- (swizzle render-coordinate :y) (swizzle band-bounds :y))
+                     (max (- (swizzle band-bounds :w) (swizzle band-bounds :y))
+                          luv.slug:slug-root-epsilon))
+                  0.0 1.0))
+         (vertical-position
+           (clamp (/ (- (swizzle render-coordinate :x) (swizzle band-bounds :x))
+                     (max (- (swizzle band-bounds :z) (swizzle band-bounds :x))
+                          luv.slug:slug-root-epsilon))
+                  0.0 1.0))
+         (horizontal-band-candidate
+           (luv.shader:uint (* horizontal-position (luv.shader:float horizontal-band-count))))
+         (vertical-band-candidate
+           (luv.shader:uint (* vertical-position (luv.shader:float vertical-band-count))))
+         (horizontal-band
+           (if (< horizontal-band-candidate horizontal-band-count)
+               horizontal-band-candidate
+               (- horizontal-band-count one)))
+         (vertical-band
+           (if (< vertical-band-candidate vertical-band-count)
+               vertical-band-candidate
+               (- vertical-band-count one)))
+         (horizontal-header-address (+ band-base horizontal-band))
+         (vertical-header-address (+ band-base horizontal-band-count vertical-band))
+         (horizontal-header-location
+           (luv.shader:uvec2 (mod horizontal-header-address width)
+                             (/ horizontal-header-address width)))
+         (vertical-header-location
+           (luv.shader:uvec2 (mod vertical-header-address width)
+                             (/ vertical-header-address width)))
+         (horizontal-header (texel-load band-data horizontal-header-location))
+         (vertical-header (texel-load band-data vertical-header-location))
+         (horizontal-count (swizzle horizontal-header :x))
+         (horizontal-offset (swizzle horizontal-header :y))
+         (vertical-count (swizzle vertical-header :x))
+         (vertical-offset (swizzle vertical-header :y))
+         (horizontal
+           (counted-fold (index horizontal-count state (vec3 0.0 0.0 0.0)
+                          :until (luv.slug::slug-band-done-p state))
+             (let* ((entry-address (+ band-base horizontal-offset index))
+                    (entry-location (luv.shader:uvec2 (mod entry-address width)
+                                                      (/ entry-address width)))
+                    (local-location (swizzle (texel-load band-data entry-location) :xy))
+                    (curve-address (+ curve-base (swizzle local-location :x)
+                                      (* (swizzle local-location :y) width)))
+                    (curve-location (luv.shader:uvec2 (mod curve-address width)
+                                                      (/ curve-address width)))
+                    (next-location (luv.shader:uvec2 (mod (+ curve-address one) width)
+                                                     (/ (+ curve-address one) width)))
+                    (curve (texel-load curve-data curve-location))
+                    (next (texel-load curve-data next-location)))
+               (luv.slug::slug-horizontal-band-step state curve next render-coordinate
+                                                    pixels-per-em))))
+         (vertical
+           (counted-fold (index vertical-count state (vec3 0.0 0.0 0.0)
+                          :until (luv.slug::slug-band-done-p state))
+             (let* ((entry-address (+ band-base vertical-offset index))
+                    (entry-location (luv.shader:uvec2 (mod entry-address width)
+                                                      (/ entry-address width)))
+                    (local-location (swizzle (texel-load band-data entry-location) :xy))
+                    (curve-address (+ curve-base (swizzle local-location :x)
+                                      (* (swizzle local-location :y) width)))
+                    (curve-location (luv.shader:uvec2 (mod curve-address width)
+                                                      (/ curve-address width)))
+                    (next-location (luv.shader:uvec2 (mod (+ curve-address one) width)
+                                                     (/ (+ curve-address one) width)))
+                    (curve (texel-load curve-data curve-location))
+                    (next (texel-load curve-data next-location)))
+               (luv.slug::slug-vertical-band-step state curve next render-coordinate
+                                                  pixels-per-em))))
+         (coverage (luv.slug::slug-combine-band-coverage
+                    (swizzle horizontal :x) (swizzle horizontal :y)
+                    (swizzle vertical :x) (swizzle vertical :y))))
+    (set-output color-output (* render-color coverage))))
 
 ;; ANCHOR is a point in clip space, OFFSET a displacement in pixels.
 (define-frame-shader overlay-vertex
@@ -1015,7 +1111,7 @@ angle in degrees), weighted by a Gaussian of SIGMA texels, normalised."
 (defmethod shader-specification-for ((role (eql :cab-text)) (stage (eql :vertex)))
   (cab-text-vertex))
 (defmethod shader-specification-for ((role (eql :cab-text)) (stage (eql :fragment)))
-  (luv.slug:slug-atlas-fragment-specification))
+  (cab-text-fragment))
 (defmethod shader-specification-for ((role (eql :cab-glass)) (stage (eql :vertex)))
   (cab-mesh-vertex))
 (defmethod shader-specification-for ((role (eql :cab-glass)) (stage (eql :fragment)))

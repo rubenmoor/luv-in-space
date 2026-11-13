@@ -1410,6 +1410,12 @@ a horizontal line a quarter of the cap height up (all its segments are lines)."
     (/ (- (second xs) (first xs)) (zpb-ttf:units/em loader))))
 
 (defun text-checks (game png width height)
+  ;; The H's stem width and tone, then E and 0 for coverage inside curves
+  ;; and bars (task 281: horizontal gaps in the strokes).
+  (dolist (char '(#\H #\E #\0))
+    (text-char-checks game png width height char)))
+
+(defun text-char-checks (game png width height char)
   (let* ((renderer (lis::game-renderer game))
          (atlas (lis::frame-renderer-text-atlas renderer))
          (batch (lis::frame-renderer-text-batch renderer))
@@ -1419,7 +1425,7 @@ a horizontal line a quarter of the cap height up (all its segments are lines)."
          (cap (/ cap-px pixels-per-metre))
          (font (lis::text-font-of atlas :mono))
          (scale (/ cap (lis::text-font-cap-em font)))
-         (glyph (lis::text-glyph-for atlas :mono #\H))
+         (glyph (lis::text-glyph-for atlas :mono char))
          (factor 1.0)
          (camera-fn
            (lambda (camera state)
@@ -1438,7 +1444,7 @@ a horizontal line a quarter of the cap height up (all its segments are lines)."
                (lis::grid-run! atlas (lis::text-batch-region batch 4) 0
                                (lis::make-text-plane :origin (coerce origin 'list)
                                                      :right (coerce right 'list) :up (coerce up 'list))
-                               "H" :cap (float cap 1f0) :factor factor))))
+                               (string char) :cap (float cap 1f0) :factor factor))))
          (saved-count (lis::text-batch-count batch))
          (saved-data (copy-seq (lis::text-batch-data batch)))
          pixels exposure)
@@ -1464,15 +1470,34 @@ a horizontal line a quarter of the cap height up (all its segments are lines)."
             (incf lit)
             (true (and (<= (- x0 2) x (+ x1 2)) (<= (- y0 2) y (+ y1 2)))
                   "lit pixel ~D, ~D outside the H's box ~F-~F, ~F-~F" x y x0 x1 y0 y1))))
-      (true (> lit (* 2 stem cap-px 0.8)) "~D lit pixels" lit)
-      (let* ((start (position-if (lambda (x) (> (pixel-luminance pixels width x row) 128)) (loop for i below width collect i)))
+      (true (> lit (* 2 stem cap-px 0.8)) "~A: ~D lit pixels" char lit)
+      (let* ((mid (floor (case char
+                           (#\H (+ (/ height 2) (* 0.25 cap-px)))
+                           (#\E (+ y0 (* 0.3 cap-px)))
+                           (t (/ height 2)))))
+             (start (position-if (lambda (x) (> (pixel-luminance pixels width x mid) 128))
+                                 (loop for i below width collect i)))
              (run (and start (loop for x from start below width
-                                   while (> (pixel-luminance pixels width x row) 128) count t))))
-        (true (and run (<= (abs (- run stem)) 1)) "stem lit ~A px, outline ~,2F px" run stem)
-        (let ((expected (lis::tone-map-srgb (/ factor exposure) exposure))
-              (centre (pixel-colour pixels width (floor (+ x0 (/ stem 2))) row)))
-          (dolist (byte centre)
-            (true (<= (abs (- byte expected)) 3) "stem centre ~A, tone map ~D" centre expected))))
+                                   while (> (pixel-luminance pixels width x mid) 128) count t))))
+        (true (and run (> run 2)) "~A: a stroke at row ~D, ~A px" char mid run)
+        (when (and run (char= char #\H))
+          (true (<= (abs (- run stem)) 1) "stem lit ~A px, outline ~,2F px" run stem)
+          (let ((expected (lis::tone-map-srgb (/ factor exposure) exposure))
+                (centre (pixel-colour pixels width (floor (+ x0 (/ stem 2))) row)))
+            (dolist (byte centre)
+              (true (<= (abs (- byte expected)) 3) "stem centre ~A, tone map ~D" centre expected))))
+        ;; The left stroke's centre column, solid over the middle of the cap.
+        (when run
+          (let ((column (+ start (floor run 2))) (gaps 0))
+            (loop for y from (ceiling (+ y0 (* 0.4 cap-px))) to (floor (+ y0 (* 0.6 cap-px)))
+                  unless (> (pixel-luminance pixels width column y) 128) do (incf gaps))
+            (true (zerop gaps) "~A: ~D gaps in the left stroke's centre column" char gaps)))
+        ;; E: the top bar's centre row, solid across its length.
+        (when (char= char #\E)
+          (let ((y (ceiling (+ y0 (* 0.06 cap-px)))) (gaps 0))
+            (loop for x from (ceiling (+ start 4)) to (floor (- x1 4))
+                  unless (> (pixel-luminance pixels width x y) 128) do (incf gaps))
+            (true (zerop gaps) "E: ~D gaps along the top bar" gaps))))
       (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream))))))
 
 ;;; The cab's shell and light (decision 126: Cockpit structure and view in
@@ -1625,12 +1650,12 @@ body axes) on the lining cylinder, the normal inward."
   '((0 16 70) (0 0 70) (0 42 60) (-32 45 70) (32 45 70) (-55 30 70) (50 55 70))
   "Head poses (yaw pitch fov, degrees) the console's checks look from, to cover every label.")
 
-(defun pose-pixel (point width height)
+(defun pose-pixel (point width height &optional (poses *console-poses*))
   "(values x y per pose) of the body POINT in the image of the *console-poses* head
 that puts it nearest the centre, or nil outside every frame; PER is pixels per
 tangent unit."
   (let ((best nil) (best-d 1e9))
-    (dolist (pose *console-poses*)
+    (dolist (pose poses)
       (destructuring-bind (yaw pitch fov) pose
         (multiple-value-bind (x y depth) (head-projection point yaw pitch)
           (let* ((per (/ (/ height 2) (tan (deg (/ fov 2)))))
@@ -1669,10 +1694,10 @@ Earth's shadow; each thing is read where the pose puts it."
                                                                  :frames 1 :head pose))))
                      (push (cons pose got) shots)
                      got))))
-        (flet ((ink-contrast (centre cap length)
+        (flet ((ink-contrast (centre cap length &optional (poses *console-poses*))
                  ;; The box of CAP x LENGTH metres about CENTRE (a body point on a plane
                  ;; facing the eye), in the first pose that holds it.
-                 (multiple-value-bind (x y per pose) (pose-pixel centre width height)
+                 (multiple-value-bind (x y per pose) (pose-pixel centre width height poses)
                    (when x
                      (destructuring-bind (path w h pixels format) (shot pose)
                        (declare (ignore path w h))
@@ -1687,9 +1712,15 @@ Earth's shadow; each thing is read where the pose puts it."
           (dolist (label lis::*cockpit-labels*)
             (multiple-value-bind (centre) (lis::label-frame label)
               (multiple-value-bind (cap advance) (lis::label-metrics label)
-                (multiple-value-bind (ratio pose) (ink-contrast centre cap advance)
-                  (true pose "tape label ~S in no pose's frame" (getf label :text))
-                  (when pose
+                ;; A pose may hide the label behind a panel: the best pose that holds it.
+                (let ((ratio nil) (seen nil))
+                  (dolist (pose *console-poses*)
+                    (multiple-value-bind (r got) (ink-contrast centre cap advance (list pose))
+                      (when got
+                        (setf seen t)
+                        (when (or (null ratio) (> r ratio)) (setf ratio r)))))
+                  (true seen "tape label ~S in no pose's frame" (getf label :text))
+                  (when seen
                     (true (>= ratio 4.5) "tape label ~S: contrast ~,1F" (getf label :text) ratio))))))
           ;; Placeholders: the text's box on each screen's face, at least 7:1.
           (let* ((panel (lis::cockpit-panel :orbit)) (cap (lis::panel-grid-cap panel))

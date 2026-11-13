@@ -68,6 +68,9 @@ the AUTOPILOT-MODEL, the clock's by reference, which the map reads (decision
   (target-relative (make-target-relative) :type target-relative)
   (prediction nil :type (or null prediction)) ; the clock's, by reference: rendering only reads it
   (autopilot-model nil)                 ; the clock's autopilot model, by reference
+  (aim-valid nil)                       ; a rendezvous plan's arrival lies ahead (render-state-aim-update!)
+  (aim-r (make-vec3) :type vec3)        ; its aim point at T, Earth-centred
+  (stop-r (make-vec3) :type vec3)       ; its stop point at T
   (objects (coerce (loop repeat (length *objects*) collect (make-object-render))
                    'simple-vector)
    :type simple-vector)                 ; an object-render per sim-objects entry
@@ -329,6 +332,7 @@ not below t or the sim is lost; the target at the render time
     (controls-assign! (render-state-controls out) (sim-controls sim))
     (setf (render-state-prediction out) (clock-prediction clock)
           (render-state-autopilot-model out) (clock-autopilot clock))
+    (render-state-aim-update! out sim)
     (let ((tr (render-state-t out)))
       (body-state-into (render-state-sun out) (render-state-scratch out) :sun tr :earth)
       (body-state-into (render-state-moon out) (render-state-scratch out) :moon tr :earth)

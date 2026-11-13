@@ -1128,3 +1128,99 @@ any), DASHED (true: a phase ≥ 0; :solid: −1; default any), in order."
       (is = 0 (least-bytes-consed
                (lambda () (dotimes (i 20) (lis::map-lines-fill! lines ribbon state camera eye '(1280 800))))
                5)))))
+
+;;; The rendezvous aim point and the terminal path (decision 125; decision
+;;; 119): "Rendezvous: Tern Station" planned from the start state.
+
+(defun rendezvous-map-fixture (goal &key (model :j2) engaged advance-to)
+  "(values state camera markers lines eye plan sim) for the rendezvous GOAL
+planned from the start (shown, or ENGAGED and flown to ADVANCE-TO)."
+  (let* ((sim (model-sim model))
+         (job (lis::new-autopilot-job sim))
+         (plan (rendezvous-now sim goal job)))
+    (when engaged
+      (lis::sim-engage-plan! sim plan)
+      (when advance-to (step-sim sim 10000000 1000 advance-to)))
+    (let* ((clock (lis::new-clock sim))
+           (model (lis::clock-autopilot clock)))
+      (lis::autopilot-keep-shot! model plan (lis::autopilot-job-shot job))
+      (if engaged
+          (lis::autopilot-engaged! model plan)
+          (progn (setf (lis::autopilot-model-plan model) plan)
+                 (lis::autopilot-set-state! model :shown)))
+      (let ((state (with-bodies (lis::render-state-update! (lis::make-render-state) clock sim))))
+        (lis::prediction-run! (lis::clock-prediction clock) sim)
+        (let* ((view (opened-map state))
+               (camera (progn (setf (lis::map-view-elevation view) (deg 90)
+                                    (lis::map-view-distance view) 1d8 (lis::map-view-target view) 1d8)
+                              (lis::map-camera-update! (lis::make-camera) view state nil)))
+               (eye (map-eye camera state))
+               (lines (lis::make-map-lines)))
+          (lis::map-lines-fill! lines (lis::make-ribbon) state camera eye '(1280 800))
+          (values state camera
+                  (lis::map-markers state camera '(1280 800) (lis::make-map-markers))
+                  lines eye plan sim))))))
+
+(define-test map-rendezvous-aim-and-terminal-path
+  (multiple-value-bind (state camera markers lines eye plan sim)
+      (rendezvous-map-fixture '(:tern-station :limit 64800d0))
+    (declare (ignore camera))
+    (let* ((part (lis::burn-plan-rendezvous plan))
+           (aim (lis::map-marker-ref markers :aim))
+           (tr (lis::render-state-t state))
+           (rt (lis::make-vec3)) (vt (lis::make-vec3)) (stop (lis::make-vec3)) (sv (lis::make-vec3)))
+      (true (lis::render-state-aim-valid state))
+      (true (> (lis::rendezvous-part-arrival part) tr))
+      (true aim)
+      (is eq :ring (lis::map-marker-kind aim))
+      (is string= "AIM" (lis::map-marker-label aim))
+      (is = lis::*marker-target-colour* (lis::map-marker-colour aim))
+      ;; the aim point is the target plus the turned offset: here (1), the target's own point
+      ;; *aim-distance* behind, on its rails, as aim-point has it at t_r
+      (lis::stop-target-state-into! rt vt sim :tern-station :drop-point tr)
+      (let ((expected (lis::aim-point sim :tern-station (lis::rendezvous-part-fixture part)
+                                      (lis::rendezvous-part-range part) 1 tr)))
+        (true (< (lis::vec3-norm (lis::vec3-sub (lis::render-state-aim-r state) expected)) 5d0)
+              "aim off by ~,3F m" (lis::vec3-norm (lis::vec3-sub (lis::render-state-aim-r state) expected)))
+        (true (< (lis::vec3-norm (lis::vec3-sub (lis::map-marker-point aim) (lis::render-state-aim-r state)))
+                 1d-6)))
+      (true (< (abs (- (lis::vec3-norm (lis::vec3-sub (lis::render-state-aim-r state) rt))
+                       (lis::vec3-norm (lis::rendezvous-part-offset part))))
+               1d-6)
+            "the offset keeps its length when turned")
+      ;; the segment ends at the stop point
+      (lis::stop-point-into! stop sv sim :tern-station (lis::rendezvous-part-fixture part)
+                             (lis::rendezvous-part-range part) tr)
+      (true (< (lis::vec3-norm (lis::vec3-sub (lis::render-state-stop-r state) stop)) 1d-6))
+      (let ((found nil))
+        (dolist (segment (line-segments lines :dashed t))
+          (let ((from (segment-from segment eye))
+                (to (lis::vec3-add (lis::vec3 (nth 4 segment) (nth 5 segment) (nth 6 segment)) eye)))
+            (when (and (< (lis::vec3-norm (lis::vec3-sub from (lis::render-state-aim-r state)))
+                          (+ 1d0 (* 1d-6 (lis::vec3-norm (lis::vec3-sub from eye)))))
+                       (< (lis::vec3-norm (lis::vec3-sub to stop))
+                          (+ 1d0 (* 1d-6 (lis::vec3-norm (lis::vec3-sub to eye))))))
+              (setf found t))))
+        (true found "a dashed segment from the aim point to the stop point")))))
+
+(define-test map-rendezvous-aim-until-the-arrival
+  (let* ((probe (rendezvous-now (model-sim :j2) '(:tern-station :limit 64800d0)))
+         (arrival (lis::rendezvous-part-arrival (lis::burn-plan-rendezvous probe))))
+    ;; just before the arrival the aim marker sits on the ship; after it, marker and segment are gone
+    (multiple-value-bind (state camera markers lines eye plan sim)
+        (rendezvous-map-fixture '(:tern-station :limit 64800d0) :engaged t :advance-to (- arrival 1d0))
+      (declare (ignore camera lines eye plan sim))
+      (true (lis::render-state-aim-valid state))
+      (let ((aim (lis::map-marker-ref markers :aim)))
+        (true aim)
+        (when aim
+          (true (< (lis::vec3-norm (lis::vec3-sub (lis::map-marker-point aim) (lis::render-state-r state))) 100d0)
+                "the ship ~,1F m from the aim point"
+                (lis::vec3-norm (lis::vec3-sub (lis::map-marker-point aim) (lis::render-state-r state))))))
+      )
+    (multiple-value-bind (state camera markers lines eye plan sim)
+        (rendezvous-map-fixture '(:tern-station :limit 64800d0) :engaged t :advance-to (+ arrival 5d0))
+      (declare (ignore camera eye plan sim))
+      (false (lis::render-state-aim-valid state))
+      (false (lis::map-marker-ref markers :aim))
+      (is = 0 (length (line-segments lines :dashed t))))))

@@ -332,7 +332,7 @@ the console's tests check: panels on the wall reach behind it)."
     (true (< (abs (- (- z1 z0) 0.07d0)) 1d-3))))
 
 ;;; The console (plan 31 piece 5; decision 126): the panel table, faces,
-;;; bezels, brackets, cables, labels and the screens' placeholders.
+;;; bezels, brackets, cables, labels.
 
 (defparameter *layout-table*
   ;; name (dx dy dz) (w h) grid, docs/design.md "Layout".
@@ -461,8 +461,7 @@ the console's tests check: panels on the wall reach behind it)."
                 (distance (lis::vec3-norm (apply #'lis::vec3 (getf panel :centre)))))
             (true (>= cap (* 0.0175d0 distance)) "~A: cap ~,2F mm at ~,2F m" (getf panel :name) (* 1000 cap) distance)
             (true (<= (* columns lis::+text-cell-width+ cap) (+ (- w 0.02d0) 1d-9)))
-            (true (<= (* rows lis::+text-cell-height+ cap) (+ (- h 0.02d0) 1d-9)))
-            (true (>= columns (length lis::*placeholder-text*)) "~A holds the placeholder" (getf panel :name))))))))
+            (true (<= (* rows lis::+text-cell-height+ cap) (+ (- h 0.02d0) 1d-9)))))))))
 
 (defun head-projection (point yaw pitch)
   "(values x y depth) of the body POINT from the eye for a head at YAW, PITCH
@@ -578,15 +577,9 @@ degrees: x right, y down, in tangents (divide by tan(fov/2))."
                     "~S lies clear of the face" (getf label :text)))))))))
 
 (define-test console-text-regions
-  ;; cockpit-text! writes the labels and one placeholder a screen.
+  ;; cockpit-text! writes the labels; the screens are drawn by the instruments.
   (let* ((atlas (text-test-atlas)) (batch (lis::make-text-batch)))
     (lis::cockpit-text! atlas batch)
-    (dolist (panel lis::*cockpit-panels*)
-      (if (and (getf panel :screen) (not (member (getf panel :name) lis::*cockpit-live-screens*)))
-          (let ((region (lis::cockpit-text-region (list :placeholder (getf panel :name)))))
-            (true region "~A has no placeholder" (getf panel :name))
-            (is = (length lis::*placeholder-text*) (lis::text-region-capacity region)))
-          (false (lis::cockpit-text-region (list :placeholder (getf panel :name))))))
     (dolist (label lis::*cockpit-labels*)
       (true (lis::cockpit-text-region (list :label (getf label :text))) "~S" (getf label :text)))
     (true (< (lis::text-batch-count batch) lis::*text-max-glyphs*))))
@@ -2205,3 +2198,12 @@ the window's plane and of a porthole's plane."
     (setf (lis::render-grapple-state (lis::render-state-grapple state)) :armed)
     (lis::grapple-view-update! view atlas state)
     (is = 0 (least-bytes-consed (lambda () (dotimes (i 100) (lis::grapple-view-update! view atlas state)))))))
+
+(define-test no-placeholder-166
+  ;; The instruments are all drawn: no PLACEHOLDER(166) stays in src/.
+  (let ((hits '()))
+    (dolist (file (directory (merge-pathnames "src/*.lisp" (asdf:system-source-directory :luv-in-space))))
+      (with-open-file (in file)
+        (loop for line = (read-line in nil) while line
+              when (search "PLACEHOLDER(166)" line) do (push (file-namestring file) hits))))
+    (false hits "PLACEHOLDER(166) in ~{~A~^ ~}" hits)))

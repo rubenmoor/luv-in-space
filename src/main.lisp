@@ -5,9 +5,9 @@
 ;;; sim, part 4's placeholders and first asset). The sim, the clock and the
 ;;; render state are touched only on the canvas thread.
 
-(defparameter *default-view* :outside
-  "The view at the start and after a restart; :outside until plan 31's
-instruments are drawn (task 166 flips it to :cockpit; decision 126).")
+(defparameter *default-view* :cockpit
+  "The view at the start and after a restart (decision 126: Cockpit structure
+and view in milestone 3).")
 
 (defclass game ()
   ((canvas :initarg :canvas :initform nil :reader game-canvas)
@@ -57,7 +57,7 @@ instruments are drawn (task 166 flips it to :cockpit; decision 126).")
               :documentation "Whether the frame draws the readout (decision 85).")
    (input :initform (make-input) :reader game-input
           :documentation "Held keys, taps and the pointer (input.lisp); not in the sim.")
-   (view :initform *default-view* :accessor game-view
+   (view :initarg :view :initform *default-view* :accessor game-view
          :documentation "The view: :outside, :cockpit or :map.")
    (interior-p :initform t :accessor game-interior-p
                :documentation "Whether :cockpit draws the cab's interior (nil: tests, the grapple camera).")
@@ -242,14 +242,10 @@ the outside view's distance."
     (encode-frame (game-renderer game) encoder target extent
                   (game-render-state game) (game-camera game)
                   exposure (game-view game)
-                  (and (game-readout-p game)
-                       (let ((lines (readout-lines (game-render-state game) (game-clock game)
-                                                   (game-real-time game))))
-                         ;; PLACEHOLDER(166): the cockpit's screens come with task 166.
-                         (if (eq (game-view game) :cockpit)
-                             (append lines (list (list (readout-run "PLACEHOLDER(166)"
-                                                                    *readout-label-colour*))))
-                             lines)))
+                  ;; the cockpit's screens replace the minimal readout
+                  (and (game-readout-p game) (not (eq (game-view game) :cockpit))
+                       (readout-lines (game-render-state game) (game-clock game)
+                                      (game-real-time game)))
                   (and (game-loss game)
                        (lost-panel-lines (game-loss game)
                                          (and (clock-checkpoint (game-clock game)) t)))

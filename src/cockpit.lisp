@@ -559,7 +559,7 @@ green. The twin of cab-glass-fragment."
         (values (* k r (first *cab-glass-tint*)) (* k g (second *cab-glass-tint*))
                 (* k b (third *cab-glass-tint*)) alpha)))))
 
-(defparameter *cab-text-regions* '() "((:label text) | (:placeholder panel-name)) -> text-region.")
+(defparameter *cab-text-regions* '() "((:label text)) -> text-region.")
 
 (defparameter *cab-plate-region* nil "The text batch's region holding the name plate.")
 
@@ -574,8 +574,7 @@ green. The twin of cab-glass-fragment."
                       :colour (apply #'text-colour *cab-plate-ink*)))
     (setf *cab-plate-region* region)
     (setf *cab-text-regions* '())
-    (cockpit-labels-text! atlas batch)
-    (cockpit-placeholders-text! atlas batch)))
+    (cockpit-labels-text! atlas batch)))
 
 (defun build-cab-model ()
   "The cab's shell and fittings as a model (meshes.lisp's builder): hull
@@ -675,8 +674,7 @@ rest, in body axes from the eye."
   "The layout table (docs/design.md \"Layout\"), one plist a panel: :name,
 :centre (dx dy dz) m from the eye, :direction (azimuth elevation) degrees
 (informative: the face turns to the eye from its centre), :size (w h) m of the
-face, :grid (columns rows) of its text, :screen (a Slug screen, PLACEHOLDER(166)
-until plan 32 draws it), :turn (the lamp columns' 30 degrees on the wall),
+face, :grid (columns rows) of its text, :screen (a Slug screen), :turn (the lamp columns' 30 degrees on the wall),
 :wall (fixed to the front wall), :cable-drop (the cables' start below the centre, in
 heights of the face, default 0.3: the buttons' are below the lenses), :round, :face (its material), :bezel (material,
 border, chin, depth, bolts), :hood, :cables (their colours).")
@@ -1179,19 +1177,16 @@ shaped advance, and its tape's length."
                         (list 0.002d0 (- length left right) (+ row-height 0.0006d0)) :tape
                         :x n :y r))))))))
 
-;;; The text regions: the labels' tape letters and the screens' placeholders.
+;;; The text regions: the labels' tape letters.
 
 (defun cockpit-text-region (key)
   (cdr (assoc key *cab-text-regions* :test #'equal)))
 
 (defparameter *cockpit-text-screens* '(:orbit :attitude :target :ship :autopilot :comms)
-  "The screens of text plan 32 has drawn so far (cockpit-screens.lisp).")
+  "The screens of text (cockpit-screens.lisp).")
 
 (defparameter *cockpit-live-screens* (append *cockpit-text-screens* '(:strip))
-  "The panels plan 32 has drawn so far (the strip with dots); a placeholder stands on each other screen.")
-
-(defparameter *placeholder-text* "PLACEHOLDER(166)")
-(defparameter *placeholder-ink* '(232 228 216) "Paper white (docs/design.md \"Readability\").")
+  "Every panel the instruments draw.")
 
 (defun cockpit-labels-text! (atlas batch)
   (dolist (label *cockpit-labels*)
@@ -1204,20 +1199,6 @@ shaped advance, and its tape's length."
                      text :font :label :cap (float cap 1f0) :kind :lit :align :centre
                           :colour (apply #'text-colour (getf *cab-label* :ink)))
         (push (cons (list :label text) region) *cab-text-regions*)))))
-
-(defun cockpit-placeholders-text! (atlas batch)
-  (dolist (panel *cockpit-panels*)
-    (when (and (getf panel :screen)
-               (not (member (getf panel :name) *cockpit-live-screens*)))
-      (let* ((cap (panel-grid-cap panel)) (origin (panel-grid-origin panel cap))
-             (region (text-batch-region batch (length *placeholder-text*))))
-        (multiple-value-bind (c n r u) (panel-frame panel)
-          (declare (ignore c n))
-          (grid-run! atlas region 0
-                     (make-text-plane :origin (coerce origin 'list) :right (coerce r 'list) :up (coerce u 'list))
-                     *placeholder-text* :font :mono :cap (float cap 1f0) :kind :emissive
-                                        :colour (apply #'text-colour *placeholder-ink*)))
-        (push (cons (list :placeholder (getf panel :name)) region) *cab-text-regions*)))))
 
 (defparameter *cab-console-parts*
   '("rack" "tray" "panel-faces" "bezels" "bezel-bolts" "hoods" "brackets" "cables" "zip-ties"

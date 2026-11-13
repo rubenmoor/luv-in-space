@@ -219,6 +219,18 @@ in the frame the draw's clip rows take."
           :end (* +text-record-floats+ (+ (text-region-start region) (text-region-capacity region))))
     region))
 
+(defun text-region-recolour! (region colour)
+  "REGION's records' ink set to COLOUR, a linear triple: nothing else changes.
+Conses nothing."
+  (declare (type text-region region) (type (simple-array single-float (3)) colour))
+  (let ((data (text-batch-data (text-region-batch region))))
+    (dotimes (i (text-region-capacity region))
+      (let ((base (* +text-record-floats+ (+ (text-region-start region) i))))
+        (setf (aref data (+ base 17)) (aref colour 0)
+              (aref data (+ base 20)) (aref colour 1)
+              (aref data (+ base 23)) (aref colour 2))))
+    region))
+
 (defun text-batch-upload! (batch buffer)
   "Write BATCH's used records to the vertex buffer BUFFER."
   (let ((view (text-batch-view batch)))
@@ -484,7 +496,7 @@ text block already filled; nothing for an empty batch."
 ;;; plots, colours and updates). Drawn in the same bind group as the text.
 
 (defconstant +line-record-floats+ 10 "From xyz, to xyz, tint rgb and the width in metres.")
-(defparameter *line-max-records* 256)
+(defparameter *line-max-records* 512)
 
 (defstruct (line-batch (:copier nil) (:constructor %make-line-batch))
   (data nil :type (simple-array single-float (*)))

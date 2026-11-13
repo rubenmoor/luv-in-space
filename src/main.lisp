@@ -222,7 +222,8 @@ the outside view's distance."
       (cockpit-update! (game-cockpit-state game) (frame-renderer-screen-views renderer)
                        (frame-renderer-text-atlas renderer) (game-render-state game)
                        (game-clock game) (game-real-time game) (game-view game)
-                       :strip (frame-renderer-strip-view renderer) :snap (null elapsed))))
+                       :strip (frame-renderer-strip-view renderer)
+                       :devices (frame-renderer-devices renderer) :snap (null elapsed))))
   (let ((exposure (update-exposure! game extent elapsed)))
     (death-glow! game exposure)
     (encode-frame (game-renderer game) encoder target extent

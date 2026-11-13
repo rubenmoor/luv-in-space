@@ -33,6 +33,28 @@
     (values (atan (* (tan a) (sqrt (+ 1 (* aspect aspect)))))
             (acos (- 1 (/ solid (* 2 pi)))))))
 
+(defun stack-exposure-radius (state)
+  "m: the sphere about the stack's CoM that holds the ship and its latched
+load: the Mule's ship-bounding-radius at m_p moved by the CoM's shift, or the
+load's reach (its CoM's distance and its bound) if larger."
+  (max (+ (ship-bounding-radius (mule) (render-state-m-p state)) (render-state-stack-shift state))
+       (render-state-load-reach state)))
+
+(defun object-sunlit-p (o state eye forward cone)
+  "Whether the object O, drawn, covers the frame (the cone of half-angle CONE
+about FORWARD from EYE) so that coverage x its sun-fraction reaches
+*exposure-ship-coverage* (decision 79's rule on its definition's bound)."
+  (let ((def (object-render-def o)))
+    (when (and def (object-render-drawn o))
+      (let* ((c (vec3-sub (object-render-r o) eye))
+             (d (vec3-norm c))
+             (radius (object-def-bound def)))
+        (and (> d radius)
+             (let* ((rho (asin (/ radius d)))
+                    (coverage (min 1d0 (/ (lens-area rho cone (vec3-angle forward c))
+                                          (* pi cone cone)))))
+               (>= (* coverage (object-render-sun-fraction o)) *exposure-ship-coverage*)))))))
+
 (defun exposure-target (camera state view &key (aspect 1.6d0))
   "The exposure the view calls for (decision 76; decision 93: Exposure rule
 as built: hidden Sun, coverage within the view): *exposure-map* for :map;
@@ -41,12 +63,15 @@ half-diagonal plus *exposure-sun-margin* of the view axis, or when Earth or
 the Moon covers at least *exposure-coverage* of the frame (its disc's
 overlap with the frame's equivalent cone, flat) and coverage x lit fraction
 (1 + cos phase) / 2 is at least as much, or, in the :outside view, when the
-ship (a sphere of the stack's ship-bounding-radius at m_p, decision 80,
-around the camera's anchor) covers the
+ship (a sphere of the stack's radius, stack-exposure-radius, around the
+camera's anchor) covers the
 frame so that coverage x its sun-fraction is at least
 *exposure-ship-coverage* (decision 79: Sunlight at a point and the sunlit
-ship in the exposure rule; no ship term with the eye inside that sphere);
-else *exposure-deep*."
+ship in the exposure rule; no ship term with the eye inside that sphere), or
+likewise a drawn object of the render state (a sphere of its definition's bound
+round its position, coverage x its own sun-fraction; decision 124: Meshes of
+the places: models, scenery liveries, lights, far dots, the grapple's claws,
+floodlight and range finder); else *exposure-deep*."
   (when (eq view :map)
     (return-from exposure-target *exposure-map*))
   (let* ((aspect (float aspect 1d0))
@@ -79,14 +104,17 @@ else *exposure-deep*."
                       bodies)
                 (and (eq view :outside)
                      (let ((d (vec3-norm (camera-offset camera)))
-                           (radius (ship-bounding-radius (mule) (render-state-m-p state))))
+                           (radius (stack-exposure-radius state)))
                        (and (> d radius)
                             (let* ((rho (asin (/ radius d)))
                                    (ship (vec3-scale (camera-offset camera) -1d0))
                                    (coverage (min 1d0 (/ (lens-area rho cone (vec3-angle forward ship))
                                                          (* pi cone cone)))))
                               (>= (* coverage (render-state-sun-fraction state))
-                                  *exposure-ship-coverage*))))))
+                                  *exposure-ship-coverage*)))))
+                (and (eq view :outside)
+                     (some (lambda (o) (object-sunlit-p o state eye forward cone)) 
+                           (render-state-objects state))))
             *exposure-sunlit*
             *exposure-deep*)))))
 

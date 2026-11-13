@@ -203,10 +203,13 @@ the viewer's right, mouse up raises it (decision 82's sign)."
           (max (- limit) (min limit (- (outside-view-elevation view) (* *outside-drag-rate* dy)))))
     view))
 
-(defun outside-min-distance (m-p)
-  "1.2 × the largest distance from the CoM at M-P kg of propellant to a
-corner of a part's box in *ship-parts*."
-  (let ((com (mass-properties-com (ship-mass-properties (float m-p 1d0))))
+(defun outside-min-distance (m-p &optional load)
+  "1.2 × the largest distance from the stack's CoM at M-P kg of propellant to
+a corner of a part's box in *ship-parts*, or, with the stack-load LOAD, to
+its bounding sphere (its CoM's distance and its definition's bound) if that
+is larger (decision 124: Meshes of the places: models, scenery liveries,
+lights, far dots, the grapple's claws, floodlight and range finder)."
+  (let ((com (mass-properties-com (ship-mass-properties (float m-p 1d0) load)))
         (radius 0d0))
     (loop for (nil nil centres size) in *ship-parts*
           do (dolist (c centres)
@@ -217,13 +220,16 @@ corner of a part's box in *ship-parts*."
                                                           (+ (second c) (* sy (second size)))
                                                           (+ (third c) (* sz (third size))))
                                        do (setf radius (max radius (vec3-norm (vec3-sub corner com)))))))))
+    (when load
+      (setf radius (max radius (+ (vec3-norm (vec3-sub (stack-load-com load) com))
+                                  (object-def-bound (stack-load-def load))))))
     (* *outside-min-factor* radius)))
 
-(defun outside-view-zoom! (view notches m-p)
+(defun outside-view-zoom! (view notches m-p &optional load)
   "The wheel: the target distance × 1.2^(−NOTCHES), clamped to
-[outside-min-distance, 5 km]."
+[outside-min-distance (with the stack-load LOAD), 5 km]."
   (setf (outside-view-target view)
-        (max (outside-min-distance m-p)
+        (max (outside-min-distance m-p load)
              (min (float *outside-max-distance* 1d0)
                   (* (outside-view-target view) (expt *outside-zoom-step* (- notches))))))
   view)

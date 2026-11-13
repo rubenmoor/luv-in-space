@@ -925,6 +925,319 @@ exact (the GPU's rounding aside)."
     (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))
     (lis::game-load-state! game (lis::new-game-sim))))
 
+;;; Objects (decision 124: Meshes of the places: models, scenery liveries,
+;;; lights, far dots, the grapple's claws, floodlight and range finder; task 222).
+
+(defun cpu-object-gpu (key)
+  "An object-gpu without buffers: the CPU side of the draws."
+  (let* ((def (lis::object-definition key))
+         (model (lis::object-model key)))
+    (lis::%make-object-gpu :key key :extent (lis::model-extent model)
+                           :dot-radius (sqrt (/ (lis::shapes-quarter-area def) pi))
+                           :beacons (lis::model-beacons model))))
+
+(define-test object-uniforms-hand-computed
+  ;; An object turned 90 degrees about z on the +x axis at 7,000 km, the Sun on
+  ;; the same axis, the eye (3, 4, 0) m from it: every row against its hand value.
+  (let* ((state (lis::make-render-state))
+         (o (object-render-of state :k-17))
+         (out (make-array lis::+ship-uniform-floats+ :element-type 'single-float :initial-element 0f0))
+         (eye (lis::vec3 7d6 0d0 0d0))
+         (sun (lis::vec3 1.5d11 0d0 0d0)))
+    (replace (lis::object-render-r o) (lis::vec3 (- 7d6 3d0) (- 0d0 4d0) 0d0))
+    (replace (lis::object-render-q o) (lis::quat (cos (/ pi 4)) 0d0 0d0 (sin (/ pi 4))))
+    (setf (lis::object-render-sun-fraction o) 0.5d0
+          (lis::object-render-drawn o) t)
+    (replace (lis::render-state-sun state) sun)
+    (setf (aref (lis::object-render-r o) 0) 7d6
+          (aref (lis::object-render-r o) 1) 0d0)
+    (replace eye (lis::vec3 (+ 7d6 3d0) 4d0 0d0))
+    (lis::object-uniforms! out state o eye)
+    (flet ((close-p (index expected)
+             (true (< (abs (- (aref out index) expected)) (+ 1d-6 (* 1d-6 (abs expected))))
+                   "float ~D: ~F against ~F" index (aref out index) expected)))
+      ;; R = [0 -1 0; 1 0 0; 0 0 1].
+      (loop for expected in '(0 -1 0 0  1 0 0 0  0 0 1 0) for i from 0 do (close-p i expected))
+      ;; The CoM relative to the eye, then the glows' least sigma.
+      (close-p 12 -3) (close-p 13 -4) (close-p 14 0) (close-p 15 (* 0.5 lis::*glow-min-pixels*))
+      ;; No gimbal, identity trim.
+      (loop for expected in '(0 0 0 0  1 0 0 0  0 1 0 0  0 0 1 0) for i from 16 do (close-p i expected))
+      (let* ((distance (- 1.5d11 7d6))
+             (irradiance (expt (/ lis::+au+ distance) 2))
+             (cap (acos (/ lis::+radius-earth+ 7d6)))
+             (earthshine (* lis::*earth-albedo* (expt (/ lis::+radius-earth+ 7d6) 2)
+                            (/ (sin cap) cap) irradiance)))
+        ;; The Sun along +x is body (0 -1 0); Earth along -x is body (0 1 0).
+        (loop for expected in (list 0 -1 0 (* 0.5 irradiance)) for i from 32 do (close-p i expected))
+        (loop for expected in (list 0 1 0 earthshine) for i from 36 do (close-p i expected)))
+      (destructuring-bind (tr tg tb) lis::*earthshine-tint*
+        (loop for expected in (list tr tg tb lis::*ship-ambient*) for i from 40 do (close-p i expected)))
+      ;; The eye (3, 4, 0) from the object is body (4 -3 0); lights on; no emission.
+      (loop for expected in '(4 -3 0 1  0 0 0 0) for i from 44 do (close-p i expected)))))
+
+(define-test object-glows-and-kinds
+  (let* ((sim (lis::new-game-sim))
+         (state (sim-render-state sim))
+         (gpu (cpu-object-gpu :tern-station))
+         (o (object-render-of state :tern-station))
+         (out (make-array (* 16 lis::+glow-floats+) :element-type 'single-float :initial-element 0f0))
+         (eye (lis::vec3-add-scaled (lis::object-render-r o) (lis::vec3 1 0 0) 100d0))
+         (camera (lis::make-camera)))
+    (setf (lis::camera-orientation camera) (lis::quat 0 0 0 1))
+    ;; Beacons: red, green, a strobe, four lamps. Strobe lit at the clock's 0, dark at 0.5 s.
+    (setf (lis::render-state-lights-t state) 0d0)
+    (is = 7 (lis::object-glows! out gpu state o eye nil 0))
+    (setf (lis::render-state-lights-t state) 0.5d0)
+    (is = 6 (lis::object-glows! out gpu state o eye nil 0))
+    ;; The glows are at q p + r - eye, the red one first.
+    (let ((p (second (first (lis::model-beacons (lis::object-model :tern-station))))))
+      (let ((expected (lis::vec3-sub (lis::vec3-add (lis::quat-rotate (lis::object-render-q o) p)
+                                                    (lis::object-render-r o))
+                                     eye)))
+        (dotimes (i 3)
+          (true (< (abs (- (aref out i) (aref expected i))) 1d-3)))
+        (true (> (aref out 4) 0))))
+    ;; The strobe's offset per index: 0.5 s plus 0.37 x 4 = 1.98 s mod 1.2 s: lit at 0.78? dark.
+    ;; A dot adds one glow, with the Sun's term and the sun-fraction; none in shadow.
+    (let ((n (lis::object-glows! out gpu state o eye t 0)))
+      (is = 7 n)
+      (true (> (aref out (+ (* 6 lis::+glow-floats+) 4)) 0)))
+    (setf (lis::object-render-sun-fraction o) 0d0)
+    (is = 6 (lis::object-glows! out gpu state o eye t 0))
+    (setf (lis::object-render-sun-fraction o) 1d0)
+    ;; Mesh below the near plane's reach, mesh from 2 px, dot beyond it.
+    (flet ((kind (distance)
+             (replace eye (lis::vec3-add-scaled (lis::object-render-r o) (lis::vec3 1 0 0) distance))
+             ;; Looking along -x at the object: its direction from the eye.
+             (setf (lis::camera-orientation camera) (lis::quat 0 0 0 1))
+             (lis::object-draw-kind gpu o camera '(320 200) eye)))
+      ;; Orientation (0 0 0 1) turns x to -x about z: forward -x.
+      (is eq :mesh (kind 150d0))
+      (is eq :dot (kind 30000d0))
+      (is eq :mesh (kind 1d0)))
+    ;; Behind the eye: nothing.
+    (replace eye (lis::vec3-add-scaled (lis::object-render-r o) (lis::vec3 1 0 0) -300d0))
+    (is eq nil (lis::object-draw-kind gpu o camera '(320 200) eye))))
+
+(define-test object-draws-cons-nothing
+  ;; The CPU side of a frame's encode with the nine objects of Skua Yard:
+  ;; uniforms, glows and draw kinds consing nothing.
+  (let* ((sim (skua-yard-sim))
+         (state (sim-render-state sim))
+         (gpus (loop for def in (coerce lis::*objects* 'list) collect (cpu-object-gpu (lis::object-def-key def))))
+         (out (make-array 52 :element-type 'single-float :initial-element 0f0))
+         (glows (make-array (* 16 lis::+glow-floats+) :element-type 'single-float :initial-element 0f0))
+         (camera (lis::make-camera))
+         (eye (lis::vec3-add (lis::render-state-r state) (lis::vec3 0d0 123d0 77d0))))
+    (flet ((frame ()
+             (loop for i from 0 for gpu in gpus
+                   for o = (svref (lis::render-state-objects state) i)
+                   when (lis::object-render-drawn o)
+                   do (lis::object-uniforms! out state o eye)
+                      (lis::object-glows! glows gpu state o eye (evenp i) i)
+                      (lis::object-draw-kind gpu o camera '(320 200) eye))))
+      (frame)
+      (true (> (count-if #'lis::object-render-drawn (lis::render-state-objects state)) 8))
+      (is = 0 (least-bytes-consed (lambda () (dotimes (i 3000) (frame))))))))
+
+(defun sim-at-offset (seconds)
+  "The start state's sim at SECONDS after its start (its objects on rails; the
+ship stays where it was: the camera-fns below fly the eye by an offset)."
+  (let ((sim (lis::new-game-sim)))
+    (incf (lis::sim-t sim) seconds)
+    sim))
+
+(defun object-sun-direction (state key)
+  "The unit vector from the object KEY to the Sun at STATE."
+  (lis::vec3-normalize (lis::vec3-sub (lis::render-state-sun state)
+                                      (lis::object-render-r (object-render-of state key)))))
+
+(defun object-eye-camera (key distance direction-fn &key (basis :world))
+  "A camera-fn: the eye DISTANCE m from object KEY's CoM along the unit
+DIRECTION-FN of (state object-render), looking at the CoM, any roll
+(BASIS :world); BASIS :body: DIRECTION-FN returns the direction in the
+object's body axes and the camera's right is its body y."
+  (lambda (camera state)
+    (let* ((o (object-render-of state key))
+           (u (funcall direction-fn state o))
+           (u (if (eq basis :body) (lis::quat-rotate (lis::object-render-q o) u) u))
+           (eye (lis::vec3-add-scaled (lis::object-render-r o) u (float distance 1d0)))
+           (x (lis::vec3-scale u -1d0))
+           (hint (if (eq basis :body)
+                     (lis::quat-rotate (lis::object-render-q o) (lis::vec3 0 1 0))
+                     (if (< (abs (aref x 2)) 0.9d0) (lis::vec3 0 0 1) (lis::vec3 1 0 0))))
+           (y (lis::vec3-normalize (if (eq basis :body)
+                                       (lis::vec3-add-scaled hint x (- (lis::vec3-dot hint x)))
+                                       (lis::vec3-cross hint x))))
+           (z (lis::vec3-cross x y)))
+      (lis::quat-from-basis! (lis::camera-orientation camera) x y z)
+      (replace (lis::camera-offset camera) (lis::vec3-sub eye (lis::render-state-r state)))
+      (setf (lis::camera-field-of-view camera) (float lis::*outside-field-of-view* 1d0)))))
+
+(defun sunward-up-direction (state o)
+  "The direction from object O to the Sun turned 45 degrees towards its
+nadir: a view along its opposite looks up, the Sun within 60 degrees behind."
+  (let* ((s (lis::vec3-normalize (lis::vec3-sub (lis::render-state-sun state) (lis::object-render-r o))))
+         (nadir (lis::vec3-normalize (lis::vec3-scale (lis::object-render-r o) -1d0)))
+         (p (lis::vec3-normalize (lis::vec3-add-scaled nadir s (- (lis::vec3-dot nadir s))))))
+    (lis::vec3-add (lis::vec3-scale s (cos (deg 45))) (lis::vec3-scale p (sin (deg 45))))))
+
+(defun sunlit-tern-offset ()
+  "Seconds after the start when Tern Station is sunlit and the Sun is within 85
+degrees of its nadir (a view away from the Sun, turned up, clears Earth)."
+  (loop for dt from 0 by 30
+        for sim = (sim-at-offset dt)
+        for state = (sim-render-state sim)
+        for o = (object-render-of state :tern-station)
+        when (and (> (lis::object-render-sun-fraction o) 0.999d0)
+                  (< (angle-between (object-sun-direction state :tern-station)
+                                    (lis::vec3-scale (lis::object-render-r o) -1d0))
+                     (deg 85)))
+          return dt
+        when (> dt 6000) do (error "No such time.")))
+
+(defun shadowed-tern-offset ()
+  (loop for dt from 0 by 30
+        when (< (lis::object-render-sun-fraction
+                 (object-render-of (sim-render-state (sim-at-offset dt)) :tern-station))
+                1d-6)
+          return (+ dt 1000)))
+
+(defun object-bound-pixels (camera state key width height)
+  "The projected centre and the angular bound's radius in pixels of object KEY."
+  (let* ((o (object-render-of state key))
+         (c (lis::vec3-sub (lis::object-render-r o) (lis::vec3-add (lis::render-state-r state)
+                                                                   (lis::camera-offset camera))))
+         (bound (lis::object-def-bound (lis::object-render-def o))))
+    (multiple-value-bind (x y) (project camera c width height)
+      (values x y (/ (* 0.5 height (tan (asin (/ bound (lis::vec3-norm c)))))
+                     (tan (* 0.5d0 (lis::camera-field-of-view camera))))))))
+
+(defun object-lamp-pixel (camera state key index width height)
+  "The pixel (x y) of the INDEXth beacon of object KEY's model."
+  (let* ((o (object-render-of state key))
+         (beacon (nth index (lis::model-beacons (lis::object-model key))))
+         (p (lis::vec3-add (lis::object-render-r o)
+                           (lis::quat-rotate (lis::object-render-q o) (second beacon)))))
+    (multiple-value-bind (x y)
+        (project camera (lis::vec3-sub p (lis::vec3-add (lis::render-state-r state)
+                                                        (lis::camera-offset camera)))
+                 width height)
+      (list (floor x) (floor y)))))
+
+(defun object-checks (game png width height)
+  (let ((format nil))
+   (flet ((capture (sim camera-fn)
+           (multiple-value-bind (path w h pixels pixel-format)
+               (lis::capture-game-state game png :sim sim :frames 1 :camera-fn camera-fn)
+             (declare (ignore path w h))
+             (setf format pixel-format)
+             pixels)))
+    (with-canvas-values (game (lis::*star-radiance-limit* 0.0))
+      ;; Tern Station from 150 m in sunlight, the Sun behind the camera.
+      (let* ((sim (sim-at-offset (sunlit-tern-offset)))
+             (state (sim-render-state sim))
+             (camera-fn (object-eye-camera :tern-station 150
+                                           #'sunward-up-direction))
+             (camera (let ((c (lis::make-camera))) (funcall camera-fn c state) c))
+             (pixels (capture sim camera-fn))
+             (inside 0) (outside 0) (brightest-outside 0))
+        (multiple-value-bind (cx cy radius) (object-bound-pixels camera state :tern-station width height)
+          (dotimes (y height)
+            (dotimes (x width)
+              (let ((d (sqrt (+ (expt (- (+ x 0.5) cx) 2) (expt (- (+ y 0.5) cy) 2))))
+                    (l (pixel-luminance pixels width x y)))
+                (cond ((<= d radius) (when (> l 40) (incf inside)))
+                      ((> d (+ radius 8))
+                       (incf outside)
+                       (setf brightest-outside (max brightest-outside l)))))))
+          (true (plusp outside))
+          (true (< brightest-outside 20) "Tern at 150 m: ~,1F outside the bound (radius ~,1F)"
+                brightest-outside radius)
+          ;; The first measured frame: 998 pixels above 40 (lavapipe), x 0.5 and x 2.
+          (true (<= 499 inside 1996) "Tern at 150 m: ~D pixels above 40" inside)))
+      ;; In Earth's shadow from 100 m, looking down body z at the wings: the
+      ;; -y tip red, the +y tip green, the free fixture's lamp white.
+      (let* ((sim (sim-at-offset (shadowed-tern-offset)))
+             (state (sim-render-state sim))
+             (camera-fn (object-eye-camera :tern-station 100 (lambda (state o)
+                                                               (declare (ignore state o))
+                                                               (lis::vec3 0 0 -1))
+                                           :basis :body))
+             (camera (let ((c (lis::make-camera))) (funcall camera-fn c state) c))
+             (pixels (with-canvas-values (game (lis::*strobe-on* 0d0)) (capture sim camera-fn)))
+             (beacons (lis::model-beacons (lis::object-model :tern-station))))
+        (flet ((colour (kind &optional (n 0))
+                 (let* ((at (loop for b in beacons for i from 0
+                                  when (eq (first b) kind) collect i))
+                        (xy (object-lamp-pixel camera state :tern-station (nth n at) width height)))
+                   (pixel-rgb pixels format width (first xy) (second xy)))))
+          (destructuring-bind (red green blue) (colour :red)
+            (declare (ignore blue))
+            (true (and (> red 150) (> red (+ green 50))) "-y tip: ~D ~D" red green))
+          (destructuring-bind (red green blue) (colour :green)
+            (declare (ignore blue))
+            (true (and (> green 150) (> green (+ red 50))) "+y tip: ~D ~D" red green))
+          (destructuring-bind (red green blue) (colour :lamp)
+            (true (and (> red 150) (> green 150) (> blue 150)) "lamp: ~D ~D ~D" red green blue))))
+      ;; Far: a dot from 30 km, none from 2,000 km (where Earth is in the
+      ;; view, so against the pixels 6 to 10 px round it).
+      (let* ((sim (sim-at-offset (sunlit-tern-offset)))
+             (state (sim-render-state sim)))
+        (dolist (distance '(30000 2000000))
+          (let* ((camera-fn (object-eye-camera :tern-station distance #'sunward-up-direction))
+                 (camera (let ((c (lis::make-camera))) (funcall camera-fn c state) c))
+                 (pixels (capture sim camera-fn)))
+            (multiple-value-bind (cx cy) (object-bound-pixels camera state :tern-station width height)
+              (let ((best 0) (ring 0) (n 0))
+                (loop for y from 0 below height
+                      do (loop for x from 0 below width
+                               for d = (sqrt (+ (expt (- (+ x 0.5) cx) 2) (expt (- (+ y 0.5) cy) 2)))
+                               for l = (pixel-luminance pixels width x y)
+                               do (cond ((<= d 2) (setf best (max best l)))
+                                        ((<= 6 d 10) (incf ring l) (incf n)))))
+                (setf ring (/ ring n))
+                (if (< distance 100000)
+                    (true (> best (+ ring 30)) "Tern at ~D m: ~,1F, ring ~,1F" distance best ring)
+                    (true (< best (+ ring 5)) "Tern at ~D m: ~,1F, ring ~,1F" distance best ring)))))))
+      ;; A latched Skua Yard 3 at its design pose from 40 m.
+      (let* ((sim (skua-yard-sim))
+             (index (position :skua-yard-3 lis::*objects* :key #'lis::object-def-key)))
+        (lis::grapple-capture! sim index 0)
+        (let* ((state (sim-render-state sim))
+               (camera-fn (lambda (camera state)
+                            (let* ((q (lis::render-state-q state))
+                                   (axis (lis::quat-rotate q (lis::vec3 1 0 0)))
+                                   (s (lis::vec3-normalize (lis::vec3-sub (lis::render-state-sun state)
+                                                                          (lis::render-state-r state))))
+                                   (u (lis::vec3-normalize (lis::vec3-add-scaled s axis (- (lis::vec3-dot s axis)))))
+                                   (rock (lis::object-render-r (svref (lis::render-state-objects state) index)))
+                                   (eye (lis::vec3-add-scaled (lis::render-state-r state) u 40d0))
+                                   (x (lis::vec3-normalize (lis::vec3-sub rock eye)))
+                                   (up (lis::quat-rotate q (lis::vec3 0 0 -1)))
+                                   (y (lis::vec3-normalize (lis::vec3-cross (lis::vec3-scale up -1d0) x)))
+                                   (z (lis::vec3-cross x y)))
+                              (lis::quat-from-basis! (lis::camera-orientation camera) x y z)
+                              (replace (lis::camera-offset camera) (lis::vec3-sub eye (lis::render-state-r state)))
+                              (setf (lis::camera-field-of-view camera)
+                                    (float lis::*outside-field-of-view* 1d0)))))
+               (camera (let ((c (lis::make-camera))) (funcall camera-fn c state) c))
+               (pixels (capture sim camera-fn))
+               (o (svref (lis::render-state-objects state) index))
+               (c (lis::vec3-sub (lis::object-render-r o)
+                                 (lis::vec3-add (lis::render-state-r state) (lis::camera-offset camera)))))
+          (multiple-value-bind (x y) (project camera c width height)
+            (let* ((half (* 0.6 (/ (* 0.5 height (lis::object-def-bound (lis::object-render-def o)))
+                                   (* (lis::vec3-norm c) (tan (* 0.5d0 (lis::camera-field-of-view camera)))))))
+                   (values (box-pixels pixels width height (- x half) (- y half) (+ x half) (+ y half)))
+                   (mean (/ (reduce #'+ values) (length values)))
+                   (centre (pixel-luminance pixels width (floor x) (floor y)))
+                   (background (/ (reduce #'+ (pixel-mode pixels width 0 height)) 3)))
+              (true (> centre (+ background 20)) "the rock's centre: ~,1F" centre)
+              (true (> mean (+ background 20)) "the rock's box: ~,1F over ~,1F" mean background)))))
+      (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))))
+    (lis::game-load-state! game (lis::new-game-sim))))
+
 ;; The lights and the engine glow (decision 100: The lights' clock and the
 ;; glows' numbers), in Earth's shadow at u = 180 deg.
 (defun light-checks (game png width height)
@@ -1218,6 +1531,7 @@ after it."
            (earth-checks game png width height)
            (ship-checks game png width height)
            (light-checks game png width height)
+           (object-checks game png width height)
            (map-checks game png width height)
            (ribbon-checks game png width height)
            (marker-checks game png width height)

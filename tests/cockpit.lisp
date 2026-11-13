@@ -778,22 +778,22 @@ the window's plane and of a porthole's plane."
     (multiple-value-bind (state clock) (screen-state sim)
       (flet ((update (real-time)
                (lis::cockpit-update! cockpit views (text-test-atlas) state clock real-time :cockpit)))
-        (is = 3 (update 0d0))
+        (is = 4 (update 0d0))
         (is = 0 (update 0.04d0))
         (is = 0 (update 0.09d0))
-        (is = 3 (update 0.11d0))
+        (is = 4 (update 0.11d0))
         (is = 0 (update 0.15d0))
         ;; a hold change at once, between the 10 Hz rebuilds
         (setf (lis::controls-hold (lis::render-state-controls state)) :retrograde)
-        (is = 3 (update 0.16d0))
+        (is = 4 (update 0.16d0))
         (is = 0 (update 0.17d0))
         (setf (lis::clock-paused clock) t)
-        (is = 3 (update 0.18d0))
-        (is = 3 (update 0.29d0))
+        (is = 4 (update 0.18d0))
+        (is = 4 (update 0.29d0))
         ;; a view change at once; a restart rebuilds
-        (is = 3 (lis::cockpit-update! cockpit views (text-test-atlas) state clock 0.30d0 :map))
+        (is = 4 (lis::cockpit-update! cockpit views (text-test-atlas) state clock 0.30d0 :map))
         (lis::cockpit-state-invalidate! cockpit)
-        (is = 3 (update 0.31d0))))))
+        (is = 4 (update 0.31d0))))))
 
 (define-test cockpit-rebuild-conses-little
   (let ((sim (lis::new-game-sim)) (cockpit (lis::make-cockpit-state)) (views (test-screen-views))
@@ -1403,3 +1403,258 @@ the window's plane and of a porthole's plane."
       (setf (lis::render-state-m-p state) lis::*propellant-full*)
       (lis::cockpit-devices-update! devices cockpit state clock 1.12d0 6 t)
       (is eq nil (svref (lis::cockpit-state-lamp-colours cockpit) 2) "a new signature rebuilds at once"))))
+
+;;; The ATTITUDE screen (plan 32 piece 4; decision 127: Cockpit screens' contents
+;;; in milestone 3: lines, modes, plots, colours and updates).
+
+(defun test-attitude-view ()
+  (lis::make-attitude-view (lis::make-text-batch) (lis::make-line-batch) (lis::make-plot-batch)))
+
+(defun attitude-face-axes ()
+  "(values centre-of-the-plot right up) in the eye's body axes, doubles."
+  (multiple-value-bind (c n r u) (lis::panel-frame (lis::cockpit-panel :attitude))
+    (declare (ignore n))
+    (values (lis::vlin c (getf lis::*attitude-plot* :a) r (getf lis::*attitude-plot* :b) u) r u)))
+
+(defun attitude-marker-point (view index)
+  "(values a b): marker INDEX's centre in metres right and up of the plot's centre."
+  (let* ((region (lis::attitude-view-markers view))
+         (data (lis::text-batch-data (lis::text-region-batch region)))
+         (base (* lis::+text-record-floats+ (+ (lis::text-region-start region) index))))
+    (multiple-value-bind (centre r u) (attitude-face-axes)
+      (let ((p (lis::vec3 (+ (aref data base) (* 0.5 (aref data (+ base 3))) (* 0.5 (aref data (+ base 6))))
+                          (+ (aref data (+ base 1)) (* 0.5 (aref data (+ base 4))) (* 0.5 (aref data (+ base 7))))
+                          (+ (aref data (+ base 2)) (* 0.5 (aref data (+ base 5))) (* 0.5 (aref data (+ base 8)))))))
+        (let ((d (lis::vec3-sub (lis::vec3 (aref p 0) (aref p 1) (aref p 2)) centre)))
+          (values (lis::vec3-dot d r) (lis::vec3-dot d u)))))))
+
+(defun attitude-segment (view index)
+  "(values from to red width): segment INDEX of the view's lines, vec3 doubles."
+  (let* ((region (lis::attitude-view-lines view))
+         (data (lis::line-batch-data (lis::line-region-batch region)))
+         (base (* lis::+line-record-floats+ (+ (lis::line-region-start region) index))))
+    (values (lis::vec3 (aref data base) (aref data (+ base 1)) (aref data (+ base 2)))
+            (lis::vec3 (aref data (+ base 3)) (aref data (+ base 4)) (aref data (+ base 5)))
+            (aref data (+ base 6)) (aref data (+ base 9)))))
+
+(defun attitude-segment-centre (view index)
+  "(values a b) of segment INDEX's middle in metres right and up of the plot's centre."
+  (multiple-value-bind (from to) (attitude-segment view index)
+    (multiple-value-bind (centre r u) (attitude-face-axes)
+      (let ((d (lis::vec3-sub (lis::vec3-scale (lis::vec3-add from to) 0.5d0) centre)))
+        (values (lis::vec3-dot d r) (lis::vec3-dot d u))))))
+
+(defun attitude-update (view state)
+  (lis::attitude-view-update! view (text-test-atlas) state))
+
+(define-test attitude-plot-projection
+  (flet ((point (x y z) (multiple-value-list (lis::attitude-plot-point x y z))))
+    ;; The nose is the centre; −z (up in the cab) at 90° is straight up at half the radius.
+    (is equalp '(0d0 0d0) (point 1d0 0d0 0d0))
+    (let ((p (point 0d0 0d0 -1d0)))
+      (true (< (abs (first p)) 1d-12))
+      (true (< (abs (- (second p) 0.5d0)) 1d-12)))
+    (let ((p (point 0d0 1d0 0d0)))
+      (true (< (abs (- (first p) 0.5d0)) 1d-12) "+y is to the right")
+      (true (< (abs (second p)) 1d-12)))
+    ;; The tail is the rim; 45° off the nose a quarter of the radius.
+    (is = 1d0 (second (point -1d0 0d0 0d0)))
+    (let ((p (point (cos (/ pi 4)) 0d0 (- (sin (/ pi 4))))))
+      (true (< (abs (- (second p) 0.25d0)) 1d-12))))
+  ;; The inverse round-trips on 1,000 directions away from the tail.
+  (let ((seed 12345) (worst 0d0))
+    (flet ((random-unit ()
+             (setf seed (mod (+ (* seed 1103515245) 12345) 2147483648))
+             (/ (- (* 2 (/ seed 2147483648d0)) 1) 1)))
+      (dotimes (i 1000)
+        (let* ((x (random-unit)) (y (random-unit)) (z (random-unit))
+               (norm (sqrt (+ (* x x) (* y y) (* z z)))))
+          (when (and (> norm 0.1) (> (/ x norm) -0.99))
+            (let ((x (/ x norm)) (y (/ y norm)) (z (/ z norm)))
+              (multiple-value-bind (px py) (lis::attitude-plot-point x y z)
+                (multiple-value-bind (a b c) (lis::attitude-plot-direction px py)
+                  (setf worst (max worst (abs (- a x)) (abs (- b y)) (abs (- c z))))))))))
+      (true (< worst 1d-9) "round trip off by ~E" worst))))
+
+(define-test attitude-markers-at-the-start-state
+  (let ((view (test-attitude-view)) (sim (lis::new-game-sim)))
+    (multiple-value-bind (state) (screen-state sim)
+      (attitude-update view state)
+      (flet ((is-at (index a b what)
+               (multiple-value-bind (x y) (attitude-marker-point view index)
+                 (true (and (< (abs (- x a)) 5d-4) (< (abs (- y b)) 5d-4))
+                       "~A at (~,4F, ~,4F) m, wanted (~,4F, ~,4F)" what x y a b))))
+        (let ((half (* 0.5 (getf lis::*attitude-plot* :radius))))
+          ;; ○ prograde at the centre, ■ radial out straight up, □ down, ▲ ▼ on the horizontal.
+          (is-at 0 0d0 0d0 "prograde")
+          (is-at 4 0d0 half "radial out")
+          (is-at 5 0d0 (- half) "radial in")
+          (multiple-value-bind (a b) (attitude-marker-point view 2)
+            (true (and (< (abs b) 5d-4) (< (abs (- (abs a) half)) 5d-4)) "normal at (~F, ~F)" a b))
+          (multiple-value-bind (a b) (attitude-marker-point view 3)
+            (true (and (< (abs b) 5d-4) (< (abs (- (abs a) half)) 5d-4)) "anti-normal at (~F, ~F)" a b))
+          (multiple-value-bind (a) (attitude-marker-point view 2)
+            (multiple-value-bind (a2) (attitude-marker-point view 3)
+              (true (< (abs (+ a a2)) 1d-5) "▲ and ▼ on opposite sides"))))
+        ;; The tail's ⊗ is on the rim, up; no target: ◆ stays blank.
+        (multiple-value-bind (x y) (attitude-marker-point view 1)
+          (true (and (< (abs x) 1d-3) (< (abs (- y (getf lis::*attitude-plot* :radius))) 1d-3))
+                "retrograde at (~F, ~F)" x y))
+        (let* ((data (lis::text-batch-data (lis::text-region-batch (lis::attitude-view-markers view))))
+               (base (* lis::+text-record-floats+ (+ 6 (lis::text-region-start (lis::attitude-view-markers view))))))
+          (true (every #'zerop (subseq data base (+ base lis::+text-record-floats+)))))))))
+
+(define-test attitude-target-diamond-and-hold-cross
+  (let ((view (test-attitude-view))
+        (sim (lis::stated-sim '(:target :tern-station))))
+    (multiple-value-bind (state) (screen-state sim)
+      (attitude-update view state)
+      (let ((relative (lis::render-state-target-relative state)))
+        (true (plusp (aref relative 0)))
+        (multiple-value-bind (px py) (lis::attitude-plot-point (aref relative 5) (aref relative 6) (aref relative 7))
+          (multiple-value-bind (a b) (attitude-marker-point view 6)
+            (let ((radius (getf lis::*attitude-plot* :radius)))
+              (true (and (< (abs (- a (* radius px))) 5d-4) (< (abs (- b (* radius py))) 5d-4))
+                    "◆ at (~,4F, ~,4F) wanted (~,4F, ~,4F)" a b (* radius px) (* radius py)))))))
+    ;; The prograde hold's cross sits on ○ (segments 9 and 10, magenta not).
+    (multiple-value-bind (state) (screen-state (lis::new-game-sim))
+      (attitude-update view state)
+      (multiple-value-bind (a b) (attitude-marker-point view 0)
+        (dolist (index '(9 10))
+          (multiple-value-bind (ca cb) (attitude-segment-centre view index)
+            (true (and (< (abs (- ca a)) 5d-4) (< (abs (- cb b)) 5d-4))
+                  "cross ~D centred at (~,4F, ~,4F) on ○ (~,4F, ~,4F)" index ca cb a b)))
+        (multiple-value-bind (from to red width) (attitude-segment view 9)
+          (declare (ignore from to))
+          (true (< red 0.1) "the cross is cyan, not red: ~F" red)
+          (true (plusp width))))
+      ;; Without a hold the cross goes.
+      (setf (lis::controls-attitude-mode (lis::render-state-controls state)) :rate-damping)
+      (attitude-update view state)
+      (multiple-value-bind (from to red width) (attitude-segment view 9)
+        (declare (ignore from to red))
+        (is = 0f0 width)))))
+
+(define-test attitude-tick-leans-towards-the-nadir
+  ;; At the start state gravity turns the velocity down on the plot.
+  (let ((view (test-attitude-view)))
+    (multiple-value-bind (state) (screen-state (lis::new-game-sim))
+      (attitude-update view state)
+      (multiple-value-bind (from to) (attitude-segment view 11)
+        (multiple-value-bind (centre r u) (attitude-face-axes)
+          (declare (ignore r))
+          (let ((a (lis::vec3-dot (lis::vec3-sub from centre) u)) (b (lis::vec3-dot (lis::vec3-sub to centre) u)))
+            (true (and (< b a 0) ) "tick from ~F to ~F m below the centre" a b)))))))
+
+(define-test attitude-rate-bars
+  (let ((view (test-attitude-view)))
+    (multiple-value-bind (state) (screen-state (lis::new-game-sim))
+      (lis::vec3-set! (lis::render-state-w state) 0.05d0 -0.02d0 0d0)
+      (attitude-update view state)
+      (flet ((bar (index)
+               ;; (values signed-length red green)
+               (multiple-value-bind (from to red) (attitude-segment view (+ 6 index))
+                 (multiple-value-bind (centre r u) (attitude-face-axes)
+                   (declare (ignore centre r))
+                   (let ((d (lis::vec3-sub to from)))
+                     (values (lis::vec3-dot d u) red))))))
+        (let ((full (getf lis::*attitude-bars* :half))
+              (amber-red (aref (lis::screen-line-colour lis::*screen-amber*) 0))
+              (green-red (aref (lis::screen-line-colour lis::*screen-green*) 0)))
+          ;; P is ω about y, Y about z, R about x: full scale ±5°/s.
+          (multiple-value-bind (length red) (bar 0)
+            (true (< (abs (- length (* full (/ (* -0.02 (/ 180 pi)) 5)))) 1d-5) "P ~F m" length)
+            (is = amber-red red))
+          (multiple-value-bind (length red) (bar 1)
+            (true (< (abs length) 1d-9))
+            (is = green-red red))
+          (multiple-value-bind (length red) (bar 2)
+            (true (< (abs (- length (* full (/ (* 0.05 (/ 180 pi)) 5)))) 1d-5) "R ~F m" length)
+            (is = amber-red red))))
+      ;; Beyond full scale the bar stops at the end.
+      (lis::vec3-set! (lis::render-state-w state) 0d0 0.5d0 0d0)
+      (attitude-update view state)
+      (multiple-value-bind (from to) (attitude-segment view 6)
+        (multiple-value-bind (centre r u) (attitude-face-axes)
+          (declare (ignore centre r))
+          (true (< (abs (- (lis::vec3-dot (lis::vec3-sub to from) u) (getf lis::*attitude-bars* :half))) 1d-5)))))))
+
+(define-test attitude-mode-lines
+  (let ((sim (lis::new-game-sim)))
+    (flet ((mode (&key mutate)
+             (let ((lines (nth-value 1 (screen-lines-of :attitude sim :mutate mutate))))
+               (values (lis::line-text (nth 7 lines)) (nth 7 lines)))))
+      (multiple-value-bind (text line) (mode)
+        (is string= "HOLD PRO  SETTLED" text)
+        (is = lis::*screen-green* (lis::run-colour (second line))))
+      (multiple-value-bind (text line)
+          (mode :mutate (lambda (s) (setf (lis::controls-settled (lis::render-state-controls s)) nil)))
+        (is string= "HOLD PRO  SLEWING" text)
+        (is = lis::*screen-amber* (lis::run-colour (second line))))
+      (is string= "DAMP"
+          (mode :mutate (lambda (s) (setf (lis::controls-attitude-mode (lis::render-state-controls s)) :rate-damping))))
+      (is string= "DIRECT"
+          (mode :mutate (lambda (s) (setf (lis::controls-attitude-mode (lis::render-state-controls s)) :direct))))
+      (is string= "DAMP +FINE"
+          (mode :mutate (lambda (s) (setf (lis::controls-attitude-mode (lis::render-state-controls s)) :rate-damping
+                                          (lis::controls-fine (lis::render-state-controls s)) t))))
+      (is string= "PRO SETTLED +FINE"
+          (mode :mutate (lambda (s) (setf (lis::controls-fine (lis::render-state-controls s)) t))))
+      (is string= "HOLD RIN  SETTLED"
+          (mode :mutate (lambda (s) (setf (lis::controls-hold (lis::render-state-controls s)) :radial-in))))
+      (is string= "AUTOPILOT HOLD PRO"
+          (mode :mutate (lambda (s) (setf (lis::render-state-autopilot s) t))))
+      (is string= "AUTOPILOT DAMP"
+          (mode :mutate (lambda (s) (setf (lis::render-state-autopilot s) t
+                                          (lis::controls-attitude-mode (lis::render-state-controls s)) :rate-damping))))
+      ;; The bars' letters sit under the bars, columns 13, 15 and 17 of row 7.
+      (let ((row (nth 6 (nth-value 1 (screen-lines-of :attitude sim)))))
+        (let ((text (lis::line-text row)))
+          (is = 13 (position #\P text)) (is = 15 (position #\Y text)) (is = 17 (position #\R text)))))))
+
+(define-test attitude-lines-fit-their-grid
+  (destructuring-bind (columns rows) (getf (lis::cockpit-panel :attitude) :grid)
+    (dolist (sim (list (lis::new-game-sim) (lis::stated-sim '(:target :tern-station))))
+      (dolist (key '(:prograde :retrograde :normal :anti-normal :radial-out :radial-in))
+        (dolist (settled '(t nil))
+          (dolist (fine '(t nil))
+            (multiple-value-bind (texts) (screen-lines-of :attitude sim
+                                                           :mutate (lambda (s)
+                                                                     (let ((c (lis::render-state-controls s)))
+                                                                       (setf (lis::controls-hold c) key
+                                                                             (lis::controls-settled c) settled
+                                                                             (lis::controls-fine c) fine))))
+              (true (<= (length texts) rows))
+              (dolist (text texts) (true (<= (length text) columns) "~S" text)))))))
+    (dolist (key lis::*hold-abbreviations*)
+      (true (<= (length (cdr key)) 4)))))
+
+(define-test attitude-update-conses-nothing
+  (let ((view (test-attitude-view)))
+    (multiple-value-bind (state) (screen-state (lis::stated-sim '(:target :tern-station)))
+      (attitude-update view state)
+      (is = 0 (least-bytes-consed (lambda () (dotimes (i 1000) (attitude-update view state)))))
+      (setf (lis::controls-attitude-mode (lis::render-state-controls state)) :rate-damping)
+      (lis::vec3-set! (lis::render-state-w state) 0.05d0 -0.02d0 0d0)
+      (is = 0 (least-bytes-consed (lambda () (dotimes (i 1000) (attitude-update view state)))))
+      (setf (lis::controls-attitude-mode (lis::render-state-controls state)) :hold
+            (lis::controls-hold (lis::render-state-controls state)) :target)
+      (is = 0 (least-bytes-consed (lambda () (dotimes (i 1000) (attitude-update view state))))))))
+
+(define-test attitude-plot-record
+  ;; The nadir in body axes and the cosine of the body's angular radius asin(R / r).
+  (let ((view (test-attitude-view)))
+    (multiple-value-bind (state) (screen-state (lis::new-game-sim))
+      (attitude-update view state)
+      (let* ((data (lis::plot-batch-data (lis::attitude-view-batch view)))
+             (base (* lis::+plot-record-floats+ (lis::attitude-view-record view)))
+             (r (+ lis::+radius-earth+ 400000d0)))
+        (true (< (abs (- (aref data (+ base 15)) (cos (asin (/ lis::+radius-earth+ r))))) 1f-6))
+        ;; the start state's nose is prograde, the nadir +z
+        (true (< (abs (- (aref data (+ base 14)) 1)) 1f-5) "nadir z ~F" (aref data (+ base 14)))
+        (is = 0.075f0 (aref data (+ base 3)))))))
+
+(define-test attitude-is-a-live-screen
+  (true (member :attitude lis::*cockpit-text-screens*))
+  (let ((names (mapcar #'lis::screen-view-name (test-screen-views))))
+    (true (member :attitude names))))

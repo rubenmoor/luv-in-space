@@ -290,6 +290,30 @@ metres per em."
 (defun text-kind (kind)
   (ecase kind (:emissive 0) (:lit 1)))
 
+(defun marker-run! (atlas region index plane char x y
+                    &key (font :mono) (cap 0.01f0) (colour *text-white*) (kind :emissive))
+  "CHAR's glyph with the centre of its outline at (X, Y) metres along PLANE's
+axes, at cap height CAP, written to REGION's record INDEX; the record zeroed
+for a character without an outline. Conses nothing. Returns INDEX + 1."
+  (declare (type text-region region) (type (unsigned-byte 24) index) (type character char)
+           (type single-float x y cap) (type text-plane plane)
+           (type (simple-array single-float (3)) colour))
+  (let* ((data (text-batch-data (text-region-batch region)))
+         (font-data (text-font-of atlas font))
+         (glyph (svref (text-font-glyphs font-data) (text-repertoire-index char)))
+         (scale (/ cap (text-font-cap-em font-data)))
+         (base (* +text-record-floats+ (+ (text-region-start region) index))))
+    (declare (type single-float scale) (type fixnum base))
+    (when (>= index (text-region-capacity region))
+      (error "The region holds ~D glyphs; ~D asked for." (text-region-capacity region) (1+ index)))
+    (if (text-glyph-drawn glyph)
+        (put-text-record! data base glyph
+                          (- x (* scale 0.5f0 (+ (text-glyph-min-x glyph) (text-glyph-max-x glyph))))
+                          (- y (* scale 0.5f0 (+ (text-glyph-min-y glyph) (text-glyph-max-y glyph))))
+                          scale plane 1f0 0f0 colour (text-kind kind) 1f0)
+        (fill data 0f0 :start base :end (+ base +text-record-floats+)))
+    (1+ index)))
+
 (defun text-grid-cell-origin (plane cap column row)
   "The em origin (baseline, left) of the character at COLUMN of ROW of a grid
 run on PLANE at cap height CAP, as three doubles (docs/design.md
@@ -651,3 +675,69 @@ before), through BUFFER, on the lines' corners; nothing for an empty batch."
     (luv:set-vertex-buffer pass 0 corners)
     (luv:set-vertex-buffer pass 1 buffer)
     (luv:draw pass 6 (dot-batch-count batch))))
+
+;;; The plot batch: the ATTITUDE plot's one record of the :cab-attitude
+;;; pipeline (shaders.lisp; decision 127), 24 floats: centre xyz and radius,
+;;; right xyz, up xyz, the nadir xyz and the cosine of the body's angular
+;;; radius, the fill and the grey (each rgb, linear, and a spare).
+
+(defconstant +plot-record-floats+ 24)
+
+(defstruct (plot-batch (:copier nil) (:constructor %make-plot-batch))
+  (data nil :type (simple-array single-float (*)))
+  (count 0 :type fixnum)
+  (view nil))
+
+(defun make-plot-batch (&optional (capacity 1))
+  (let ((data (make-array (* capacity +plot-record-floats+) :element-type 'single-float
+                                                            :initial-element 0f0)))
+    (%make-plot-batch :data data
+                      :view (make-array (length data) :element-type 'single-float
+                                                      :displaced-to data :fill-pointer 0))))
+
+(defun plot-batch-capacity (batch)
+  (floor (length (plot-batch-data batch)) +plot-record-floats+))
+
+(defun plot-batch-take! (batch)
+  "The index of one new record at the batch's end."
+  (let ((start (plot-batch-count batch)))
+    (when (>= start (plot-batch-capacity batch))
+      (error "The plot batch holds ~D records." (plot-batch-capacity batch)))
+    (setf (plot-batch-count batch) (1+ start))
+    start))
+
+(defun plot-batch-upload! (batch buffer)
+  (let ((view (plot-batch-view batch)))
+    (setf (fill-pointer view) (* +plot-record-floats+ (plot-batch-count batch)))
+    (when (plusp (plot-batch-count batch))
+      (luv:write-buffer buffer view))))
+
+(defun plot-pipeline (renderer layout format)
+  "The :cab-attitude live pipeline into FORMAT: as the lines'."
+  (live-pipeline renderer :cab-attitude layout
+                 `((:array-stride 8
+                    :attributes ((:shader-location 0 :offset 0 :format :float32x2)))
+                   (:array-stride ,(* 4 +plot-record-floats+) :step-mode :instance
+                    :attributes ,(loop for k below 6
+                                       collect `(:shader-location ,(1+ k) :offset ,(* 16 k)
+                                                 :format :float32x4))))
+                 :format format :blend :premultiplied-alpha
+                 :depth-stencil '(:format :depth32-float :depth-write-enabled nil
+                                  :depth-compare :greater)))
+
+(defun make-plot-buffer (renderer capacity)
+  (luv:create (renderer-device renderer)
+              (luv:make-buffer-descriptor :label "plot instances"
+                                          :size (* 4 +plot-record-floats+ capacity)
+                                          :usage '(:vertex :copy-dst))))
+
+(defun encode-plots (pass renderer text-slot batch buffer corners)
+  "BATCH's records into the open scene PASS (the block of TEXT-SLOT written
+before), on the lines' corners; nothing for an empty batch."
+  (when (plusp (plot-batch-count batch))
+    (plot-batch-upload! batch buffer)
+    (luv:set-pipeline pass (renderer-pipeline renderer :cab-attitude))
+    (luv:set-bind-group pass 0 (text-slot-bind-group text-slot))
+    (luv:set-vertex-buffer pass 0 corners)
+    (luv:set-vertex-buffer pass 1 buffer)
+    (luv:draw pass 6 (plot-batch-count batch))))

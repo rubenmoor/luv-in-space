@@ -900,6 +900,68 @@
   (let* ((coverage (clamp (/ (- 1.0 (sqrt (dot offset offset))) 0.25) 0.0 1.0)))
     (set-output color (vec4 (* shade coverage) coverage))))
 
+;;; The ATTITUDE sky plot (src/cockpit-attitude.lisp; decision 127: Cockpit
+;;; screens' contents in milestone 3: lines, modes, plots, colours and
+;;; updates): one instance, a square quad on the face's plane; every pixel
+;;; inverts the azimuthal equidistant projection about +x (-z up, the rim the
+;;; tail) to a body direction D. Records: centre and radius, right, up, the
+;;; nadir in body axes with the cosine of the body's angular radius, the body's
+;;; fill and the grey (linear, as the screen shows them). The body is filled
+;;; where D . nadir exceeds that cosine, 10 degree rings at 30 % and the rim
+;;; in grey.
+(define-shader cab-attitude-vertex
+    (:stage :vertex
+     :inputs ((corner :vec2 :location 0)
+              (centre-radius :vec4 :location 1)
+              (right :vec4 :location 2)
+              (up :vec4 :location 3)
+              (nadir :vec4 :location 4)
+              (fill-tint :vec4 :location 5)
+              (grey-tint :vec4 :location 6))
+     :outputs ((clip-position :vec4 :built-in :position)
+               (offset :vec2 :location 0)
+               (nadir-out :vec4 :location 1 :interpolation :flat)
+               (fill-ink :vec3 :location 2 :interpolation :flat)
+               (grey-ink :vec3 :location 3 :interpolation :flat))
+     :resources ((text-block :uniform-block :binding 2
+                  :members #.*cab-block-members*)))
+  (let* ((c (vec2 (- (* 2.0 (swizzle corner :x)) 1.0) (swizzle corner :y)))
+         (radius (swizzle centre-radius :w))
+         (q (vec4 (+ (swizzle centre-radius :xyz)
+                     (* (swizzle right :xyz) (* (swizzle c :x) radius))
+                     (* (swizzle up :xyz) (* (swizzle c :y) radius)))
+                  1.0)))
+    (set-output clip-position (vec4 (dot clip-x q) (dot clip-y q) (dot clip-z q) (dot clip-w q)))
+    (set-output offset c)
+    (set-output nadir-out nadir)
+    (set-output fill-ink (* (inverse-tone-map (swizzle fill-tint :xyz)) (swizzle params :x)))
+    (set-output grey-ink (* (inverse-tone-map (swizzle grey-tint :xyz)) (swizzle params :x)))))
+
+;; Premultiplied: the fill, the rings and the rim composed over each other.
+(define-shader cab-attitude-fragment
+    (:stage :fragment
+     :inputs ((offset :vec2 :location 0)
+              (nadir-out :vec4 :location 1 :interpolation :flat)
+              (fill-ink :vec3 :location 2 :interpolation :flat)
+              (grey-ink :vec3 :location 3 :interpolation :flat))
+     :outputs ((color :vec4 :location 0)))
+  (let* ((rho (sqrt (dot offset offset)))
+         (theta (* rho 3.1415927))
+         (k (/ (sin theta) (max rho 0.000001)))
+         (d (vec3 (cos theta) (* k (swizzle offset :x)) (- 0.0 (* k (swizzle offset :y)))))
+         (edge (clamp (/ (- (dot d (swizzle nadir-out :xyz)) (swizzle nadir-out :w)) 0.004) 0.0 1.0))
+         (turns (+ (/ (* theta 57.29578) 10.0) 0.5))
+         (ring-offset (abs (- (fract turns) 0.5)))
+         (ring (if (< rho 0.03) 0.0 (* 0.3 (clamp (/ (- 0.07 ring-offset) 0.04) 0.0 1.0))))
+         (rim (clamp (/ (- rho 0.985) 0.005) 0.0 1.0))
+         (inside (clamp (/ (- 1.0 rho) 0.004) 0.0 1.0))
+         (c1 (* fill-ink edge))
+         (c2 (+ (* c1 (- 1.0 ring)) (* grey-ink ring)))
+         (a2 (+ edge (* ring (- 1.0 edge))))
+         (c3 (+ (* c2 (- 1.0 rim)) (* grey-ink rim)))
+         (a3 (+ a2 (* rim (- 1.0 a2)))))
+    (set-output color (vec4 (* c3 inside) (* a3 inside)))))
+
 ;;; Slug text on planes (src/text.lisp; decision 126: Cockpit structure and
 ;;; view in milestone 3), after Luvcraft's :slug-world-text vertex stage
 ;;; (luvcraft/shaders.lisp, luv by Mikael Brockman): the glyph quad grows past
@@ -1251,6 +1313,10 @@ angle in degrees), weighted by a Gaussian of SIGMA texels, normalised."
   (cab-lines-vertex))
 (defmethod shader-specification-for ((role (eql :cab-lines)) (stage (eql :fragment)))
   (cab-lines-fragment))
+(defmethod shader-specification-for ((role (eql :cab-attitude)) (stage (eql :vertex)))
+  (cab-attitude-vertex))
+(defmethod shader-specification-for ((role (eql :cab-attitude)) (stage (eql :fragment)))
+  (cab-attitude-fragment))
 (defmethod shader-specification-for ((role (eql :cab-dots)) (stage (eql :vertex)))
   (cab-dots-vertex))
 (defmethod shader-specification-for ((role (eql :cab-dots)) (stage (eql :fragment)))

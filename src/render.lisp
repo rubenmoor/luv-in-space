@@ -736,7 +736,7 @@ sunlit patch). The static part stays. Conses nothing; the block."
     out))
 
 (defun encode-cockpit (pass renderer gpu slot text-slot batch corners state camera extent exposure eye
-                       &optional lines line-buffer line-corners dots dot-buffer)
+                       &optional lines line-buffer line-corners dots dot-buffer plots plot-buffer)
   "The cab's interior into the open scene PASS, after the scene (decision 126:
 the opaque meshes and instances, the lines, the cockpit's text, then the glass): its block (the
 head camera in body axes) written to SLOT and, with the text, to TEXT-SLOT.
@@ -757,6 +757,7 @@ BATCH the text batch, CORNERS the glyph quad. Conses nothing."
     (when lines
       ;; The lines go before the text: an inverted run's block lies under its letters.
       (luv:write-buffer (text-slot-buffer text-slot) data)
+      (when plots (encode-plots pass renderer text-slot plots plot-buffer line-corners))
       (encode-lines pass renderer text-slot lines line-buffer line-corners)
       (when dots (encode-dots pass renderer text-slot dots dot-buffer line-corners)))
     (encode-text pass renderer text-slot batch data corners)
@@ -827,6 +828,9 @@ the tests' one decode for every canvas they open.")
    (line-corners :initarg :line-corners :reader frame-renderer-line-corners)
    (dots :initform (make-dot-batch) :reader frame-renderer-dots
          :documentation "The strip's LED records (cockpit-screens.lisp).")
+   (plots :initform (make-plot-batch) :reader frame-renderer-plots
+          :documentation "The ATTITUDE plot's record (cockpit-attitude.lisp).")
+   (attitude-view :initform nil :accessor frame-renderer-attitude-view)
    (strip-view :initform nil :accessor frame-renderer-strip-view)
    (devices :initform nil :accessor frame-renderer-devices
             :documentation "The lamps, gauges and lever (cockpit-devices.lisp).")
@@ -905,11 +909,15 @@ camera's clip rows (positions relative to the eye in ICRF axes).")
                              :line-corners (vertex-buffer renderer (line-corners) "line corners"))
       (text-pipeline renderer text-layout +hdr-format+)
       (lines-pipeline renderer text-layout +hdr-format+)
-      (dots-pipeline renderer text-layout +hdr-format+))
+      (dots-pipeline renderer text-layout +hdr-format+)
+      (plot-pipeline renderer text-layout +hdr-format+))
     (cockpit-text! (frame-renderer-text-atlas renderer) (frame-renderer-text-batch renderer))
     (setf (frame-renderer-screen-views renderer)
           (cockpit-screens-init! (frame-renderer-text-batch renderer) (frame-renderer-lines renderer)))
     (setf (frame-renderer-strip-view renderer) (make-strip-view (frame-renderer-dots renderer)))
+    (setf (frame-renderer-attitude-view renderer)
+          (make-attitude-view (frame-renderer-text-batch renderer) (frame-renderer-lines renderer)
+                              (frame-renderer-plots renderer)))
     (setf (frame-renderer-devices renderer)
           (make-cockpit-devices (frame-renderer-text-atlas renderer) (frame-renderer-text-batch renderer)
                                 (frame-renderer-lines renderer)))
@@ -919,7 +927,7 @@ camera's clip rows (positions relative to the eye in ICRF axes).")
 "A target's frame block, its scene bind group, its ship-slot, its ribbon
 instance buffer, its overlay vertices, its text-slot, its cab-slot, and the bind groups sampling the
 post levels in POST-VIEWS."
-  buffer bind-group ship ribbon overlay text lines dots cab (post-views '()) (post-bind-groups '()))
+  buffer bind-group ship ribbon overlay text lines dots plots cab (post-views '()) (post-bind-groups '()))
 
 (defun release-frame-resources (slot)
   (release-ship-slot (frame-slot-ship slot))
@@ -928,6 +936,7 @@ post levels in POST-VIEWS."
   (release-text-slot (frame-slot-text slot))
   (luv:destroy (frame-slot-lines slot))
   (luv:destroy (frame-slot-dots slot))
+  (luv:destroy (frame-slot-plots slot))
   (release-cab-slot (frame-slot-cab slot))
   (mapc #'luv:destroy (frame-slot-post-bind-groups slot))
   (luv:destroy (frame-slot-bind-group slot))
@@ -965,6 +974,7 @@ again once it is acquired (luv's canvas-frame-resource-cache)."
                 :cab (make-cab-slot-for renderer (frame-renderer-cockpit renderer))
                 :lines (make-line-buffer renderer (line-batch-capacity (frame-renderer-lines renderer)))
                 :dots (make-dot-buffer renderer (dot-batch-capacity (frame-renderer-dots renderer)))
+                :plots (make-plot-buffer renderer (plot-batch-capacity (frame-renderer-plots renderer)))
                 :text (make-text-slot renderer (frame-renderer-text-layout renderer)
                                       (frame-renderer-text-atlas renderer)
                                       (text-batch-capacity (frame-renderer-text-batch renderer)))
@@ -1140,7 +1150,8 @@ cab's meshes, instances and text."
                             (frame-renderer-eye renderer)
                             (frame-renderer-lines renderer) (frame-slot-lines slot)
                             (frame-renderer-line-corners renderer)
-                            (frame-renderer-dots renderer) (frame-slot-dots slot)))
+                            (frame-renderer-dots renderer) (frame-slot-dots slot)
+                            (frame-renderer-plots renderer) (frame-slot-plots slot)))
           (when (eq view :map)
             (encode-map-lines pass renderer bind-group (frame-renderer-map-lines renderer)
                               (frame-slot-ribbon slot) (frame-renderer-ribbon-corners renderer)

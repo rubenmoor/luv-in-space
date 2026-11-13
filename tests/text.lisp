@@ -184,3 +184,29 @@ an atlas whose locations are zeros (only the GPU packs the real ones)."
                                       :kind :lit :factor 0.5f0 :align :centre))))
       (fill-region)
       (true (< (least-bytes-consed #'fill-region) 1000)))))
+
+(define-test marker-run-centres-a-glyph-on-a-point
+  ;; The record's quad is centred on the outline's box, so its centre is the point;
+  ;; a space has no outline and zeroes its record.
+  (let* ((atlas (text-test-atlas))
+         (batch (lis::make-text-batch 4))
+         (region (lis::text-batch-region batch 2))
+         (plane (lis::make-text-plane :origin '(0.5 0.1 0.2) :right '(0 1 0) :up '(0 0 1)))
+         (colour (lis::text-colour 232 228 216)))
+    (is = 1 (lis::marker-run! atlas region 0 plane #\■ 0.02f0 -0.01f0 :cap 0.012f0 :colour colour))
+    (let* ((record (record-floats batch 0))
+           (x (+ (nth 0 record) (* 0.5 (nth 3 record)) (* 0.5 (nth 6 record))))
+           (y (+ (nth 1 record) (* 0.5 (nth 4 record)) (* 0.5 (nth 7 record))))
+           (z (+ (nth 2 record) (* 0.5 (nth 5 record)) (* 0.5 (nth 8 record)))))
+      (true (< (abs (- x 0.5)) 1f-6))
+      (true (< (abs (- y (+ 0.1 0.02))) 1f-5) "along right: ~F" y)
+      (true (< (abs (- z (+ 0.2 -0.01))) 1f-5) "along up: ~F" z))
+    (lis::marker-run! atlas region 1 plane #\Space 0f0 0f0 :cap 0.012f0 :colour colour)
+    (true (every #'zerop (record-floats batch 1)))
+    (is = 0 (least-bytes-consed
+             (lambda () (dotimes (i 1000) (lis::marker-run! atlas region 0 plane #\○ 0.02f0 0f0
+                                                            :cap 0.012f0 :colour colour)))))))
+
+(define-test text-repertoire-has-the-middle-dot-and-minus
+  (true (find #\· lis::*text-repertoire*))
+  (true (find #\− lis::*text-repertoire*)))

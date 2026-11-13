@@ -768,7 +768,7 @@ point on rails (Skua Yard) the stack's CoM. Conses nothing."
 (decision 120): aborts \"TARGET LOST\" (the target removed or latched) and
 \"APPROACH TIMED OUT\" (:terminal *terminal-timeout* old); on a COARSE step
 the keys and the throttle released; else on station (|p| ≤
-*station-distance*, |u| ≤ *station-speed*) :station with the notice \"ON
+*station-distance*, |u| ≤ *station-speed*, the :target hold settled: the turn done, decision 175) :station with the notice \"ON
 STATION: <NAME>\" and a checkpoint request, then terminal-controls!. SIM;
 conses nothing but the notice."
   (declare (optimize speed) (type sim sim) (type boolean coarse))
@@ -790,7 +790,9 @@ conses nothing but the notice."
                  (progn
                    (when (and (eq (sim-plan-phase sim) :terminal)
                               (<= (vec3-norm p) *station-distance*)
-                              (<= (vec3-norm u) *station-speed*))
+                              (<= (vec3-norm u) *station-speed*)
+                              (eq (controls-hold controls) :target)
+                              (controls-settled controls))
                      (setf (sim-plan-phase sim) :station
                            (sim-checkpoint-request sim) t)
                      (sim-notice! sim :station (format nil "ON STATION: ~A" (target-name target))))

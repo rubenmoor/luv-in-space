@@ -1598,7 +1598,7 @@ planned-burn) pending, else in :terminal from TIME."
 
 (defun station-sim (target &optional (time (lis::start-t)))
   "terminal-sim with the tip at TARGET's stop point, moving with it, the
-nose prograde: on station at the first step, then the :target hold's slew."
+nose prograde, in :station (decision 175) so the :target hold's slew comes first."
   (let* ((sim (terminal-sim target :time time))
          (fixture (lis::rendezvous-part-fixture (lis::burn-plan-rendezvous (lis::sim-plan sim)))))
     (multiple-value-bind (s sv) (stop-point sim target fixture time)
@@ -1606,6 +1606,7 @@ nose prograde: on station at the first step, then the :target hold's slew."
         (replace (lis::ship-state-r (lis::sim-ship sim))
                  (lis::vec3-add-scaled s (lis::vec3-normalize (lis::vec3-sub rt s)) (- (ship-arm))))
         (replace (lis::ship-state-v (lis::sim-ship sim)) sv)))
+    (setf (lis::sim-plan-phase sim) :station)
     (lis::sim-recheck-objects! sim)))
 
 (defun terminal-relative (sim)

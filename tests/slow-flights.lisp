@@ -152,13 +152,15 @@ least CoM distance before each step from the first burn's start to :station."
     (true (equalp sim (skua-yard-5-run)) "end sims differ")))
 
 ;;; The preset scripts: every Earth-orbit place by the autopilot alone from
-;;; the start state (plan 28's Done when). preset-fulmar-depot is left out
-;;; until task 277 (ON STATION while the ship still turns: 0.452 m/s at the
-;;; tip), preset-skua-yard until task 278 (the stop point's rails velocity
+;;; the start state (plan 28's Done when). preset-skua-yard is left out
+;;; until task 278 (the stop point's rails velocity
 ;;; ~1.05 m/s off its position's rate: APPROACH TIMED OUT at 103 m).
 
 (define-test preset-tern-station
   (fly-script "preset-tern-station"))
+
+(define-test preset-fulmar-depot
+  (fly-script "preset-fulmar-depot"))
 
 (define-test preset-k-17
   (fly-script "preset-k-17"))

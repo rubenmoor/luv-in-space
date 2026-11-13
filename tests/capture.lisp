@@ -36,3 +36,24 @@ fully black."
            (loop for path in paths for p in pixels
                  do (true (find-if #'plusp p) "~A: fully black" (file-namestring path))))
       (uiop:delete-directory-tree dir :validate t :if-does-not-exist :ignore)))))
+
+(define-test capture-cockpit-poses-home-head
+  ;; capture-state :view :cockpit: the head at Home unless :head gives it, the
+  ;; field of view snapped (decision 126: Cockpit structure and view in milestone 3).
+  (uiop:with-temporary-file (:pathname png :type "png")
+    (luv:call-with-sdl-main-thread
+     (lambda ()
+       (lis::with-capture-game (game :width 320 :height 200)
+         (lis::cockpit-view-drag! (lis::game-cockpit-view game) 100d0 100d0)
+         (lis::capture-game-state game png :view :cockpit :frames 2)
+         (let ((view (lis::game-cockpit-view game)))
+           (is eq :cockpit (lis::game-view game))
+           (is = 0d0 (lis::cockpit-view-yaw view))
+           (is = (* 16 (/ pi 180)) (lis::cockpit-view-pitch view))
+           (is = (* 70 (/ pi 180)) (lis::cockpit-view-fov view)))
+         (lis::capture-game-state game png :view :cockpit :head '(30 -5 50) :interior nil :frames 2)
+         (let ((view (lis::game-cockpit-view game)))
+           (true (< (abs (- (lis::cockpit-view-yaw view) (* 30 (/ pi 180)))) 1d-12))
+           (true (< (abs (- (lis::cockpit-view-pitch view) (* -5 (/ pi 180)))) 1d-12))
+           (true (< (abs (- (lis::cockpit-view-fov view) (* 50 (/ pi 180)))) 1d-12))
+           (false (lis::game-interior-p game))))))))

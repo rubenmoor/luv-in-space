@@ -54,7 +54,7 @@
     (:|7| . :hold-target) (:|8| . :hold-anti-target)
     (:|9| . :hold-relative-prograde) (:|0| . :hold-relative-retrograde)
     (:|.| . :warp-up) (:|,| . :warp-down) (:/ . :warp-reset) (:p . :pause)
-    (:c . :camera-frame) (:home . :camera-reset)
+    (:v . :view-toggle) (:c . :camera-frame) (:home . :camera-reset)
     (:m . :map) (:tab . :map-focus) (:page-up . :map-zoom-in) (:page-down . :map-zoom-out)
     (:g . :grapple) (:b . :transfer) (:y . :acknowledge)
     (:] . :target-next) (:[ . :target-previous) (:\\ . :target-clear)
@@ -130,11 +130,13 @@ keys, disengages the autopilot (\"AUTOPILOT OFF: PILOT INPUT\"; decision 118).")
       (:warp-down (clock-warp-down clock))
       (:warp-reset (clock-warp-reset clock))
       (:pause (clock-toggle-pause clock))
-      (:camera-frame (unless (map-p game)
+      (:view-toggle (toggle-cockpit! game))
+      (:camera-frame (when (eq (game-view game) :outside)
                        (outside-view-toggle-frame! (game-outside-view game) (game-render-state game))))
-      (:camera-reset (if (map-p game)
-                         (open-map-view! game)
-                         (outside-view-reset! (game-outside-view game))))
+      (:camera-reset (ecase (game-view game)
+                       (:map (open-map-view! game))
+                       (:cockpit (cockpit-view-reset! (game-cockpit-view game)))
+                       (:outside (outside-view-reset! (game-outside-view game)))))
       (:map (toggle-map! game))
       (:grapple (key-refusal! clock :grapple (grapple-key! sim)))
       (:transfer (key-refusal! clock :transfer (transfer-key! sim)))
@@ -165,13 +167,24 @@ opening, focus, zoom, drag and exposure)."
                   (render-state-update! (game-render-state game) (game-clock game) (game-sim game))))
 
 (defun toggle-map! (game)
-  "M: :outside ↔ :map; opening frames the map, leaving keeps the outside
-view as it was. The frame snaps the exposure (view-changed-p)."
+  "M: the view (:outside or :cockpit) ↔ :map; opening frames the map, leaving
+returns to the view it opened from (game-map-return-view), which stays as it
+was. The frame snaps the exposure (view-changed-p)."
   (if (map-p game)
-      (setf (game-view game) :outside)
-      (progn (open-map-view! game)
+      (setf (game-view game) (game-map-return-view game))
+      (progn (setf (game-map-return-view game) (game-view game))
+             (open-map-view! game)
              (setf (game-view game) :map)))
   (setf (game-view-changed-p game) t))
+
+(defun toggle-cockpit! (game)
+  "V: :outside ↔ :cockpit, paused, at every warp and while the autopilot
+flies (not a pilot's key, decision 118); ignored in the map and while lost
+(decision 126: Cockpit structure and view in milestone 3: frames, draw order,
+Slug text, head look, exposure, cab light, portholes, bezels, tape labels)."
+  (unless (or (map-p game) (sim-lost-p (game-sim game)))
+    (setf (game-view game) (if (eq (game-view game) :cockpit) :outside :cockpit)
+          (game-view-changed-p game) t)))
 
 (defun engine-key-p (key command)
   "KEY (its COMMAND) works the engine or the RCS: locked while berthed."
@@ -223,7 +236,7 @@ key that acts disengages an engaged autopilot first (decision 118)."
 
 (defun window-title ()
   "The window's title: the main keys by QWERTY position (decision 81)."
-  "Luv in Space · WASD QE turn · HN IK JL move · Shift/Ctrl throttle · Z/X full/cut · T damp · R 1–6 hold · 7–0 target holds · F fine · . , / warp · P pause · C/Home camera · M map · O autopilot · G grapple · B refuel · Y ack · [ ] \\ target · Esc quit")
+  "Luv in Space · WASD QE turn · HN IK JL move · Shift/Ctrl throttle · Z/X full/cut · T damp · R 1–6 hold · 7–0 target holds · F fine · . , / warp · P pause · V view · C/Home camera · M map · O autopilot · G grapple · B refuel · Y ack · [ ] \\ target · Esc quit")
 
 ;; Runs on the canvas thread: only flag the quit; STOP runs on the caller's.
 (defun handle-event (game event)
@@ -288,6 +301,12 @@ below 0.1 off (controls-set-throttle)."
          (unless (= notches 0d0)
            (with-stack-load (load (game-sim game))
              (outside-view-zoom! view notches (ship-state-m-p (sim-ship (game-sim game))) load)))))
+      (:cockpit
+       (let ((view (game-cockpit-view game)))
+         (unless (and (= dx 0d0) (= dy 0d0))
+           (cockpit-view-drag! view dx dy))
+         (unless (= notches 0d0)
+           (cockpit-view-zoom! view notches))))
       (:map
        (let ((view (game-map-view game)))
          (unless (and (= dx 0d0) (= dy 0d0))

@@ -811,3 +811,96 @@ digits inside the 1–6 range, the rest by name."
       (input-tap game key))
     (is eq :closed (input-menu-state game))
     (lis::flight-stop :game game)))
+
+;;; The cockpit view's keys and pointer (decision 126: Cockpit structure and
+;;; view in milestone 3: frames, draw order, Slug text, head look, exposure,
+;;; cab light, portholes, bezels, tape labels).
+
+(defun cockpit-of (game) (lis::game-cockpit-view game))
+
+(define-test input-view-toggle
+  (let ((game (input-game)))
+    (is eq :outside (lis::game-view game))
+    (input-tap game :v)
+    (is eq :cockpit (lis::game-view game))
+    (true (lis::game-view-changed-p game))
+    ;; Paused and under warp.
+    (lis::clock-toggle-pause (input-clock game))
+    (input-tap game :v)
+    (is eq :outside (lis::game-view game))
+    (lis::clock-toggle-pause (input-clock game))
+    (input-tap game :|.|)
+    (input-tap game :v)
+    (is eq :cockpit (lis::game-view game))
+    ;; M from the cockpit and back; V does nothing in the map.
+    (input-tap game :m)
+    (is eq :map (lis::game-view game))
+    (input-tap game :v)
+    (is eq :map (lis::game-view game))
+    (input-tap game :m)
+    (is eq :cockpit (lis::game-view game))
+    (input-tap game :v)
+    (input-tap game :m)
+    (input-tap game :m)
+    (is eq :outside (lis::game-view game))))
+
+(define-test input-view-toggle-is-not-a-pilot-key
+  (let ((game (input-game)))
+    (lis::fly "burn" :game game)
+    (input-tap game :v)
+    (is eq :cockpit (lis::game-view game))
+    (lis::flight-stop :game game)))
+
+(define-test input-cockpit-pointer
+  (let ((game (input-game)))
+    (input-tap game :v)
+    (let ((outside (copy-structure (outside-view game))))
+      (pointer-event game 'luv:canvas-pointer-button-press-event :button :right)
+      (pointer-event game 'luv:canvas-pointer-motion-event :delta-x 100.0 :delta-y -100.0)
+      (pointer-event game 'luv:canvas-pointer-wheel-event :scroll-y 1.0)
+      (input-frame game)
+      (true (< (abs (- (lis::cockpit-view-yaw (cockpit-of game)) (deg 25))) 1d-12))
+      (true (< (abs (- (lis::cockpit-view-pitch (cockpit-of game)) (deg -9))) 1d-12))
+      (true (< (lis::cockpit-view-target-fov (cockpit-of game)) (deg 70)))
+      (is equalp outside (outside-view game))
+      ;; C does nothing; Home is the cockpit's.
+      (input-tap game :c)
+      (is eq :orbital (lis::outside-view-frame (outside-view game)))
+      (input-tap game :home)
+      (is equalp (lis::new-cockpit-view) (let ((v (copy-structure (cockpit-of game))))
+                                           (setf (lis::cockpit-view-scratch v)
+                                                 (lis::cockpit-view-scratch (lis::new-cockpit-view)))
+                                           v))
+      (is equalp outside (outside-view game)))))
+
+(define-test cockpit-view-exposure-snaps
+  (let* ((sim (lis::new-game-sim))
+         (game (make-instance 'lis::game :sim sim :clock (lis::new-clock sim)))
+         (extent '(1280 800)))
+    (lis::update-view! game nil)
+    (is = lis::*exposure-sunlit* (lis::update-exposure! game extent nil))
+    (lis::run-command game :view-toggle)
+    (lis::update-view! game 0.016d0)
+    (is = 4d0 (lis::update-exposure! game extent 0.016d0))
+    (lis::run-command game :view-toggle)
+    (lis::update-view! game 0.016d0)
+    (is = lis::*exposure-sunlit* (lis::update-exposure! game extent 0.016d0))))
+
+(define-test cockpit-loss-and-restart
+  (let ((game (deorbit-game))
+        (lis::*frame-step-time-limit* nil))
+    (lis::toggle-map! game)
+    (input-tap game :v)
+    (is eq :cockpit (lis::game-view game))
+    (lis::cockpit-view-drag! (cockpit-of game) 40d0 10d0)
+    (loop repeat 600 until (lis::sim-lost-p (lis::game-sim game))
+          do (game-frames game 1))
+    (true (lis::sim-lost-p (lis::game-sim game)))
+    (is eq :outside (lis::game-view game))
+    ;; V is ignored while lost; the head survives the restart.
+    (input-tap game :v)
+    (is eq :outside (lis::game-view game))
+    (let ((yaw (lis::cockpit-view-yaw (cockpit-of game))))
+      (lis::game-restart! game)
+      (is eq lis::*default-view* (lis::game-view game))
+      (is = yaw (lis::cockpit-view-yaw (cockpit-of game))))))

@@ -955,14 +955,20 @@ left (decision 85), then PANEL, nil or lost-panel-lines' lines (decision 86)."
       (luv:draw pass (overlay-buffer-count out)))))
 
 (defun encode-frame (renderer encoder target extent state camera exposure
-                     &optional (view :outside) readout panel)
+                     &optional (view :outside) readout panel &key (interior t))
   "The frame into TARGET of EXTENT (width height) from the render STATE seen
 by CAMERA, in three stages (decision 76: Frame passes, radiance scale and
 exposure): the scene pass into the HDR target (the stars, the Sun, the
 Moon, Earth, Earth's halo, the Mule, the objects, in :map the orbit's ribbon); the bloom
 chain; one pass on TARGET, the tone map at EXPOSURE and then the overlay
 (in :map the markers and their labels, then READOUT, readout-lines' lines
-or nil, then the LOST PANEL's lines or nil). VIEW: :outside or :map."
+or nil, then the LOST PANEL's lines or nil). VIEW: :outside, :cockpit (the
+Mule without its cab exterior, the eye being inside the cab; decision 126:
+Cockpit structure and view in milestone 3: frames, draw order, Slug text, head
+look, exposure, cab light, portholes, bezels, tape labels) or :map. INTERIOR
+nil leaves the cab's interior out of :cockpit (for tests and the grapple
+camera); the interior itself comes with plan 31's later pieces."
+  (declare (ignorable interior))
   (let* ((slot (frame-resources renderer target))
          (views (post-views renderer extent))
          (bind-groups (post-bind-groups renderer slot views))
@@ -995,7 +1001,7 @@ or nil, then the LOST PANEL's lines or nil). VIEW: :outside or :map."
                   for form in forms
                   do (draw-impostor pass renderer role form bind-group corners)))
           (encode-ship pass renderer (frame-renderer-ship renderer) (frame-slot-ship slot)
-                       state (frame-renderer-eye renderer))
+                       state (frame-renderer-eye renderer) (eq view :cockpit))
           (encode-objects pass renderer (frame-renderer-ship renderer) (frame-slot-ship slot)
                           state camera extent (frame-renderer-eye renderer))
           (let ((text (frame-renderer-test-text renderer)))

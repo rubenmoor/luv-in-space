@@ -11,6 +11,8 @@
 (defparameter *exposure-deep* 16.0d0 "Deep space: stars.")
 (defparameter *exposure-map* 4.0d0
   "The map's fixed exposure, snapped to on entering; decision 83: Map camera: framing on opening, focus, zoom, drag and exposure.")
+(defparameter *exposure-cockpit* 4.0d0
+  "The cockpit's fixed exposure, snapped to on entering and leaving: a room-lit cab and the window's view read together; decision 126: Cockpit structure and view in milestone 3: frames, draw order, Slug text, head look, exposure, cab light, portholes, bezels, tape labels.")
 (defparameter *exposure-time-constant* 1.0d0 "Real seconds; log2 easing.")
 (defparameter *exposure-sun-margin* (* 5 (/ pi 180)) "Beyond the half-diagonal, radians.")
 (defparameter *exposure-coverage* 0.05d0 "Least coverage, and coverage x lit fraction.")
@@ -57,7 +59,7 @@ about FORWARD from EYE) so that coverage x its sun-fraction reaches
 
 (defun exposure-target (camera state view &key (aspect 1.6d0))
   "The exposure the view calls for (decision 76; decision 93: Exposure rule
-as built: hidden Sun, coverage within the view): *exposure-map* for :map;
+as built: hidden Sun, coverage within the view): *exposure-map* for :map, *exposure-cockpit* for :cockpit;
 *exposure-sunlit* when the Sun's centre, not hidden by a body, is within the
 half-diagonal plus *exposure-sun-margin* of the view axis, or when Earth or
 the Moon covers at least *exposure-coverage* of the frame (its disc's
@@ -72,8 +74,9 @@ likewise a drawn object of the render state (a sphere of its definition's bound
 round its position, coverage x its own sun-fraction; decision 124: Meshes of
 the places: models, scenery liveries, lights, far dots, the grapple's claws,
 floodlight and range finder); else *exposure-deep*."
-  (when (eq view :map)
-    (return-from exposure-target *exposure-map*))
+  (case view
+    (:map (return-from exposure-target *exposure-map*))
+    (:cockpit (return-from exposure-target *exposure-cockpit*)))
   (let* ((aspect (float aspect 1d0))
          (eye (let ((eye (make-vec3)))
                 (camera-eye camera (camera-anchor-position! eye camera state) eye)))

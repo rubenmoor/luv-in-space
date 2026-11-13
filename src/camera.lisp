@@ -364,3 +364,112 @@ vertical. Conses nothing."
     (setf (camera-anchor camera) (map-view-focus view)
           (camera-field-of-view camera) *map-fov*)
     camera))
+
+
+;;; The cockpit view (decision 126: Cockpit structure and view in milestone 3:
+;;; frames, draw order, Slug text, head look, exposure, cab light, portholes,
+;;; bezels, tape labels): the eye at *cockpit-eye* in the ship's body axes, the
+;;; head turned by yaw (positive right) and pitch (positive down) within limits,
+;;; the vertical field of view eased by the wheel. Game state, not the sim's.
+
+(defparameter *cockpit-eye* (vec3 14.1d0 0d0 -3.6d0)
+  "The pilot's eye, m in body axes (FRD) from R; decision 126.")
+(defparameter *cockpit-yaw-limit* (* 150 (/ pi 180)) "±, radians; decision 126.")
+(defparameter *cockpit-pitch-up-limit* (* 60 (/ pi 180)) "Pitch down to this negative, radians.")
+(defparameter *cockpit-pitch-down-limit* (* 80 (/ pi 180)) "Radians.")
+(defparameter *cockpit-drag-rate* (* 0.25d0 (/ pi 180)) "Radians per pixel of right-drag.")
+(defparameter *cockpit-home-pitch* (* 16 (/ pi 180)) "Home: radians down.")
+(defparameter *cockpit-home-fov* (* 70 (/ pi 180)) "Home: vertical, radians.")
+(defparameter *cockpit-min-fov* (* 20 (/ pi 180)) "Radians.")
+(defparameter *cockpit-max-fov* (* 90 (/ pi 180)) "Radians.")
+(defparameter *cockpit-zoom-step* 1.2d0 "tan(fov/2) factor per wheel notch.")
+(defparameter *cockpit-zoom-tau* 0.15d0 "s of real time, the field of view's easing in log.")
+(declaim (type double-float *cockpit-yaw-limit* *cockpit-pitch-up-limit* *cockpit-pitch-down-limit*
+               *cockpit-drag-rate* *cockpit-home-pitch* *cockpit-home-fov* *cockpit-min-fov*
+               *cockpit-max-fov* *cockpit-zoom-step* *cockpit-zoom-tau*))
+
+(defstruct (cockpit-view (:constructor new-cockpit-view ()))
+  (yaw 0d0 :type double-float)
+  (pitch *cockpit-home-pitch* :type double-float)
+  (fov *cockpit-home-fov* :type double-float)
+  (target-fov *cockpit-home-fov* :type double-float)
+  (scratch (make-camera) :type camera))
+
+(defun cockpit-view-reset! (view)
+  "Home: yaw 0, pitch 16° down, field of view 70°."
+  (setf (cockpit-view-yaw view) 0d0
+        (cockpit-view-pitch view) *cockpit-home-pitch*
+        (cockpit-view-fov view) *cockpit-home-fov*
+        (cockpit-view-target-fov view) *cockpit-home-fov*)
+  view)
+
+(defun cockpit-view-drag! (view dx dy)
+  "Right-drag by DX, DY pixels (luv's y down): mouse right turns the head
+right, mouse up raises it; clamped to the limits."
+  (setf (cockpit-view-yaw view)
+        (max (- *cockpit-yaw-limit*)
+             (min *cockpit-yaw-limit* (+ (cockpit-view-yaw view) (* *cockpit-drag-rate* dx))))
+        (cockpit-view-pitch view)
+        (max (- *cockpit-pitch-up-limit*)
+             (min *cockpit-pitch-down-limit*
+                  (+ (cockpit-view-pitch view) (* *cockpit-drag-rate* dy)))))
+  view)
+
+(defun cockpit-view-zoom! (view notches)
+  "The wheel: the target's tan(fov/2) ÷ 1.2^NOTCHES (up narrows), within 20°
+to 90°."
+  (let ((tan-half (/ (tan (* 0.5d0 (cockpit-view-target-fov view)))
+                     (expt *cockpit-zoom-step* notches))))
+    (setf (cockpit-view-target-fov view)
+          (max *cockpit-min-fov* (min *cockpit-max-fov* (* 2d0 (atan tan-half))))))
+  view)
+
+(declaim (inline cockpit-ease-fov))
+(defun cockpit-ease-fov (fov target elapsed)
+  "FOV eased towards TARGET in log of tan(fov/2) over ELAPSED real seconds;
+TARGET when ELAPSED is nil."
+  (declare (type double-float fov target) (type (or null double-float) elapsed))
+  (if elapsed
+      (let ((a (tan (* 0.5d0 fov))) (b (tan (* 0.5d0 target))))
+        (* 2d0 (atan (* b (exp (* (log (/ a b))
+                                  (exp (- (/ elapsed *cockpit-zoom-tau*)))))))))
+      target))
+
+(defun cockpit-head-quat! (out view)
+  "The head's rotation in body axes: yaw about z, then pitch (down positive)
+about y; OUT looks along (cos p cos y, cos p sin y, sin p)."
+  (declare (optimize speed) (type quat out) (type cockpit-view view))
+  (let* ((hy (* 0.5d0 (cockpit-view-yaw view)))
+         (hp (* -0.5d0 (cockpit-view-pitch view)))
+         (qz (make-quat)) (qy (make-quat)))
+    (declare (dynamic-extent qz qy))
+    (quat-set! qz (cos hy) 0d0 0d0 (sin hy))
+    (quat-set! qy (cos hp) 0d0 (sin hp) 0d0)
+    (quat-mul! out qz qy)))
+
+(defun cockpit-camera-update! (camera view render-state elapsed)
+  "Ease VIEW's field of view over ELAPSED real seconds (snap when nil) and
+pose CAMERA at the eye: offset q (e − c) from R (c the stack's CoM, as
+encode-ship receives it), oriented q × head. Conses nothing."
+  (declare (optimize speed) (type camera camera) (type cockpit-view view)
+           (type (or null double-float) elapsed))
+  (setf (cockpit-view-fov view)
+        (cockpit-ease-fov (cockpit-view-fov view) (cockpit-view-target-fov view) elapsed))
+  (let ((q (render-state-q render-state))
+        (head (make-quat)) (d (make-vec3)))
+    (declare (dynamic-extent head d))
+    (vec3-sub! d *cockpit-eye* (render-state-com render-state))
+    (quat-rotate! (camera-offset camera) q d)
+    (cockpit-head-quat! head view)
+    (quat-mul! (camera-orientation camera) q head)
+    (setf (camera-anchor camera) :ship
+          (camera-field-of-view camera) (cockpit-view-fov view))
+    camera))
+
+(defun cab-clip-rows! (out view aspect)
+  "The clip rows (as camera-clip-rows!) for points in body axes relative to
+the eye: the head camera's projection without the ship's rotation."
+  (let ((camera (cockpit-view-scratch view)))
+    (cockpit-head-quat! (camera-orientation camera) view)
+    (setf (camera-field-of-view camera) (cockpit-view-fov view))
+    (camera-clip-rows! out camera aspect)))

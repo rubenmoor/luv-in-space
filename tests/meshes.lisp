@@ -618,3 +618,24 @@ vertices of the \"plate\" parts, by part."
     ;; Stowed: where the static claws stood (16.6, 0.85 sin, -0.85 cos).
     (lis::ship-claw-instances! out 0)
     (true (close-to (lis::claw-tip out 0) (lis::vec3 16.6d0 0d0 -0.85d0) 1d-5))))
+
+(define-test mule-cab-exterior-baked-last
+  ;; The cab, window, portholes, hatch and decals fill the hull from
+  ;; model-cab-start to its end, nothing else lies in that range (decision 126:
+  ;; Cockpit structure and view in milestone 3).
+  (let* ((model (mule))
+         (count (floor (length (lis::model-vertices model)) lis::+vertex-floats+))
+         (start (lis::model-cab-start model))
+         (cab-parts '("cab" "window" "portholes" "hatch" "decal +y" "decal -y"))
+         (covered (make-array count :element-type 'bit :initial-element 0)))
+    (is = 7302 count)
+    (true (and start (< 0 start count)))
+    (dolist (part (lis::model-parts model))
+      (destructuring-bind (name where from to) part
+        (when (eq where :hull)
+          (if (member name cab-parts :test #'string=)
+              (progn (true (>= from start) "~A starts at ~D, before ~D" name from start)
+                     (loop for i from from below to do (setf (aref covered i) 1)))
+              (true (<= to start) "~A ends at ~D, past ~D" name to start)))))
+    (true (every (lambda (i) (= 1 (aref covered i))) (loop for i from start below count collect i)))
+    (is eq nil (lis::model-cab-start (lis::capsule-model)))))

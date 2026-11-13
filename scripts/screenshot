@@ -1,25 +1,29 @@
 #!/usr/bin/env bash
-# scripts/screenshot <out.png> [--frames N]
+# scripts/screenshot <out.png> [--frames N] [--view outside|cockpit|map]
 # Renders the scene on a hidden canvas (offscreen), writes a 1280x800 PNG,
 # exits; non-zero on failure. Enters the dev shell itself.
 # Time: ~5 s warm (dev shell entry, load from cached FASLs, 10 frames,
 # capture), on the desktop GPU and headless on lavapipe alike.
 set -euo pipefail
 
-usage() { echo "usage: scripts/screenshot <out.png> [--frames N]" >&2; exit 2; }
+usage() { echo "usage: scripts/screenshot <out.png> [--frames N] [--view outside|cockpit|map]" >&2; exit 2; }
 
 out=""
 frames=""
+view="outside"
 while [ $# -gt 0 ]; do
   case "$1" in
     --frames) [ $# -ge 2 ] || usage; frames="$2"; shift 2 ;;
     --frames=*) frames="${1#--frames=}"; shift ;;
+    --view) [ $# -ge 2 ] || usage; view="$2"; shift 2 ;;
+    --view=*) view="${1#--view=}"; shift ;;
     -h|--help) usage ;;
     -*) usage ;;
     *) [ -z "$out" ] || usage; out="$1"; shift ;;
   esac
 done
 [ -n "$out" ] || usage
+case "$view" in outside|cockpit|map) ;; *) usage ;; esac
 if [ -n "$frames" ] && ! [[ "$frames" =~ ^[1-9][0-9]*$ ]]; then usage; fi
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -28,13 +32,14 @@ out="$(realpath -m -- "$out")"
 # Always this flake's shell; see scripts/test.
 if [ "${LIS_DEV_SHELL:-}" != 1 ]; then
   LIS_DEV_SHELL=1 exec nix develop --accept-flake-config "$root" -c "$root/scripts/screenshot" \
-    "$out" ${frames:+--frames "$frames"}
+    "$out" ${frames:+--frames "$frames"} --view "$view"
 fi
 
 cd "$root"
 export LIS_SCREENSHOT="$out"
+export LIS_VIEW="$view"
 exec sbcl --noinform --non-interactive \
   --eval '(require :asdf)' \
   --eval '(setf *compile-verbose* nil *compile-print* nil)' \
   --eval '(handler-bind ((warning (function muffle-warning))) (asdf:load-system "luv-in-space"))' \
-  --eval "(luv-in-space:screenshot-main (uiop:getenv \"LIS_SCREENSHOT\")${frames:+ :frames $frames})"
+  --eval "(luv-in-space:screenshot-main (uiop:getenv \"LIS_SCREENSHOT\") :view (intern (string-upcase (uiop:getenv \"LIS_VIEW\")) :keyword)${frames:+ :frames $frames})"

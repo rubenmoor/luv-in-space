@@ -184,3 +184,16 @@ from Earth and the Sun."
     (is = lis::*exposure-deep* (exposure camera state))
     ;; The map's exposure stays.
     (is = lis::*exposure-map* (exposure camera state :map))))
+
+(define-test exposure-cockpit
+  ;; The cockpit's exposure is fixed at 4.0, whatever the camera sees
+  ;; (decision 126: Cockpit structure and view in milestone 3).
+  (is = 4d0 lis::*exposure-cockpit*)
+  (let* ((sim (lis::new-game-sim))
+         (state (lis::make-render-state))
+         (camera (lis::make-camera)))
+    (lis::render-state-update! state (lis::new-clock sim) sim)
+    (is = 4d0 (lis::exposure-target camera state :cockpit))
+    (let ((view (lis::new-cockpit-view)))
+      (lis::cockpit-camera-update! camera view state nil)
+      (is = 4d0 (lis::exposure-target camera state :cockpit)))))

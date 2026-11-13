@@ -492,3 +492,122 @@ against |c|^2 - R^2 in rationals, for C at ALTITUDE over Earth."
       (let ((view (lis::new-outside-view)))
         (lis::outside-view-zoom! view 100 wet load)
         (is = (lis::outside-min-distance wet load) (lis::outside-view-target view))))))
+
+;;; The cockpit view (decision 126: Cockpit structure and view in milestone 3:
+;;; frames, draw order, Slug text, head look, exposure, cab light, portholes,
+;;; bezels, tape labels).
+
+(defun cockpit-render-state (&key (axis (lis::vec3 1 2 3)) (angle (* 37 (/ pi 180))))
+  "A render state of the start sim, the ship turned by ANGLE about AXIS."
+  (let* ((sim (lis::new-game-sim))
+         (clock (lis::new-clock sim))
+         (state (lis::make-render-state)))
+    (setf (lis::ship-state-q (lis::sim-ship sim))
+          (lis::quat-from-axis-angle (lis::vec3-normalize axis) angle))
+    (lis::render-state-update! state clock sim)
+    state))
+
+(defun deg (x) (* x (/ pi 180)))
+
+(define-test cockpit-camera-pose
+  (let* ((state (cockpit-render-state))
+         (view (lis::new-cockpit-view))
+         (camera (lis::make-camera)))
+    (setf (lis::cockpit-view-yaw view) 0d0 (lis::cockpit-view-pitch view) 0d0)
+    (lis::cockpit-camera-update! camera view state nil)
+    (let* ((q (lis::render-state-q state))
+           (expected (lis::quat-rotate q (lis::vec3-sub lis::*cockpit-eye* (lis::render-state-com state))))
+           (forward (lis::quat-rotate (lis::camera-orientation camera) (lis::vec3 1 0 0)))
+           (body-x (lis::quat-rotate q (lis::vec3 1 0 0))))
+      (true (< (lis::vec3-norm (lis::vec3-sub expected (lis::camera-offset camera))) 1d-9))
+      (is eq :ship (lis::camera-anchor camera))
+      (true (< (lis::vec3-angle forward body-x) 1d-12)))
+    ;; The head: yaw right, pitch down in body axes.
+    (setf (lis::cockpit-view-yaw view) (deg 30) (lis::cockpit-view-pitch view) (deg 20))
+    (lis::cockpit-camera-update! camera view state nil)
+    (let* ((q (lis::render-state-q state))
+           (p (deg 20)) (y (deg 30))
+           (expected (lis::quat-rotate q (lis::vec3 (* (cos p) (cos y)) (* (cos p) (sin y)) (sin p))))
+           (forward (lis::quat-rotate (lis::camera-orientation camera) (lis::vec3 1 0 0))))
+      (true (< (lis::vec3-norm (lis::vec3-sub expected forward)) 1d-12)))))
+
+(define-test cockpit-window-corners
+  ;; The window (1.20 x 0.60 m, 0.90 m ahead of the eye) spans ±33.69° and
+  ;; ±18.43°: with the field of view of its height and its aspect, the head
+  ;; at yaw 0, pitch 0, its corners are the clip square's.
+  (let ((view (lis::new-cockpit-view))
+        (rows (make-array 16 :element-type 'single-float)))
+    (setf (lis::cockpit-view-yaw view) 0d0 (lis::cockpit-view-pitch view) 0d0
+          (lis::cockpit-view-fov view) (* 2 (atan 0.3d0 0.9d0)))
+    (lis::cab-clip-rows! rows view 2)
+    (dolist (corner '((0.6d0 0.3d0) (0.6d0 -0.3d0) (-0.6d0 0.3d0) (-0.6d0 -0.3d0)))
+      (destructuring-bind (x y z w) (clip rows (lis::vec3 0.9d0 (first corner) (second corner)))
+        (declare (ignore z))
+        (true (< (abs (- (abs (/ x w)) 1)) 2d-4) "x ~A" (/ x w))
+        (true (< (abs (- (abs (/ y w)) 1)) 2d-4) "y ~A" (/ y w))))))
+
+(define-test cockpit-clip-rows-agree
+  ;; A point in body axes from the eye through cab-clip-rows!, and the same
+  ;; point in the world through camera-clip-rows!, project alike.
+  (let* ((state (cockpit-render-state))
+         (view (lis::new-cockpit-view))
+         (camera (lis::make-camera))
+         (cab (make-array 16 :element-type 'single-float))
+         (world (make-array 16 :element-type 'single-float)))
+    (setf (lis::cockpit-view-yaw view) (deg 25) (lis::cockpit-view-pitch view) (deg -10))
+    (lis::cockpit-camera-update! camera view state nil)
+    (lis::cab-clip-rows! cab view 1.6)
+    (lis::camera-clip-rows! world camera 1.6)
+    (dolist (body '((3d0 0.5d0 -0.2d0) (1.2d0 -0.4d0 0.3d0) (20d0 3d0 2d0)))
+      (let* ((body (apply #'lis::vec3 body))
+             (in-world (lis::quat-rotate (lis::render-state-q state) body))
+             (a (clip cab body))
+             (b (clip world in-world)))
+        (loop for x in a for y in b for i from 0
+              do (true (< (abs (- x y)) (* 1e-5 (max 1 (abs x) (abs y)))) "row ~D: ~A ~A" i x y))))))
+
+(define-test cockpit-head-limits-and-drag
+  (let ((view (lis::new-cockpit-view)))
+    (lis::cockpit-view-drag! view 100d0 -100d0)
+    (true (< (abs (- (lis::cockpit-view-yaw view) (deg 25))) 1d-12))
+    (true (< (abs (- (lis::cockpit-view-pitch view) (deg (- 16 25)))) 1d-12))
+    (lis::cockpit-view-drag! view 1d6 1d6)
+    (true (< (abs (- (lis::cockpit-view-yaw view) (deg 150))) 1d-12))
+    (true (< (abs (- (lis::cockpit-view-pitch view) (deg 80))) 1d-12))
+    (lis::cockpit-view-drag! view -1d6 -1d6)
+    (true (< (abs (- (lis::cockpit-view-yaw view) (deg -150))) 1d-12))
+    (true (< (abs (- (lis::cockpit-view-pitch view) (deg -60))) 1d-12))
+    (lis::cockpit-view-reset! view)
+    (true (zerop (lis::cockpit-view-yaw view)))
+    (true (< (abs (- (lis::cockpit-view-pitch view) (deg 16))) 1d-12))
+    (true (< (abs (- (lis::cockpit-view-fov view) (deg 70))) 1d-12))))
+
+(define-test cockpit-zoom
+  (let ((view (lis::new-cockpit-view)))
+    (lis::cockpit-view-zoom! view 1)
+    (true (< (abs (- (tan (* 0.5d0 (lis::cockpit-view-target-fov view)))
+                     (/ (tan (deg 35)) 1.2d0)))
+             1d-12))
+    (lis::cockpit-view-zoom! view 100)
+    (true (< (abs (- (lis::cockpit-view-target-fov view) (deg 20))) 1d-12))
+    (lis::cockpit-view-zoom! view -100)
+    (true (< (abs (- (lis::cockpit-view-target-fov view) (deg 90))) 1d-12))
+    ;; Eased in log: within 1 % of the gap in 0.7 s, in steps of 1/60 s; snapped without time.
+    (lis::cockpit-view-reset! view)
+    (lis::cockpit-view-zoom! view 3)
+    (let ((state (cockpit-render-state)) (camera (lis::make-camera))
+          (gap (abs (log (/ (tan (* 0.5d0 (lis::cockpit-view-fov view)))
+                            (tan (* 0.5d0 (lis::cockpit-view-target-fov view))))))))
+      (dotimes (i 42) (lis::cockpit-camera-update! camera view state (/ 1d0 60)))
+      (true (< (abs (log (/ (tan (* 0.5d0 (lis::cockpit-view-fov view)))
+                            (tan (* 0.5d0 (lis::cockpit-view-target-fov view))))))
+               (* 0.01d0 gap)))
+      (lis::cockpit-camera-update! camera view state nil)
+      (is = (lis::cockpit-view-target-fov view) (lis::cockpit-view-fov view)))))
+
+(define-test cockpit-camera-update-conses-nothing
+  (let ((state (cockpit-render-state)) (view (lis::new-cockpit-view)) (camera (lis::make-camera)))
+    (lis::cockpit-view-zoom! view 2)
+    (lis::cockpit-camera-update! camera view state 0.016d0)
+    (is = 0 (least-bytes-consed
+             (lambda () (dotimes (i 100) (lis::cockpit-camera-update! camera view state 0.016d0)))))))

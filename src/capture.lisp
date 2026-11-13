@@ -46,20 +46,36 @@ one canvas for several captures. Call on luv's SDL main thread
        (unwind-protect (progn ,@body)
          (stop ,game)))))
 
-(defun game-set-view! (game view)
-  "GAME in VIEW (:outside or :map), the map framed on the current state."
-  (call-on-canvas-thread game (lambda ()
-                                (when (eq view :map)
-                                  (open-map-view! game))
-                                (setf (game-view game) (ecase view ((:outside :map) view))
-                                      (game-view-changed-p game) t))))
+(defun game-set-view! (game view &optional head)
+  "GAME in VIEW (:outside, :cockpit or :map), the map framed on the current
+state, the cockpit's head at Home or at HEAD, (yaw pitch [fov]) in degrees,
+the field of view snapped."
+  (call-on-canvas-thread
+   game (lambda ()
+          (case view
+            (:map (open-map-view! game))
+            (:cockpit
+             (let ((cockpit (game-cockpit-view game)))
+               (cockpit-view-reset! cockpit)
+               (when head
+                 (destructuring-bind (yaw pitch &optional fov) head
+                   (setf (cockpit-view-yaw cockpit) (degrees-to-radians yaw)
+                         (cockpit-view-pitch cockpit) (degrees-to-radians pitch))
+                   (when fov
+                     (setf (cockpit-view-fov cockpit) (degrees-to-radians fov)
+                           (cockpit-view-target-fov cockpit) (cockpit-view-fov cockpit))))))))
+          (setf (game-view game) (ecase view ((:outside :cockpit :map) view))
+                (game-map-return-view game) (if (eq view :map) :outside view)
+                (game-view-changed-p game) t))))
 
-(defun capture-game-state (game pathname &key sim camera-fn (view :outside)
+(defun capture-game-state (game pathname &key sim camera-fn (view :outside) head (interior t)
                                               (frames *screenshot-frames*)
                                               (readout (game-readout-p game))
                                               (death-elapsed 0d0))
   "Write a PNG of GAME showing SIM (default its current state) after FRAMES
-frames in VIEW (:outside, or :map framed as on opening); CAMERA-FN (fn
+frames in VIEW (:outside, :cockpit with the head at Home or at HEAD,
+(yaw pitch [fov]) in degrees, and the cab's interior unless INTERIOR is nil,
+or :map framed as on opening); CAMERA-FN (fn
 camera render-state) sets a pose other than the view's; READOUT nil leaves
 the readout out (default: as GAME draws it now). A lost sim shows the LOST
 panel and the death glow DEATH-ELAPSED real seconds after the death
@@ -68,31 +84,35 @@ panel and the death glow DEATH-ELAPSED real seconds after the death
     (game-load-state! game sim))
   (setf (game-readout-p game) (and readout t)
         (game-death-elapsed game) (float death-elapsed 1d0))
-  (game-set-view! game view)
+  (setf (game-interior-p game) (and interior t))
+  (game-set-view! game view head)
   (setf (game-camera-fn game) camera-fn)
   (wait-for-frames game frames)
   (screenshot pathname :game game))
 
-(defun capture-state (pathname sim &key camera-fn (view :outside) (frames *screenshot-frames*)
+(defun capture-state (pathname sim &key camera-fn (view :outside) head (interior t)
+                                       (frames *screenshot-frames*)
                                        (width 1280) (height 800) (readout t) (death-elapsed 0d0))
   "A PNG showing exactly SIM's state (a copy, the game frozen) on a hidden
-canvas in VIEW (:outside or :map), with the readout unless READOUT is nil
+canvas in VIEW (:outside, :cockpit with HEAD and INTERIOR as capture-game-state's, or :map), with the readout unless READOUT is nil
 (decision 85); a lost SIM with the LOST panel and the glow DEATH-ELAPSED
 real seconds after the death (decision 86). Call on luv's SDL main thread."
   (with-capture-game (game :width width :height height :sim sim :readout readout)
-    (capture-game-state game pathname :camera-fn camera-fn :view view :frames frames
+    (capture-game-state game pathname :camera-fn camera-fn :view view :head head
+                                      :interior interior :frames frames
                                       :death-elapsed death-elapsed)))
 
-(defun capture-scene (pathname &key (frames *screenshot-frames*) (width 1280) (height 800))
-  "The start state from the outside view: scripts/screenshot's picture."
-  (capture-state pathname (new-game-sim) :frames frames :width width :height height))
+(defun capture-scene (pathname &key (frames *screenshot-frames*) (width 1280) (height 800)
+                                    (view :outside))
+  "The start state from VIEW (:outside, :cockpit, :map): scripts/screenshot's picture."
+  (capture-state pathname (new-game-sim) :view view :frames frames :width width :height height))
 
-(defun screenshot-main (pathname &key (frames *screenshot-frames*))
+(defun screenshot-main (pathname &key (frames *screenshot-frames*) (view :outside))
   "Entry point of scripts/screenshot: write the PNG, report it, exit 0; exit 1 on error."
   (handler-case
       (multiple-value-bind (path width height)
           (luv:call-with-sdl-main-thread
-           (lambda () (capture-scene pathname :frames frames)))
+           (lambda () (capture-scene pathname :frames frames :view view)))
         (format t "~&~A ~Dx~D~%" (uiop:native-namestring path) width height)
         (finish-output)
         (uiop:quit 0))
@@ -129,10 +149,7 @@ luv's SDL main thread."
                    collect path into paths
                    collect (nth-value 3 (capture-game-state
                                          game path :sim (flight-entry-sim entry)
-                                                   ;; PLACEHOLDER(165): :cockpit drawn from outside.
-                                                   :view (case (flight-entry-view entry)
-                                                           ((nil :cockpit) :outside)
-                                                           (t (flight-entry-view entry)))
+                                                   :view (or (flight-entry-view entry) :outside)
                                                    :frames frames :readout t :death-elapsed 0d0))
                      into pixels
                    finally (return (values paths pixels)))))

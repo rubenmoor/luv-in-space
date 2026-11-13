@@ -1922,3 +1922,32 @@ start, so the rock is moved to the ship)."
                 "the armed claw's pixels ~,1F, stowed ~,1F" (first levels) (second levels))))
       (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream))))
     (lis::game-load-state! game (lis::new-game-sim))))
+
+(define-test render-cockpit-limb
+  ;; The cockpit view with the head on the nose (yaw 0, pitch 0, 70°), the cab
+  ;; exterior not drawn and no interior: Earth's limb on the nose column lies
+  ;; 19.8° below the axis, f tan 19.8° below the centre, space above it
+  ;; (decision 126: Cockpit structure and view in milestone 3).
+  (let* ((width 320) (height 200)
+         (f (/ (/ height 2) (tan (* 35 (/ pi 180)))))
+         (expected (+ (/ height 2) (* f (tan (* 19.8d0 (/ pi 180)))))))
+    (share-earth-pixels)
+    (luv:call-with-sdl-main-thread
+     (lambda ()
+       (lis::with-capture-game (game :width width :height height :readout nil)
+         (uiop:with-temporary-file (:pathname png :type "png")
+           (let ((pixels (nth-value 3 (lis::capture-game-state game png :view :cockpit
+                                                                        :head '(0 0 70)
+                                                                        :interior nil :frames 2)))
+                 (x (floor width 2)))
+             (flet ((lum (y) (pixel-luminance pixels width x y)))
+               ;; The brightest row of the column is the limb's rim, under
+               ;; the halo's glow; space is dark above the halo.
+               (let ((limb (loop with best = 0 with row = 0
+                                 for y from (floor height 2) below height
+                                 do (when (> (lum y) best) (setf best (lum y) row y))
+                                 finally (return row))))
+                 (true (< (abs (- limb expected)) 2) "limb at row ~D, expected ~,1F" limb expected)
+                 (true (< (loop for y below (- limb 15) maximize (lum y)) 40)
+                       "space above the limb is dark"))))
+           (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))))))))

@@ -5,6 +5,10 @@
 ;;; sim, part 4's placeholders and first asset). The sim, the clock and the
 ;;; render state are touched only on the canvas thread.
 
+(defparameter *default-view* :outside
+  "The view at the start and after a restart; :outside until plan 31's
+instruments are drawn (task 166 flips it to :cockpit; decision 126).")
+
 (defclass game ()
   ((canvas :initarg :canvas :initform nil :reader game-canvas)
    (device :initarg :device :reader game-device)
@@ -18,6 +22,10 @@
               :documentation "nil or (fn camera render-state), after the outside view's pose.")
    (outside-view :initform (new-outside-view) :reader game-outside-view
                  :documentation "The outside view's frame, angles and distance (camera.lisp); not in the sim.")
+   (cockpit-view :initform (new-cockpit-view) :reader game-cockpit-view
+                 :documentation "The head's yaw and pitch and the field of view (camera.lisp); kept across a restart, not in the sim.")
+   (map-return-view :initform :outside :accessor game-map-return-view
+                    :documentation "The view M's second press returns to: :outside or :cockpit.")
    (map-view :initform (new-map-view) :reader game-map-view
              :documentation "The map's focus, basis, angles and distance (camera.lisp); not in the sim.")
    (render-state :initform (let ((state (make-render-state)))
@@ -43,7 +51,10 @@
               :documentation "Whether the frame draws the readout (decision 85).")
    (input :initform (make-input) :reader game-input
           :documentation "Held keys, taps and the pointer (input.lisp); not in the sim.")
-   (view :initform :outside :accessor game-view :documentation "The view: :outside or :map.")
+   (view :initform *default-view* :accessor game-view
+         :documentation "The view: :outside, :cockpit or :map.")
+   (interior-p :initform t :accessor game-interior-p
+               :documentation "Whether :cockpit draws the cab's interior (nil: tests, the grapple camera).")
    (flight :initform nil :accessor game-flight
            :documentation "The flight fly started (flights.lisp), kept after its end; nil.")
    (view-changed-p :initform nil :accessor game-view-changed-p
@@ -88,6 +99,7 @@ then the game's camera-fn."
     (render-state-ease-claws! state elapsed)
     (ecase (game-view game)
       (:outside (outside-camera-update! camera (game-outside-view game) state elapsed))
+      (:cockpit (cockpit-camera-update! camera (game-cockpit-view game) state elapsed))
       (:map (map-camera-update! camera (game-map-view game) state elapsed)))
     (when (game-camera-fn game)
       (funcall (game-camera-fn game) camera state))))
@@ -140,7 +152,7 @@ flash: *contact-flash-…*); 0 for a Moon impact (no air) and without a loss."
 
 (defun notice-death! (game)
   "After the frame's steps: on a new loss the view becomes :outside (the
-outside view's pose kept) and the death time is recorded; without a loss
+outside view's pose kept; from the map or the cockpit) and the death time is recorded; without a loss
 the record clears."
   (let ((loss (sim-loss (game-sim game))))
     (cond ((null loss)
@@ -148,21 +160,23 @@ the record clears."
           ((not (eq loss (game-loss game)))
            (setf (game-loss game) loss
                  (game-death-time game) (game-real-time game))
-           (when (map-p game)
+           (unless (eq (game-view game) :outside)
              (setf (game-view game) :outside
+                   (game-map-return-view game) :outside
                    (game-view-changed-p game) t))))))
 
 (defun game-restart! (game &optional (checkpoint (game-start-checkpoint game)))
   "The LOST panel's restart: CHECKPOINT (the start's) restored by
-clock-restart! (×1, unpaused), the outside view at its default pose, the
-map closed, the input cleared, the death record cleared, the exposure
+clock-restart! (×1, unpaused), the outside view at its default pose (the
+cockpit's head kept), the view *default-view*, the input cleared, the death record cleared, the exposure
 snapped. GAME."
   (clock-restart! (game-clock game) (game-sim game) checkpoint)
   (outside-view-reset! (game-outside-view game))
   (when (input-drag (game-input game))
     (set-relative-pointer-mode game nil))
   (input-clear! (game-input game))
-  (setf (game-view game) :outside
+  (setf (game-view game) *default-view*
+        (game-map-return-view game) *default-view*
         (game-view-changed-p game) t
         (game-loss game) nil
         (game-death-time game) nil)
@@ -201,11 +215,17 @@ the outside view's distance."
                   (game-render-state game) (game-camera game)
                   exposure (game-view game)
                   (and (game-readout-p game)
-                       (readout-lines (game-render-state game) (game-clock game)
-                                      (game-real-time game)))
+                       (let ((lines (readout-lines (game-render-state game) (game-clock game)
+                                                   (game-real-time game))))
+                         ;; PLACEHOLDER(166): the cockpit's screens come with task 166.
+                         (if (eq (game-view game) :cockpit)
+                             (append lines (list (list (readout-run "PLACEHOLDER(166)"
+                                                                    *readout-label-colour*))))
+                             lines)))
                   (and (game-loss game)
                        (lost-panel-lines (game-loss game)
-                                         (and (clock-checkpoint (game-clock game)) t))))))
+                                         (and (clock-checkpoint (game-clock game)) t)))
+                  :interior (game-interior-p game))))
 
 (defun game-frame! (game elapsed)
   "One frame's simulation, ELAPSED real seconds: the real time, the input,

@@ -272,6 +272,14 @@ and v along z from and to UV, by default metres from the centre."
                   (error "No part ~S." name))))
     (values-list (rest part))))
 
+(defun model-cab-start (model)
+  "The first hull vertex of the cab exterior (the parts cab, window,
+portholes, hatch and decals, baked last), nil for a model without a cab
+(decision 126: Cockpit structure and view in milestone 3: frames, draw order,
+Slug text, head look, exposure, cab light, portholes, bezels, tape labels)."
+  (let ((part (assoc "cab" (model-parts model) :test #'string=)))
+    (and part (third part))))
+
 (defun floats-positions (floats start end)
   (loop for i from start below end
         for o = (* i +vertex-floats+)
@@ -562,6 +570,36 @@ is one case (`mule-model`), a tanker another."
                                                                      :scale (list r r r))
                                      m 8 32)
                          (hemisphere hull (xform (list (- x1 r) 0 0) :scale (list r r r)) m 8 32)))))
+      (case (if (consp nose) (first nose) nose)
+        (:grapple
+         (part "grapple" :hull
+               (lambda ()
+                 (cylinder hull (xform (list length 0 0) :scale '(0.8d0 0.3d0 0.3d0)) (id :steel) 16)
+                 (frustum hull (xform (list (+ length 0.8d0) 0 0) :scale '(0.8d0 1 1)) (id :steel) 16
+                          0.3d0 0.8d0))))
+        (:fixture
+         (let ((fixture (fixture-mesh (list (second nose) 0 0) '(1 0 0)
+                                      :standoff (- (second nose) 0.05d0 length))))
+           (bake-model! b fixture (xform '(0 0 0))))))
+      (when wings
+        (part "solar wings" :hull
+              (lambda ()
+                (dolist (s '(1 -1))
+                  (box hull (xform (list 5.0d0 (* s 5.3d0) 0) :scale '(2.0d0 6.0d0 0.05d0))
+                       (append (make-list 5 :initial-element (id :steel)) (list (id :solar-cells))))))))
+      (when radiators
+        (part "radiators" :hull
+              (lambda ()
+                (dolist (s '(1 -1))
+                  (box hull (xform (list 8.0d0 (* s 1.2d0) 2.55d0) :scale '(4.0d0 0.05d0 1.5d0))
+                       (id :radiator))))))
+      (when equipment
+        (part "gas conditioning" :hull
+              (lambda () (box hull (xform '(9.5d0 0 1.4d0) :scale '(1.0d0 1.2d0 0.6d0)) (id :aluminium))))
+        (part "equipment bay" :hull
+              (lambda () (box hull (xform '(10.0d0 0 2.3d0) :scale '(1.0d0 1.6d0 0.8d0)) (id :aluminium)))))
+      ;; Last in the hull: the cab exterior, which the cockpit view skips
+      ;; (model-cab-start).
       ;; Cab: flat ends, window, portholes, hatch, decals.
       (when cab
         (destructuring-bind (cx0 cx1) cab
@@ -602,34 +640,6 @@ is one case (`mule-model`), a tanker another."
                         (cylinder-patch hull (cab-xf (- x1 (* decal-u (- x1 x0))) x1 r) (id decal) 8
                                         (- (+ pi *decal-angle*) half) (+ pi *decal-angle* half)
                                         :uv (list decal-u 0 1 0)))))))))
-      (case (if (consp nose) (first nose) nose)
-        (:grapple
-         (part "grapple" :hull
-               (lambda ()
-                 (cylinder hull (xform (list length 0 0) :scale '(0.8d0 0.3d0 0.3d0)) (id :steel) 16)
-                 (frustum hull (xform (list (+ length 0.8d0) 0 0) :scale '(0.8d0 1 1)) (id :steel) 16
-                          0.3d0 0.8d0))))
-        (:fixture
-         (let ((fixture (fixture-mesh (list (second nose) 0 0) '(1 0 0)
-                                      :standoff (- (second nose) 0.05d0 length))))
-           (bake-model! b fixture (xform '(0 0 0))))))
-      (when wings
-        (part "solar wings" :hull
-              (lambda ()
-                (dolist (s '(1 -1))
-                  (box hull (xform (list 5.0d0 (* s 5.3d0) 0) :scale '(2.0d0 6.0d0 0.05d0))
-                       (append (make-list 5 :initial-element (id :steel)) (list (id :solar-cells))))))))
-      (when radiators
-        (part "radiators" :hull
-              (lambda ()
-                (dolist (s '(1 -1))
-                  (box hull (xform (list 8.0d0 (* s 1.2d0) 2.55d0) :scale '(4.0d0 0.05d0 1.5d0))
-                       (id :radiator))))))
-      (when equipment
-        (part "gas conditioning" :hull
-              (lambda () (box hull (xform '(9.5d0 0 1.4d0) :scale '(1.0d0 1.2d0 0.6d0)) (id :aluminium))))
-        (part "equipment bay" :hull
-              (lambda () (box hull (xform '(10.0d0 0 2.3d0) :scale '(1.0d0 1.6d0 0.8d0)) (id :aluminium)))))
       ;; The engine at zero trim: the bell from the throat (the axial
       ;; parameter 0 there), chamber, turbopumps.
       (when engine-p (part "engine" :engine
@@ -1415,6 +1425,7 @@ texture-from-pixels; alpha 0 off the cairn and the letters."
 (defstruct (ship-gpu (:constructor %make-ship-gpu))
   "The static resources of the Mule's draws and the bind group layout."
   model layout hull hull-count engine engine-count
+  (cab-start nil)                       ; the hull's first cab vertex (model-cab-start)
   groups                                ; (primitive count instances count) per group
   decal-view decal-sampler corners
   (objects (make-hash-table :test #'eq)) ; an object-gpu per object definition key
@@ -1479,6 +1490,7 @@ written, compare :greater; and :ship-glow: additive, depth tested, not written."
          :model model :layout layout
          :hull (vertex-buffer renderer (model-vertices model) "hull")
          :hull-count (count-of (model-vertices model) +vertex-floats+)
+         :cab-start (model-cab-start model)
          :engine (vertex-buffer renderer (model-engine model) "engine")
          :engine-count (count-of (model-engine model) +vertex-floats+)
          :groups (loop for g in (model-groups model)
@@ -1635,11 +1647,12 @@ the lights-on flag, the emissive colour, the floodlight's lamp and axis."
           (progn (put 52 0 0 0 0) (put 56 0 0 0 0))))
     out))
 
-(defun encode-ship (pass renderer ship slot state eye)
+(defun encode-ship (pass renderer ship slot state eye &optional cockpit)
   "The Mule into the open scene PASS (after the impostors, before the
 ribbons), about the stack's CoM (render-state-com, with the latched load):
-the hull, the instance groups, then the engine as instance 1 of
-:ship-mesh, so its vertex stage turns it by its trim; then its glows."
+the hull (with COCKPIT, up to the cab exterior only: the eye is inside the
+cab), the instance groups, then the engine as instance 1 of :ship-mesh, so its
+vertex stage turns it by its trim; then its glows."
   (let ((com (if (render-state-com-valid state)
                  (render-state-com state)
                  (mass-properties-com (ship-mass-properties (render-state-m-p state) nil
@@ -1650,7 +1663,9 @@ the hull, the instance groups, then the engine as instance 1 of
     (luv:set-pipeline pass (renderer-pipeline renderer :ship-mesh))
     (luv:set-bind-group pass 0 bind-group)
     (luv:set-vertex-buffer pass 0 (ship-gpu-hull ship))
-    (luv:draw pass (ship-gpu-hull-count ship))
+    (luv:draw pass (if cockpit
+                       (or (ship-gpu-cab-start ship) (ship-gpu-hull-count ship))
+                       (ship-gpu-hull-count ship)))
     (luv:set-vertex-buffer pass 0 (ship-gpu-engine ship))
     (luv:draw pass (ship-gpu-engine-count ship) 1 0 1)
     (luv:set-pipeline pass (renderer-pipeline renderer :ship-instanced))

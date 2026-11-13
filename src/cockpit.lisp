@@ -715,8 +715,13 @@ border, chin, depth, bolts), :hood, :cables (their colours).")
 (defun panel-frame (panel)
   "(values centre normal right up): the face's centre, its unit normal (to the
 eye, or turned as :turn says), its right and up, all vec3 doubles."
-  (let* ((c (apply #'vec3 (getf panel :centre)))
-         (turn (getf panel :turn))
+  (let* ((turn (getf panel :turn))
+         (c (let ((table (apply #'vec3 (getf panel :centre))))
+              ;; A column turned on the wall moves off it by what its far edge would bury.
+              (if turn
+                  (vec3 (- (aref table 0) (* 0.5d0 (first (getf panel :size)) (abs (sin (degrees-to-radians turn)))) 0.004d0)
+                        (aref table 1) (aref table 2))
+                  table)))
          (n (if turn
                 (let ((a (degrees-to-radians turn))) (vec3 (- (cos a)) (sin a) 0d0))
                 (vec3-normalize (vec3-scale c -1d0))))

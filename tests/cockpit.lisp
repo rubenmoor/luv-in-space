@@ -1096,3 +1096,310 @@ the window's plane and of a porthole's plane."
         (is = 1 (update 0.06d0))
         (update 2d0)
         (is = 0 (update 2.01d0) "typed out: nothing between the 10 Hz rebuilds")))))
+
+;;; Lamps, MSTR, gauges and the throttle lever (plan 32 piece 3; decision 128:
+;;; Cockpit devices, buttons, picking, the grapple camera and messages in
+;;; milestone 3).
+
+(defun lamp-of (key state clock &optional (cockpit (lis::make-cockpit-state)))
+  "(colour flash) of lamp KEY."
+  (multiple-value-list (lis::lamp-condition key state clock cockpit)))
+
+(defun slow-state (state)
+  "STATE's velocity at 0.9: a periapsis far below the crash radius."
+  (lis::vec3-scale! (lis::render-state-v state) (lis::render-state-v state) 0.9d0))
+
+(define-test lamps-dark-at-the-start
+  (multiple-value-bind (state clock) (screen-state (lis::new-game-sim))
+    (dolist (entry (lis::lamp-states state clock (lis::make-cockpit-state)))
+      (is eq nil (second entry) "~A at the start" (first entry)))
+    (is = 11 (length lis::*lamps*))))
+
+(define-test lamp-peri
+  (multiple-value-bind (state clock) (screen-state (lis::new-game-sim))
+    (is equal '(nil nil) (lamp-of :peri state clock))
+    (slow-state state)
+    (is equal '(:red nil) (lamp-of :peri state clock)))
+  ;; An impact in the prediction lights it with a safe osculating periapsis.
+  (multiple-value-bind (state clock) (screen-state (lis::new-game-sim))
+    (lis::push-event! (lis::clock-prediction clock) :impact (+ (lis::render-state-t state) 600d0))
+    (is equal '(:red nil) (lamp-of :peri state clock))))
+
+(define-test lamp-prop
+  (multiple-value-bind (state clock) (screen-state (lis::new-game-sim))
+    (is equal '(nil nil) (lamp-of :prop state clock))
+    (setf (lis::render-state-m-p state) (* 0.04d0 lis::*propellant-full*))
+    (is equal '(:amber nil) (lamp-of :prop state clock))
+    (setf (lis::render-state-m-p state) (* 0.06d0 lis::*propellant-full*))
+    (is equal '(nil nil) (lamp-of :prop state clock)))
+  ;; Below a shown plan's need, and the burns already cut do not count.
+  (multiple-value-bind (state clock) (screen-state (lis::new-game-sim))
+    (let* ((model (lis::clock-autopilot clock))
+           (ve (lis::engine-exhaust-velocity))
+           (now (lis::render-state-t state)))
+      (flet ((plan (dv &optional (cut (+ now 1000d0)))
+               (lis::make-burn-plan
+                (vector (lis::make-planned-burn :prograde 0d0 now (lis::quat 1 0 0 0) 1d0 nil dv :cut-t cut)))))
+        (setf (lis::render-state-autopilot-model state) model)
+        (setf (lis::autopilot-model-plan model) (plan (* 1.0d0 ve)))
+        (setf (lis::autopilot-model-state model) :shown)
+        (is equal '(nil nil) (lamp-of :prop state clock))
+        (setf (lis::autopilot-model-plan model) (plan (* 2.0d0 ve)))
+        (is equal '(:amber nil) (lamp-of :prop state clock))
+        (setf (lis::autopilot-model-plan model) (plan (* 2.0d0 ve) (- now 1d0)))
+        (is equal '(nil nil) (lamp-of :prop state clock))
+        (setf (lis::autopilot-model-state model) :closed)
+        (setf (lis::autopilot-model-plan model) (plan (* 2.0d0 ve)))
+        (is equal '(nil nil) (lamp-of :prop state clock))))))
+
+(define-test lamp-warp
+  (multiple-value-bind (state clock) (screen-state (lis::new-game-sim))
+    (is equal '(nil nil) (lamp-of :warp state clock))
+    (setf (lis::clock-level-index clock) 2)
+    (is equal '(:white nil) (lamp-of :warp state clock))
+    (lis::clock-message! clock :refused "WARP REFUSED")
+    (is equal '(:amber :slow) (lamp-of :warp state clock))
+    (setf (lis::clock-real-time clock) 2.9d0)
+    (is equal '(:amber :slow) (lamp-of :warp state clock))
+    (setf (lis::clock-real-time clock) 3.1d0)
+    (is equal '(:white nil) (lamp-of :warp state clock))
+    (lis::clock-message! clock :lowered "WARP LOWERED")
+    (is equal '(:amber :slow) (lamp-of :warp state clock))))
+
+(define-test lamp-rcs
+  (multiple-value-bind (state clock) (screen-state (lis::new-game-sim))
+    (is equal '(nil nil) (lamp-of :rcs state clock))
+    (setf (lis::clock-level-index clock) 3)
+    (is equal '(:amber nil) (lamp-of :rcs state clock))
+    (setf (lis::clock-level-index clock) 1)
+    (is equal '(nil nil) (lamp-of :rcs state clock))
+    (setf (aref (lis::render-state-w state) 0) 0.02d0)
+    (is equal '(nil nil) (lamp-of :rcs state clock) "turning under a hold")
+    (setf (lis::controls-attitude-mode (lis::render-state-controls state)) :rate-damping)
+    (is equal '(:amber nil) (lamp-of :rcs state clock) "turning without a hold")
+    (setf (aref (lis::render-state-w state) 0) 0.005d0)
+    (is equal '(nil nil) (lamp-of :rcs state clock))))
+
+(define-test lamp-auto
+  (multiple-value-bind (state clock) (screen-state (lis::new-game-sim))
+    (let ((model (lis::clock-autopilot clock)))
+      (setf (lis::render-state-autopilot-model state) model)
+      (is equal '(nil nil) (lamp-of :auto state clock))
+      (dolist (planning '(:planning :shown))
+        (setf (lis::autopilot-model-state model) planning)
+        (is equal '(:white nil) (lamp-of :auto state clock)))
+      (setf (lis::autopilot-model-state model) :engaged)
+      (is equal '(:green nil) (lamp-of :auto state clock))
+      ;; An abort: red and flashing until Y marks the log read.
+      (lis::clock-message! clock :autopilot "AUTOPILOT ABORT: UNSAFE ORBIT")
+      (setf (lis::autopilot-model-state model) :off
+            (lis::autopilot-model-text model) "AUTOPILOT ABORT: UNSAFE ORBIT")
+      (is equal '(:red :fast) (lamp-of :auto state clock))
+      (lis::clock-acknowledge! clock)
+      (is equal '(nil nil) (lamp-of :auto state clock))
+      ;; A switched-off plan is no abort.
+      (lis::clock-message! clock :autopilot "AUTOPILOT OFF")
+      (setf (lis::autopilot-model-text model) "AUTOPILOT OFF")
+      (is equal '(nil nil) (lamp-of :auto state clock)))))
+
+(define-test lamp-grpl
+  (multiple-value-bind (state clock) (screen-state (lis::new-game-sim))
+    (let ((grapple (lis::render-state-grapple state)))
+      (is equal '(nil nil) (lamp-of :grpl state clock))
+      (setf (lis::render-grapple-state grapple) :armed)
+      (is equal '(:white nil) (lamp-of :grpl state clock))
+      (dolist (state-name '(:closing :latched))
+        (setf (lis::render-grapple-state grapple) state-name)
+        (is equal '(:green nil) (lamp-of :grpl state clock)))
+      (setf (lis::render-grapple-state grapple) :armed)
+      (lis::clock-message! clock :grapple "NO CAPTURE: TOO FAST")
+      (is equal '(:amber :slow) (lamp-of :grpl state clock))
+      (setf (lis::clock-real-time clock) 3.5d0)
+      (is equal '(:white nil) (lamp-of :grpl state clock))
+      ;; A message that is no refusal does not flash it.
+      (lis::clock-message! clock :grapple "ARMED")
+      (is equal '(:white nil) (lamp-of :grpl state clock))
+      (lis::clock-message! clock :grapple "LOAD 90 T OVER 60 T RATING")
+      (is equal '(:amber :slow) (lamp-of :grpl state clock))))
+  (let ((sim (lis::stated-sim '(:berthed (:tern-station :berth)))))
+    (multiple-value-bind (state clock) (screen-state sim)
+      (is equal '(:green nil) (lamp-of :grpl state clock)))))
+
+(define-test lamp-eng-and-the-dark-lamps
+  (multiple-value-bind (state clock) (screen-state (lis::new-game-sim))
+    (is equal '(nil nil) (lamp-of :eng state clock))
+    (setf (lis::controls-throttle (lis::render-state-controls state)) 0.5d0)
+    (is equal '(:white nil) (lamp-of :eng state clock))
+    (setf (lis::render-state-m-p state) 0d0)
+    (is equal '(nil nil) (lamp-of :eng state clock))
+    (dolist (key '(:temp :life :msg))
+      (is equal '(nil nil) (lamp-of key state clock)))))
+
+(define-test lamp-flashing-phases
+  ;; 2 Hz: on at 0.1 s, off at 0.3 s; 1 Hz: on at 0.4 s, off at 0.6 s; paused or not.
+  (true (lis::lamp-on-p :fast 0.1d0))
+  (false (lis::lamp-on-p :fast 0.3d0))
+  (true (lis::lamp-on-p :fast 0.6d0))
+  (true (lis::lamp-on-p :slow 0.4d0))
+  (false (lis::lamp-on-p :slow 0.6d0))
+  (true (lis::lamp-on-p :slow 1.2d0))
+  (true (lis::lamp-on-p nil 0.3d0))
+  (true (lis::lamp-on-p :fast 12345.1d0)))
+
+(define-test mstr-onsets-and-acknowledgement
+  (let ((cockpit (lis::make-cockpit-state)))
+    (multiple-value-bind (state clock) (screen-state (lis::new-game-sim))
+      (flet ((rebuild () (lis::cockpit-lamps-rebuild! cockpit state clock) (lis::cockpit-state-mstr cockpit))
+             (lamp (key) (let ((i (position key lis::*lamps* :key #'first)))
+                           (list (svref (lis::cockpit-state-lamp-colours cockpit) i)
+                                 (svref (lis::cockpit-state-lamp-flashes cockpit) i)))))
+        (is eq nil (rebuild))
+        (is equal '(nil nil) (lamp :mstr))
+        ;; PERI comes on: MSTR flashes red; Y puts it out; the same alarm does not re-arm it.
+        (let ((v (copy-seq (lis::render-state-v state))))
+          (slow-state state)
+          (is eq :red (rebuild))
+          (is equal '(:red :fast) (lamp :mstr))
+          (is equal '(:red nil) (lamp :peri))
+          (lis::cockpit-state-acknowledge! cockpit)
+          (is eq nil (rebuild))
+          (is equal '(nil nil) (lamp :mstr))
+          (is equal '(:red nil) (lamp :peri) "the lamp shows its condition regardless")
+          ;; Back to a safe orbit and a second onset: re-armed.
+          (replace (lis::render-state-v state) v)
+          (is eq nil (rebuild))
+          (slow-state state)
+          (is eq :red (rebuild)))
+        ;; PROP's onset after Y: amber and steady.
+        (lis::cockpit-state-acknowledge! cockpit)
+        (setf (lis::render-state-m-p state) 1000d0)
+        (is eq :amber (rebuild))))
+    (let ((cockpit (lis::make-cockpit-state)))
+      (multiple-value-bind (state clock) (screen-state (lis::new-game-sim))
+        (setf (lis::render-state-m-p state) 1000d0)
+        (lis::cockpit-lamps-rebuild! cockpit state clock)
+        (is eq :amber (lis::cockpit-state-mstr cockpit))
+        (is equal :amber (svref (lis::cockpit-state-lamp-colours cockpit) 0))
+        (is eq nil (svref (lis::cockpit-state-lamp-flashes cockpit) 0))
+        ;; A red onset takes it over; an amber one after does not lower it.
+        (slow-state state)
+        (lis::cockpit-lamps-rebuild! cockpit state clock)
+        (is eq :red (lis::cockpit-state-mstr cockpit))))))
+
+(define-test mstr-abort-onset
+  (let ((cockpit (lis::make-cockpit-state)))
+    (multiple-value-bind (state clock) (screen-state (lis::new-game-sim))
+      (let ((model (lis::clock-autopilot clock)))
+        (setf (lis::render-state-autopilot-model state) model)
+        (lis::cockpit-lamps-rebuild! cockpit state clock)
+        (is eq nil (lis::cockpit-state-mstr cockpit))
+        (lis::clock-message! clock :autopilot "AUTOPILOT ABORT: UNSAFE ORBIT")
+        (setf (lis::autopilot-model-state model) :off
+              (lis::autopilot-model-text model) "AUTOPILOT ABORT: UNSAFE ORBIT")
+        (lis::cockpit-lamps-rebuild! cockpit state clock)
+        (is eq :red (lis::cockpit-state-mstr cockpit))))))
+
+(define-test needle-lags-by-0.3-s
+  (let ((cockpit (lis::make-cockpit-state)))
+    (multiple-value-bind (state) (screen-state (lis::new-game-sim))
+      (setf (lis::render-state-m-p state) 0d0)
+      (lis::cockpit-needles-update! cockpit state 10d0 t)
+      (is = 0d0 (aref (lis::cockpit-state-needles cockpit) 0))
+      (setf (lis::render-state-m-p state) lis::*propellant-full*)
+      ;; A frame every 1/60 s; the step from 0 to 100 %.
+      (let ((t0 10d0))
+        (flet ((after (seconds)
+                 (loop for k from 1 to (round (* seconds 60))
+                       do (lis::cockpit-needles-update! cockpit state (+ t0 (/ k 60d0)) nil))
+                 (aref (lis::cockpit-state-needles cockpit) 0)))
+          (let ((at-03 (after 0.3d0)))
+            (true (< (abs (- at-03 (- 1 (exp -1d0)))) 0.005d0) "~F at 0.3 s" at-03))
+          (let ((at-1 (after 0.7d0)))
+            (true (< (abs (- at-1 (- 1 (exp (/ -1d0 0.3d0))))) 0.005d0) "~F at 1 s" at-1)))))
+    ;; Snapped in captures; the hull needle at its 150 K stop.
+    (multiple-value-bind (state) (screen-state (lis::new-game-sim))
+      (lis::cockpit-needles-update! cockpit state 20d0 t)
+      (is = (/ 28000d0 lis::*propellant-full*) (aref (lis::cockpit-state-needles cockpit) 0))
+      (is = 0d0 (aref (lis::cockpit-state-needles cockpit) 1)))))
+
+(define-test throttle-lever-angles
+  (is = -10d0 (lis::lever-angle 0d0))
+  (is = 30d0 (lis::lever-angle 0.5d0))
+  (is = 60d0 (lis::lever-angle 1d0))
+  (is = 6d0 (lis::lever-angle 0.1d0)))
+
+(defun test-devices ()
+  (lis::make-cockpit-devices (text-test-atlas) (lis::make-text-batch) (lis::make-line-batch)))
+
+(define-test lamp-engravings-fit-their-lenses
+  (let ((devices (test-devices)))
+    (dolist (lamp (lis::cockpit-devices-lamps devices))
+      (let ((cap (lis::lamp-cap lamp)))
+        (true (<= (+ (lis::lamp-advance lamp) 0.002) (* 2 (lis::lamp-half-width lamp)))
+              "~A: ~F m on a lens of ~F" (lis::lamp-key lamp) (lis::lamp-advance lamp)
+              (* 2 (lis::lamp-half-width lamp)))
+        ;; The readability rule's cap at the lens's distance from the eye.
+        (let ((d (sqrt (reduce #'+ (map 'list (lambda (x) (* x x)) (lis::plane-frame-centre (lis::lamp-frame lamp)))))))
+          (true (>= cap (* 0.0175d0 d)) "~A: cap ~F at ~F m" (lis::lamp-key lamp) cap d))))))
+
+(define-test lamp-lenses-sit-in-front-of-their-faces
+  ;; Every lens corner is on the eye's side of the wall (x < 0.90) and of its face.
+  (let ((devices (test-devices)))
+    (dolist (lamp (lis::cockpit-devices-lamps devices))
+      (let* ((frame (lis::lamp-frame lamp)) (c (lis::plane-frame-centre frame))
+             (r (lis::plane-frame-r frame)))
+        (dolist (sign '(-1 1))
+          (let ((x (+ (aref c 0) (* sign (lis::lamp-half-width lamp) (aref r 0)))))
+            (true (< x 0.90) "~A lens corner at x ~F" (lis::lamp-key lamp) x)))))))
+
+(define-test devices-draw-lenses-needles-and-lever
+  (let* ((devices (test-devices)) (cockpit (lis::make-cockpit-state)))
+    (multiple-value-bind (state clock) (screen-state (lis::new-game-sim))
+      (setf (lis::render-state-m-p state) 1000d0)
+      (setf (lis::controls-throttle (lis::render-state-controls state)) 1d0)
+      (lis::cockpit-devices-update! devices cockpit state clock 1.1d0 0 t)
+      (let* ((region (lis::cockpit-devices-dynamic devices))
+             (data (lis::line-batch-data (lis::line-region-batch region)))
+             (start (lis::line-region-start region)))
+        (flet ((segment (i) (subseq data (* lis::+line-record-floats+ (+ start i))
+                                    (* lis::+line-record-floats+ (+ start i 1)))))
+          ;; PROP's lens (index 2) lit amber, PERI's (1) the dim red.
+          (let ((prop (segment 2)) (peri (segment 1)) (amber (lis::screen-line-colour lis::*screen-amber*)))
+            (is = (aref amber 0) (aref prop 6))
+            (true (< (aref peri 6) (* 0.1 (aref (lis::screen-line-colour lis::*screen-red*) 0))))
+            (is = (* 2 (lis::lamp-half-height (first (lis::cockpit-devices-lamps devices)))) (aref prop 9)))
+          ;; Full throttle: the lever's tip 0.1 m from its pivot at 60° from the face's normal.
+          (let* ((lever (segment 13))
+                 (length (sqrt (+ (expt (- (aref lever 3) (aref lever 0)) 2)
+                                  (expt (- (aref lever 4) (aref lever 1)) 2)
+                                  (expt (- (aref lever 5) (aref lever 2)) 2)))))
+            (true (< (abs (- length 0.10)) 1d-5) "lever ~F m" length))))
+      ;; Each frame conses nothing.
+      (is = 0 (least-bytes-consed
+               (lambda () (dotimes (i 1000) (lis::cockpit-devices-draw! devices cockpit state 2.3d0))))))))
+
+(define-test devices-recolour-the-engraving-with-the-lens
+  (let* ((devices (test-devices)) (cockpit (lis::make-cockpit-state))
+         (lamp (find :prop (lis::cockpit-devices-lamps devices) :key #'lis::lamp-key)))
+    (multiple-value-bind (state clock) (screen-state (lis::new-game-sim))
+      (flet ((ink () (let* ((region (lis::lamp-region lamp))
+                            (data (lis::text-batch-data (lis::text-region-batch region))))
+                       (aref data (+ 17 (* lis::+text-record-floats+ (lis::text-region-start region)))))))
+        (lis::cockpit-devices-update! devices cockpit state clock 0d0 0 t)
+        (is = (aref (lis::screen-ink lis::*screen-grey*) 0) (ink))
+        (setf (lis::render-state-m-p state) 1000d0)
+        (lis::cockpit-devices-update! devices cockpit state clock 0.5d0 1 t)
+        (is = (aref (lis::screen-ink lis::*screen-black*) 0) (ink))))))
+
+(define-test cockpit-lamps-rebuild-at-10-hz-and-on-a-change
+  (let* ((devices (test-devices)) (cockpit (lis::make-cockpit-state)))
+    (multiple-value-bind (state clock) (screen-state (lis::new-game-sim))
+      (lis::cockpit-devices-update! devices cockpit state clock 1d0 5 t)
+      (setf (lis::render-state-m-p state) 1000d0)
+      (lis::cockpit-devices-update! devices cockpit state clock 1.05d0 5 t)
+      (is eq nil (svref (lis::cockpit-state-lamp-colours cockpit) 2) "not between rebuilds")
+      (lis::cockpit-devices-update! devices cockpit state clock 1.11d0 5 t)
+      (is eq :amber (svref (lis::cockpit-state-lamp-colours cockpit) 2))
+      (setf (lis::render-state-m-p state) lis::*propellant-full*)
+      (lis::cockpit-devices-update! devices cockpit state clock 1.12d0 6 t)
+      (is eq nil (svref (lis::cockpit-state-lamp-colours cockpit) 2) "a new signature rebuilds at once"))))

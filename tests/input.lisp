@@ -1022,3 +1022,17 @@ TARGET key, when given); the marker."
       (lis::update-view! game nil)
       (is eq :ship (lis::map-view-focus (map-view game)))
       (is = az (lis::map-view-azimuth (map-view game))))))
+
+(define-test input-acknowledge-puts-out-the-master-alarm
+  (let* ((game (input-game)) (cockpit (lis::game-cockpit-state game)))
+    (setf (lis::cockpit-state-mstr cockpit) :red)
+    (input-tap game :y)
+    (is eq nil (lis::cockpit-state-mstr cockpit))
+    ;; Paused too; lost: not.
+    (setf (lis::cockpit-state-mstr cockpit) :amber (lis::clock-paused (input-clock game)) t)
+    (input-tap game :y)
+    (is eq nil (lis::cockpit-state-mstr cockpit))
+    (setf (lis::cockpit-state-mstr cockpit) :red
+          (lis::sim-loss (lis::game-sim game)) (lis::make-loss :crash :earth 0d0 100d0 0d0 0d0))
+    (input-tap game :y)
+    (is eq :red (lis::cockpit-state-mstr cockpit))))

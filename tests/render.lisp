@@ -2134,6 +2134,36 @@ Earth's shadow; each thing is read where the pose puts it."
             (true (> red 800) "the inverted PE line: ~D red pixels of ~D" red (length pixels)))))))
   (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream))))
 
+;;; The lamps (plan 32 piece 3; decision 128): a lit lens against an unlit one.
+
+(defun lamp-checks (game png width height)
+  (with-canvas-values (game (lis::*bloom-strength* 0.0))
+    (let ((sim (lis::copy-sim (start-sim-at 180)))
+          (devices (lis::frame-renderer-devices (lis::game-renderer game))))
+      (setf (lis::ship-state-m-p (lis::sim-ship sim)) 1000d0)
+      (flet ((lens-luminance (key)
+               (let* ((lamp (find key (lis::cockpit-devices-lamps devices) :key #'lis::lamp-key))
+                      (frame (lis::lamp-frame lamp))
+                      (p (loop for k below 3
+                               collect (+ (aref (lis::plane-frame-centre frame) k)
+                                          (* 0.0155 (aref (lis::plane-frame-u frame) k)))))
+                      (yaw (lis::rad->deg (atan (second p) (first p))))
+                      (pitch (lis::rad->deg (asin (/ (third p) (sqrt (reduce #'+ (mapcar (lambda (x) (* x x)) p))))))))
+                 (multiple-value-bind (path w h pixels format)
+                     (lis::capture-game-state game png :sim sim :view :cockpit :readout nil :frames 3
+                                                       :head (list yaw pitch 6))
+                   (declare (ignore path w h))
+                   (let ((sum 0.0))
+                     (loop for y from (- (floor height 2) 2) to (+ (floor height 2) 2)
+                           do (loop for x from (- (floor width 2) 2) to (+ (floor width 2) 2)
+                                    do (destructuring-bind (r g b) (pixel-rgb pixels format width x y)
+                                         (incf sum (+ (* 0.2126 (byte-linear r)) (* 0.7152 (byte-linear g))
+                                                      (* 0.0722 (byte-linear b)))))))
+                     (/ sum 25))))))
+        (let ((lit (lens-luminance :prop)) (unlit (lens-luminance :peri)))
+          (true (>= lit (* 5 unlit)) "a lit lens ~,4F against an unlit one ~,4F" lit unlit)))))
+  (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream))))
+
 ;;; The dot-matrix strip (plan 32 piece 2; decision 128): the head aimed at one
 ;;; dot, a lit one amber and an unlit one dim.
 
@@ -2314,6 +2344,7 @@ Earth's shadow; each thing is read where the pose puts it."
            (cockpit-checks game png width height)
            (screen-checks game png width height)
            (strip-checks game png width height)
+           (lamp-checks game png width height)
            (sun-patch-checks game png width height)
            (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))
            ;; Resizes replace the swapchain's textures; what the renderer kept

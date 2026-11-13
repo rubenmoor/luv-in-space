@@ -163,9 +163,25 @@ followed by the text of its run."
   (let* ((m (render-state-stack-mass state)) (dry (- m (render-state-m-p state))))
     (* (engine-exhaust-velocity) (log (/ m dry)))))
 
+(defun plan-propellant-need (plan state)
+  "kg: what PLAN's burns not yet cut at STATE's t take from the stack's mass,
+the rocket equation per burn. Conses nothing but its result."
+  (let* ((mass (render-state-stack-mass state)) (end mass) (now (render-state-t state)))
+    (loop for burn across (burn-plan-burns plan)
+          when (> (planned-burn-cut-t burn) now)
+            do (setf end (* end (exp (- (/ (planned-burn-dv burn)
+                                          (* (planned-burn-isp burn) +g0+)))))))
+    (- mass end)))
+
 (defun propellant-low-p (state)
-  "Whether PROP is lit: below 5 % of the load (plan 32 piece 3 adds the shown plan's need)."
-  (< (render-state-m-p state) (* 0.05d0 *propellant-full*)))
+  "Whether PROP is lit (decision 128): below 5 % of the load, or below the need
+of the plan shown or engaged."
+  (let* ((model (render-state-autopilot-model state))
+         (plan (and model (case (autopilot-model-state model)
+                            (:shown (autopilot-model-plan model))
+                            (:engaged (autopilot-model-flown model))))))
+    (or (< (render-state-m-p state) (* 0.05d0 *propellant-full*))
+        (and plan (< (render-state-m-p state) (plan-propellant-need plan state))))))
 
 (defun ship-lines (state)
   (let* ((controls (render-state-controls state))
@@ -309,18 +325,38 @@ region under dark text; the rest zeroed."
   (typing-time nil)                   ; the real time of the last advance
   (typing-serial 0 :type fixnum)      ; changes with every character shown
   (scroll 0 :type fixnum)
-  (log-lines 0 :type fixnum))
+  (log-lines 0 :type fixnum)
+  ;; The lamps and the gauges (cockpit-devices.lisp; decision 128).
+  (mstr nil :type (member nil :red :amber)) ; the master alarm until acknowledged
+  (peri-lit nil) (prop-lit nil) (abort-lit nil) ; the alarms' last states: MSTR's onsets
+  (lamp-colours (make-array 12 :initial-element nil) :type simple-vector)
+  (lamp-flashes (make-array 12 :initial-element nil) :type simple-vector)
+  (lamp-built -1d9 :type double-float)
+  (lamp-signature -1 :type fixnum)
+  (needles (make-array 2 :element-type 'double-float :initial-element 0d0)
+   :type (simple-array double-float (2))) ; the lagged values, 0 to 1: PROP, hull
+  (needle-time nil))                  ; the real time of the last lag step
+
+(defun cockpit-state-acknowledge! (cockpit)
+  "Y or a click: the master alarm acknowledged; a later onset lights it again."
+  (setf (cockpit-state-mstr cockpit) nil)
+  cockpit)
 
 (defun cockpit-state-invalidate! (cockpit)
   "The next frame rebuilds every screen (a restart, a loaded state)."
   (fill (cockpit-state-rebuilt cockpit) -1d9)
-  (setf (cockpit-state-strip-built cockpit) -1d9)
+  (setf (cockpit-state-strip-built cockpit) -1d9
+        (cockpit-state-lamp-built cockpit) -1d9)
   cockpit)
 
 (defun cockpit-state-restart! (cockpit clock)
   "A restart: every screen rebuilds; the marquee and the log's typing start
 from the log as it is (nothing replays), the scroll at the bottom."
   (cockpit-state-invalidate! cockpit)
+  (setf (cockpit-state-mstr cockpit) nil
+        (cockpit-state-peri-lit cockpit) nil (cockpit-state-prop-lit cockpit) nil
+        (cockpit-state-abort-lit cockpit) nil
+        (cockpit-state-lamp-built cockpit) -1d9)
   (setf (cockpit-state-strip-queue cockpit) nil
         (cockpit-state-strip-current cockpit) nil
         (cockpit-state-strip-seen cockpit) (first (clock-log clock))
@@ -371,7 +407,7 @@ the berth, the transfer, the log's length. Conses nothing."
   (logand (+ (* 7 (cockpit-state-typing-serial cockpit)) (cockpit-state-scroll cockpit))
           most-positive-fixnum))
 
-(defun cockpit-update! (cockpit views atlas state clock real-time view &key strip snap)
+(defun cockpit-update! (cockpit views atlas state clock real-time view &key strip devices snap)
   "Rebuild the text of each of VIEWS (screen-views) whose last rebuild is 0.1 s
 of REAL-TIME old, or was made under another cockpit-signature (COMMS also
 while it types); COCKPIT the game's cockpit-state. The log's typing and the
@@ -383,6 +419,8 @@ of screens rebuilt."
   (when strip (strip-update! cockpit strip state clock real-time snap))
   (let ((signature (cockpit-signature state clock view)) (built 0))
     (declare (type fixnum signature built))
+    (when devices
+      (cockpit-devices-update! devices cockpit state clock real-time signature snap))
     (loop for screen in views
           for i of-type fixnum from 0
           do (let ((signature (if (eq (screen-view-name screen) :comms)

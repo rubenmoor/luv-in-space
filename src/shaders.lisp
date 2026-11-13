@@ -1262,6 +1262,54 @@ angle in degrees), weighted by a Gaussian of SIGMA texels, normalised."
                     (vec4 c 1.0)))))
 
 
+;; The grapple camera's image (src/render.lisp; decision 128: Cockpit devices,
+;; buttons, picking, the grapple camera and messages in milestone 3): the
+;; tone-mapped luminance in grey, sRGB-encoded, plus noise uniform in
+;; +-4/255 from a hash of the pixel and the frame counter (post.w), into an
+;; rgba8-unorm target.
+(define-post-fragment grapple-post-fragment
+  (let* ((scene (finite-radiance3 (swizzle (sample base source-sampler uv) :rgb)))
+         (c (aces-filmic (* scene (swizzle post :x))))
+         (grey (+ (* 0.2126 (swizzle c :x)) (* 0.7152 (swizzle c :y)) (* 0.0722 (swizzle c :z))))
+         (pixel (floor (* uv (vec2 (/ 2.0 (swizzle screen :x)) (/ 2.0 (swizzle screen :y))))))
+         (noise (* (- (hash13 (vec3 (swizzle pixel :x) (swizzle pixel :y) (swizzle post :w))) 0.5)
+                   (/ 8.0 255.0)))
+         (e (clamp (+ (srgb-encode grey) noise) 0.0 1.0)))
+    (set-output color (vec4 e e e 1.0))))
+
+;; The TARGET face's image (src/cockpit-screens.lisp): one quad on the face's
+;; plane, CENTRE, RIGHT and UP its half edges in body axes from the eye. The
+;; grey byte decoded and its inverse tone map over the exposure, so the face
+;; shows the image's values at the cockpit's exposure.
+(define-shader cab-screen-image-vertex
+    (:stage :vertex
+     :inputs ((corner :vec2 :location 0)
+              (centre :vec4 :location 1)
+              (right :vec4 :location 2)
+              (up :vec4 :location 3))
+     :outputs ((clip-position :vec4 :built-in :position)
+               (uv :vec2 :location 0))
+     :resources ((text-block :uniform-block :binding 2
+                  :members #.*cab-block-members*)))
+  (let* ((cx (- (* 2.0 (swizzle corner :x)) 1.0))
+         (cy (swizzle corner :y))
+         (q (vec4 (+ (swizzle centre :xyz) (* (swizzle right :xyz) cx) (* (swizzle up :xyz) cy)) 1.0)))
+    (set-output clip-position (vec4 (dot clip-x q) (dot clip-y q) (dot clip-z q) (dot clip-w q)))
+    (set-output uv (vec2 (swizzle corner :x) (* 0.5 (- 1.0 cy))))))
+
+(define-shader cab-screen-image-fragment
+    (:stage :fragment
+     :inputs ((uv :vec2 :location 0))
+     :outputs ((color :vec4 :location 0))
+     :resources ((text-block :uniform-block :binding 2
+                  :members #.*cab-block-members*)
+                 (image :texture-2d :binding 3)
+                 (image-sampler :sampler :binding 4)))
+  (let* ((g (swizzle (sample image image-sampler uv) :x))
+         (linear (if (<= g 0.04045) (/ g 12.92) (expt (/ (+ g 0.055) 1.055) 2.4)))
+         (ink (* (inverse-tone-map (vec3 linear linear linear)) (swizzle params :x))))
+    (set-output color (vec4 ink 1.0))))
+
 ;; Roles for luv's live shader pipelines.  Each method returns the current
 ;; definition; a re-evaluated DEFINE-SHADER bumps luv's source revision, so
 ;; the renderer's pipelines rebuild at the next frame.
@@ -1346,4 +1394,9 @@ angle in degrees), weighted by a Gaussian of SIGMA texels, normalised."
                         collect `(defmethod shader-specification-for
                                      ((role (eql ,role)) (stage (eql :fragment)))
                                    (,fragment))))))
-  (post-roles :bloom-down bloom-down-fragment :bloom-up bloom-up-fragment :tone-map tone-map-fragment))
+  (post-roles :bloom-down bloom-down-fragment :bloom-up bloom-up-fragment :tone-map tone-map-fragment
+              :grapple-post grapple-post-fragment))
+(defmethod shader-specification-for ((role (eql :cab-screen-image)) (stage (eql :vertex)))
+  (cab-screen-image-vertex))
+(defmethod shader-specification-for ((role (eql :cab-screen-image)) (stage (eql :fragment)))
+  (cab-screen-image-fragment))

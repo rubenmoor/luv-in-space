@@ -257,7 +257,7 @@ the mode on row 8."
         (screen-line :grey "             P Y R")
         (attitude-mode-line state)))
 
-;;; TARGET (24 × 8), the grapple stowed (the armed camera is plan 32 piece 7's)
+;;; TARGET (24 × 8), the grapple stowed (the armed lines are cockpit-grapple.lisp's)
 
 (defun format-range (metres)
   "METRES as 12.345 km from 1 km, else 340.2 m."
@@ -278,6 +278,8 @@ the mode on row 8."
 
 (defun target-lines (state)
   (let ((target (render-state-target state)))
+    (when (grapple-active-p state)
+      (return-from target-lines (grapple-armed-lines state)))
     (if (null target)
         (list (screen-line :white "NO TARGET") '() (screen-line :grey "PICK ] [  OR MAP CLICK"))
         (let* ((rel (render-state-target-relative state))
@@ -399,6 +401,7 @@ advances the log's scroll in COCKPIT, the game's cockpit-state)."
   name panel columns rows cap
   text lines                       ; the text-region and the line-region
   plane scratch line-plane         ; text planes: at the grid, a shifted copy, the lines'
+  (width 0f0 :type single-float)   ; the face's width, metres (the bands')
   plot)                            ; AUTOPILOT: its orbit plot (cockpit-autopilot.lisp)
 
 (defun make-screen-view (name text-batch line-batch)
@@ -412,6 +415,7 @@ advances the log's scroll in COCKPIT, the game's cockpit-state)."
                  (make-text-plane :origin (coerce origin 'list) :right (coerce r 'list)
                                   :up (coerce u 'list))))
           (%make-screen-view :name name :panel panel :columns columns :rows rows
+                            :width (float (first (getf panel :size)) 1f0)
                             :cap (float cap 1f0)
                             :text (text-batch-region text-batch (* columns rows))
                             :lines (line-batch-region line-batch rows)
@@ -439,6 +443,15 @@ region under dark text; the rest zeroed."
           do (let ((column 0))
                (declare (type fixnum column))
                (dolist (run line)
+                 (when (eq (run-style run) :band)
+                   (let ((y (- (* 0.5f0 cap) (* row +text-cell-height+ cap)))
+                         (x0 -0.01f0) (x1 (- (screen-view-width view) 0.01f0)))
+                     (flet ((at (x k) (+ (aref line-plane k) (* x (aref line-plane (+ 3 k)))
+                                         (* y (aref line-plane (+ 6 k))))))
+                       (line-put! blocks block-index (at x0 0) (at x0 1) (at x0 2)
+                                  (at x1 0) (at x1 1) (at x1 2)
+                                  (screen-line-colour (run-colour run)) (* 1.62f0 cap))
+                       (incf block-index))))
                  (let* ((string (run-text run)) (length (length string))
                         (inverted (and (eq (run-style run) :inverted) (not (eq (run-flash run) :off)))))
                    (when (and (plusp length) (<= (+ column length) (screen-view-columns view)))
@@ -577,7 +590,7 @@ the berth, the transfer, the log's length. Conses nothing."
   (logand (+ (* 7 (cockpit-state-typing-serial cockpit)) (cockpit-state-scroll cockpit))
           most-positive-fixnum))
 
-(defun cockpit-update! (cockpit views atlas state clock real-time view &key strip devices buttons attitude snap)
+(defun cockpit-update! (cockpit views atlas state clock real-time view &key strip devices buttons attitude grapple snap)
   "Rebuild the text of each of VIEWS (screen-views) whose last rebuild is 0.1 s
 of REAL-TIME old, or was made under another cockpit-signature (COMMS also
 while it types); COCKPIT the game's cockpit-state. The log's typing and the
@@ -588,6 +601,7 @@ of screens rebuilt."
   (comms-type! cockpit clock real-time snap)
   (when strip (strip-update! cockpit strip state clock real-time snap))
   (when attitude (attitude-view-update! attitude atlas state))
+  (when grapple (grapple-view-update! grapple atlas state))
   (let ((signature (cockpit-signature state clock view)) (built 0))
     (declare (type fixnum signature built))
     (when devices

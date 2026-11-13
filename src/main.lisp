@@ -225,10 +225,20 @@ the outside view's distance."
                        (game-clock game) (game-real-time game) (game-view game)
                        :strip (frame-renderer-strip-view renderer)
                        :attitude (frame-renderer-attitude-view renderer)
+                       :grapple (frame-renderer-grapple-view renderer)
                        :devices (frame-renderer-devices renderer)
                        :buttons (frame-renderer-buttons renderer) :snap (null elapsed))))
-  (let ((exposure (update-exposure! game extent elapsed)))
+  (let ((exposure (update-exposure! game extent elapsed))
+        (grapple (and (eq (game-view game) :cockpit) (game-interior-p game)
+                      (grapple-active-p (game-render-state game)))))
     (death-glow! game exposure)
+    (when grapple
+      ;; the TARGET face's image: its own camera and exposure, snapped (decision 128)
+      (let ((camera (frame-renderer-grapple-camera (game-renderer game))))
+        (grapple-camera-update! camera (game-render-state game))
+        (encode-grapple-pass (game-renderer game) encoder target (game-render-state game) camera
+                             (exposure-target camera (game-render-state game) :outside
+                                              :aspect (/ (first *grapple-extent*) (second *grapple-extent*))))))
     (encode-frame (game-renderer game) encoder target extent
                   (game-render-state game) (game-camera game)
                   exposure (game-view game)
@@ -243,7 +253,7 @@ the outside view's distance."
                   (and (game-loss game)
                        (lost-panel-lines (game-loss game)
                                          (and (clock-checkpoint (game-clock game)) t)))
-                  :interior (game-interior-p game))))
+                  :interior (game-interior-p game) :grapple grapple)))
 
 (defun game-frame! (game elapsed)
   "One frame's simulation, ELAPSED real seconds: the real time, the input,

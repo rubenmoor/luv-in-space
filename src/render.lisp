@@ -738,11 +738,12 @@ sunlit patch). The static part stays. Conses nothing; the block."
     out))
 
 (defun encode-cockpit (pass renderer gpu slot text-slot batch corners state camera extent exposure eye
-                       &optional lines line-buffer line-corners dots dot-buffer plots plot-buffer)
+                       &optional lines line-buffer line-corners dots dot-buffer plots plot-buffer image)
   "The cab's interior into the open scene PASS, after the scene (decision 126:
 the opaque meshes and instances, the lines, the cockpit's text, then the glass): its block (the
 head camera in body axes) written to SLOT and, with the text, to TEXT-SLOT.
-BATCH the text batch, CORNERS the glyph quad. Conses nothing."
+BATCH the text batch, CORNERS the glyph quad; IMAGE, nil or the bind group of
+the TARGET face's grapple image, drawn first among the lines. Conses nothing."
   (let ((data (cab-block! gpu state camera extent exposure eye)))
     (luv:write-buffer (cab-slot-buffer slot) data)
     (luv:write-buffer (cab-slot-materials slot) (cab-materials! (cockpit-gpu-materials gpu)))
@@ -759,6 +760,12 @@ BATCH the text batch, CORNERS the glyph quad. Conses nothing."
     (when lines
       ;; The lines go before the text: an inverted run's block lies under its letters.
       (luv:write-buffer (text-slot-buffer text-slot) data)
+      (when image
+        (luv:set-pipeline pass (renderer-pipeline renderer :cab-screen-image))
+        (luv:set-bind-group pass 0 image)
+        (luv:set-vertex-buffer pass 0 line-corners)
+        (luv:set-vertex-buffer pass 1 (frame-renderer-image-quad renderer))
+        (luv:draw pass 6))
       (when plots (encode-plots pass renderer text-slot plots plot-buffer line-corners))
       (encode-lines pass renderer text-slot lines line-buffer line-corners)
       (when dots (encode-dots pass renderer text-slot dots dot-buffer line-corners)))
@@ -833,6 +840,7 @@ the tests' one decode for every canvas they open.")
    (plots :initform (make-plot-batch) :reader frame-renderer-plots
           :documentation "The ATTITUDE plot's record (cockpit-attitude.lisp).")
    (attitude-view :initform nil :accessor frame-renderer-attitude-view)
+   (grapple-view :initform nil :accessor frame-renderer-grapple-view)
    (strip-view :initform nil :accessor frame-renderer-strip-view)
    (devices :initform nil :accessor frame-renderer-devices
             :documentation "The lamps, gauges and lever (cockpit-devices.lisp).")
@@ -854,7 +862,16 @@ camera's clip rows (positions relative to the eye in ICRF axes).")
    (uniforms :initform (make-array +frame-uniform-floats+ :element-type 'single-float
                                                           :initial-element 0f0)
              :reader frame-renderer-uniforms)
-   (eye :initform (make-vec3) :reader frame-renderer-eye)))
+   (eye :initform (make-vec3) :reader frame-renderer-eye)
+   (grapple-frames :initform (luv:make-canvas-frame-resource-cache)
+                   :reader frame-renderer-grapple-frames
+                   :documentation "Per target: the grapple pass's frame-slot.")
+   (grapple-camera :initform (make-camera) :reader frame-renderer-grapple-camera)
+   (grapple-passes :initform 0 :accessor frame-renderer-grapple-passes
+                   :documentation "Grapple passes encoded so far (tests count them).")
+   (image-layout :initarg :image-layout :accessor frame-renderer-image-layout)
+   (image-quad :initarg :image-quad :accessor frame-renderer-image-quad
+               :documentation "The TARGET face's image quad: centre and half edges.")))
 
 (defmethod initialize-instance :after ((renderer frame-renderer) &key)
   (let ((floats (overlay-buffer-floats (frame-renderer-overlay renderer))))
@@ -915,6 +932,23 @@ camera's clip rows (positions relative to the eye in ICRF axes).")
       (lines-pipeline renderer text-layout +hdr-format+)
       (dots-pipeline renderer text-layout +hdr-format+)
       (plot-pipeline renderer text-layout +hdr-format+))
+    (let ((image-layout (gpu-create renderer (luv:make-bind-group-layout-descriptor
+                                              :entries '((:binding 2 :type :uniform-buffer)
+                                                         (:binding 3 :type :texture)
+                                                         (:binding 4 :type :sampler))))))
+      (reinitialize-instance renderer :image-layout image-layout
+                                      :image-quad (vertex-buffer renderer (screen-image-quad)
+                                                                 "target image quad"))
+      (live-pipeline renderer :cab-screen-image image-layout
+                     `((:array-stride 8
+                        :attributes ((:shader-location 0 :offset 0 :format :float32x2)))
+                       (:array-stride 48 :step-mode :instance
+                        :attributes ((:shader-location 1 :offset 0 :format :float32x4)
+                                     (:shader-location 2 :offset 16 :format :float32x4)
+                                     (:shader-location 3 :offset 32 :format :float32x4))))
+                     :format +hdr-format+ :blend :premultiplied-alpha
+                     :depth-stencil '(:format :depth32-float :depth-write-enabled nil
+                                      :depth-compare :greater)))
     (cockpit-text! (frame-renderer-text-atlas renderer) (frame-renderer-text-batch renderer))
     (setf (frame-renderer-screen-views renderer)
           (cockpit-screens-init! (frame-renderer-text-batch renderer) (frame-renderer-lines renderer)))
@@ -922,6 +956,8 @@ camera's clip rows (positions relative to the eye in ICRF axes).")
     (setf (frame-renderer-attitude-view renderer)
           (make-attitude-view (frame-renderer-text-batch renderer) (frame-renderer-lines renderer)
                               (frame-renderer-plots renderer)))
+    (setf (frame-renderer-grapple-view renderer)
+          (make-grapple-view (frame-renderer-text-batch renderer) (frame-renderer-lines renderer)))
     (setf (frame-renderer-devices renderer)
           (make-cockpit-devices (frame-renderer-text-atlas renderer) (frame-renderer-text-batch renderer)
                                 (frame-renderer-lines renderer)))
@@ -934,7 +970,8 @@ camera's clip rows (positions relative to the eye in ICRF axes).")
 "A target's frame block, its scene bind group, its ship-slot, its ribbon
 instance buffer, its overlay vertices, its text-slot, its cab-slot, and the bind groups sampling the
 post levels in POST-VIEWS."
-  buffer bind-group ship ribbon overlay text lines dots plots cab (post-views '()) (post-bind-groups '()))
+  buffer bind-group ship ribbon overlay text lines dots plots cab (post-views '()) (post-bind-groups '())
+  (image-bind-group nil))
 
 (defun release-frame-resources (slot)
   (release-ship-slot (frame-slot-ship slot))
@@ -946,6 +983,7 @@ post levels in POST-VIEWS."
   (luv:destroy (frame-slot-plots slot))
   (release-cab-slot (frame-slot-cab slot))
   (mapc #'luv:destroy (frame-slot-post-bind-groups slot))
+  (when (frame-slot-image-bind-group slot) (luv:destroy (frame-slot-image-bind-group slot)))
   (luv:destroy (frame-slot-bind-group slot))
   (luv:destroy (frame-slot-buffer slot)))
 
@@ -958,6 +996,35 @@ post levels in POST-VIEWS."
                           (:binding 2 :resource ,sampler)
                           (:binding 3 :resource ,base)))))
 
+(defun make-frame-slot-for (renderer)
+  "A new frame-slot of RENDERER's resources."
+  (let ((buffer (luv:create (renderer-device renderer)
+                            (luv:make-buffer-descriptor
+                             :label "frame" :size (* 4 +frame-uniform-floats+)
+                             :usage '(:uniform)))))
+    (make-frame-slot
+     :buffer buffer
+     :bind-group (frame-bind-group renderer buffer
+                                   (frame-renderer-earth-view renderer)
+                                   (frame-renderer-earth-sampler renderer)
+                                   (frame-renderer-earth-coarse-view renderer))
+     :ship (make-ship-target-slot renderer (frame-renderer-ship renderer) buffer)
+     :ribbon (make-ribbon-buffer (renderer-device renderer)
+                                 (frame-renderer-map-lines renderer))
+     :cab (make-cab-slot-for renderer (frame-renderer-cockpit renderer))
+     :lines (make-line-buffer renderer (line-batch-capacity (frame-renderer-lines renderer)))
+     :dots (make-dot-buffer renderer (dot-batch-capacity (frame-renderer-dots renderer)))
+     :plots (make-plot-buffer renderer (plot-batch-capacity (frame-renderer-plots renderer)))
+     :text (make-text-slot renderer (frame-renderer-text-layout renderer)
+                           (frame-renderer-text-atlas renderer)
+                           (text-batch-capacity (frame-renderer-text-batch renderer)))
+     :overlay (luv:create (renderer-device renderer)
+                          (luv:make-buffer-descriptor
+                           :label "overlay"
+                           :size (* 4 (array-total-size
+                                       (frame-renderer-overlay-floats renderer)))
+                           :usage '(:vertex :copy-dst))))))
+
 (defun frame-resources (renderer target)
   "TARGET's frame-slot, made on first use; a swapchain texture's is free
 again once it is acquired (luv's canvas-frame-resource-cache)."
@@ -965,32 +1032,16 @@ again once it is acquired (luv's canvas-frame-resource-cache)."
            (frame-renderer-frames renderer) (frame-renderer-context renderer) target
            (lambda (key texture)
              (declare (ignore key texture))
-             (let ((buffer (luv:create (renderer-device renderer)
-                                       (luv:make-buffer-descriptor
-                                        :label "frame" :size (* 4 +frame-uniform-floats+)
-                                        :usage '(:uniform)))))
-               (make-frame-slot
-                :buffer buffer
-                :bind-group (frame-bind-group renderer buffer
-                                              (frame-renderer-earth-view renderer)
-                                              (frame-renderer-earth-sampler renderer)
-                                              (frame-renderer-earth-coarse-view renderer))
-                :ship (make-ship-target-slot renderer (frame-renderer-ship renderer) buffer)
-                :ribbon (make-ribbon-buffer (renderer-device renderer)
-                                            (frame-renderer-map-lines renderer))
-                :cab (make-cab-slot-for renderer (frame-renderer-cockpit renderer))
-                :lines (make-line-buffer renderer (line-batch-capacity (frame-renderer-lines renderer)))
-                :dots (make-dot-buffer renderer (dot-batch-capacity (frame-renderer-dots renderer)))
-                :plots (make-plot-buffer renderer (plot-batch-capacity (frame-renderer-plots renderer)))
-                :text (make-text-slot renderer (frame-renderer-text-layout renderer)
-                                      (frame-renderer-text-atlas renderer)
-                                      (text-batch-capacity (frame-renderer-text-batch renderer)))
-                :overlay (luv:create (renderer-device renderer)
-                                     (luv:make-buffer-descriptor
-                                      :label "overlay"
-                                      :size (* 4 (array-total-size
-                                                  (frame-renderer-overlay-floats renderer)))
-                                      :usage '(:vertex :copy-dst)))))))))
+             (make-frame-slot-for renderer)))))
+
+(defun grapple-resources (renderer target)
+  "The grapple pass's frame-slot for TARGET, the swapchain texture the frame
+draws into, whose acquisition is the proof that the slot is free again."
+  (values (luv:canvas-frame-resource
+           (frame-renderer-grapple-frames renderer) (frame-renderer-context renderer) target
+           (lambda (key texture)
+             (declare (ignore key texture))
+             (make-frame-slot-for renderer)))))
 
 (defun post-bind-groups (renderer slot views)
   "SLOT's bind groups sampling VIEWS, remade when the post targets were."
@@ -1017,6 +1068,9 @@ again once it is acquired (luv's canvas-frame-resource-cache)."
   (luv:evict-canvas-frame-resource (frame-renderer-frames renderer)
                                    (frame-renderer-context renderer) target
                                    #'release-frame-resources)
+  (luv:evict-canvas-frame-resource (frame-renderer-grapple-frames renderer)
+                                   (frame-renderer-context renderer) target
+                                   #'release-frame-resources)
   (forget-color-view renderer target))
 
 (defun note-swapchain-target (renderer target extent)
@@ -1031,6 +1085,8 @@ means luv rebuilt the swapchain: forget its old textures first."
 
 (defun destroy-frame-renderer (renderer)
   (luv:destroy-canvas-frame-resource-cache (frame-renderer-frames renderer)
+                                           #'release-frame-resources)
+  (luv:destroy-canvas-frame-resource-cache (frame-renderer-grapple-frames renderer)
                                            #'release-frame-resources)
   (release-text-atlas (frame-renderer-text-atlas renderer))
   (destroy-renderer renderer))
@@ -1095,8 +1151,125 @@ left (decision 85), then PANEL, nil or lost-panel-lines' lines (decision 86)."
       (luv:set-vertex-buffer pass 0 buffer)
       (luv:draw pass (overlay-buffer-count out)))))
 
+(defun encode-scene-pass (renderer encoder slot hdr depth bind-group forms data state camera extent
+                          exposure view interior grapple)
+  "The scene pass into the HDR view HDR with DEPTH (decision 76): the stars, the
+Sun, the Moon, Earth, Earth's halo, the Mule, the objects, the test text, in
+:cockpit (INTERIOR) the cab (GRAPPLE: with the grapple camera's image on the
+TARGET face), in :map the orbit's ribbon, the tests' quads. DATA the frame
+block just written, FORMS the impostors' draw forms."
+  (flet ((draw (pass role vertices count)
+           (luv:set-pipeline pass (renderer-pipeline renderer role))
+           (luv:set-bind-group pass 0 bind-group)
+           (luv:set-vertex-buffer pass 0 vertices)
+           (luv:draw pass count)))
+    (let ((pass (luv:begin-render-pass
+                 encoder
+                 (luv:make-render-pass-descriptor
+                  :color-attachments
+                  `((:view ,hdr :load-op :clear :store-op :store
+                     :clear-value ,(coerce (append *background* '(1.0)) 'vector)))
+                  :depth-stencil-attachment
+                  `(:view ,depth
+                    :depth-load-op :clear :depth-store-op :store
+                    :depth-clear-value 0.0)))))
+      (luv:set-pipeline pass (renderer-pipeline renderer :stars))
+      (luv:set-bind-group pass 0 bind-group)
+      (luv:set-vertex-buffer pass 0 (frame-renderer-star-corners renderer))
+      (luv:set-vertex-buffer pass 1 (frame-renderer-stars renderer))
+      (luv:draw pass 6 (frame-renderer-star-count renderer))
+      (let ((corners (frame-renderer-impostor-corners renderer)))
+        (loop for role in '(:sun :moon :earth :earth-halo)
+              for form in forms
+              do (draw-impostor pass renderer role form bind-group corners)))
+      (encode-ship pass renderer (frame-renderer-ship renderer) (frame-slot-ship slot)
+                   state (frame-renderer-eye renderer) (eq view :cockpit))
+      (encode-objects pass renderer (frame-renderer-ship renderer) (frame-slot-ship slot)
+                      state camera extent (frame-renderer-eye renderer))
+      (let ((text (frame-renderer-test-text renderer)))
+        (when text
+          (encode-text pass renderer (frame-slot-text slot) text
+                       (text-block! (frame-renderer-text-block renderer) data extent exposure)
+                       (frame-renderer-text-corners renderer))))
+      (when (and interior (eq view :cockpit))
+        (encode-cockpit pass renderer (frame-renderer-cockpit renderer) (frame-slot-cab slot)
+                        (frame-slot-text slot) (frame-renderer-text-batch renderer)
+                        (frame-renderer-text-corners renderer) state camera extent exposure
+                        (frame-renderer-eye renderer)
+                        (frame-renderer-lines renderer) (frame-slot-lines slot)
+                        (frame-renderer-line-corners renderer)
+                        (frame-renderer-dots renderer) (frame-slot-dots slot)
+                        (frame-renderer-plots renderer) (frame-slot-plots slot)
+                        (and grapple (screen-image-bind-group renderer slot))))
+      (when (eq view :map)
+        (encode-map-lines pass renderer bind-group (frame-renderer-map-lines renderer)
+                          (frame-slot-ribbon slot) (frame-renderer-ribbon-corners renderer)
+                          state camera (frame-renderer-eye renderer) extent))
+      (let ((quads (frame-renderer-test-quads renderer)))
+        (when quads (draw pass :quads (car quads) (cdr quads))))
+      (luv:end-pass pass))))
+
+(defparameter *grapple-extent* '(480 320) "The grapple camera's image, decision 128.")
+(defparameter *grapple-near* 0.1d0 "m: the grapple camera's near plane.")
+(defparameter *grapple-field-of-view* (* 50 (/ pi 180)) "Vertical, radians.")
+(declaim (type double-float *grapple-near* *grapple-field-of-view*))
+
+(defun grapple-target-views (renderer)
+  "(values hdr depth image) views of the grapple camera's cached targets
+(decision 94: Render targets in gpu.lisp: cached per name)."
+  (values (render-target renderer :grapple-hdr *grapple-extent* +hdr-format+
+                                  :usage '(:render-attachment :texture-binding))
+          (render-target renderer :grapple-depth *grapple-extent* :depth32-float)
+          (render-target renderer :grapple-image *grapple-extent* :rgba8-unorm
+                                  :usage '(:render-attachment :texture-binding))))
+
+(defun screen-image-bind-group (renderer slot)
+  "SLOT's bind group of the TARGET face's image: the text block, the grapple
+image and a linear sampler; made once."
+  (or (frame-slot-image-bind-group slot)
+      (setf (frame-slot-image-bind-group slot)
+            (luv:create (renderer-device renderer)
+                        (luv:make-bind-group-descriptor
+                         :layout (frame-renderer-image-layout renderer)
+                         :entries `((:binding 2 :resource ,(text-slot-buffer (frame-slot-text slot)))
+                                    (:binding 3 :resource ,(nth-value 2 (grapple-target-views renderer)))
+                                    (:binding 4 :resource ,(frame-renderer-post-sampler renderer))))))))
+
+(defun encode-grapple-pass (renderer encoder target state camera exposure)
+  "The grapple camera's image (decision 128): the scene seen by CAMERA (the
+grapple-camera-update! pose) at EXPOSURE without the cab or bloom into
+:grapple-hdr, then :grapple-post into :grapple-image (grey, noise). TARGET the
+swapchain texture the frame draws into, whose slot of its own the pass uses."
+  (let* ((extent *grapple-extent*)
+         (slot (grapple-resources renderer target))
+         (count (incf (frame-renderer-grapple-passes renderer))))
+    (multiple-value-bind (hdr depth image) (grapple-target-views renderer)
+      (multiple-value-bind (data forms)
+          (frame-uniforms! renderer extent state camera exposure)
+        (setf (aref data 43) (coerce (mod count 4096) 'single-float))
+        (luv:write-buffer (frame-slot-buffer slot) data)
+        (encode-scene-pass renderer encoder slot hdr depth (frame-slot-bind-group slot) forms data
+                           state camera extent exposure :outside nil nil))
+      (unless (and (frame-slot-post-views slot) (eq (first (frame-slot-post-views slot)) hdr))
+        (mapc #'luv:destroy (frame-slot-post-bind-groups slot))
+        (setf (frame-slot-post-views slot) (list hdr)
+              (frame-slot-post-bind-groups slot)
+              (list (frame-bind-group renderer (frame-slot-buffer slot) hdr
+                                      (frame-renderer-post-sampler renderer) hdr))))
+      (let ((pass (luv:begin-render-pass
+                   encoder
+                   (luv:make-render-pass-descriptor
+                    :color-attachments
+                    `((:view ,image :load-op :clear :store-op :store
+                       :clear-value #(0.0 0.0 0.0 1.0)))))))
+        (luv:set-pipeline pass (renderer-pipeline renderer :grapple-post))
+        (luv:set-bind-group pass 0 (first (frame-slot-post-bind-groups slot)))
+        (luv:set-vertex-buffer pass 0 (frame-renderer-post renderer))
+        (luv:draw pass 3 1 0)
+        (luv:end-pass pass)))))
+
 (defun encode-frame (renderer encoder target extent state camera exposure
-                     &optional (view :outside) readout panel &key (interior t))
+                     &optional (view :outside) readout panel &key (interior t) grapple)
   "The frame into TARGET of EXTENT (width height) from the render STATE seen
 by CAMERA, in three stages (decision 76: Frame passes, radiance scale and
 exposure): the scene pass into the HDR target (the stars, the Sun, the
@@ -1109,7 +1282,8 @@ Cockpit structure and view in milestone 3: frames, draw order, Slug text, head
 look, exposure, cab light, portholes, bezels, tape labels) or :map. INTERIOR
 nil leaves the cab's interior out of :cockpit (for tests and the grapple
 camera); with it, after the objects and the test text, encode-cockpit draws the
-cab's meshes, instances and text."
+cab's meshes, instances and text. GRAPPLE: encode-grapple-pass ran before in
+this encoder, so the TARGET face shows its image."
   (let* ((slot (frame-resources renderer target))
          (views (post-views renderer extent))
          (bind-groups (post-bind-groups renderer slot views))
@@ -1117,63 +1291,16 @@ cab's meshes, instances and text."
     (multiple-value-bind (data forms)
         (frame-uniforms! renderer extent state camera exposure)
       (luv:write-buffer (frame-slot-buffer slot) data)
-      (flet ((draw (pass role vertices count)
-               (luv:set-pipeline pass (renderer-pipeline renderer role))
-               (luv:set-bind-group pass 0 bind-group)
-               (luv:set-vertex-buffer pass 0 vertices)
-               (luv:draw pass count)))
-        (let ((pass (luv:begin-render-pass
-                     encoder
-                     (luv:make-render-pass-descriptor
-                      :color-attachments
-                      `((:view ,(first views) :load-op :clear :store-op :store
-                         :clear-value ,(coerce (append *background* '(1.0)) 'vector)))
-                      :depth-stencil-attachment
-                      `(:view ,(depth-view renderer extent)
-                        :depth-load-op :clear :depth-store-op :store
-                        :depth-clear-value 0.0)))))
-          (luv:set-pipeline pass (renderer-pipeline renderer :stars))
-          (luv:set-bind-group pass 0 bind-group)
-          (luv:set-vertex-buffer pass 0 (frame-renderer-star-corners renderer))
-          (luv:set-vertex-buffer pass 1 (frame-renderer-stars renderer))
-          (luv:draw pass 6 (frame-renderer-star-count renderer))
-          (let ((corners (frame-renderer-impostor-corners renderer)))
-            (loop for role in '(:sun :moon :earth :earth-halo)
-                  for form in forms
-                  do (draw-impostor pass renderer role form bind-group corners)))
-          (encode-ship pass renderer (frame-renderer-ship renderer) (frame-slot-ship slot)
-                       state (frame-renderer-eye renderer) (eq view :cockpit))
-          (encode-objects pass renderer (frame-renderer-ship renderer) (frame-slot-ship slot)
-                          state camera extent (frame-renderer-eye renderer))
-          (let ((text (frame-renderer-test-text renderer)))
-            (when text
-              (encode-text pass renderer (frame-slot-text slot) text
-                           (text-block! (frame-renderer-text-block renderer) data extent exposure)
-                           (frame-renderer-text-corners renderer))))
-          (when (and interior (eq view :cockpit))
-            (encode-cockpit pass renderer (frame-renderer-cockpit renderer) (frame-slot-cab slot)
-                            (frame-slot-text slot) (frame-renderer-text-batch renderer)
-                            (frame-renderer-text-corners renderer) state camera extent exposure
-                            (frame-renderer-eye renderer)
-                            (frame-renderer-lines renderer) (frame-slot-lines slot)
-                            (frame-renderer-line-corners renderer)
-                            (frame-renderer-dots renderer) (frame-slot-dots slot)
-                            (frame-renderer-plots renderer) (frame-slot-plots slot)))
-          (when (eq view :map)
-            (encode-map-lines pass renderer bind-group (frame-renderer-map-lines renderer)
-                              (frame-slot-ribbon slot) (frame-renderer-ribbon-corners renderer)
-                              state camera (frame-renderer-eye renderer) extent))
-          (let ((quads (frame-renderer-test-quads renderer)))
-            (when quads (draw pass :quads (car quads) (cdr quads))))
-          (luv:end-pass pass))
-        (encode-bloom renderer encoder views bind-groups (frame-renderer-post renderer))
-        (let ((pass (luv:begin-render-pass
-                     encoder
-                     (luv:make-render-pass-descriptor
-                      :color-attachments
-                      `((:view ,(color-view renderer target) :load-op :clear :store-op :store
-                         :clear-value #(0.0 0.0 0.0 1.0)))))))
-          (draw-tone-map renderer pass (car (last bind-groups)) (frame-renderer-post renderer))
-          (encode-overlay pass renderer bind-group (frame-slot-overlay slot)
-                          state camera extent view readout panel)
-          (luv:end-pass pass))))))
+      (encode-scene-pass renderer encoder slot (first views) (depth-view renderer extent)
+                         bind-group forms data state camera extent exposure view interior grapple)
+      (encode-bloom renderer encoder views bind-groups (frame-renderer-post renderer))
+      (let ((pass (luv:begin-render-pass
+                   encoder
+                   (luv:make-render-pass-descriptor
+                    :color-attachments
+                    `((:view ,(color-view renderer target) :load-op :clear :store-op :store
+                       :clear-value #(0.0 0.0 0.0 1.0)))))))
+        (draw-tone-map renderer pass (car (last bind-groups)) (frame-renderer-post renderer))
+        (encode-overlay pass renderer bind-group (frame-slot-overlay slot)
+                        state camera extent view readout panel)
+        (luv:end-pass pass)))))

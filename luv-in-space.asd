@@ -37,6 +37,7 @@
                (:file "cockpit-buttons")
                (:file "cockpit-attitude")
                (:file "cockpit-autopilot")
+               (:file "cockpit-grapple")
                (:file "input")
                (:file "main")
                (:file "capture")))

@@ -15,11 +15,23 @@
 ;;;
 ;;; Clearance: every object but the target stays >= its bound + 200 m away
 ;;; (decision 59), one expectation each.
+;;;
+;;; Screenshots (scripts/fly; PNGs not committed, decision 87; decision 131),
+;;; each after a step or a condition wait, so the states equal the script's without them:
+;;; - start (outside): Skua Yard 5 ahead at 1 km.
+;;; - plan (map, engaged): the trajectory and burn markers.
+;;; - terminal (cockpit): the yard through the window.
+;;; - on-station (outside): Skua Yard 5 beside the ship.
 ((:start :state (:date (:apoapsis :highport)
                  :orbit (:near :skua-yard-5 :behind 1000)))
+ (:screenshot "start")
  (:autopilot :rendezvous :skua-yard-5)
  (:warp :coast)
+ (:screenshot "plan" :view :map)
+ (:wait :terminal)
+ (:screenshot "terminal" :view :cockpit)
  (:wait :autopilot-done :within 259200)
+ (:screenshot "on-station")
  (:expect :on-station :skua-yard-5)
  (:expect :elapsed-below 180000)
  (:expect :dv-below 21)

@@ -13,11 +13,28 @@
 ;;; decision 59). Planned at :j2 94.7 m/s, re-timed after the search's
 ;;; transfer passed the depot 1.7 m inside its clearance (task 276). The
 ;;; final transfer passes the depot >= its bound 33.7 m + 200 m.
+;;;
+;;; Screenshots (scripts/fly; PNGs not committed, decision 87; decision 131),
+;;; each after a step or a condition wait, so the states equal the script's without them:
+;;; - start (map): the ship and the depot's orbit, the depot far ahead.
+;;; - plan (map, engaged): the trajectory with the phasing and the burn markers.
+;;; - departure (map, in the departure burn): the burn marker under the ship.
+;;; - arrival (map, in the arrival burn): the closest approach at the depot.
+;;; - on-station (outside): Fulmar Depot with TANKER 2 beside the ship.
+;;; - on-station-cockpit (cockpit): the screens at the stop.
 ((:start :state (:date "2040-01-01"
                  :orbit (:circular 400e3 :lead (:fulmar-depot 297.96))))
+ (:screenshot "start" :view :map)
  (:autopilot :rendezvous (:fulmar-depot :a))
  (:warp :coast)
+ (:screenshot "plan" :view :map)
+ (:wait :in-burn :departure)
+ (:screenshot "departure" :view :map)
+ (:wait :in-burn :arrival)
+ (:screenshot "arrival" :view :map)
  (:wait :autopilot-done :within 259200)
+ (:screenshot "on-station")
+ (:screenshot "on-station-cockpit" :view :cockpit)
  (:expect :on-station (:fulmar-depot :a))
  (:expect :elapsed-below 175620)         ; 48 h 47 min
  (:expect :dv-below 118)

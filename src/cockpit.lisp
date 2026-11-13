@@ -1183,7 +1183,7 @@ shaped advance, and its tape's length."
 (defun cockpit-text-region (key)
   (cdr (assoc key *cab-text-regions* :test #'equal)))
 
-(defparameter *cockpit-text-screens* '(:orbit :attitude :ship :comms)
+(defparameter *cockpit-text-screens* '(:orbit :attitude :target :ship :autopilot :comms)
   "The screens of text plan 32 has drawn so far (cockpit-screens.lisp).")
 
 (defparameter *cockpit-live-screens* (append *cockpit-text-screens* '(:strip))

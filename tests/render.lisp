@@ -2200,6 +2200,57 @@ Earth's shadow; each thing is read where the pose puts it."
                 (true (within-bytes-p sky '(#x0A #x0C #x0C) 8) "the upper sky the face: ~A" sky)))))))
     (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))))
 
+;;; The AUTOPILOT screen (plan 32 piece 5; decision 127): the menu's selected row
+;;; an inverted block, the orbit plot's cyan near its projected points.
+
+(defun autopilot-checks (game png width height)
+  (with-canvas-values (game (lis::*bloom-strength* 0.0) (lis::*screen-flash-period* 1d6))
+    (let* ((sim (start-sim-at 180)) (panel (lis::cockpit-panel :autopilot))
+           (cap (lis::panel-grid-cap panel))
+           (cell (* lis::+text-cell-width+ cap)) (row-height (* lis::+text-cell-height+ cap))
+           (fov 16))
+      (multiple-value-bind (c n r u) (lis::panel-frame panel)
+        (let* ((yaw (lis::rad->deg (atan (aref c 1) (aref c 0))))
+               (pitch (lis::rad->deg (asin (/ (aref c 2) (lis::vec3-norm c))))))
+          (labels ((pixel-of (a b depth pixels format)
+                     ;; the face point A right, B up of its centre
+                     (let ((point (lis::vlin c a r b u depth n)))
+                       (multiple-value-bind (x y) (head-projection point yaw pitch)
+                         (let ((per (/ (/ height 2) (tan (lis::deg->rad (/ fov 2))))))
+                           (pixel-rgb pixels format width (round (+ (/ width 2) (* x per)))
+                                      (round (+ (/ height 2) (* y per))))))))
+                   (shot (&optional (loaded t))
+                     (lis::capture-game-state game png :sim (and loaded sim) :view :cockpit :readout nil
+                                                       :frames 3 :head (list yaw pitch fov))))
+            ;; the plot: a point of the path is cyan on the face
+            (multiple-value-bind (path w h pixels format) (shot)
+              (declare (ignore path w h))
+              (let* ((view (find :autopilot (lis::frame-renderer-screen-views (lis::game-renderer game))
+                                 :key #'lis::screen-view-name))
+                     (plot (lis::screen-view-plot view))
+                     (i (+ 3 (aref (lis::autopilot-plot-run-start plot) 0)))
+                     (a (+ (lis::autopilot-plot-cx plot) (* (lis::autopilot-plot-unit plot) (aref (lis::autopilot-plot-px plot) i))))
+                     (b (+ (lis::autopilot-plot-cy plot) (* (lis::autopilot-plot-unit plot) (aref (lis::autopilot-plot-py plot) i))))
+                     (pixel (pixel-of a b 0.002d0 pixels format)))
+                (true (and (> (third pixel) 200) (> (third pixel) (* 2 (first pixel))))
+                      "the plot's path is cyan: ~A" pixel)))
+            ;; the menu: the first row's block paper white, its glyphs dark
+            (lis::call-on-canvas-thread
+             game (lambda ()
+                    (lis::autopilot-key! (lis::clock-autopilot (lis::game-clock game)) (lis::game-clock game)
+                                         (lis::game-sim game) :open)))
+            (multiple-value-bind (path w h pixels format) (shot nil)
+              (declare (ignore path w h))
+              (let* ((x0 (+ (* -0.5d0 (first (getf panel :size))) 0.01d0))
+                     (y (- (* 0.5d0 (second (getf panel :size))) 0.01d0 (* 0.5d0 row-height)))
+                     (block-pixel (pixel-of (+ x0 (* 20.5d0 cell)) y 0.002d0 pixels format))
+                     (dark (loop for k below 40
+                                 thereis (let ((p (pixel-of (+ x0 (* (+ 0.5d0 (* k 0.3d0)) cell)) y 0.003d0 pixels format)))
+                                           (within-bytes-p p '(#x0A #x0C #x0C) 24)))))
+                (true (within-bytes-p block-pixel '(#xE8 #xE4 #xD8) 6) "the inverted row's block: ~A" block-pixel)
+                (true dark "dark glyph pixels on the inverted row"))))))))
+  (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream))))
+
 ;;; The dot-matrix strip (plan 32 piece 2; decision 128): the head aimed at one
 ;;; dot, a lit one amber and an unlit one dim.
 
@@ -2382,6 +2433,7 @@ Earth's shadow; each thing is read where the pose puts it."
            (strip-checks game png width height)
            (lamp-checks game png width height)
            (attitude-checks game png width height)
+           (autopilot-checks game png width height)
            (sun-patch-checks game png width height)
            (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))
            ;; Resizes replace the swapchain's textures; what the renderer kept

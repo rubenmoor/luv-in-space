@@ -4,10 +4,10 @@
 ;;; the :cab-lines pipeline, the 10 Hz rebuild of each screen's text region,
 ;;; and the table of instruments (plan 32: Cockpit instruments, buttons, the
 ;;; grapple camera and messages; decision 127: Cockpit screens' contents in
-;;; milestone 3: lines, modes, plots, colours and updates). So far ORBIT, SHIP and
-;;; COMMS, with the dot-matrix strip (decision 128: Cockpit devices, buttons,
-;;; picking, the grapple camera and messages in milestone 3); the other faces
-;;; keep PLACEHOLDER(166) until their pieces.
+;;; milestone 3: lines, modes, plots, colours and updates): ORBIT, ATTITUDE,
+;;; TARGET (stowed), SHIP, AUTOPILOT and COMMS, with the dot-matrix strip
+;;; (decision 128: Cockpit devices, buttons, picking, the grapple camera and
+;;; messages in milestone 3).
 
 ;;; Colours (sRGB hex, decision 127; the readout's constants of overlay.lisp
 ;;; where they exist) and their inks: the radiance the tone map shows as that
@@ -257,6 +257,122 @@ the mode on row 8."
         (screen-line :grey "             P Y R")
         (attitude-mode-line state)))
 
+;;; TARGET (24 × 8), the grapple stowed (the armed camera is plan 32 piece 7's)
+
+(defun format-range (metres)
+  "METRES as 12.345 km from 1 km, else 340.2 m."
+  (if (>= metres 1000d0)
+      (concatenate 'string (format-fixed (m->km metres) 3) " km")
+      (concatenate 'string (format-fixed metres 1) " m")))
+
+(defun rendezvous-phase-line (state)
+  "The engaged rendezvous plan's terminal phase on the shown target: a line
+\"TERMINAL\" or \"ON STATION 100 m\", else nil."
+  (let ((sim (render-state-sim state)))
+    (when (and sim (render-state-target state) (sim-plan sim))
+      (let ((part (burn-plan-rendezvous (sim-plan sim))))
+        (case (sim-plan-phase sim)
+          (:terminal (screen-line :green "TERMINAL"))
+          (:station (screen-line :green (format nil "ON STATION ~D m"
+                                                (round (if part (rendezvous-part-range part) 0d0))))))))))
+
+(defun target-lines (state)
+  (let ((target (render-state-target state)))
+    (if (null target)
+        (list (screen-line :white "NO TARGET") '() (screen-line :grey "PICK ] [  OR MAP CLICK"))
+        (let* ((rel (render-state-target-relative state))
+               (closing (aref rel 1))
+               (small (< (max (abs (aref rel 2)) (abs (aref rel 3)) (abs (aref rel 4))) 1d0))
+               (decimals (if small 2 1))
+               (pred (render-state-prediction state)))
+          (list
+           (screen-line :magenta (target-name target))
+           (screen-line :grey "RNG " :white (format-range (aref rel 0)))
+           (screen-line :grey "CLS " :white (format nil "~A m/s" (signed-fixed closing (if (< (abs closing) 1d0) 2 1))))
+           (screen-line :grey "F " :white (signed-fixed (aref rel 2) decimals)
+                        :grey " R " :white (signed-fixed (aref rel 3) decimals)
+                        :grey " D " :white (signed-fixed (aref rel 4) decimals))
+           (multiple-value-bind (time distance) (if pred (prediction-closest-approach pred) nil)
+             (if time
+                 (screen-line :grey "CA " :white (format-clock-time (- time (render-state-t state)))
+                              :white " " :white (format-range distance))
+                 (screen-line :grey "CA --")))
+           (or (rendezvous-phase-line state) '())
+           '()
+           (screen-line :grey "TGT ] NEXT [ PREV"))))))
+
+;;; AUTOPILOT (22 × 8): by the model's state (decision 127, decision 118).
+
+(defparameter *autopilot-screen-rows* 7 "Rows over the plot or the menu's window; row 8 is the hint.")
+
+(defun format-arrival (seconds)
+  "SECONDS ahead as mm:ss, h:mm:ss above an hour."
+  (subseq (format-clock-time seconds) 2))
+
+(defun autopilot-plan-screen-lines (plan sim)
+  "The plan's four lines (decision 127) from autopilot-plan-summary: burn n/m
+and when, its Δv and duration, the total Δv and propellant, what is left and
+the arrival; nil when the plan's cursor has no burn left."
+  (let ((burns (burn-plan-burns plan)))
+    (unless (and (eq (sim-plan sim) plan) (>= (sim-plan-index sim) (length burns)))
+      (let ((summary (autopilot-plan-summary plan sim)))
+        (list
+         (screen-line :grey "BURN " :white (format nil "~D/~D" (1+ (getf summary :index)) (getf summary :burns))
+                      :white " " :white (format-clock-time (getf summary :next-in)))
+         (screen-line :grey "DV " :white (format-fixed (getf summary :next-dv) 1)
+                      :grey " m/s  " :white (format nil "~D" (round (getf summary :next-duration))) :grey " s")
+         (screen-line :grey "TOTAL " :white (format nil "~D" (round (getf summary :total-dv)))
+                      :grey " m/s " :white (format nil "~D" (round (getf summary :propellant))) :grey " kg")
+         (screen-line :grey "LEFT " :white (format-fixed (/ (getf summary :left) 1000d0) 1)
+                      :grey " t  ARR " :white (format-arrival (- (getf summary :arrival) (sim-t sim)))))))))
+
+(defun autopilot-menu-window (model sim)
+  "The menu's rows, seven of them keeping the selection in sight, the
+selected one inverted over the width of the grid."
+  (multiple-value-bind (texts selected) (autopilot-menu-lines model sim)
+    (let* ((count (length texts))
+           (rows *autopilot-screen-rows*)
+           (start (max 0 (min (- count rows) (- (or selected 0) (floor rows 2))))))
+      ;; the marker column goes: the inverted row says which is selected
+      (loop for text in (subseq texts start (min count (+ start rows)))
+            for i from start
+            collect (let ((text (subseq text 2)))
+                      (if (eql i selected)
+                          (list (screen-run (format nil "~22A" text) *screen-white* :inverted))
+                          (screen-line :white text)))))))
+
+(defun autopilot-row-8 (clock model real-time)
+  (case (autopilot-model-state model)
+    (:closed (screen-line :grey "PRESETS [O]"))
+    (:menu (screen-line :grey "PLAN [RET]  CLOSE [O]"))
+    (:refused (screen-line :amber (format nil "! ~A" (or (autopilot-model-text model) "REFUSED"))))
+    (:planning (screen-line :grey "DROP [BKSP]"))
+    (:shown (screen-line :grey "RET ENGAGE  BKSP DROP"))
+    (:engaged (screen-line :green "ENGAGED  OFF [BKSP]"))
+    (:off (if (autopilot-abort-unread-p clock model)
+              (let ((text (or (autopilot-model-text model) "ABORT")))
+                (list (screen-run (if (and (> (length text) 11) (string= "AUTOPILOT: " text :end2 11))
+                                      (subseq text 11) text)
+                                  *screen-red* :inverted (screen-flash real-time))))
+              (screen-line :grey "PRESETS [O]")))))
+
+(defun autopilot-lines (state clock real-time)
+  (let* ((model (render-state-autopilot-model state))
+         (sim (render-state-sim state))
+         (lines
+           (when (and model sim)
+             (ecase (autopilot-model-state model)
+               ((:menu :refused) (autopilot-menu-window model sim))
+               (:planning (list (screen-line :white "PLANNING…")))
+               ((:shown :engaged)
+                (let ((plan (autopilot-map-plan model)))
+                  (or (and plan (autopilot-plan-screen-lines plan sim))
+                      (list (or (rendezvous-phase-line state) '())))))
+               ((:closed :off) '())))))
+    (when model
+      (append lines (make-list (max 0 (- (1- 8) (length lines))))
+              (list (autopilot-row-8 clock model real-time))))))
+
 ;;; The screens, by name: their grids come from *cockpit-panels*.
 
 (defun screen-lines (name state clock real-time &optional cockpit)
@@ -268,6 +384,8 @@ advances the log's scroll in COCKPIT, the game's cockpit-state)."
             (ecase name
               (:orbit (orbit-lines state real-time))
               (:attitude (attitude-lines state))
+              (:target (target-lines state))
+              (:autopilot (autopilot-lines state clock real-time))
               (:ship (ship-lines state))
               (:comms (comms-lines clock (or cockpit (make-cockpit-state))))))))
 
@@ -276,7 +394,8 @@ advances the log's scroll in COCKPIT, the game's cockpit-state)."
 (defstruct (screen-view (:copier nil) (:constructor %make-screen-view))
   name panel columns rows cap
   text lines                       ; the text-region and the line-region
-  plane scratch line-plane)        ; text planes: at the grid, a shifted copy, the lines'
+  plane scratch line-plane         ; text planes: at the grid, a shifted copy, the lines'
+  plot)                            ; AUTOPILOT: its orbit plot (cockpit-autopilot.lisp)
 
 (defun make-screen-view (name text-batch line-batch)
   (let* ((panel (cockpit-panel name))
@@ -293,7 +412,8 @@ advances the log's scroll in COCKPIT, the game's cockpit-state)."
                             :text (text-batch-region text-batch (* columns rows))
                             :lines (line-batch-region line-batch rows)
                             :plane (plane origin) :scratch (plane origin)
-                            :line-plane (plane (vlin origin -0.001d0 n))))))))
+                            :line-plane (plane (vlin origin -0.001d0 n))
+                            :plot (when (eq name :autopilot) (make-autopilot-plot line-batch))))))))
 
 (defun cockpit-screens-init! (text-batch line-batch)
   "A screen-view for each of *cockpit-text-screens*, its regions made in the batches."
@@ -430,7 +550,9 @@ the berth, the transfer, the log's length. Conses nothing."
       (mix (if (render-state-autopilot state) 1 0))
       (when model
         (mix (sxhash (autopilot-model-state model)))
-        (mix (sxhash (autopilot-model-selection model))))
+        (mix (sxhash (autopilot-model-selection model)))
+        (when (eq (autopilot-model-state model) :off)
+          (mix (if (autopilot-abort-unread-p clock model) 1 0))))
       (mix (clock-level clock))
       (mix (if (clock-paused clock) 1 0))
       (mix (if (render-state-berth-def state) 1 0))
@@ -472,6 +594,8 @@ of screens rebuilt."
                          (< real-time (aref (cockpit-state-rebuilt cockpit) i)))
                  (screen-view-draw! screen atlas
                                     (screen-lines (screen-view-name screen) state clock real-time cockpit))
+                 (when (screen-view-plot screen)
+                   (autopilot-plot-update! (screen-view-plot screen) state))
                  (setf (aref (cockpit-state-rebuilt cockpit) i) real-time
                        (aref (cockpit-state-signatures cockpit) i) signature)
                  (incf built)

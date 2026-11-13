@@ -194,6 +194,20 @@
     (false (lis::clock-paused (input-clock game)))
     (is = 4 (lis::clock-level (input-clock game)))))
 
+(define-test input-pause-while-shot-pending
+  ;; decision 131: P does nothing while a live flight's shot is pending
+  (let* ((game (input-game))
+         (flight (lis::new-flight (lis::read-flight "((:screenshot \"a\"))") (lis::game-sim game))))
+    (setf (lis::game-flight game) flight)
+    (input-tap game :p)
+    (true (lis::clock-paused (input-clock game)))
+    (setf (lis::flight-pending flight) (list :entry))
+    (input-tap game :p)
+    (true (lis::clock-paused (input-clock game)))
+    (setf (lis::flight-pending flight) nil)
+    (input-tap game :p)
+    (false (lis::clock-paused (input-clock game)))))
+
 (define-test input-gating-paused
   (let ((game (input-game)))
     (lis::controls-set-throttle (game-controls game) 0.5d0)

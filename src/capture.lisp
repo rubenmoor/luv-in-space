@@ -178,6 +178,24 @@ luv's SDL main thread."
           (with-capture-game (game :width width :height height)
             (capture-all game))))))
 
+(defun fly-live-shot! (game entry n directory)
+  "The window's PNG of the live flight's pending shot ENTRY, the Nth, as
+<DIRECTORY>/<nn>-<label>.png: GAME's view set to the entry's (the outside at
+its default pose, the cockpit's head at Home, the map framed with its
+prediction run to completion), 10 frames drawn, then SCREENSHOT; the view
+stays. The path (decision 131). Not on the canvas thread."
+  (let ((view (or (flight-entry-view entry) :outside))
+        (path (fly-screenshot-pathname directory n (flight-entry-label entry))))
+    (call-on-canvas-thread game (lambda () (outside-view-reset! (game-outside-view game))))
+    (game-set-view! game view)
+    (when (eq view :map)
+      (call-on-canvas-thread game (lambda ()
+                                    (prediction-run! (clock-prediction (game-clock game))
+                                                     (game-sim game)))))
+    (wait-for-frames game *screenshot-frames*)
+    (screenshot path :game game)
+    path))
+
 (defun fly-main (name out-dir)
   "Entry point of scripts/fly: run-flight of flights/NAME.sexp, its record
 lines on stdout, the PNGs in OUT-DIR; exit 0, or 1 on a failure, a failed

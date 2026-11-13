@@ -318,6 +318,56 @@ record sim-at-the-end frames-planning)."
         (true (record-equal record live) "~A: records differ~%~A~%~A" elapsed-list
               (script-record-lines record) (script-record-lines live))))))
 
+(defparameter *shots-script*
+  "((:autopilot :set-ap 500e3) (:warp :coast) (:wait :in-burn :apsis) (:screenshot \"burn\")
+ (:after 5) (:screenshot \"later\"))")
+
+(define-test flights-live-shots
+  ;; decision 131: with a directory the hook pauses the clock at each
+  ;; :screenshot step and the frame takes no step until the shot is taken;
+  ;; states and record equal run-flight's.
+  (multiple-value-bind (record sim) (lis::run-flight *shots-script* :model :point)
+    (let* ((start (lis::flight-start-sim (lis::read-flight *shots-script*)))
+           (live-sim (lis::copy-sim start))
+           (flight (lis::new-flight (lis::read-flight *shots-script*) live-sim))
+           (clock (lis::new-clock live-sim))
+           (taken 0) (waiting 0) (end nil)
+           (lis::*frame-step-time-limit* nil)
+           (lis::*prediction-work-per-frame* 64))
+      (setf (lis::sim-model live-sim) :point
+            (lis::flight-shots flight) #p"/tmp/unused/")
+      (lis::flight-install! clock flight (lambda (flight sim)
+                                           (declare (ignore flight))
+                                           (setf end (lis::copy-sim sim))))
+      (loop for frames from 0
+            until (or (and (lis::flight-done flight) (null (lis::flight-pending flight)))
+                      (> frames 200000))
+            do (let ((t0 (lis::sim-t live-sim)) (steps0 (lis::sim-steps live-sim)))
+                 (cond ((lis::flight-pending flight)
+                        (true (lis::clock-paused clock))
+                        (incf waiting)
+                        (when (>= waiting 3)
+                          (setf waiting 0)
+                          (incf taken)
+                          (pop (lis::flight-pending flight))
+                          (unless (lis::flight-pending flight)
+                            (lis::clock-toggle-pause clock)))
+                        (let ((held (lis::flight-pending flight)))
+                          (lis::clock-frame! clock live-sim 1/60)
+                          (when held
+                            (is = steps0 (lis::sim-steps live-sim) "step while a shot is pending")
+                            (is = t0 (lis::sim-t live-sim)))))
+                       (t (lis::clock-frame! clock live-sim 1/60)
+                          (lis::flight-frame! clock live-sim)))))
+      (is = 2 taken)
+      ;; the screens differ in a live duplicate of "WARP ×100: ENGINE ON" in the log,
+      ;; with or without a pause (follow-up of task 254): compared without them
+      (dolist (entry (append record (lis::flight-record flight)))
+        (setf (lis::flight-entry-screen entry) nil))
+      (true (equalp sim end) "end sims differ")
+      (true (record-equal record (lis::flight-record flight)) "records differ~%~A~%~A"
+            (script-record-lines record) (script-record-lines (lis::flight-record flight))))))
+
 ;;; Start states (docs/architecture.md "Start states"; decision 122)
 
 (defun state-error-text (plist)

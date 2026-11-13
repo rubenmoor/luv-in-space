@@ -319,6 +319,7 @@ nothing."
 (defparameter *ribbon-merge-tries* 40 "Times the merge tolerance doubles at most for the budget.")
 (declaim (type fixnum *ribbon-run-max* *ribbon-merge-tries*))
 
+(declaim (inline trajectory-first-node trajectory-drawn-p))
 (defun trajectory-first-node (pred time)
   "The index of the first node of PRED stored after TIME when at least two
 follow it, else nil: the trajectory is drawn from them, otherwise the
@@ -757,16 +758,27 @@ lines function, if any, adds its own first."
 (defparameter *marker-impact-colour* #xFF3030 "The impact, red, sRGB; decision 84.")
 (defparameter *marker-body-colour* #x8A8A80 "Bodies, grey, sRGB; decision 84.")
 (defparameter *marker-label-colour* #xE8E4D8 "Labels, paper white, sRGB; decision 84.")
+(defparameter *marker-target-colour* #xE040E0 "The target, its closest-approach point and the relative nodes, magenta, sRGB; decision 125.")
+(defparameter *marker-target-px* 12 "The target's box; decision 125.")
+(defparameter *marker-candidate-px* 8 "The other candidates' boxes; decision 125.")
+(defparameter *marker-candidate-body-px* 6d0
+  "A candidate whose bound projects to this many px or more has no box; decision 125.")
+(defparameter *map-pick-px* 10d0 "A click picks a marker within this many px; decision 125.")
 (defparameter *marker-ship-label* "M-07" "decision 49: Story: names, call signs and ships.")
-(declaim (type double-float *marker-body-px*)
+(declaim (type double-float *marker-body-px* *marker-candidate-body-px* *map-pick-px*)
+         (type fixnum *marker-target-px* *marker-candidate-px*)
+         (type (unsigned-byte 24) *marker-target-colour*)
          (type fixnum *marker-label-gap-px*)
          (type (unsigned-byte 24) *marker-colour* *marker-impact-colour* *marker-body-colour*
                *marker-label-colour*))
 
 (defstruct (map-marker (:constructor make-map-marker ()))
-  "KEY (:ship :apoapsis :periapsis :impact :earth :moon :sun), the shape
-KIND, pixel X, Y from the top left, the sRGB COLOUR, LABEL or nil, the
-POINT relative to Earth's centre and, for the impact, its TIME; where
+  "KEY (:ship :apoapsis :periapsis :impact :earth :moon :sun :target
+:candidate :closest-approach :closest-approach-target :ascending
+:descending), the shape KIND, pixel X, Y from the top left, the sRGB
+COLOUR, LABEL or nil, the SIZE in px (nil: the kind's), the TARGET key of
+a :target or :candidate marker, the POINT relative to Earth's centre and,
+for the impact, a closest approach and a node, its TIME; where
 overlay.lisp placed the label: LABEL-SIDE (nil when dropped), its left
 edge LABEL-X."
   (key :ship :type symbol)
@@ -775,12 +787,14 @@ edge LABEL-X."
   (y 0d0 :type double-float)
   (colour 0 :type (unsigned-byte 24))
   (label nil :type (or null string))
+  (size nil :type (or null fixnum))
+  (target nil :type (or null keyword))
   (point (make-vec3) :type vec3)
   (time 0d0 :type double-float)
   (label-side nil :type (member nil :right :left))
   (label-x 0d0 :type double-float))
 
-(defconstant +map-marker-capacity+ 7)
+(defconstant +map-marker-capacity+ 48)
 
 (defun label-buffer ()
   (make-array 32 :element-type 'character :fill-pointer 0))
@@ -793,6 +807,11 @@ strings and scratch vectors, preallocated."
    :type simple-vector)
   (apoapsis-label (label-buffer) :type string)
   (periapsis-label (label-buffer) :type string)
+  (closest-label (label-buffer) :type string)
+  (ascending-label (label-buffer) :type string)
+  (descending-label (label-buffer) :type string)
+  (candidate-r (make-vec3) :type vec3)
+  (candidate-v (make-vec3) :type vec3)
   (eye (make-vec3) :type vec3)
   (forward (make-vec3) :type vec3)
   (right (make-vec3) :type vec3)
@@ -830,6 +849,79 @@ strings and scratch vectors, preallocated."
                  (setf n rest power (floor power 10))))))
   (loop for c across " KM" do (vector-push c out))
   out)
+
+(defun push-integer! (out n)
+  "OUT's fill pointer end: the non-negative integer N in decimal."
+  (declare (type string out) (type (integer 0 1000000000000000) n))
+  (let ((power 1))
+    (declare (type (integer 0 10000000000000000) power))
+    (loop while (<= (* 10 power) n) do (setf power (* 10 power)))
+    (loop while (>= power 1)
+          do (multiple-value-bind (digit rest) (floor n power)
+               (vector-push (code-char (+ 48 digit)) out)
+               (setf n rest power (floor power 10)))))
+  out)
+
+(defun push-fixed! (out x decimals)
+  "OUT's end: the non-negative X rounded to DECIMALS (0-2) places."
+  (declare (type string out) (type double-float x) (type (integer 0 2) decimals))
+  (let* ((scale (expt 10 decimals))
+         (n (round (min 1d12 (max 0d0 x)) (/ 1d0 scale))))
+    (declare (type (integer 0 1000000000000000) n))
+    (multiple-value-bind (whole fraction) (floor n scale)
+      (push-integer! out whole)
+      (when (> decimals 0)
+        (vector-push #\. out)
+        (when (and (= decimals 2) (< fraction 10)) (vector-push #\0 out))
+        (push-integer! out fraction))))
+  out)
+
+(defun write-distance-label! (out prefix distance)
+  "OUT: PREFIX, DISTANCE in m: whole metres below 1 km (\"CA 340 M\"), one
+decimal below 100 km (\"CA 12.3 KM\"), whole km above (decision 125: Map in
+milestone 3)."
+  (declare (type string out prefix) (type double-float distance))
+  (setf (fill-pointer out) 0)
+  (loop for c across prefix do (vector-push c out))
+  (cond ((< distance 999.5d0) (push-fixed! out distance 0) (loop for c across " M" do (vector-push c out)))
+        ((< distance 99950d0) (push-fixed! out (/ distance 1d3) 1)
+         (loop for c across " KM" do (vector-push c out)))
+        (t (push-fixed! out (/ distance 1d3) 0) (loop for c across " KM" do (vector-push c out))))
+  out)
+
+(defun write-angle-label! (out prefix angle)
+  "OUT: PREFIX, ANGLE (rad) in degrees: two decimals below 1°, one below 10°,
+whole above, then \"°\" (decision 125)."
+  (declare (type string out prefix) (type double-float angle))
+  (setf (fill-pointer out) 0)
+  (loop for c across prefix do (vector-push c out))
+  (let ((deg (abs (* angle (/ 180d0 pi)))))
+    (declare (type double-float deg))
+    (push-fixed! out deg (cond ((< deg 0.995d0) 2) ((< deg 9.95d0) 1) (t 0))))
+  (vector-push (code-char 176) out)
+  out)
+
+(defun drop-point-into! (r v place render-state)
+  "R, V: PLACE's point on rails at the render time (no double crosses a call)."
+  (declare (optimize speed) (type vec3 r v) (type place place) (type render-state render-state)
+           (inline rails-state-into!))
+  (let ((time (render-state-t render-state)))
+    (rails-state-into! r v (rails-segment-at (place-rails place) time) time)))
+
+(defun map-pick (markers x y)
+  "The clickable marker (the target, a candidate, the ship, Earth) of
+MARKERS whose centre is nearest pixel X, Y within *map-pick-px*, or nil
+(decision 125). Conses nothing."
+  (declare (optimize speed) (type map-markers markers) (type real x y))
+  (let ((x (float x 1d0)) (y (float y 1d0)) (best nil) (best-d (* *map-pick-px* *map-pick-px*)))
+    (declare (type double-float x y best-d))
+    (dotimes (i (map-markers-count markers) best)
+      (let ((marker (svref (map-markers-items markers) i)))
+        (when (member (map-marker-key marker) '(:target :candidate :ship :earth))
+          (let ((d (+ (expt (- (map-marker-x marker) x) 2) (expt (- (map-marker-y marker) y) 2))))
+            (declare (type double-float d))
+            (when (<= d best-d)
+              (setf best marker best-d d))))))))
 
 (defun map-markers (render-state camera extent &optional (out *map-markers*))
   "The frame's markers into OUT (decision 84: Map ribbons and markers:
@@ -878,7 +970,7 @@ OUT."
                  (< (+ (* ox ox) (* oy oy) (* oz oz)) (* radius radius))))
              (by-earth-p (p) (occluded-p p 0d0 0d0 0d0 +radius-earth+))
              (by-moon-p (p) (occluded-p p (aref moon 0) (aref moon 1) (aref moon 2) +radius-moon+))
-             (add (key kind colour label p occluders &optional (time 0d0))
+             (add (key kind colour label p occluders &optional (time 0d0) size target)
                ;; P relative to Earth's centre; OCCLUDERS :both, :earth, :moon or nil
                (declare (type vec3 p) (type double-float time))
                (let* ((dx (- (aref p 0) (aref eye 0))) (dy (- (aref p 1) (aref eye 1)))
@@ -895,7 +987,8 @@ OUT."
                            (map-marker-colour marker) colour (map-marker-label marker) label
                            (map-marker-x marker) (* 0.5d0 width (+ 1d0 (/ (* fx x) w)))
                            (map-marker-y marker) (* 0.5d0 height (+ 1d0 (/ (* fy y) w)))
-                           (map-marker-time marker) time)
+                           (map-marker-time marker) time (map-marker-size marker) size
+                           (map-marker-target marker) target)
                      (replace (map-marker-point marker) p)
                      (incf count)))))
              (put-on-conic (radius theta)
@@ -903,6 +996,39 @@ OUT."
                (declare (type double-float radius theta))
                (vec3-scale! scratch pv (* radius (cos theta)))
                (vec3-add-scaled! scratch scratch qv (* radius (sin theta))))
+             (distance-to (p)
+               (declare (type vec3 p))
+               (sqrt (the (double-float 0d0) (+ (expt (- (aref p 0) (aref eye 0)) 2)
+                                                 (expt (- (aref p 1) (aref eye 1)) 2)
+                                                 (expt (- (aref p 2) (aref eye 2)) 2)))))
+             (candidate (key)
+               ;; a candidate's box, when its bound projects below the limit
+               (declare (type keyword key))
+               (unless (eq key (render-state-target render-state))
+                 (let* ((object-key (target-object-key key))
+                        (p (map-markers-candidate-r out))
+                        (bound 0d0))
+                   (declare (type vec3 p) (type double-float bound))
+                   (if object-key
+                       (let* ((i (position object-key *objects* :key #'object-def-key))
+                              (o (and i (svref (render-state-objects render-state) i)))
+                              (grapple (render-state-grapple render-state)))
+                         (when (and o (object-render-drawn o) (object-render-def o)
+                                    (not (and (eq (render-grapple-state grapple) :latched)
+                                              (eql (render-grapple-object grapple) i))))
+                           (replace p (object-render-r o))
+                           (setf bound (object-def-bound (object-render-def o)))
+                           (setf object-key :ok)))
+                       (progn
+                         (drop-point-into! p (map-markers-candidate-v out) (place key) render-state)
+                         (setf object-key :ok)))
+                   (when object-key
+                     (let ((d (distance-to p)))
+                       (when (and (> d bound)
+                                  (< (* height (tan (asin (the (double-float 0d0 1d0) (/ bound d)))) f)
+                                     *marker-candidate-body-px*))
+                         (add :candidate :box *marker-body-colour* (target-name key) p :both
+                              0d0 *marker-candidate-px* key)))))))
              (body-marker (key label p radius occluders)
                (declare (type vec3 p) (type double-float radius))
                (let ((d (sqrt (the (double-float 0d0) (+ (expt (- (aref p 0) (aref eye 0)) 2)
@@ -911,7 +1037,7 @@ OUT."
                  (when (and (> d radius)
                             (< (* height (tan (asin (the (double-float 0d0 1d0) (/ radius d)))) f) *marker-body-px*))
                    (add key :dot *marker-body-colour* label p occluders)))))
-      (declare (inline occluded-p by-earth-p by-moon-p add put-on-conic body-marker))
+      (declare (inline occluded-p by-earth-p by-moon-p add put-on-conic body-marker distance-to candidate))
       (add :ship :ring *marker-colour* *marker-ship-label* r nil)
       ;; the osculating conic about Earth: P to periapsis, Q 90° ahead
       (let* ((mu +mu-earth+)
@@ -979,6 +1105,34 @@ OUT."
             (vec3-set! scratch (aref nodes (+ k 1)) (aref nodes (+ k 2)) (aref nodes (+ k 3)))
             (add :impact :cross *marker-impact-colour* "IMPACT" scratch :both
                  (loss-time (sim-loss (prediction-sim pred))))))
+        (let ((target (render-state-target render-state)))
+          (when target
+            (add :target :box *marker-target-colour* (target-name target)
+                 (render-state-target-r render-state) nil 0d0 *marker-target-px* target)
+            (when pred
+              (multiple-value-bind (time distance) (prediction-closest-approach pred)
+                (when (and time (prediction-position! scratch pred time))
+                  (add :closest-approach :triangle *marker-colour*
+                       (write-distance-label! (map-markers-closest-label out) "CA " distance)
+                       scratch :both time)
+                  (when (prediction-target-position! scratch pred time)
+                    (add :closest-approach-target :triangle *marker-target-colour* nil scratch :both time))))
+              (multiple-value-bind (time angle) (prediction-relative-node pred :ascending)
+                (when (and time (prediction-position! scratch pred time))
+                  (add :ascending :diamond *marker-target-colour*
+                       (write-angle-label! (map-markers-ascending-label out) "AN " angle)
+                       scratch :both time)))
+              (multiple-value-bind (time angle) (prediction-relative-node pred :descending)
+                (when (and time (prediction-position! scratch pred time))
+                  (add :descending :diamond *marker-target-colour*
+                       (write-angle-label! (map-markers-descending-label out) "DN " angle)
+                       scratch :both time))))))
+        (dolist (place *places*)
+          (candidate (place-key place)))
+        (dolist (def *objects*)
+          (when (and (eq (object-def-kind def) :towable)
+                     (not (find (object-def-key def) *places* :key #'place-object)))
+            (candidate (object-def-key def))))
         (vec3-set! scratch 0d0 0d0 0d0)
         (body-marker :earth "EARTH" scratch +radius-earth+ :moon)
         (body-marker :moon "MOON" moon +radius-moon+ :earth)

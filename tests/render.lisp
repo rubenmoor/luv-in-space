@@ -725,7 +725,7 @@ at the background, neither black nor white-out."
     (is eq :map (lis::game-view game))
     (is = lis::*exposure-map* (lis::game-exposure game))
     (true (> centre (+ background 20)) "map centre ~,1F, background ~,1F" centre background)
-    (loop for (x y) in (list (list 0 0) (list (1- width) 0) (list 0 (1- height))
+    (loop for (x y) in (list (list (1- width) 0) (list 0 (1- height))
                              (list (1- width) (1- height)))
           do (let ((corner (pixel-luminance pixels width x y)))
                (true (<= (abs (- corner background)) 10) "corner ~D, ~D: ~,1F, background ~,1F"
@@ -858,13 +858,18 @@ in px, or solid."
         (incf (lis::map-lines-count lines))))))
 
 (defun capture-with-lines (game png hook camera-fn &key (sim (lis::new-game-sim)))
-  (let ((renderer (lis::game-renderer game)))
+  "The map with the test-line HOOK; the candidates' boxes and labels off, which
+sit along the top where the lines are measured."
+  (let ((renderer (lis::game-renderer game))
+        (limit lis::*marker-candidate-body-px*))
+    (setf lis::*marker-candidate-body-px* 0d0)
     (lis::call-on-canvas-thread game (lambda () (setf (lis::frame-renderer-test-lines renderer) hook)))
     (unwind-protect
          (multiple-value-bind (path w h pixels format)
              (lis::capture-game-state game png :sim sim :view :map :frames 1 :camera-fn camera-fn)
            (declare (ignore path w h))
            (values pixels format))
+      (setf lis::*marker-candidate-body-px* limit)
       (lis::call-on-canvas-thread game (lambda () (setf (lis::frame-renderer-test-lines renderer) nil))))))
 
 (defun run-lengths (flags)
@@ -926,12 +931,13 @@ the ship's (seen from the ship, 150 km out, its orbit 20 km higher)."
 measured across the line."
   (let* ((camera-fn (map-camera-fn 30))
          (y 12.5)
-         (hook (test-line-hook (list 6 y) (list (- width 6) y))))
+         (x0 6)
+         (hook (test-line-hook (list x0 y) (list (- width 6) y))))
     (flet ((lit (pixels format x row)
              (destructuring-bind (r g b) (pixel-rgb pixels format width x row)
                (and (>= (- g r) 60) (>= (- b r) 60)))))
       (multiple-value-bind (pixels format) (capture-with-lines game png hook camera-fn)
-       (let* ((runs (run-lengths (loop for x from 8 below (- width 8) collect (lit pixels format x (floor y)))))
+       (let* ((runs (run-lengths (loop for x from (+ x0 2) below (- width 8) collect (lit pixels format x (floor y)))))
              (inner (butlast (rest runs))))
         (true (>= (length inner) 4) "dash runs: ~S" runs)
         (dolist (run inner)
@@ -940,7 +946,7 @@ measured across the line."
               (true (<= 5 (cdr run) 7) "dark run ~D" (cdr run))))))
       (flet ((across (w)
                (multiple-value-bind (pixels format)
-                   (capture-with-lines game png (test-line-hook (list 6 y) (list (- width 6) y)
+                   (capture-with-lines game png (test-line-hook (list x0 y) (list (- width 6) y)
                                                                 :dashed nil :width w)
                                        camera-fn)
                  (loop with x = (floor width 2)
@@ -949,6 +955,7 @@ measured across the line."
                                                        (pixel-rgb pixels format width x row)
                                                      (declare (ignore b r))
                                                      (lis::srgb-channel-linear (ash g 8) 8)))
+
                        for value in column
                        sum (/ value (float (max 1 (reduce #'max column))))))))
         (let ((one (across 1f0)) (two (across 2f0)))

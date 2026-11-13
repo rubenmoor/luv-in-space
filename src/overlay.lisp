@@ -65,6 +65,9 @@ tests require every one used, glyph-missing).")
 (defparameter *marker-diamond-px* 9 "Apsis diamonds; decision 84.")
 (defparameter *marker-cross-px* 12 "The impact X; decision 84.")
 (defparameter *marker-dot-px* 7 "Bodies below 6 px; decision 84.")
+(defparameter *marker-box-px* 12 "The target's box; decision 125: Map in milestone 3.")
+(defparameter *marker-triangle-px* 10 "Closest approach; decision 125.")
+(defparameter *marker-plus-px* 12 "Burns; decision 125.")
 (defparameter *overlay-max-vertices* 73728
   "Capacity of the frame's overlay buffer (a multiple of 6, so whole quads
 are kept): the readout, the map's markers and labels and the LOST panel.")
@@ -128,13 +131,15 @@ the capacity are dropped."
 (defun marker-size (kind)
   (ecase kind
     (:ring *marker-ring-px*) (:diamond *marker-diamond-px*)
-    (:cross *marker-cross-px*) (:dot *marker-dot-px*)))
+    (:cross *marker-cross-px*) (:dot *marker-dot-px*)
+    (:box *marker-box-px*) (:triangle *marker-triangle-px*) (:plus *marker-plus-px*)))
 
 (defun marker-vertices! (out kind x y colour &optional size)
   "Triangles of marker KIND centred on pixel X, Y within a SIZE box (default
 the kind's, decision 84: Map ribbons and markers: osculating orbit, adaptive
 segments, overlay markers and visibility) in the sRGB integer COLOUR:
-:ring a 16-segment outline, :diamond, :cross two bars, :dot a 12-gon. Conses
+:ring a 16-segment outline, :diamond, :cross two bars, :dot a 12-gon,
+:box a square outline, :triangle a filled one pointing up, :plus two bars. Conses
 nothing for real X, Y that are not boxed doubles."
   (declare (optimize speed) (type overlay-buffer out) (type real x y)
            (type (unsigned-byte 24) colour))
@@ -161,6 +166,19 @@ nothing for real X, Y that are not boxed doubles."
                           (+ x a w) (+ y a (- w)) (+ x a (- w)) (+ y a w) r g b)
            (overlay-quad! out (- x a w) (+ y a (- w)) (- x a (- w)) (+ y a w)
                           (+ x a w) (- y a (- w)) (+ x a (- w)) (- y a w) r g b)))
+        (:box
+         (let ((i (max 0f0 (- h line))))
+           (overlay-quad! out (- x h) (- y h) (+ x h) (- y h) (+ x h) (- y i) (- x h) (- y i) r g b)
+           (overlay-quad! out (- x h) (+ y i) (+ x h) (+ y i) (+ x h) (+ y h) (- x h) (+ y h) r g b)
+           (overlay-quad! out (- x h) (- y i) (- x i) (- y i) (- x i) (+ y i) (- x h) (+ y i) r g b)
+           (overlay-quad! out (+ x i) (- y i) (+ x h) (- y i) (+ x h) (+ y i) (+ x i) (+ y i) r g b)))
+        (:triangle
+         (overlay-triangle! out x (- y h) (+ x h) (+ y h) (- x h) (+ y h) r g b))
+        (:plus
+         (let ((w (* 0.5f0 line)))
+           (overlay-quad! out (- x h) (- y w) (+ x h) (- y w) (+ x h) (+ y w) (- x h) (+ y w) r g b)
+           (overlay-quad! out (- x w) (- y h) (+ x w) (- y h) (+ x w) (- y w) (- x w) (- y w) r g b)
+           (overlay-quad! out (- x w) (+ y w) (+ x w) (+ y w) (+ x w) (+ y h) (- x w) (+ y h) r g b)))
         (:dot
          (let ((step (/ (* 2 (coerce pi 'single-float)) 12)))
            (dotimes (k 12)
@@ -193,7 +211,8 @@ integer COLOUR. Conses nothing for real X, Y that are not boxed doubles."
                                         px (+ py dot) r g b))))))))
     out))
 
-(defparameter *marker-label-order* '(:earth :sun :moon :ship :impact :periapsis :apoapsis)
+(defparameter *marker-label-order* '(:earth :sun :moon :ship :target :impact :burn :closest-approach :aim :periapsis
+    :apoapsis :ascending :descending :candidate)
   "Labels are placed in this order, each right of its marker, else left of
 it, else dropped where it would overlap one placed before; decision 103.")
 
@@ -273,7 +292,8 @@ last, then the labels in *marker-label-colour*, rows centred on the marker
         do (marker-vertices! out (map-marker-kind marker)
                              (coerce (map-marker-x marker) 'single-float)
                              (coerce (map-marker-y marker) 'single-float)
-                             (map-marker-colour marker)))
+                             (map-marker-colour marker)
+                             (map-marker-size marker)))
   (dotimes (i (map-markers-count markers) out)
     (let ((marker (svref (map-markers-items markers) i)))
       (when (map-marker-label-side marker)

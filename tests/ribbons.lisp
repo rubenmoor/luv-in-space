@@ -721,3 +721,204 @@ points S and S + 1 from their chord, at 8 times."
       (let ((ribbon (lis::make-ribbon)) (eye (map-eye camera state))
             (focal (lis::camera-focal-px camera 800)))
         (time (dotimes (i 1000) (lis::trajectory-ribbon-points! ribbon pred state eye focal)))))))
+
+;;; The target, the candidates, closest approach and the relative nodes
+;;; (decision 125: Map in milestone 3).
+
+(defun target-markers (sim &key (setup #'identity))
+  "(values markers camera pred state) for SIM at its start with its prediction
+run; SETUP is called with the state before the markers."
+  (multiple-value-bind (state camera pred) (trajectory-fixture sim)
+    (funcall setup state)
+    (values (lis::map-markers state camera '(1280 800) (lis::make-map-markers)) camera pred state)))
+
+(defun visible-markers (sim keys)
+  "(values markers camera pred) for SIM from the first of several azimuths,
+looking down from 80°, that shows every marker of KEYS (Earth hides some)."
+  (multiple-value-bind (state camera pred) (trajectory-fixture sim)
+    (declare (ignore camera))
+    (let ((view (opened-map state)))
+      (setf (lis::map-view-elevation view) (lis::deg->rad 80d0))
+      (loop for degrees from 0 below 360 by 15
+            do (setf (lis::map-view-azimuth view) (lis::deg->rad degrees))
+               (let* ((camera (lis::map-camera-update! (lis::make-camera) view state nil))
+                      (markers (lis::map-markers state camera '(1280 800) (lis::make-map-markers))))
+                 (when (every (lambda (key) (marker markers key)) keys)
+                   (return (values markers camera pred))))
+            finally (error "No azimuth shows ~S." keys)))))
+
+(defun candidate-marker (markers key)
+  (loop for i below (lis::map-markers-count markers)
+        for m = (svref (lis::map-markers-items markers) i)
+        when (and (eq (lis::map-marker-key m) :candidate) (eq (lis::map-marker-target m) key))
+          return m))
+
+(defun tern-sim ()
+  (let ((sim (lis::new-game-sim)))
+    (setf (lis::sim-model sim) :point)
+    (lis::sim-set-target! sim :tern-station)
+    sim))
+
+(define-test map-markers-target-and-candidates
+  (multiple-value-bind (markers camera pred state) (target-markers (tern-sim))
+    (declare (ignore pred))
+    (let ((target (marker markers :target)))
+      (true target)
+      (is eq :box (lis::map-marker-kind target))
+      (is = #xE040E0 (lis::map-marker-colour target))
+      (is = 12 (lis::map-marker-size target))
+      (is string= "TERN STATION" (lis::map-marker-label target))
+      (true (at-pixel-p target camera (lis::render-state-target-r state)))
+      (false (candidate-marker markers :tern-station)))
+    (let ((candidate (candidate-marker markers :highport)))
+      (true candidate)
+      (is eq :box (lis::map-marker-kind candidate))
+      (is = #x8A8A80 (lis::map-marker-colour candidate))
+      (is = 8 (lis::map-marker-size candidate))
+      (is string= "HIGHPORT" (lis::map-marker-label candidate)))
+    ;; Skua Yard's drop point is a candidate too
+    (true (candidate-marker markers :skua-yard)))
+  ;; behind Earth: the target's box stays, a candidate's goes
+  (let ((behind (lambda (state)
+                  (let* ((m (lis::make-map-markers))
+                         (camera (nth-value 1 (opened-map state))))
+                    (lis::map-markers state camera '(1280 800) m)
+                    (let ((p (lis::vec3-scale (lis::vec3-normalize (lis::map-markers-eye m))
+                                              -7d6))
+                          (i (position :fulmar-depot lis::*objects* :key #'lis::object-def-key)))
+                      (replace (lis::render-state-target-r state) p)
+                      (replace (lis::object-render-r (svref (lis::render-state-objects state) i)) p))))))
+    (multiple-value-bind (markers) (target-markers (tern-sim) :setup behind)
+      (true (marker markers :target))
+      (false (candidate-marker markers :fulmar-depot))))
+  ;; a candidate whose bound projects to 6 px or more has no box
+  (let ((near (lambda (state)
+                (let* ((m (lis::make-map-markers))
+                       (camera (nth-value 1 (opened-map state))))
+                  (lis::map-markers state camera '(1280 800) m)
+                  (let* ((i (position :highport lis::*objects* :key #'lis::object-def-key))
+                         (bound (lis::object-def-bound (lis::object-render-def
+                                                        (svref (lis::render-state-objects state) i)))))
+                    (replace (lis::object-render-r (svref (lis::render-state-objects state) i))
+                             (lis::vec3-add-scaled (lis::map-markers-eye m) (lis::map-markers-forward m)
+                                                   (* 20 bound))))))))
+    (multiple-value-bind (markers) (target-markers (tern-sim) :setup near)
+      (false (candidate-marker markers :highport))
+      (true (candidate-marker markers :k-17)))))
+
+(define-test map-markers-closest-approach
+  (let ((sim (fulmar-sim)))
+    (kepler-target! sim :fulmar-depot)
+    (dolist (key '(:closest-approach :closest-approach-target))
+      (multiple-value-bind (markers camera pred) (visible-markers sim (list key))
+        (multiple-value-bind (time distance) (lis::prediction-closest-approach pred)
+          (true time)
+          (let ((marker (marker markers key)) (out (lis::make-vec3)))
+            (is eq :triangle (lis::map-marker-kind marker))
+            (if (eq key :closest-approach)
+                (progn
+                  (is = #x40D0FF (lis::map-marker-colour marker))
+                  (is string= (lis::write-distance-label! (lis::label-buffer) "CA " distance)
+                      (lis::map-marker-label marker))
+                  (true (lis::prediction-position! out pred time)))
+                (progn
+                  (is = #xE040E0 (lis::map-marker-colour marker))
+                  (false (lis::map-marker-label marker))
+                  (true (lis::prediction-target-position! out pred time))))
+            (true (< (lis::vec3-norm (lis::vec3-sub out (lis::map-marker-point marker))) 1d-6))
+            (true (at-pixel-p marker camera out)))))))
+  (flet ((label (d) (copy-seq (lis::write-distance-label! (lis::label-buffer) "CA " d))))
+    (is string= "CA 340 M" (label 340d0))
+    (is string= "CA 12.3 KM" (label 12345d0))
+    (is string= "CA 2370 KM" (label 2.37d6))
+    (is string= "CA 1.0 KM" (label 999.6d0))))
+
+(define-test map-markers-relative-nodes
+  (let* ((sim (lis::new-game-sim))
+         (ship (lis::sim-ship sim))
+         (t0 (lis::sim-t sim))
+         (orbit (lis::state->orbit (lis::ship-state-r ship) (lis::ship-state-v ship)
+                                   lis::+mu-earth+ t0))
+         (turn (lis::quat-from-axis-angle (lis::vec3 0 0 1) (lis::deg->rad 1d0))))
+    (setf (lis::sim-model sim) :point)
+    (multiple-value-bind (r v) (lis::orbit-state orbit (+ t0 2000))
+      (rails-target! sim :tern-station (lis::quat-rotate turn r) (lis::quat-rotate turn v)))
+    (dolist (key '(:ascending :descending))
+      (multiple-value-bind (markers camera pred) (visible-markers sim (list key))
+        (let ((node (marker markers key)) (out (lis::make-vec3))
+              (time (lis::prediction-relative-node pred key)))
+          (is string= (if (eq key :ascending) "AN 1.0°" "DN 1.0°") (lis::map-marker-label node))
+          (is eq :diamond (lis::map-marker-kind node))
+          (is = #xE040E0 (lis::map-marker-colour node))
+          (is = time (lis::map-marker-time node))
+          (true (lis::prediction-position! out pred time))
+          (true (< (lis::vec3-norm (lis::vec3-sub out (lis::map-marker-point node))) 1d-6))
+          (true (at-pixel-p node camera out))))))
+  (flet ((label (prefix deg)
+           (copy-seq (lis::write-angle-label! (lis::label-buffer) prefix (lis::deg->rad deg)))))
+    (is string= "AN 0.25°" (label "AN " 0.25d0))
+    (is string= "DN 5.5°" (label "DN " 5.5d0))
+    (is string= "AN 23°" (label "AN " 23.4d0))))
+
+(define-test map-markers-skua-yard-cluster
+  ;; Highport and Skua Yard, 1 px apart: their labels do not overlap, the
+  ;; target's stays.
+  (let ((sim (lis::new-game-sim)))
+    (setf (lis::sim-model sim) :point)
+    (lis::sim-set-target! sim :skua-yard)
+    (multiple-value-bind (state camera) (trajectory-fixture sim)
+      (declare (ignore camera))
+      (let* ((view (opened-map state))
+             (camera (progn (lis::map-view-zoom! view 30d0)
+                            (lis::map-camera-update! (lis::make-camera) view state nil)))
+             (markers (lis::map-markers state camera '(1280 800) (lis::make-map-markers))))
+        (lis::place-map-labels! markers)
+        (let ((target (marker markers :target)))
+          (true target)
+          (true (lis::map-marker-label-side target)))
+        (dotimes (i (lis::map-markers-count markers))
+          (dotimes (j i)
+            (let ((a (svref (lis::map-markers-items markers) i))
+                  (b (svref (lis::map-markers-items markers) j)))
+              (when (and (lis::map-marker-label-side a) (lis::map-marker-label-side b))
+                (false (labels-overlap-p a b))))))))))
+
+(define-test map-markers-new-labels-have-glyphs
+  (dolist (label '("CA 340 M" "CA 12.3 KM" "AN 1.0°" "DN 0.25°" "BURN 1 12.5 M/S" "AIM"
+                   "TERN STATION" "FULMAR DEPOT" "DERELICT K-17" "HIGHPORT" "SKUA YARD"))
+    (loop for c across label
+          do (true (lis::glyph c) "~S in ~S has no glyph" c label)))
+  (dolist (def lis::*objects*)
+    (loop for c across (lis::object-def-name def)
+          do (true (lis::glyph c) "~S in ~S has no glyph" c (lis::object-def-name def)))))
+
+(define-test map-pick-nearest
+  (multiple-value-bind (markers) (target-markers (tern-sim))
+    (let* ((target (marker markers :target))
+           (x (lis::map-marker-x target)) (y (lis::map-marker-y target)))
+      (is eq target (lis::map-pick markers (+ x 6) (- y 6)))
+      (false (lis::map-pick markers (+ x 11) y))
+      (false (lis::map-pick markers 5 790))
+      (let ((highport (candidate-marker markers :highport)))
+        (is eq highport (lis::map-pick markers (lis::map-marker-x highport)
+                                       (lis::map-marker-y highport))))
+      ;; the ship's ring is clickable, the Moon or the Sun is not
+      (let ((ship (marker markers :ship)))
+        (is eq ship (lis::map-pick markers (lis::map-marker-x ship) (lis::map-marker-y ship)))))
+    (is = 0 (least-bytes-consed
+             (lambda () (dotimes (i 1000) (lis::map-pick markers 100.5d0 200.5d0)))
+             5))))
+
+(define-test map-markers-target-cons-nothing
+  ;; With a target and the candidates; the prediction's queries (closest
+  ;; approach, nodes) return boxed doubles, a few dozen bytes a frame.
+  (multiple-value-bind (markers camera pred state) (target-markers (tern-sim))
+    (declare (ignore pred))
+    (setf (lis::render-state-prediction state) nil)
+    (let ((out (lis::make-overlay-buffer)))
+      (lis::map-markers state camera '(1280 800) markers)
+      (is = 0 (least-bytes-consed
+               (lambda () (dotimes (i 1000)
+                            (lis::map-markers state camera '(1280 800) markers)
+                            (lis::map-marker-vertices! (lis::overlay-clear! out) markers)))
+               5)))))

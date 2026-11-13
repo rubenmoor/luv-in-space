@@ -463,7 +463,8 @@ diagonals per bay. The Mule's are 15 m and 10 bays."
 
 (defun truss-ship-model (&key (length 15d0) (bays 10) tanks (tank-radius 1.6d0)
                            cab decal (nose :grapple) (engine-x -0.6d0) (engine-z -0.5d0)
-                           (rcs-x '(0.5d0 14.5d0)) (wings t) (radiators t) (equipment t) lights)
+                           (rcs-x '(0.5d0 14.5d0)) (wings t) (radiators t) (equipment t)
+                           (structure t) (rcs t) (engine-p t) (decal-u 1d0) lights)
   "A ship on a truss of LENGTH m in BAYS bays along +x from x 0: TANKS
 ((name x0 x1 material) …) with hemispherical domes of TANK-RADIUS; CAB nil or
 (x0 x1), the cab on top with its struts, window, portholes and hatch, and
@@ -472,7 +473,9 @@ its claws) or (:fixture x) for a fixture plate with its pin at x; the engine
 at zero trim, its bell's rim at ENGINE-X on the axis at z ENGINE-Z; RCS blocks
 at the x in RCS-X (four each, with the Mule's thruster triples; blocks past
 x 7 move with the nose); WINGS, RADIATORS, EQUIPMENT (the gas conditioning
-and the equipment bay) flags; LIGHTS the plist of light positions. The Mule
+and the equipment bay) flags; STRUCTURE (the truss and the thrust frame), RCS
+and ENGINE-P flags, nil for a cab alone; DECAL-U the share of the decal's width
+(its left, the cairn) drawn; LIGHTS the plist of light positions. The Mule
 is one case (`mule-model`), a tanker another."
   (let* ((b (make-builder)) (hull (builder-hull b)) (engine (builder-engine b))
          (cab-dx (if cab (- (first cab) 10.5d0) 0d0))
@@ -484,25 +487,27 @@ is one case (`mule-model`), a tanker another."
              (tube (a c radius) (builder-tube b a c radius (id :steel)))
              (cab-xf (x0 x1 radius)
                (xform (list x0 0 (second *cab-axis*)) :y '(0 1 0) :scale (list (- x1 x0) radius radius))))
-      (part "truss" :tube
-            (lambda ()
-              (loop for (nil centre direction rod-length) in (truss-rods length bays)
-                    for half = (vec3-scale direction (* 0.5d0 rod-length))
-                    do (tube (vec3-sub centre half) (vec3-add centre half)
-                             (if (= rod-length length) 0.038d0 0.030d0)))))
+      (when structure
+        (part "truss" :tube
+              (lambda ()
+                (loop for (nil centre direction rod-length) in (truss-rods length bays)
+                      for half = (vec3-scale direction (* 0.5d0 rod-length))
+                      do (tube (vec3-sub centre half) (vec3-add centre half)
+                               (if (= rod-length length) 0.038d0 0.030d0))))))
       (when cab
         (part "cab struts" :tube
               (lambda ()
                 (dolist (x (list (+ 11.0d0 cab-dx) (+ 14.5d0 cab-dx)))
                   (dolist (s '(1 -1))
                     (tube (list x (* s 1.8d0) -1.8d0) (list x (* s 0.9d0) -2.3d0) 0.04d0))))))
-      (part "thrust frame" :tube
-            (lambda ()
-              (dolist (y '(1.8d0 -1.8d0))
-                (dolist (z '(1.8d0 -1.8d0))
-                  (let* ((corner (vec3 0 y z))
-                         (end (vec3-add-scaled gimbal (vec3-normalize (vec3-sub corner gimbal)) 0.3d0)))
-                    (tube corner end 0.04d0))))))
+      (when structure
+        (part "thrust frame" :tube
+              (lambda ()
+                (dolist (y '(1.8d0 -1.8d0))
+                  (dolist (z '(1.8d0 -1.8d0))
+                    (let* ((corner (vec3 0 y z))
+                           (end (vec3-add-scaled gimbal (vec3-normalize (vec3-sub corner gimbal)) 0.3d0)))
+                      (tube corner end 0.04d0)))))))
       (when (eq nose :grapple)
         (part "grapple struts" :tube
               (lambda ()
@@ -516,27 +521,28 @@ is one case (`mule-model`), a tanker another."
               (lambda ()
                 (dolist (s '(1 -1))
                   (tube (list 5.0d0 (* s 1.8d0) 0) (list 5.0d0 (* s 2.3d0) 0) 0.04d0)))))
-      ;; RCS: a block per thruster triple of ship.lisp, a nozzle per thruster
-      ;; pointing along its exhaust, from the block's face.
-      (flet ((rcs-position (i)
-               (let ((x (aref *rcs-positions* i 0)))
-                 (vec3 (if (> x 7) (+ (second rcs-x) (- x 14.5d0)) (+ (first rcs-x) (- x 0.5d0)))
-                       (aref *rcs-positions* i 1) (aref *rcs-positions* i 2)))))
-        (part "RCS blocks" :box
-              (lambda ()
-                (loop for i from 0 below +rcs-count+ by 3
-                      do (add :box (instance (rcs-position i) '(1 0 0) '(0 1 0)
-                                             '(0.3d0 0.4d0 0.4d0) (id :aluminium))))))
-        (part "RCS nozzles" :cone
-              (lambda ()
-                (dotimes (i +rcs-count+)
-                  (let* ((exhaust (vec3 (- (aref *rcs-directions* i 0)) (- (aref *rcs-directions* i 1))
-                                        (- (aref *rcs-directions* i 2))))
-                         (face (+ (* 0.15d0 (abs (aref exhaust 0)))
-                                  (* 0.2d0 (+ (abs (aref exhaust 1)) (abs (aref exhaust 2))))))
-                         (centre (rcs-position i)))
-                    (add :cone (instance (vec3-add-scaled centre exhaust face) exhaust nil
-                                         '(0.12d0 0.08d0 0.08d0) (id :nozzle))))))))
+      (when rcs
+        ;; RCS: a block per thruster triple of ship.lisp, a nozzle per thruster
+        ;; pointing along its exhaust, from the block's face.
+        (flet ((rcs-position (i)
+                 (let ((x (aref *rcs-positions* i 0)))
+                   (vec3 (if (> x 7) (+ (second rcs-x) (- x 14.5d0)) (+ (first rcs-x) (- x 0.5d0)))
+                         (aref *rcs-positions* i 1) (aref *rcs-positions* i 2)))))
+          (part "RCS blocks" :box
+                (lambda ()
+                  (loop for i from 0 below +rcs-count+ by 3
+                        do (add :box (instance (rcs-position i) '(1 0 0) '(0 1 0)
+                                               '(0.3d0 0.4d0 0.4d0) (id :aluminium))))))
+          (part "RCS nozzles" :cone
+                (lambda ()
+                  (dotimes (i +rcs-count+)
+                    (let* ((exhaust (vec3 (- (aref *rcs-directions* i 0)) (- (aref *rcs-directions* i 1))
+                                          (- (aref *rcs-directions* i 2))))
+                           (face (+ (* 0.15d0 (abs (aref exhaust 0)))
+                                    (* 0.2d0 (+ (abs (aref exhaust 1)) (abs (aref exhaust 2))))))
+                           (centre (rcs-position i)))
+                      (add :cone (instance (vec3-add-scaled centre exhaust face) exhaust nil
+                                           '(0.12d0 0.08d0 0.08d0) (id :nozzle)))))))))
       (when (eq nose :grapple)
         (part "claws" :box
               (lambda ()
@@ -585,16 +591,17 @@ is one case (`mule-model`), a tanker another."
           (when decal
             (destructuring-bind (x0 x1) (mapcar (lambda (x) (+ x cab-dx)) *decal-span*)
               (let* ((r (+ *cab-radius* *cab-skin*))
-                     (half (/ *decal-height* r 2))
-                     (xf (cab-xf x0 x1 r)))
+                     (half (/ *decal-height* r 2)))
                 (part "decal +y" :hull
                       (lambda ()
-                        (cylinder-patch hull xf (id decal) 8 (- (- *decal-angle*) half)
-                                        (+ (- *decal-angle*) half) :uv '(0 1 0 1))))
+                        (cylinder-patch hull (cab-xf x0 (+ x0 (* decal-u (- x1 x0))) r) (id decal) 8
+                                        (- (- *decal-angle*) half) (+ (- *decal-angle*) half)
+                                        :uv (list 0 decal-u 0 1))))
                 (part "decal -y" :hull
                       (lambda ()
-                        (cylinder-patch hull xf (id decal) 8 (- (+ pi *decal-angle*) half)
-                                        (+ pi *decal-angle* half) :uv '(1 0 1 0)))))))))
+                        (cylinder-patch hull (cab-xf (- x1 (* decal-u (- x1 x0))) x1 r) (id decal) 8
+                                        (- (+ pi *decal-angle*) half) (+ pi *decal-angle* half)
+                                        :uv (list decal-u 0 1 0)))))))))
       (case (if (consp nose) (first nose) nose)
         (:grapple
          (part "grapple" :hull
@@ -625,7 +632,7 @@ is one case (`mule-model`), a tanker another."
               (lambda () (box hull (xform '(10.0d0 0 2.3d0) :scale '(1.0d0 1.6d0 0.8d0)) (id :aluminium)))))
       ;; The engine at zero trim: the bell from the throat (the axial
       ;; parameter 0 there), chamber, turbopumps.
-      (part "engine" :engine
+      (when engine-p (part "engine" :engine
             (lambda ()
               (frustum engine (xform (list engine-x 0 engine-z) :x '(-1 0 0) :y '(0 -1 0)
                                                                 :scale '(1.6d0 1 1))
@@ -635,7 +642,7 @@ is one case (`mule-model`), a tanker another."
               (dolist (s '(1 -1))
                 (box engine (xform (list (+ engine-x 0.3d0) (* s 0.35d0) engine-z)
                                    :scale '(0.3d0 0.25d0 0.25d0))
-                     (id :aluminium)))))
+                     (id :aluminium))))))
       (let ((lights (or lights
                         (list :red (vec3 length -1.95d0 -1.95d0) :green (vec3 length 1.95d0 -1.95d0)
                               :strobe (vec3 (* 0.5d0 length) 0 -2.1d0)
@@ -643,11 +650,12 @@ is one case (`mule-model`), a tanker another."
         (dolist (beacon (light-beacons lights)) (push beacon (builder-beacons b)))
         (builder-model b lights)))))
 
-(defun mule-model ()
-  "The Mule: the baked hull, the instance groups, the engine, the lights."
+(defun mule-model (&key (decal :decal))
+  "The Mule: the baked hull, the instance groups, the engine, the lights;
+DECAL the material of its registration (:decal M-07, :decal-m04, :decal-m05)."
   (truss-ship-model
    :tanks '(("LH2 tank" 0.50d0 9.36d0 :lh2-foil) ("LOX tank" 9.76d0 13.48d0 :lox-foil))
-   :cab '(10.5d0 15.0d0) :decal :decal
+   :cab '(10.5d0 15.0d0) :decal decal
    ;; The navigation lights on brackets 0.15 m out from the truss's top
    ;; front corners, so its tubes don't cut them (decision 100).
    :lights (list :red (vec3 15.0d0 -1.95d0 -1.95d0) :green (vec3 15.0d0 1.95d0 -1.95d0)
@@ -664,7 +672,7 @@ on the axis."
    :nose '(:fixture 24.15d0) :engine-x -0.7d0 :engine-z 0d0 :rcs-x '(0.5d0 23.5d0)))
 
 (defun capsule-model ()
-  "AURORA 11's capsule, nose at x 0 pointing +x: a frustum Ø 1.5 → 3.9 over
+  "AURORA 11's capsule, nose at x 0, the body along +x: a frustum Ø 1.5 → 3.9 over
 2.5 m, the service section Ø 3.9 × 2.0 with a 0.6 m Boreal band round its
 middle, two wings 1.0 × 3.0 m."
   (let* ((b (make-builder)) (hull (builder-hull b)))
@@ -728,6 +736,359 @@ leaning 30° out, and a stand-off tube Ø 0.25 STANDOFF m back from the plate."
 
 (defun cached-model (key maker)
   (or (gethash key *models*) (setf (gethash key *models*) (funcall maker))))
+
+;;; The places' models (decision 124: Meshes of the places; docs/design.md
+;;; "Earth-orbit points of interest", "Other ships", "Rigid bodies"): one model
+;;; per object definition in its body axes about the CoM, scenery ships baked
+;;; in, each fixture's mesh from its definition's pin and axis.
+
+(defparameter *fixture-proud* 0.3d0
+  "m: a fixture's plate beyond the surface it stands on (decision 47).")
+(defparameter *thin-part-names*
+  '("solar wings" "wing booms" "radiators" "plate" "pin" "guides" "stand-off" "arms" "net frame"
+    "engine" "thrust frame" "wings" "decal +y" "decal -y" "cryocooler fins" "seams"
+    "RCS blocks" "RCS nozzles" "gas conditioning" "equipment bay")
+  "Parts the shapes need not hold (wings, booms, fixtures, the engine): the
+tests' exemption.")
+(defparameter *lamp-radius* 0.55d0 "m: a free berth fixture's lamps from its pin.")
+
+(defun sphere (out xf material rings sides)
+  "The unit sphere, poles on local ±x, RINGS bands from +x to -x. Parameters:
+the arc length from the +x pole and the arc along the latitude (metres at the
+scale's x), the net's coordinates."
+  (let ((r (aref (xform-scale xf) 0)))
+    (flet ((point (i k)
+             (let* ((theta (* pi (/ i rings))) (phi (ring-angle k sides))
+                    (x (cos theta)) (y (* (sin theta) (cos phi))) (z (* (sin theta) (sin phi))))
+               (list x y z x y z (* r theta) (* r (sin theta) phi)))))
+      (dotimes (k sides)
+        (dotimes (i rings)
+          (let ((a (point i k)) (b (point (1+ i) k)) (c (point (1+ i) (1+ k))) (d (point i (1+ k))))
+            (cond ((= i 0) (triangle! out xf material a b c))
+                  ((= i (1- rings)) (triangle! out xf material a c d))
+                  (t (quad! out xf material a b c d)))))))))
+
+(defun capped-tank (b name from to radius material)
+  "A tank of RADIUS from the point FROM to TO (end to end, domes included)
+along its axis."
+  (let* ((from (v3 from)) (to (v3 to))
+         (axis (vec3-sub to from)) (length (vec3-norm axis)) (u (vec3-normalize axis))
+         (hull (builder-hull b)) (m (material-id material)))
+    (builder-part b name :hull
+                  (lambda ()
+                    (cylinder hull (xform (vec3-add-scaled from u radius) :x u
+                                                                          :scale (list (- length radius radius) radius radius))
+                              m 32 :caps nil)
+                    (hemisphere hull (xform (vec3-add-scaled from u radius) :x (vec3-scale u -1d0)
+                                                                            :scale (list radius radius radius))
+                                m 8 32)
+                    (hemisphere hull (xform (vec3-add-scaled to u (- radius)) :x u
+                                                                              :scale (list radius radius radius))
+                                m 8 32)))))
+
+(defun fixture-lamp-lights (fixture)
+  "(:lamp position …) for a free berth FIXTURE: four lamps on a circle of
+*lamp-radius* round its pin, 45° off the body axes (decision 124)."
+  (when (and (fixture-free fixture) (eq (fixture-kind fixture) :berth))
+    (multiple-value-bind (ax ay az) (orthonormal-basis (fixture-axis fixture))
+      (declare (ignore ax))
+      (loop for k below 4
+            for angle = (degrees-to-radians (+ 45 (* 90 k)))
+            append (list :lamp (vec3-add (fixture-pin fixture)
+                                         (vec3-add (vec3-scale ay (* *lamp-radius* (cos angle)))
+                                                   (vec3-scale az (* *lamp-radius* (sin angle))))))))))
+
+(defun bake-fixtures! (b def)
+  "The meshes of DEF's free fixtures into B; the lamps' lights."
+  (loop for fixture in (object-def-fixtures def)
+        when (fixture-free fixture)
+          do (bake-model! b (fixture-mesh (fixture-pin fixture) (fixture-axis fixture)
+                                          :standoff (- *fixture-proud* 0.05d0))
+                          (xform '(0 0 0)))
+          and append (fixture-lamp-lights fixture)))
+
+(defun bake-ship! (b model origin &key (x '(1 0 0)) y (keep '(:red :green :strobe)))
+  "MODEL baked into B with its local origin at ORIGIN, its x along X; its
+lights of the kinds KEEP, transformed, as a plist."
+  (let ((xf (xform origin :x x :y y)))
+    (bake-model! b model xf)
+    (loop for (kind position) on (model-lights model) by #'cddr
+          when (member kind keep)
+            append (list kind (xform-point xf (aref position 0) (aref position 1) (aref position 2))))))
+
+(defun finish-place-model (b lights)
+  (let ((model (builder-model b lights)))
+    (setf (model-beacons model) (light-beacons lights))
+    model))
+
+(defun place-wing! (b centre size faces &key (wide 0) (thin 2))
+  "A solar wing: a box at CENTRE of SIZE (long along y, its thin axis THIN
+0.05 m), FACES the six materials, and four booms 0.03 m round along its long
+edges at ±0.22 m on the thin axis and the WIDE axis' edges."
+  (let ((hull (builder-hull b)) (centre (v3 centre)))
+    (builder-part b "solar wings" :hull (lambda () (box hull (xform centre :scale size) faces)))
+    (builder-part b "wing booms" :tube
+                  (lambda ()
+                    (dolist (sw '(1 -1))
+                      (dolist (st '(1 -1))
+                        (flet ((end (long)
+                                 (let ((p (vec3-copy centre)))
+                                   (incf (aref p 1) (* long 0.5d0 (second size)))
+                                   (incf (aref p wide) (* sw (- (* 0.5d0 (nth wide size)) 0.03d0)))
+                                   (incf (aref p thin) (* st 0.22d0))
+                                   p)))
+                          (builder-tube b (end -1) (end 1) 0.03d0 (material-id :steel)))))))))
+
+(defun module-decal! (b x0 x1 radius material)
+  "A decal on the sides of a cylinder along x, between X0 and X1."
+  (let* ((hull (builder-hull b)) (r (+ radius 0.006d0)) (half (/ *decal-height* r 2))
+         (xf (xform (list x0 0 0) :y '(0 1 0) :scale (list (- x1 x0) r r))))
+    (builder-part b "decal +y" :hull
+                  (lambda () (cylinder-patch hull xf (material-id material) 8 (- half) half
+                                             :uv '(0 1 0 1))))
+    (builder-part b "decal -y" :hull
+                  (lambda () (cylinder-patch hull xf (material-id material) 8 (- pi half) (+ pi half)
+                                             :uv '(1 0 1 0))))))
+
+(defun tern-model (def)
+  "Tern Station: three modules Ø 4.2 × 8 and the node Ø 4.2 × 4 in white
+with Boreal's green bands, the truss across the middle module, radiators,
+wings, AURORA 11 nose-in on the node (x 13.08 to 17.58)."
+  (let* ((b (make-builder)) (hull (builder-hull b)) (white (material-id :cab-paint))
+         (green (material-id :boreal-green)))
+    (builder-part b "modules" :hull
+                  (lambda ()
+                    (dolist (x '(-10.92d0 -2.92d0 5.08d0))
+                      (cylinder hull (xform (list (- x 4) 0 0) :scale '(8d0 2.1d0 2.1d0)) white 32)
+                      (cylinder hull (xform (list (- x 0.3d0) 0 0) :scale '(0.6d0 2.103d0 2.103d0))
+                                green 32 :caps nil))
+                    (cylinder hull (xform '(9.08d0 0 0) :scale '(4d0 2.1d0 2.1d0)) white 32)))
+    (module-decal! b -4.32d0 -1.52d0 2.1d0 :decal-tern)
+    (builder-part b "truss" :hull
+                  (lambda () (box hull (xform '(-2.92d0 0 0) :scale '(1.5d0 28d0 1.5d0))
+                                  (material-id :aluminium))))
+    (builder-part b "radiators" :hull
+                  (lambda ()
+                    (dolist (s '(1 -1))
+                      (box hull (xform (list -2.92d0 (* s 8d0) 0.77d0) :scale '(4d0 10d0 0.05d0))
+                           (material-id :radiator)))))
+    (dolist (s '(1 -1))
+      (let ((y (* s 26.5d0)))
+        (place-wing! b (list -2.92d0 y 0) '(8d0 25d0 0.05d0)
+                     (append (make-list 5 :initial-element (material-id :steel))
+                             (list (material-id :solar-cells))))))
+    (let ((lights (list :red (vec3 -2.92d0 -39d0 0) :green (vec3 -2.92d0 39d0 0)
+                        :strobe (vec3 11.08d0 0 -2.15d0))))
+      (setf lights (append lights (bake-fixtures! b def)))
+      (bake-model! b (capsule-model) (xform '(13.08d0 0 0)))
+      (finish-place-model b lights))))
+
+(defun fulmar-model (def)
+  "Fulmar Depot: the 30 m spine, two LH2 tanks Ø 6 × 14 in gold foil and two
+LOX tanks Ø 4.5 × 6 in silver at y ±3.9, the gold sunshade disc Ø 16 at the
+sunward end, the aft mount with its two arms along ±z and the cryocooler
+fins; TANKER 2 berthed at fixture B, its nose on the pin, fixture A free."
+  (let* ((b (make-builder)) (hull (builder-hull b)) (white (material-id :cab-paint)))
+    (builder-part b "sunshade" :hull
+                  (lambda () (cylinder hull (xform '(14.07d0 0 0) :scale '(0.3d0 8d0 8d0))
+                                       (material-id :lh2-foil) 48)))
+    (builder-part b "spine" :hull
+                  (lambda () (cylinder hull (xform '(-15.98d0 0 0) :scale '(30.05d0 0.4d0 0.4d0))
+                                       white 16)))
+    (dolist (s '(1 -1))
+      (capped-tank b "LH2 tank" (list -0.48d0 (* s 3.9d0) 0) (list 13.52d0 (* s 3.9d0) 0) 3d0 :lh2-foil)
+      (capped-tank b "LOX tank" (list -7.98d0 (* s 3.9d0) 0) (list -1.98d0 (* s 3.9d0) 0) 2.25d0
+                   :lox-foil))
+    (builder-part b "tank mounts" :tube
+                  (lambda ()
+                    (dolist (x '(-6.0d0 6.0d0))
+                      (dolist (s '(1 -1))
+                        (builder-tube b (list x 0 0) (list x (* s 3.9d0) 0) 0.12d0 (material-id :steel))))))
+    (builder-part b "aft mount" :hull
+                  (lambda () (box hull (xform '(-11.98d0 0 0) :scale '(8d0 1d0 0.8d0))
+                                  (material-id :aluminium))))
+    (builder-part b "arms" :tube
+                  (lambda ()
+                    (builder-tube b '(-13.98d0 0 -4d0) '(-13.98d0 0 4d0) 0.3d0 (material-id :aluminium))))
+    (builder-part b "cryocooler fins" :hull
+                  (lambda ()
+                    (dolist (z '(2d0 -2d0))
+                      (dolist (y '(0.7d0 -0.7d0))
+                        (box hull (xform (list -11.98d0 y z) :scale '(6d0 0.05d0 2.5d0))
+                             (material-id :radiator))))))
+    (let* ((lights (list :strobe (vec3 -15.78d0 0 -0.45d0)))
+           (lamps (bake-fixtures! b def))
+           (tanker (tanker-model))
+           (pin (fixture-pin (find "B" (object-def-fixtures def) :key #'fixture-name :test #'string=))))
+      (setf lights
+            (append lights lamps
+                    (bake-ship! b tanker (vec3-add pin (vec3 0 0 -24.15d0)) :x '(0 0 1) :y '(0 1 0)
+                                         :keep '(:strobe))))
+      (finish-place-model b lights))))
+
+(defun highport-truss! (b)
+  "The open truss 6.5 × 60 × 6.5 along y, centred (0.02, 0, -4.84): 12 bays of
+5 m, longerons, frames and diagonals as tubes 0.06 m round."
+  (let ((cx 0.02d0) (cz -4.84d0) (h 3.19d0) (steel (material-id :steel)))
+    (builder-part b "truss" :tube
+                  (lambda ()
+                    (flet ((tube (x1 y1 z1 x2 y2 z2)
+                             ;; the end frames 0.06 m in, so the tubes' radius stays inside 30 m
+                             (builder-tube b (list (+ cx x1) (max -29.94d0 (min 29.94d0 y1)) (+ cz z1))
+                                           (list (+ cx x2) (max -29.94d0 (min 29.94d0 y2)) (+ cz z2))
+                                           0.06d0 steel)))
+                      (dolist (sx '(1 -1))
+                        (dolist (sz '(1 -1))
+                          (tube (* sx h) -30d0 (* sz h) (* sx h) 30d0 (* sz h))))
+                      (dotimes (k 13)
+                        (let ((y (+ -30d0 (* 5 k))))
+                          (tube h y h (- h) y h) (tube h y (- h) (- h) y (- h))
+                          (tube h y h h y (- h)) (tube (- h) y h (- h) y (- h))))
+                      (dotimes (k 12)
+                        (let ((y (+ -30d0 (* 5 k))) (sign (if (evenp k) 1 -1)))
+                          (dolist (s '(1 -1))
+                            (tube (* s h) y (* sign h) (* s h) (+ y 5) (* (- sign) h))
+                            (tube (* sign h) y (* s h) (* (- sign) h) (+ y 5) (* s h))))))))))
+
+(defun highport-model (def)
+  "Highport: the open truss, four tanks Ø 6 × 12, the water plant below it
+with two radiator fins edge-on to the Sun, wings 40 × 20 at y ±50, three arms;
+STUBBORN (M-04) and THISTLE (M-05) berthed at the arms, nose on the pin, their
++x along +z, the plant fixture free."
+  (let* ((b (make-builder)) (hull (builder-hull b)) (white (material-id :cab-paint)))
+    (highport-truss! b)
+    (dolist (c '(7d0 -7d0 21d0 -21d0))
+      (capped-tank b "tank" (list 0.02d0 (- c 6) -4.84d0) (list 0.02d0 (+ c 6) -4.84d0) 3d0 :lox-foil))
+    (builder-part b "water plant" :hull
+                  (lambda () (box hull (xform '(0.02d0 0 3.41d0) :scale '(6d0 6d0 10d0)) white)))
+    (builder-part b "plant fins" :hull
+                  (lambda ()
+                    (dolist (s '(1 -1))
+                      (box hull (xform (list (+ 0.02d0 (* s 2.5d0)) 0 18.41d0) :scale '(0.05d0 6d0 20d0))
+                           (material-id :radiator)))))
+    (dolist (s '(1 -1))
+      (place-wing! b (list 0.02d0 (* s 50d0) -4.84d0) '(0.05d0 40d0 20d0)
+                   (cons (material-id :solar-cells) (make-list 5 :initial-element (material-id :steel)))
+                   :wide 2 :thin 0))
+    (builder-part b "arms" :tube
+                  (lambda ()
+                    (dolist (s '(1 -1))
+                      (builder-tube b (list 0.02d0 (* s 20d0) -8.09d0) (list 0.02d0 (* s 20d0) -11.09d0)
+                                    0.25d0 (material-id :aluminium)))))
+    (let* ((lights (list :red (vec3 0.02d0 -70d0 -4.84d0) :green (vec3 0.02d0 70d0 -4.84d0)
+                         :strobe (vec3 0.02d0 -29.5d0 -8.14d0) :strobe (vec3 0.02d0 29.5d0 -8.14d0)))
+           (lamps (bake-fixtures! b def)))
+      (setf lights (append lights lamps))
+      (loop for (name y decal) in '(("arm 1" 20d0 :decal-m04) ("arm 2" -20d0 :decal-m05))
+            do (let ((pin (fixture-pin (find name (object-def-fixtures def) :key #'fixture-name
+                                                                            :test #'string=))))
+                 (setf lights (append lights
+                                      (bake-ship! b (mule-model :decal decal) (vec3-add pin (vec3 0 0 -16.6d0))
+                                                  :x '(0 0 1) :y '(0 1 0))))))
+      (finish-place-model b lights))))
+
+(defun k-17-model (def)
+  "Derelict K-17: the tank Ø 3.05 × 12.7 in peeling foil and scorched steel,
+the adapter ring at x 5.80, the bell 1.5 m out of the aft end, the bright
+fixture."
+  (let* ((b (make-builder)) (hull (builder-hull b)))
+    (builder-part b "tank" :hull
+                  (lambda ()
+                    (cylinder hull (xform '(-6.65d0 0 0) :scale '(8.0d0 1.525d0 1.525d0))
+                              (material-id :peeling-foil) 32 :caps :start)
+                    (cylinder hull (xform '(1.35d0 0 0) :scale '(4.25d0 1.525d0 1.525d0))
+                              (material-id :scorched) 32 :caps nil)
+                    (frustum hull (xform '(5.6d0 0 0) :scale '(0.45d0 1 1)) (material-id :scorched) 32
+                             1.525d0 1.0d0 :caps :end)))
+    (builder-part b "adapter ring" :hull
+                  (lambda () (cylinder hull (xform '(5.75d0 0 0) :scale '(0.1d0 1.4d0 1.4d0))
+                                       (material-id :scorched) 32)))
+    (builder-part b "bell" :hull
+                  (lambda ()
+                    (frustum hull (xform '(-6.65d0 0 0) :x '(-1 0 0) :y '(0 -1 0) :scale '(1.5d0 1 1))
+                             (material-id :nozzle) 24 0.15d0 0.725d0)))
+    (bake-fixtures! b def)
+    (let ((model (finish-place-model b '())))
+      model)))
+
+(defun pod-model (def)
+  "POD 14: a box 4.0 × 2.5 × 2.5 with panel seams (rings at x -1, 0 and 1,
+the edges), \"POD 14\" stencilled on both long sides."
+  (let* ((b (make-builder)) (hull (builder-hull b)))
+    (builder-part b "pod" :hull
+                  (lambda () (box hull (xform '(0 0 0) :scale '(4d0 2.5d0 2.5d0)) (material-id :cab-paint))))
+    (builder-part b "seams" :tube
+                  (lambda ()
+                    (flet ((tube (a c) (builder-tube b a c 0.02d0 (material-id :steel))))
+                      (dolist (x '(-1d0 0d0 1d0))
+                        (tube (list x -1.25d0 -1.25d0) (list x 1.25d0 -1.25d0))
+                        (tube (list x 1.25d0 -1.25d0) (list x 1.25d0 1.25d0))
+                        (tube (list x 1.25d0 1.25d0) (list x -1.25d0 1.25d0))
+                        (tube (list x -1.25d0 1.25d0) (list x -1.25d0 -1.25d0))))))
+    (dolist (s '(1 -1))
+      (builder-part b (if (= s 1) "decal +y" "decal -y") :hull
+                    (lambda ()
+                      (rect hull (xform (list 0 (* s 1.254d0) 0) :x (list 0 s 0) :y (list s 0 0)
+                                                                   :scale '(1d0 2.8d0 0.7d0))
+                            (material-id :decal-pod-14) :uv '(0 1 1 0)))))
+    (bake-fixtures! b def)
+    (finish-place-model b '())))
+
+(defun rock-model (def)
+  "A Skua Yard rock: a sphere of its radius under the net, the net's frame (a
+square of four tubes 1.2 m across round the stand-off) and the fixture."
+  (let* ((b (make-builder)) (hull (builder-hull b))
+         (r (shape-radius (first (object-def-shapes def)))))
+    (builder-part b "rock" :hull
+                  (lambda () (sphere hull (xform '(0 0 0) :scale (list r r r)) (material-id :net) 12 24)))
+    (builder-part b "net frame" :tube
+                  (lambda ()
+                    (let ((x (+ (sqrt (- (* r r) 0.72d0)) 0.01d0)))
+                      (loop for (y1 z1 y2 z2) in '((0.6d0 0.6d0 -0.6d0 0.6d0) (-0.6d0 0.6d0 -0.6d0 -0.6d0)
+                                                   (-0.6d0 -0.6d0 0.6d0 -0.6d0) (0.6d0 -0.6d0 0.6d0 0.6d0))
+                            do (builder-tube b (list x y1 z1) (list x y2 z2) 0.02d0 (material-id :steel))))))
+    (bake-fixtures! b def)
+    (finish-place-model b '())))
+
+(defun grindstone-model (def)
+  "GRINDSTONE: two 20 m Mule trusses at y ±1.8 with their engines, tanks Ø 3.04 × 17
+and grapples, the Mule cab on top at x 15.5 to 20 showing the cairn only, the
+netted rock Ø 10 at its tabled centre."
+  (declare (ignore def))
+  (let* ((b (make-builder)) (hull (builder-hull b)) (x0 -26.31d0)
+         (truss (truss-ship-model :length 20d0 :bays 13 :tank-radius 1.52d0
+                                  :tanks '(("tank" 0.5d0 17.5d0 :lh2-foil))
+                                  :wings nil :radiators nil :equipment nil :rcs nil
+                                  :lights (list :engine-exit (vec3 -2.2d0 0 -0.5d0))))
+         (cab (truss-ship-model :length 20d0 :structure nil :rcs nil :engine-p nil :wings nil
+                                :radiators nil :equipment nil :nose nil :cab '(15.5d0 20d0)
+                                :decal :decal :decal-u 0.27d0
+                                :lights (list :engine-exit (vec3 0 0 0))))
+         (lights '()))
+    (dolist (y '(1.8d0 -1.8d0)) (bake-ship! b truss (vec3 x0 y 0.01d0)))
+    (bake-ship! b cab (vec3 x0 0 0.01d0))
+    (builder-part b "rock" :hull
+                  (lambda () (sphere hull (xform '(0.59d0 0 0.01d0) :scale '(5d0 5d0 5d0))
+                                     (material-id :net) 16 32)))
+    (setf lights (list :red (vec3 -6.31d0 -3.75d0 -1.94d0) :green (vec3 -6.31d0 3.75d0 -1.94d0)
+                       :strobe (vec3 -8.56d0 0 -5.04d0)))
+    (finish-place-model b lights)))
+
+(defun build-object-model (key)
+  (let ((def (object-definition key)))
+    (ecase key
+      (:tern-station (tern-model def))
+      (:fulmar-depot (fulmar-model def))
+      (:highport (highport-model def))
+      (:k-17 (k-17-model def))
+      (:pod-14 (pod-model def))
+      ((:skua-yard-1 :skua-yard-2 :skua-yard-3 :skua-yard-4 :skua-yard-5 :skua-yard-6)
+       (rock-model def))
+      (:rock-mover (grindstone-model def)))))
+
+(defun object-model (key)
+  "The model of the object definition KEY, made once."
+  (cached-model key (lambda () (build-object-model key))))
 
 ;;; The engine's trim (docs/design.md "Propulsion"): its axis through the
 ;;; gimbal turned onto the CoM.

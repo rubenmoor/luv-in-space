@@ -407,3 +407,183 @@
                                                   count (dark-pixel-p (aref pixels y x))))))
                         (true (<= 0.15 (/ dark (* (- x1 x0) (- y1 y0))) 0.60)
                               "~A ~C covers ~A" text char dark))))))
+
+;;; Piece 2 of plan 29: the places' models and lights (decision 124).
+
+(defun part-entries (model)
+  "Every part of MODEL as (name positions)."
+  (loop for (name where start end) in (lis::model-parts model)
+        collect (list name
+                      (case where
+                        (:hull (lis::floats-positions (lis::model-vertices model) start end))
+                        (:engine (lis::floats-positions (lis::model-engine model) start end))
+                        (t (lis::instance-positions (lis::model-group model where) start end))))))
+
+(defun parts-named (model name)
+  (loop for (n positions) in (part-entries model) when (string= n name) collect positions))
+
+(defun shape-contains-p (shape p grow)
+  (let ((c (lis::shape-centre shape)))
+    (if (eq (lis::shape-kind shape) :sphere)
+        (<= (lis::vec3-norm (lis::vec3-sub p c)) (+ (lis::shape-radius shape) grow))
+        (loop for i below 3
+              always (<= (abs (- (aref p i) (aref c i))) (+ (* 0.5d0 (aref (lis::shape-size shape) i)) grow))))))
+
+(defun shape-span (shape points)
+  "The span per axis of the POINTS inside SHAPE (grown 0.05 m), as a list."
+  (let ((inside (remove-if-not (lambda (p) (shape-contains-p shape p 0.05d0)) points)))
+    (if inside
+        (multiple-value-bind (lo hi) (lis::positions-box inside)
+          (loop for i below 3 collect (- (aref hi i) (aref lo i))))
+        '(0 0 0))))
+
+(defun shape-extent (shape)
+  (if (eq (lis::shape-kind shape) :sphere)
+      (make-list 3 :initial-element (* 2 (lis::shape-radius shape)))
+      (coerce (lis::shape-size shape) 'list)))
+
+(defparameter *fill-exceptions* '((:highport 4 0 0.8d0))
+  "(object shape-index axis least-fill): the berthed Mules are 8.3 m across
+the 10 m shape (decision 47's box).")
+
+(defparameter *shape-growth* '((:fulmar-depot . 0.2d0))
+  "TANKER 2's tail is 0.15 m beyond the shape's 24 m (its nose pin on fixture B).")
+
+(define-test places-models-fit-shapes
+  (dolist (def lis::*objects*)
+    (let* ((key (lis::object-def-key def)) (model (lis::object-model key))
+           (shapes (lis::object-def-shapes def))
+           (grow (or (cdr (assoc key *shape-growth*)) 0.05d0))
+           (all '()))
+      (loop for (name positions) in (part-entries model)
+            do (setf all (append positions all))
+               (unless (member name lis::*thin-part-names* :test #'string=)
+                 (let ((outside (remove-if (lambda (p) (some (lambda (shape) (shape-contains-p shape p grow))
+                                                             shapes))
+                                           positions)))
+                   (true (null outside) "~A ~A: ~D vertices outside the shapes, first ~A"
+                         key name (length outside) (first outside)))))
+      (loop for shape in shapes for index from 0
+            do (loop for span in (shape-span shape all)
+                     for size in (shape-extent shape)
+                     for axis from 0
+                     for least = (or (fourth (find-if (lambda (e) (and (eq (first e) key) (= (second e) index)
+                                                                       (= (third e) axis)))
+                                                      *fill-exceptions*))
+                                     0.9d0)
+                     do (true (>= span (* least size))
+                              "~A shape ~D axis ~D: ~,2F of ~,2F" key index axis span size))))))
+
+(defun fixture-plates (model)
+  "((centre normal) …) of every fixture plate in MODEL: the fixture material's
+vertices of the \"plate\" parts, by part."
+  (let ((floats (lis::model-vertices model)) (result '()))
+    (loop for (name where start end) in (lis::model-parts model)
+          when (string= name "plate")
+            do (let ((sum (lis::vec3 0 0 0)) (normal nil) (n 0))
+                 (loop for i from start below end
+                       for o = (* i lis::+vertex-floats+)
+                       when (= (aref floats (+ o 6)) (float (lis::material-id :fixture) 1.0))
+                         do (lis::vec3-add! sum sum (lis::vec3 (aref floats o) (aref floats (+ o 1))
+                                                               (aref floats (+ o 2))))
+                            (setf normal (lis::vec3 (aref floats (+ o 3)) (aref floats (+ o 4))
+                                                    (aref floats (+ o 5))))
+                            (incf n))
+                 (push (list (lis::vec3-scale sum (/ 1d0 n)) normal) result)))
+    (nreverse result)))
+
+(defun vector-angle (a b)
+  (acos (max -1d0 (min 1d0 (lis::vec3-dot (lis::vec3-normalize a) (lis::vec3-normalize b))))))
+
+(define-test places-fixture-plates
+  (dolist (def lis::*objects*)
+    (let* ((model (lis::object-model (lis::object-def-key def)))
+           (plates (fixture-plates model)))
+      (dolist (fixture (lis::object-def-fixtures def))
+        (let* ((pin (lis::fixture-pin fixture)) (axis (lis::fixture-axis fixture))
+               ;; Free: the fixture's own plate faces along its axis; held: the
+               ;; scenery ship's nose plate faces back at it.
+               (sign (if (lis::fixture-free fixture) 1d0 -1d0))
+               (plate (find-if (lambda (p) (close-to (first p) pin 1d-3)) plates)))
+          ;; A Mule holds Highport's arms: its grapple tip is checked apart.
+          (unless (or plate (and (eq (lis::object-def-key def) :highport) (not (lis::fixture-free fixture))))
+            (true plate "~A ~A: no plate on the pin" (lis::object-def-key def) (lis::fixture-name fixture)))
+          (when plate
+            (true (< (vector-angle (second plate) (lis::vec3-scale axis sign)) (degrees-to-rad 0.01))
+                  "~A ~A: plate normal ~A" (lis::object-def-key def) (lis::fixture-name fixture)
+                  (second plate))))))))
+
+(define-test places-scenery-ships
+  ;; AURORA 11 nose-in on Tern's node, x 13.08 to 17.58.
+  (let ((tern (lis::object-model :tern-station)))
+    (let ((points (append (first (parts-named tern "frustum")) (first (parts-named tern "service section")))))
+      (multiple-value-bind (lo hi) (lis::positions-box points)
+        (true (< (abs (- (aref lo 0) 13.08)) 0.01) "AURORA nose ~A" (aref lo 0))
+        (true (< (abs (- (aref hi 0) 17.58)) 0.01) "AURORA tail ~A" (aref hi 0)))))
+  ;; The Mules' grapple tips on the arms' pins.
+  (let* ((def (lis::object-definition :highport)) (model (lis::object-model :highport)))
+    (loop for name in '("arm 1" "arm 2")
+          for pin = (lis::fixture-pin (find name (lis::object-def-fixtures def)
+                                            :key #'lis::fixture-name :test #'string=))
+          do (let ((grapple (find-if (lambda (points)
+                                       (multiple-value-bind (lo hi) (lis::positions-box points)
+                                         (< (abs (- (* 0.5 (+ (aref lo 1) (aref hi 1))) (aref pin 1))) 0.01)))
+                                     (parts-named model "grapple"))))
+               (true grapple "~A: no grapple" name)
+               (multiple-value-bind (lo hi) (lis::positions-box grapple)
+                 (true (< (abs (- (aref hi 2) (aref pin 2))) 0.01) "tip z ~A" (aref hi 2))
+                 (true (> (- (aref hi 2) (aref lo 2)) 1.55) "grapple length")
+                 (true (< (abs (- (* 0.5 (+ (aref lo 0) (aref hi 0))) (aref pin 0))) 0.01))
+                 (true (< (abs (- (* 0.5 (+ (aref lo 1) (aref hi 1))) (aref pin 1))) 0.01)))))))
+
+(defparameter *expected-lights*
+  `((:tern-station (:red (-2.92d0 -39d0 0)) (:green (-2.92d0 39d0 0)) (:strobe (11.08d0 0 -2.15d0)))
+    (:fulmar-depot (:strobe (-15.78d0 0 -0.45d0)))
+    (:highport (:red (0.02d0 -70d0 -4.84d0)) (:green (0.02d0 70d0 -4.84d0))
+     (:strobe (0.02d0 -29.5d0 -8.14d0)) (:strobe (0.02d0 29.5d0 -8.14d0)))
+    (:rock-mover (:red (-6.31d0 -3.75d0 -1.94d0)) (:green (-6.31d0 3.75d0 -1.94d0))
+     (:strobe (-8.56d0 0 -5.04d0))))
+  "The places' own lights; scenery ships' and fixture lamps are checked apart.")
+
+(define-test places-lights
+  (dolist (def lis::*objects*)
+    (let* ((key (lis::object-def-key def)) (model (lis::object-model key))
+           (lights (loop for (kind position) on (lis::model-lights model) by #'cddr
+                         collect (list kind position)))
+           (lamps (remove :lamp lights :key #'first :test-not #'eq)))
+      (is equal lights (lis::model-beacons model) "~A beacons" key)
+      (loop for (kind position) in (cdr (assoc key *expected-lights*))
+            do (true (find-if (lambda (l) (and (eq (first l) kind)
+                                               (close-to (second l) (apply #'lis::vec3 position) 1d-3)))
+                              lights)
+                     "~A ~A at ~A" key kind position))
+      ;; Four lamps on a circle of 0.55 m round each free berth fixture, none at others.
+      (dolist (fixture (lis::object-def-fixtures def))
+        (let ((near (remove-if-not (lambda (l) (< (lis::vec3-norm (lis::vec3-sub (second l) (lis::fixture-pin fixture)))
+                                                  0.7d0))
+                                   lamps)))
+          (if (and (lis::fixture-free fixture) (eq (lis::fixture-kind fixture) :berth))
+              (progn
+                (is = 4 (length near) "~A ~A lamps" key (lis::fixture-name fixture))
+                (dolist (l near)
+                  (let ((d (lis::vec3-sub (second l) (lis::fixture-pin fixture))))
+                    (true (< (abs (- (lis::vec3-norm d) 0.55d0)) 1d-3))
+                    (true (< (abs (lis::vec3-dot d (lis::fixture-axis fixture))) 1d-3))
+                    ;; 45 degrees off the body axes
+                    (let ((big (loop for i below 3 maximize (abs (aref d i)))))
+                      (true (< (abs (- big (* 0.55d0 (sqrt 0.5d0)))) 1d-3))))))
+              (is = 0 (length near) "~A ~A lamps" key (lis::fixture-name fixture)))))))
+  ;; Scenery ships' lights count: (red green strobe lamp).
+  (loop for (key . counts) in '((:tern-station 1 1 1 4) (:fulmar-depot 0 0 2 4) (:highport 3 3 4 4)
+                                (:rock-mover 1 1 1 0) (:k-17 0 0 0 0) (:pod-14 0 0 0 0) (:skua-yard-3 0 0 0 0))
+        do (let ((kinds (loop for (k) on (lis::model-lights (lis::object-model key)) by #'cddr collect k)))
+             (is equal counts (mapcar (lambda (kind) (count kind kinds)) '(:red :green :strobe :lamp)) "~A" key))))
+
+(define-test places-model-sizes
+  (dolist (def lis::*objects*)
+    (let ((model (lis::object-model (lis::object-def-key def))))
+      (true (<= (floor (length (lis::model-vertices model)) lis::+vertex-floats+) 40000))
+      (true (<= (loop for g in (lis::model-groups model)
+                      sum (floor (length (lis::instance-group-instances g)) lis::+instance-floats+))
+                2000))
+      (true (eq model (lis::object-model (lis::object-def-key def)))))))

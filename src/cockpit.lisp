@@ -24,7 +24,8 @@
 (defparameter *cab-material-names*
   '(:lining :steel-angle :tread :eclss :red :tape :marker :black-plastic :grey-plastic
     :green-surplus :beige :aluminium :screen-face :cable-black :cable-grey :cable-red
-    :cable-yellow :kapton :cardboard :sheet-metal :led :fabric :seat :hatch :plate)
+    :cable-yellow :kapton :cardboard :sheet-metal :led :fabric :seat :hatch :plate
+    :channel-x :channel-y :channel-z)
   "Row order of *cab-materials*; a vertex's material id is the row.")
 
 (defparameter *cab-materials*
@@ -52,7 +53,10 @@
                 (0.30 0.32 0.22 0.05 8.0 0.0)      ; net, bags
                 (0.12 0.12 0.14 0.05 8.0 0.0)      ; seat
                 (0.70 0.70 0.68 0.05 8.0 0.0)      ; hatch paint
-                (0.40 0.40 0.42 0.15 16.0 0.0))))  ; name plate, steel
+                (0.40 0.40 0.42 0.15 16.0 0.0)     ; name plate, steel
+                (0.45 0.45 0.47 0.15 16.0 0.0)     ; slotted channel, along x
+                (0.45 0.45 0.47 0.15 16.0 0.0)     ; slotted channel, along y
+                (0.45 0.45 0.47 0.15 16.0 0.0))))  ; slotted channel, along z
     (make-array (list (length rows) 6) :element-type 'single-float :initial-contents rows))
   "Rows of *cab-material-names*: r g b, specular weight, exponent, emission; live.")
 
@@ -517,6 +521,8 @@ green. The twin of cab-glass-fragment."
         (values (* k r (first *cab-glass-tint*)) (* k g (second *cab-glass-tint*))
                 (* k b (third *cab-glass-tint*)) alpha)))))
 
+(defparameter *cab-text-regions* '() "((:label text) | (:placeholder panel-name)) -> text-region.")
+
 (defparameter *cab-plate-region* nil "The text batch's region holding the name plate.")
 
 (defun cockpit-text! (atlas batch)
@@ -528,7 +534,10 @@ green. The twin of cab-glass-fragment."
                  (make-text-plane :origin origin :right '(0 1 0) :up '(0 0 -1))
                  text :font :mono-bold :cap (float (getf *cab-plate* :cap) 1f0) :kind :lit
                       :colour (apply #'text-colour *cab-plate-ink*)))
-    (setf *cab-plate-region* region)))
+    (setf *cab-plate-region* region)
+    (setf *cab-text-regions* '())
+    (cockpit-labels-text! atlas batch)
+    (cockpit-placeholders-text! atlas batch)))
 
 (defun build-cab-model ()
   "The cab's shell and fittings as a model (meshes.lisp's builder): hull
@@ -560,6 +569,7 @@ rest, in body axes from the eye."
     (cab-boresight-cross! b)
     (cab-porthole-rings! b)
     (cab-plate! b)
+    (cab-console! b)
     (builder-model b)))
 
 (defvar *cab-model* nil "The cab's model, made once.")
@@ -569,6 +579,613 @@ rest, in body axes from the eye."
 
 (defun cab-shell-part-names ()
   (mapcar #'first (model-parts (cab-model))))
+
+;;; The console (plan 31 piece 5; decision 126): the rack, the panels with
+;;; their faces, bezels, brackets and hoods, the cables and the tape labels.
+;;; *cockpit-panels* is the layout table of docs/design.md "Layout" as data,
+;;; reachable by name (cockpit-panel); plan 32's instruments hang on it.
+
+(defparameter *cockpit-panels*
+  '((:name :caution-lamps :centre (0.90d0 -0.72d0 0d0) :direction (-38.7d0 0d0) :turn 30d0
+     :size (0.08d0 0.58d0) :wall t
+     :bezel (:material :black-plastic :border 0.015d0 :depth 0.04d0)
+     :cables (:cable-black))
+    (:name :status-lamps :centre (0.90d0 0.72d0 0d0) :direction (38.7d0 0d0) :turn -30d0
+     :size (0.08d0 0.58d0) :wall t
+     :bezel (:material :black-plastic :border 0.015d0 :depth 0.04d0)
+     :cables (:cable-grey))
+    (:name :orbit :centre (0.60d0 -0.28d0 0.35d0) :direction (-25d0 27.5d0)
+     :size (0.30d0 0.20d0) :grid (24 8) :screen t
+     :bezel (:material :grey-plastic :border 0.025d0 :depth 0.05d0 :bolts 4)
+     :hood :cardboard :cables (:cable-black :cable-grey))
+    (:name :attitude :centre (0.67d0 0d0 0.35d0) :direction (0d0 27.5d0)
+     :size (0.24d0 0.20d0) :grid (19 8) :screen t
+     :bezel (:material :black-plastic :border 0.015d0 :depth 0.04d0)
+     :cables (:cable-black))
+    (:name :target :centre (0.60d0 0.28d0 0.35d0) :direction (25d0 27.5d0)
+     :size (0.30d0 0.20d0) :grid (24 8) :screen t
+     :bezel (:material :green-surplus :border 0.03d0 :depth 0.06d0)
+     :hood :sheet-metal :cables (:cable-red :cable-black :cable-grey))
+    (:name :strip :centre (0.55d0 0d0 0.455d0) :direction (0d0 39.6d0)
+     :size (0.30d0 0.08d0) :grid (19 3) :screen t :face :green-surplus
+     :bezel (:material :aluminium :border 0.012d0 :depth 0.03d0)
+     :cables (:cable-grey))
+    (:name :buttons :centre (0.46d0 0d0 0.52d0) :direction (0d0 48.5d0)
+     :size (0.26d0 0.13d0)
+     :bezel (:material :black-plastic :border 0.015d0 :depth 0.04d0)
+     :cables (:cable-yellow :cable-black :cable-grey))
+    (:name :autopilot :centre (0.42d0 -0.30d0 0.50d0) :direction (-35.5d0 45d0)
+     :size (0.26d0 0.19d0) :grid (22 8) :screen t
+     :bezel (:material :beige :border 0.035d0 :chin 0.05d0 :depth 0.08d0)
+     :cables (:cable-black :cable-grey))
+    (:name :ship :centre (0.42d0 0.30d0 0.50d0) :direction (35.5d0 45d0)
+     :size (0.26d0 0.19d0) :grid (22 8) :screen t
+     :bezel (:material :tape :border 0.035d0 :depth 0.03d0)
+     :cables (:cable-black :cable-grey))
+    (:name :comms :centre (0.34d0 -0.60d0 0.12d0) :direction (-60d0 10d0)
+     :size (0.30d0 0.24d0) :grid (26 11) :screen t
+     :bezel (:material :black-plastic :border 0.02d0 :depth 0.06d0)
+     :cables (:cable-grey :cable-black))
+    (:name :throttle :centre (0.17d0 -0.24d0 0.52d0) :direction (-55d0 61d0)
+     :size (0.14d0 0.16d0)
+     :bezel (:material :black-plastic :border 0.015d0 :depth 0.04d0)
+     :cables (:cable-black :cable-grey))
+    (:name :hull-gauge :centre (0.17d0 0.24d0 0.52d0) :direction (55d0 61d0)
+     :size (0.12d0 0.12d0) :round t :face :aluminium
+     :bezel (:material :black-plastic :border 0.015d0 :depth 0.04d0)
+     :cables (:cable-grey)))
+  "The layout table (docs/design.md \"Layout\"), one plist a panel: :name,
+:centre (dx dy dz) m from the eye, :direction (azimuth elevation) degrees
+(informative: the face turns to the eye from its centre), :size (w h) m of the
+face, :grid (columns rows) of its text, :screen (a Slug screen, PLACEHOLDER(166)
+until plan 32 draws it), :turn (the lamp columns' 30 degrees on the wall),
+:wall (fixed to the front wall), :round, :face (its material), :bezel (material,
+border, chin, depth, bolts), :hood, :cables (their colours).")
+
+(defparameter *cockpit-bezel-front* 0.004d0 "m: a bezel stands this far in front of its face.")
+(defparameter *cockpit-face-thickness* 0.004d0)
+(defparameter *cockpit-hood-length* 0.09d0 "m: how far a hood reaches towards the eye.")
+(defparameter *cockpit-rack-section* 0.041d0 "m: the slotted channel's square section.")
+(defparameter *cockpit-tray* '(:x 0.78d0 :z 0.90d0 :y 0.85d0 :width 0.12d0 :height 0.03d0)
+  "The cable tray on the rack: along y at x 0.78, its middle at z 0.90, from -y to +y.")
+(defparameter *cockpit-conduit-radius* 1.29d0 "m: the ceiling conduit's distance from the cab's axis.")
+
+(defparameter *cockpit-rack*
+  '((:rail-high (0.85d0 -0.85d0 0.42d0) (0.85d0 0.85d0 0.42d0))
+    (:rail-mid (0.85d0 -0.85d0 0.62d0) (0.85d0 0.85d0 0.62d0))
+    (:rail-low (0.85d0 -0.85d0 0.80d0) (0.85d0 0.85d0 0.80d0))
+    (:wall-post-port (0.85d0 -0.85d0 1.15d0) (0.85d0 -0.85d0 0.0d0))
+    (:wall-post-starboard (0.85d0 0.85d0 1.15d0) (0.85d0 0.85d0 0.0d0))
+    (:stand-port (0.20d0 -0.24d0 1.15d0) (0.20d0 -0.24d0 0.64d0))
+    (:stand-starboard (0.20d0 0.24d0 1.15d0) (0.20d0 0.24d0 0.64d0))
+    (:tie-port (0.20d0 -0.24d0 0.64d0) (0.85d0 -0.24d0 0.64d0))
+    (:tie-starboard (0.20d0 0.24d0 0.64d0) (0.85d0 0.24d0 0.64d0))
+    (:comms-post (0.50d0 -0.80d0 1.15d0) (0.50d0 -0.80d0 -0.30d0))
+    (:comms-tie (0.50d0 -0.80d0 0.45d0) (0.85d0 -0.85d0 0.42d0)))
+  "The rack of slotted channel, deck to front wall: (name from to), body axes from the eye.")
+
+(defun cockpit-panel (name)
+  (or (find name *cockpit-panels* :key (lambda (p) (getf p :name)))
+      (error "No cockpit panel ~S." name)))
+
+(defun vlin (origin &rest terms)
+  "ORIGIN + k1 v1 + k2 v2 + ... for TERMS (k1 v1 k2 v2 ...)."
+  (let ((p origin))
+    (loop for (k v) on terms by #'cddr do (setf p (vec3-add p (vec3-scale v (float k 1d0)))))
+    p))
+
+(defun panel-frame (panel)
+  "(values centre normal right up): the face's centre, its unit normal (to the
+eye, or turned as :turn says), its right and up, all vec3 doubles."
+  (let* ((c (apply #'vec3 (getf panel :centre)))
+         (turn (getf panel :turn))
+         (n (if turn
+                (let ((a (degrees-to-radians turn))) (vec3 (- (cos a)) (sin a) 0d0))
+                (vec3-normalize (vec3-scale c -1d0))))
+         (up0 (vec3 0d0 0d0 -1d0))
+         (u (vec3-normalize (vec3-sub up0 (vec3-scale n (vec3-dot up0 n)))))
+         (r (vec3-cross (vec3-scale n -1d0) u)))
+    (values c n r u)))
+
+(defun panel-nominal-sides (panel)
+  "The bezel's left, right, top and bottom borders as the table gives them."
+  (let* ((bezel (getf panel :bezel)) (border (getf bezel :border)))
+    (list border border border (or (getf bezel :chin) border))))
+
+(defparameter *panel-side-minimum* 0d0 "m: the least a bezel border is clipped to.")
+(defvar *panel-sides* nil "Alist panel name -> (left right top bottom), made by clip-panel-sides.")
+
+(defun box-penetration (a b)
+  "How far the oriented boxes A and B (as panel-bezel-box's values) overlap along the
+axis where it is least; negative when they are apart."
+  (destructuring-bind (ca &rest da) a
+    (destructuring-bind (cb &rest db) b
+      (let* ((axes-a (subseq da 0 3)) (axes-b (subseq db 0 3))
+             (half-a (subseq da 3)) (half-b (subseq db 3))
+             (d (vec3-sub cb ca)) (best 1d9))
+        (dolist (axis (append axes-a axes-b
+                              (loop for x in axes-a
+                                    append (loop for y in axes-b collect (vec3-cross x y))))
+                      best)
+          (let ((norm (vec3-norm axis)))
+            (when (> norm 1d-9)
+              (let* ((axis (vec3-scale axis (/ norm)))
+                     (ra (loop for x in axes-a for h in half-a sum (* h (abs (vec3-dot x axis)))))
+                     (rb (loop for x in axes-b for h in half-b sum (* h (abs (vec3-dot x axis))))))
+                (setf best (min best (- (+ ra rb) (abs (vec3-dot d axis)))))))))))))
+
+(defun clip-panel-sides ()
+  "The panels' borders, clipped where bezels would meet: the faces of the layout
+table nearly touch (a few millimetres apart), so a pair whose boxes intersect
+gives up the penetration between them from the sides facing each other (not
+below *panel-side-minimum*); elsewhere the table's borders stand."
+  (let* ((panels (remove-if (lambda (p) (getf p :round)) *cockpit-panels*))
+         (sides (mapcar (lambda (p) (cons (getf p :name) (copy-list (panel-nominal-sides p)))) panels)))
+    (flet ((box (panel) (panel-bezel-box panel (cdr (assoc (getf panel :name) sides)))))
+      (dotimes (pass 60)
+        (let ((changed nil))
+          (loop for (a . rest) on panels
+                do (dolist (b rest)
+                     (let ((pen (box-penetration (multiple-value-list (box a)) (multiple-value-list (box b)))))
+                       (when (> pen -0.001d0)
+                         (setf changed t)
+                         (flet ((clip (panel other share)
+                                  (multiple-value-bind (c n r u) (panel-frame panel)
+                                    (declare (ignore n))
+                                    (let* ((d (vec3-sub (panel-frame other) c))
+                                           (hw (* 0.5d0 (first (getf panel :size))))
+                                           (hh (* 0.5d0 (second (getf panel :size))))
+                                           (dr (/ (vec3-dot d r) hw)) (du (/ (vec3-dot d u) hh))
+                                           (index (if (> (abs dr) (abs du)) (if (> dr 0) 1 0) (if (> du 0) 2 3)))
+                                           (cell (cdr (assoc (getf panel :name) sides))))
+                                      (setf (nth index cell)
+                                            (max *panel-side-minimum* (- (nth index cell) share)))))))
+                           (let ((share (* 0.5d0 (+ pen 0.002d0))))
+                             (clip a b share) (clip b a share)))))))
+          (unless changed (return)))))
+    sides))
+
+(defun panel-borders (panel)
+  "(values left right top bottom depth) of PANEL's bezel, metres: the table's
+borders clipped where the neighbouring panels leave no room (clip-panel-sides)."
+  (let ((sides (if (getf panel :round)
+                   (panel-nominal-sides panel)
+                   (cdr (assoc (getf panel :name)
+                               (or *panel-sides* (setf *panel-sides* (clip-panel-sides))))))))
+    (values (first sides) (second sides) (third sides) (fourth sides)
+            (getf (getf panel :bezel) :depth))))
+
+(defun panel-bezel-box (panel &optional sides)
+  "PANEL's bezel as an oriented box: (values centre normal right up half-n half-r half-u)."
+  (multiple-value-bind (c n r u) (panel-frame panel)
+    (destructuring-bind (left right top bottom &rest more) (or sides (multiple-value-list (panel-borders panel)))
+      (declare (ignore more))
+      (let ((depth (getf (getf panel :bezel) :depth)))
+        (destructuring-bind (w h) (getf panel :size)
+          (let* ((half-r (+ (* 0.5d0 w) (* 0.5d0 (+ left right)))) (half-u (* 0.5d0 (+ h top bottom)))
+                 (half-n (* 0.5d0 (+ depth *cockpit-bezel-front*))))
+            (values (vlin c (* 0.5d0 (- right left)) r (* 0.5d0 (- top bottom)) u
+                          (- *cockpit-bezel-front* half-n) n)
+                    n r u half-n half-r half-u)))))))
+
+(defun panel-grid-cap (panel)
+  "The cap height of PANEL's text grid: the largest that fits its face with 10 mm margins."
+  (destructuring-bind (w h) (getf panel :size)
+    (destructuring-bind (columns rows) (getf panel :grid)
+      (min (/ (- w 0.02d0) (* columns +text-cell-width+))
+           (/ (- h 0.02d0) (* rows +text-cell-height+))))))
+
+(defun panel-grid-origin (panel cap)
+  "The text plane's origin of PANEL's grid (its first row's baseline, left),
+3 mm in front of the face."
+  (multiple-value-bind (c n r u) (panel-frame panel)
+    (destructuring-bind (w h) (getf panel :size)
+      (vlin c (- (* 0.5d0 w) 0.01d0) (vec3-scale r -1d0) (- (* 0.5d0 h) 0.01d0 cap) u 0.003d0 n))))
+
+(defun cab-panel-box! (b panel material du dv dn size-n size-r size-u)
+  (multiple-value-bind (c n r u) (panel-frame panel)
+    (cab-box! b (vlin c du r dv u dn n) (list size-n size-r size-u) material :x n :y r)))
+
+(defun cab-panel-faces! (b)
+  (dolist (panel *cockpit-panels*)
+    (unless (getf panel :round)
+      (destructuring-bind (w h) (getf panel :size)
+        (cab-panel-box! b panel (getf panel :face :screen-face) 0 0 (* -0.5d0 *cockpit-face-thickness*)
+                        *cockpit-face-thickness* w h)))))
+
+(defun cab-panel-bezels! (b)
+  "Four borders and a back plate behind each face, standing 4 mm in front of it."
+  (dolist (panel *cockpit-panels*)
+    (unless (getf panel :round)
+      (destructuring-bind (w h) (getf panel :size)
+        (multiple-value-bind (left right top bottom depth) (panel-borders panel)
+          (let* ((material (getf (getf panel :bezel) :material))
+                 (front *cockpit-bezel-front*)
+                 (centre-n (- front (* 0.5d0 (+ depth front))))
+                 (across (+ w left right)))
+            (flet ((bar (du dv sr su)
+                     (cab-panel-box! b panel material du dv centre-n (+ depth front) sr su)))
+              (bar (* 0.5d0 (- right left)) (+ (* 0.5d0 h) (* 0.5d0 top)) across top)
+              (bar (* 0.5d0 (- right left)) (- (+ (* 0.5d0 h) (* 0.5d0 bottom))) across bottom)
+              (bar (+ (* 0.5d0 w) (* 0.5d0 right)) 0 right h)
+              (bar (- (+ (* 0.5d0 w) (* 0.5d0 left))) 0 left h))
+            (cab-panel-box! b panel material (* 0.5d0 (- right left)) (* 0.5d0 (- top bottom))
+                            (- (+ depth 0.002d0)) 0.004d0 across (+ h top bottom))))))))
+
+(defun cab-panel-bolts! (b)
+  "The ruggedised bezel's four bolts, and the round gauge's dial and ring."
+  (dolist (panel *cockpit-panels*)
+    (multiple-value-bind (c n r u) (panel-frame panel)
+      (destructuring-bind (w h) (getf panel :size)
+        (multiple-value-bind (left right top bottom depth) (panel-borders panel)
+          (if (getf panel :round)
+              (let ((radius (* 0.5d0 w)))
+                (builder-add b :tube (tube-instance (vlin c (- depth) n) (vlin c *cockpit-bezel-front* n)
+                                                    (+ radius left)
+                                                    (cab-material-id (getf (getf panel :bezel) :material))))
+                (builder-add b :tube (tube-instance (vlin c *cockpit-bezel-front* n)
+                                                    (vlin c (+ *cockpit-bezel-front* 0.002d0) n) radius
+                                                    (cab-material-id (getf panel :face :screen-face)))))
+              (when (getf (getf panel :bezel) :bolts)
+                (dolist (sr '(-1 1))
+                  (dolist (su '(-1 1))
+                    (let ((p (vlin c (* sr (+ (* 0.5d0 w) (* 0.5d0 (if (plusp sr) right left)))) r
+                                   (* su (+ (* 0.5d0 h) (* 0.5d0 (if (plusp su) top bottom)))) u)))
+                      (builder-add b :tube (tube-instance (vlin p *cockpit-bezel-front* n)
+                                                          (vlin p (+ *cockpit-bezel-front* 0.006d0) n)
+                                                          (min 0.006d0 (* 0.4d0 (min left right top bottom)))
+                                                          (cab-material-id :steel-angle)))))))))))))
+
+(defun cab-panel-hoods! (b)
+  "A cardboard or sheet-metal sun hood over a panel's top edge, reaching towards the eye."
+  (dolist (panel *cockpit-panels*)
+    (let ((material (getf panel :hood)))
+      (when material
+        (destructuring-bind (w h) (getf panel :size)
+          (multiple-value-bind (left right top) (panel-borders panel)
+            (cab-panel-box! b panel material (* 0.5d0 (- right left)) (+ (* 0.5d0 h) top 0.0015d0)
+                            (+ *cockpit-bezel-front* (* 0.5d0 *cockpit-hood-length*))
+                            *cockpit-hood-length* (+ w left right) 0.003d0)))))))
+
+(defun closest-on-segment (p a b)
+  (let* ((ab (vec3-sub b a))
+         (tt (max 0d0 (min 1d0 (/ (vec3-dot (vec3-sub p a) ab) (vec3-dot ab ab))))))
+    (vec3-add a (vec3-scale ab tt))))
+
+(defun cockpit-rack-member (name)
+  (or (assoc name *cockpit-rack*) (error "No rack member ~S." name)))
+
+(defun rack-member-ends (member)
+  (values (apply #'vec3 (second member)) (apply #'vec3 (third member))))
+
+(defun panel-bracket-anchors (panel)
+  "Two points on PANEL's bezel the brackets start from: behind it, left and
+right, or (a panel on the wall) at the ends of its bezel's face."
+  (multiple-value-bind (c n r u) (panel-frame panel)
+    (destructuring-bind (w h) (getf panel :size)
+      (multiple-value-bind (left right top bottom depth) (panel-borders panel)
+        (cond ((getf panel :wall)
+               (list (vlin c (+ (* 0.5d0 h) (* 0.5d0 top)) u)
+                     (vlin c (- (+ (* 0.5d0 h) (* 0.5d0 bottom))) u)))
+              ((getf panel :round)
+               (list (vlin c (* 0.3d0 w) r (- depth) n) (vlin c (* -0.3d0 w) r (- depth) n)))
+              (t (list (vlin c (+ (* 0.3d0 w) (* 0.5d0 (- right left))) r (- depth) n)
+                       (vlin c (+ (* -0.3d0 w) (* 0.5d0 (- right left))) r (- depth) n))))))))
+
+(defun panel-brackets (panel)
+  "PANEL's L-brackets as (P M Q member): P on the bezel, M the corner (P moved
+along the normal), Q on the nearest rack member's surface (or the front
+wall, member :wall)."
+  (multiple-value-bind (c n) (panel-frame panel)
+    (declare (ignore c))
+    (loop for p in (panel-bracket-anchors panel)
+          collect (let ((best nil) (best-q nil) (best-d 1d9) (half (* 0.5d0 *cockpit-rack-section*)))
+                    (dolist (member *cockpit-rack*)
+                      (multiple-value-bind (a b) (rack-member-ends member)
+                        (let* ((m (closest-on-segment p a b)) (d (vec3-norm (vec3-sub p m))))
+                          (when (< d best-d)
+                            (setf best-d d best member
+                                  best-q (vec3-add m (vec3-scale (vec3-normalize (vec3-sub p m)) half)))))))
+                    (let ((wall-d (abs (- (aref p 0) (getf *cab-window* :x)))))
+                      (when (< wall-d best-d)
+                        (setf best :wall best-q (vec3 (getf *cab-window* :x) (aref p 1) (aref p 2)))))
+                    (let ((m (vec3-add p (vec3-scale n (vec3-dot (vec3-sub best-q p) n)))))
+                      (list p m best-q (if (eq best :wall) :wall (first best))))))))
+
+(defun cab-flat! (b from to material hint &optional (width 0.025d0) (thickness 0.004d0))
+  "A flat bar from FROM to TO, WIDTH wide across HINT's direction."
+  (let ((length (vec3-norm (vec3-sub to from))))
+    (when (> length 0.002d0)
+      (cab-box! b (vec3-scale (vec3-add from to) 0.5d0) (list length width thickness) material
+                :x (vec3-sub to from) :y hint))))
+
+(defun cab-panel-brackets! (b)
+  (dolist (panel *cockpit-panels*)
+    (multiple-value-bind (c n r) (panel-frame panel)
+      (declare (ignore c))
+      (dolist (bracket (panel-brackets panel))
+        (destructuring-bind (p m q member) bracket
+          (declare (ignore member))
+          (cab-flat! b p m :steel-angle r)
+          (cab-flat! b m q :steel-angle n))))))
+
+(defun rack-material (a b)
+  (let ((d (vec3-sub b a)))
+    (cond ((and (> (abs (aref d 2)) (abs (aref d 0))) (> (abs (aref d 2)) (abs (aref d 1)))) :channel-z)
+          ((> (abs (aref d 1)) (abs (aref d 0))) :channel-y)
+          (t :channel-x))))
+
+(defun cab-rack! (b)
+  (dolist (member *cockpit-rack*)
+    (multiple-value-bind (a e) (rack-member-ends member)
+      (cab-box! b (vec3-scale (vec3-add a e) 0.5d0)
+                (list (vec3-norm (vec3-sub e a)) *cockpit-rack-section* *cockpit-rack-section*)
+                (rack-material a e) :x (vec3-sub e a)
+                :y (if (> (abs (aref (vec3-sub e a) 1)) 0.5d0) (vec3 0d0 0d0 1d0) (vec3 0d0 1d0 0d0))))))
+
+(defun cab-tray! (b)
+  (destructuring-bind (&key x z y width height) *cockpit-tray*
+    (cab-box! b (vec3 x 0d0 z) (list width (* 2 y) height) :sheet-metal)))
+
+;;; Cables
+
+(defun cable-points (a b &optional (segments 6))
+  "SEGMENTS + 1 points from A to B sagging down (+z) by 8 % of the span at the middle."
+  (let ((drop (* 0.08d0 (vec3-norm (vec3-sub b a)))))
+    (loop for i to segments
+          for s = (/ i (float segments 1d0))
+          collect (vec3-add (vec3-add (vec3-scale a (- 1 s)) (vec3-scale b s))
+                            (vec3 0d0 0d0 (* drop 4 s (- 1 s)))))))
+
+(defun cable-radius (index)
+  "Ø 15 to 25 mm in turn."
+  (nth (mod index 3) '(0.0075d0 0.010d0 0.0125d0)))
+
+(defun panel-cable-start (panel k count radius)
+  (multiple-value-bind (c n r u) (panel-frame panel)
+    (destructuring-bind (w h) (getf panel :size)
+      (multiple-value-bind (left right top bottom depth) (panel-borders panel)
+        (declare (ignore left right top))
+        (let ((spread (* (- k (* 0.5d0 (1- count))) 0.03d0)))
+          (if (getf panel :wall)
+              (vlin c (- (+ (* 0.5d0 h) bottom 0.02d0)) u spread r 0.015d0 n)
+              (vlin c (- depth radius) n (* -0.3d0 h) u spread r)))))))
+
+(defun cockpit-cables ()
+  "Every panel's cables as (panel material radius points): from its back to the tray."
+  (let ((index 0) (cables '()))
+    (dolist (panel *cockpit-panels*)
+      (let* ((colours (getf panel :cables)) (count (length colours)))
+        (loop for colour in colours for k from 0
+              do (let* ((radius (cable-radius index))
+                        (start (panel-cable-start panel k count radius))
+                        (end (vec3 (+ (getf *cockpit-tray* :x) (* 0.02d0 (- k 1)))
+                                   (max -0.8d0 (min 0.8d0 (+ (aref start 1) (* 0.03d0 (- k 1)))))
+                                   (- (getf *cockpit-tray* :z) (* 0.5d0 (getf *cockpit-tray* :height)) radius))))
+                   (push (list (getf panel :name) colour radius (cable-points start end)) cables)
+                   (incf index)))))
+    (nreverse cables)))
+
+(defun cockpit-trunks ()
+  "The cables' way on from the tray: up the wall at -y and aft along the ceiling
+conduit, one tube a colour: (material radius points)."
+  (let* ((tray-x (getf *cockpit-tray* :x)) (tray-z (- (getf *cockpit-tray* :z) 0.02d0))
+         (conduit (cab-wall-point 0d0 (degrees-to-radians 225d0) *cockpit-conduit-radius*))
+         (y (aref conduit 1)) (z (aref conduit 2))
+         (x1 (first *cab-x-range*)))
+    (loop for colour in '(:cable-black :cable-grey :cable-red :cable-yellow)
+          for k from 0
+          collect (let ((dx (* 0.03d0 k)))
+                    (list colour 0.012d0
+                          (list (vec3 (+ tray-x dx) (- (getf *cockpit-tray* :y) 0.05d0) tray-z)
+                                (vec3 (+ tray-x dx) y tray-z)
+                                (vec3 (+ tray-x dx) y (+ z (* 0.02d0 k)))
+                                (vec3 (+ x1 0.2d0) y (+ z (* 0.02d0 k)))))))))
+
+(defun cab-cables! (b)
+  (dolist (cable (cockpit-cables))
+    (destructuring-bind (name colour radius points) cable
+      (declare (ignore name))
+      (loop for (p q) on points while q
+            do (builder-add b :tube (tube-instance p q radius (cab-material-id colour))))))
+  (dolist (trunk (cockpit-trunks))
+    (destructuring-bind (colour radius points) trunk
+      (loop for (p q) on points while q
+            do (builder-add b :tube (tube-instance p q radius (cab-material-id colour)))))))
+
+(defun polyline-point (points distance)
+  "The point DISTANCE m along POINTS and the unit direction there, or nil past the end."
+  (loop for (p q) on points while q
+        do (let ((length (vec3-norm (vec3-sub q p))))
+             (if (<= distance length)
+                 (return (values (vec3-add p (vec3-scale (vec3-sub q p) (/ distance length)))
+                                 (vec3-normalize (vec3-sub q p))))
+                 (decf distance length)))))
+
+(defun cab-zip-ties! (b)
+  "A zip tie every 0.2 m along each cable: a thin ring a little thicker than it."
+  (dolist (cable (cockpit-cables))
+    (destructuring-bind (name colour radius points) cable
+      (declare (ignore name colour))
+      (loop for distance from 0.1d0 by 0.2d0
+            do (multiple-value-bind (p d) (polyline-point points distance)
+                 (unless p (return))
+                 (builder-add b :tube (tube-instance (vec3-sub p (vec3-scale d 0.002d0))
+                                                     (vec3-add p (vec3-scale d 0.002d0))
+                                                     (+ radius 0.003d0) (cab-material-id :cable-black))))))))
+
+(defun cab-kapton! (b)
+  "Amber Kapton tape on each cable's joints: where it leaves the panel and where it meets the tray."
+  (dolist (cable (cockpit-cables))
+    (destructuring-bind (name colour radius points) cable
+      (declare (ignore name colour))
+      (let ((first (first points)) (second (second points))
+            (last (car (last points))) (before (car (last points 2))))
+        (flet ((wrap (from towards)
+                 (let ((d (vec3-normalize (vec3-sub towards from))))
+                   (builder-add b :tube (tube-instance (vec3-add from (vec3-scale d 0.01d0))
+                                                       (vec3-add from (vec3-scale d 0.05d0))
+                                                       (+ radius 0.002d0) (cab-material-id :kapton))))))
+          (wrap first second)
+          (wrap last before)))))
+  (dolist (trunk (cockpit-trunks))
+    (destructuring-bind (colour radius points) trunk
+      (declare (ignore colour))
+      (loop for (p q) on (rest points) while q
+            do (let ((d (vec3-normalize (vec3-sub q p))))
+                 (builder-add b :tube (tube-instance (vec3-sub p (vec3-scale d 0.02d0))
+                                                     (vec3-add p (vec3-scale d 0.02d0))
+                                                     (+ radius 0.002d0) (cab-material-id :kapton))))))))
+
+;;; Tape labels
+
+(defparameter *cockpit-labels*
+  '((:text "ORBIT" :panel :orbit :side :above)
+    (:text "ATT [WASD QE]" :panel :attitude :side :above)
+    (:text "TGT NEXT ] PREV [ CLR \\" :panel :target :side :above)
+    (:text "AUTOPILOT [O] [RET]" :panel :autopilot)
+    (:text "SHIP  XFER [B]" :panel :ship)
+    (:text "COMMS  ACK [Y]" :panel :comms)
+    (:text "WARP [. , /] PAUSE [P]" :panel :strip :side :above)
+    (:text "COMPUTER  DAMP [T]" :panel :buttons)
+    (:text "THR [SHFT/CTRL]" :panel :throttle :side :above)
+    (:text "[Z] MAX [X] CUT" :panel :throttle)
+    (:text "HULL TEMP" :panel :hull-gauge)
+    (:text "ACK [Y]" :panel :caution-lamps)
+    (:text "STATUS" :panel :status-lamps)
+    (:text "VIEW [V]  MAP [M]  HOME [HOME]" :window t))
+  "The tape labels (docs/design.md \"The DIY look\", decision 126), each beside
+its panel: :at (du dv) from the panel's centre in its plane, else :side :above
+its bezel's top edge or (the default) under its chin. The upper row's tapes go
+above: the console's lower panels stand right under them, so a strip below
+would be hidden.")
+
+(defparameter *cockpit-label-keyless* '("ORBIT" "STATUS" "HULL TEMP")
+  "The labels without a bracketed key (decision 126).")
+
+(defparameter *cab-label*
+  '(:height 0.05d0 :window-height 0.04d0 :margin 0.015d0 :rows 5 :ink (237 237 237)
+    :cap-per-distance 0.023d0 :max-angle 1.9d0)
+  "Tape 50 mm tall in five rows (ragged ends), the text a white marker's, its
+cap 2.3 % of the distance (the readability rule's 1.75 % with a margin).")
+
+(defun label-angle (text)
+  "A fixed pseudo-random angle of TEXT's tape within +-2 degrees, radians."
+  (* (degrees-to-radians (getf *cab-label* :max-angle))
+     (sin (* 1.7d0 (reduce #'+ (map 'list #'char-code text))))))
+
+(defun label-frame (label)
+  "(values centre normal right up height) of LABEL's tape, turned by its angle in its plane."
+  (let ((angle (label-angle (getf label :text))))
+    (multiple-value-bind (centre n r u height)
+        (if (getf label :window)
+            (values (vec3 0.838d0 0d0 -0.325d0) (vec3 -1d0 0d0 0d0) (vec3 0d0 1d0 0d0) (vec3 0d0 0d0 -1d0)
+                    (getf *cab-label* :window-height))
+            (let ((panel (cockpit-panel (getf label :panel))) (height (getf *cab-label* :height)))
+              (multiple-value-bind (c n r u) (panel-frame panel)
+                (destructuring-bind (w h) (getf panel :size)
+                  (declare (ignore w))
+                  (multiple-value-bind (left right border chin) (panel-borders panel)
+                    (declare (ignore left right))
+                    (destructuring-bind (du dv) (or (getf label :at)
+                                                    (list 0d0 (if (eq (getf label :side) :above)
+                                                                  (+ (* 0.5d0 h) border 0.01d0 (* 0.5d0 height))
+                                                                  (- (+ (* 0.5d0 h) chin 0.01d0 (* 0.5d0 height))))))
+                      (values (vlin c du r dv u (+ *cockpit-bezel-front* 0.002d0) n) n r u height)))))))
+      (values centre n
+              (vec3-add (vec3-scale r (cos angle)) (vec3-scale u (sin angle)))
+              (vec3-sub (vec3-scale u (cos angle)) (vec3-scale r (sin angle)))
+              height))))
+
+(let ((loaders (make-hash-table)))
+  (defun label-loader (key)
+    (or (gethash key loaders)
+        (setf (gethash key loaders) (luv.slug:slug-font-loader (font-path key))))))
+
+(defun label-metrics (label)
+  "(values cap advance length) of LABEL: the text's cap height in metres, its
+shaped advance, and its tape's length."
+  (let* ((text (getf label :text))
+         (loader (label-loader :label))
+         (upm (zpb-ttf:units/em loader))
+         (cap-em (/ (luv.slug:slug-font-cap-height loader) upm))
+         (centre (label-frame label))
+         (cap (* (getf *cab-label* :cap-per-distance) (vec3-norm centre)))
+         (shaped (luv.slug:slug-shaped-text-for (font-path :label) text))
+         (advance (* (/ cap cap-em) (/ (luv.slug:slug-shaped-text-x-advance shaped)
+                                       (luv.slug:slug-shaped-text-units-per-em shaped)))))
+    (values cap advance (+ advance (* 2 (getf *cab-label* :margin))))))
+
+(defun label-ragged-ends (text row)
+  "(values left right) the lengths in metres row ROW of TEXT's tape is cut short at its ends."
+  (flet ((frac (seed) (let ((x (* 43758.5453d0 (sin (* seed 12.9898d0))))) (- x (floor x)))))
+    (let ((seed (+ (reduce #'+ (map 'list #'char-code text)) (* 7 row))))
+      (values (* 0.006d0 (frac seed)) (* 0.006d0 (frac (+ seed 0.5d0)))))))
+
+(defun cab-labels! (b)
+  "The tape strips: five rows of grey gaffer tape, 2 mm thick, ragged at the ends."
+  (dolist (label *cockpit-labels*)
+    (multiple-value-bind (centre n r u height) (label-frame label)
+      (multiple-value-bind (cap advance length) (label-metrics label)
+        (declare (ignore cap advance))
+        (let* ((rows (getf *cab-label* :rows)) (row-height (/ height rows)))
+          (dotimes (i rows)
+            (multiple-value-bind (left right) (label-ragged-ends (getf label :text) i)
+              (cab-box! b (vlin centre (* 0.5d0 (- left right)) r (* (- i (* 0.5d0 (1- rows))) row-height) u)
+                        (list 0.002d0 (- length left right) (+ row-height 0.0006d0)) :tape
+                        :x n :y r))))))))
+
+;;; The text regions: the labels' tape letters and the screens' placeholders.
+
+(defun cockpit-text-region (key)
+  (cdr (assoc key *cab-text-regions* :test #'equal)))
+
+(defparameter *placeholder-text* "PLACEHOLDER(166)")
+(defparameter *placeholder-ink* '(232 228 216) "Paper white (docs/design.md \"Readability\").")
+
+(defun cockpit-labels-text! (atlas batch)
+  (dolist (label *cockpit-labels*)
+    (multiple-value-bind (centre n r u) (label-frame label)
+      (let* ((cap (label-metrics label)) (text (getf label :text))
+             (region (text-batch-region batch (length text)))
+             (origin (vlin centre 0.004d0 n (* -0.5d0 cap) u)))
+        (shaped-run! atlas region 0
+                     (make-text-plane :origin (coerce origin 'list) :right (coerce r 'list) :up (coerce u 'list))
+                     text :font :label :cap (float cap 1f0) :kind :lit :align :centre
+                          :colour (apply #'text-colour (getf *cab-label* :ink)))
+        (push (cons (list :label text) region) *cab-text-regions*)))))
+
+(defun cockpit-placeholders-text! (atlas batch)
+  (dolist (panel *cockpit-panels*)
+    (when (getf panel :screen)
+      (let* ((cap (panel-grid-cap panel)) (origin (panel-grid-origin panel cap))
+             (region (text-batch-region batch (length *placeholder-text*))))
+        (multiple-value-bind (c n r u) (panel-frame panel)
+          (declare (ignore c n))
+          (grid-run! atlas region 0
+                     (make-text-plane :origin (coerce origin 'list) :right (coerce r 'list) :up (coerce u 'list))
+                     *placeholder-text* :font :mono :cap (float cap 1f0) :kind :emissive
+                                        :colour (apply #'text-colour *placeholder-ink*)))
+        (push (cons (list :placeholder (getf panel :name)) region) *cab-text-regions*)))))
+
+(defparameter *cab-console-parts*
+  '("rack" "tray" "panel-faces" "bezels" "bezel-bolts" "hoods" "brackets" "cables" "zip-ties"
+    "kapton" "labels")
+  "The model's parts of the console, in the order cab-console! adds them.")
+
+(defun cab-console! (b)
+  "The console's parts."
+  (builder-part b "rack" :box (lambda () (cab-rack! b)))
+  (builder-part b "tray" :box (lambda () (cab-tray! b)))
+  (builder-part b "panel-faces" :box (lambda () (cab-panel-faces! b)))
+  (builder-part b "bezels" :box (lambda () (cab-panel-bezels! b)))
+  (builder-part b "bezel-bolts" :tube (lambda () (cab-panel-bolts! b)))
+  (builder-part b "hoods" :box (lambda () (cab-panel-hoods! b)))
+  (builder-part b "brackets" :box (lambda () (cab-panel-brackets! b)))
+  (builder-part b "cables" :tube (lambda () (cab-cables! b)))
+  (builder-part b "zip-ties" :tube (lambda () (cab-zip-ties! b)))
+  (builder-part b "kapton" :tube (lambda () (cab-kapton! b)))
+  (builder-part b "labels" :box (lambda () (cab-labels! b))))
 
 ;;; Counts for the budget (plan 31: ≤ 30,000 vertices, ≤ 2,000 instances).
 

@@ -178,7 +178,8 @@ asymptote (a byte of 255 asks for x = 7.24 / EXPOSURE)."
                     :attributes ((:shader-location 0 :offset 0 :format :float32x3))))))
     (live-pipeline renderer :bloom-down layout buffers :format +hdr-format+)
     (live-pipeline renderer :bloom-up layout buffers :format +hdr-format+)
-    (live-pipeline renderer :tone-map layout buffers)))
+    (live-pipeline renderer :tone-map layout buffers)
+    (live-pipeline renderer :grapple-post layout buffers :format :rgba8-unorm)))
 
 (defun level-extent (extent k)
   (mapcar (lambda (n) (max 1 (floor n (expt 2 k)))) extent))

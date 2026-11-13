@@ -2469,6 +2469,7 @@ Earth's shadow; each thing is read where the pose puts it."
            (lamp-checks game png width height)
            (attitude-checks game png width height)
            (autopilot-checks game png width height)
+           (grapple-camera-checks game png width height)
            (sun-patch-checks game png width height)
            (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))
            ;; Resizes replace the swapchain's textures; what the renderer kept
@@ -2773,6 +2774,102 @@ start, so the rock is moved to the ship)."
                 "the armed claw's pixels ~,1F, stowed ~,1F" (first levels) (second levels))))
       (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream))))
     (lis::game-load-state! game (lis::new-game-sim))))
+
+;;; The grapple camera on the TARGET face (plan 32 piece 7; decision 128): Skua
+;;; Yard 3's fixture 20 m ahead of the tip on its axis in Earth's shadow, the
+;;; grapple armed (the floodlight on). The face shows a grey image with the
+;;; crosshair and the pin's ◆; the pass runs only while the grapple is armed,
+;;; closing or latched; two frames differ by noise only.
+
+(defun shadowed-on-axis-sim (range)
+  "The ship RANGE m in front of Skua Yard 3's fixture, on its axis, both
+turned about Earth's axis into Earth's shadow."
+  (let* ((sim (lis::stated-sim `(:orbit (:on-axis :skua-yard-3 ,range))))
+         (bodies (list (lis::sim-ship sim) (lis::object-state (lis::sim-object sim :skua-yard-3)))))
+    (loop for degrees from 0 below 360 by 5
+          for rotation = (lis::quat-from-axis-angle (lis::vec3 0 0 1) (lis::deg->rad degrees))
+          when (< (lis::sun-visible-fraction (lis::quat-rotate rotation (lis::ship-state-r (lis::sim-ship sim)))
+                                             (lis::sim-t sim))
+                  0.001)
+            do (dolist (body bodies)
+                 (replace (lis::ship-state-r body) (lis::quat-rotate rotation (lis::ship-state-r body)))
+                 (replace (lis::ship-state-v body) (lis::quat-rotate rotation (lis::ship-state-v body)))
+                 (replace (lis::ship-state-q body) (lis::quat-mul rotation (lis::ship-state-q body))))
+               (return-from shadowed-on-axis-sim sim))
+    (error "No shadow found")))
+
+(defun grapple-camera-checks (game png width height)
+  (with-canvas-values (game (lis::*bloom-strength* 0.0) (lis::*screen-flash-period* 1d6)
+                            (lis::*star-radiance-limit* 0.0))
+    (let* ((sim (shadowed-on-axis-sim 20d0))
+           (panel (lis::cockpit-panel :target)) (fov 20)
+           (renderer (lis::game-renderer game))
+           (w (first (getf panel :size))) (h (second (getf panel :size))))
+      (multiple-value-bind (c n r u) (lis::panel-frame panel)
+        (let ((yaw (lis::rad->deg (atan (aref c 1) (aref c 0))))
+              (pitch (lis::rad->deg (asin (/ (aref c 2) (lis::vec3-norm c))))))
+          (labels ((pixel-at (fx fy)
+                     ;; the face's point FX of its width from the left, FY of its height from the top
+                     (multiple-value-bind (x y) (head-projection (lis::vlin c (* (- fx 0.5) w) r (* (- 0.5 fy) h) u
+                                                                            0.002d0 n)
+                                                                 yaw pitch)
+                       (let ((per (/ (/ height 2) (tan (lis::deg->rad (/ fov 2))))))
+                         (values (round (+ (/ width 2) (* x per))) (round (+ (/ height 2) (* y per)))))))
+                   (shot (state)
+                     (setf (lis::grapple-state (lis::sim-grapple sim)) state)
+                     (multiple-value-bind (path w h pixels format)
+                         (lis::capture-game-state game png :sim sim :view :cockpit :readout nil :frames 3
+                                                           :head (list yaw pitch fov))
+                       (declare (ignore path w h))
+                       (lambda (fx fy)
+                         (multiple-value-bind (x y) (pixel-at fx fy)
+                           (pixel-rgb pixels format width x y)))))
+                   (luminance (rgb) (/ (reduce #'+ (mapcar #'byte-linear rgb)) 3)))
+            (let* ((before (lis::frame-renderer-grapple-passes renderer))
+                   (armed (shot :armed))
+                   (after (lis::frame-renderer-grapple-passes renderer))
+                   (again (shot :armed))
+                   (stowed (shot :stowed))
+                   (still (progn (lis::wait-for-frames game 1) (lis::frame-renderer-grapple-passes renderer)))
+                   (lattice (loop for fx in '(0.15 0.3 0.7 0.85)
+                                  append (loop for fy in '(0.44 0.56) collect (cons fx fy)))))
+              (true (> after before) "the pass ran while armed: ~D to ~D" before after)
+              (lis::wait-for-frames game 2)
+              (is = still (lis::frame-renderer-grapple-passes renderer) "no pass while stowed")
+              ;; the image is grey away from the bands and the crosshair
+              (dolist (point lattice)
+                (let ((rgb (funcall armed (car point) (cdr point))))
+                  (true (and (<= (abs (- (first rgb) (second rgb))) 6) (<= (abs (- (second rgb) (third rgb))) 6))
+                        "grey at ~A: ~A" point rgb)))
+              ;; the pin's neighbourhood against the face's median
+              (let* ((reading (lis::make-grapple-reading))
+                     (extent lis::*grapple-extent*))
+                (true (lis::grapple-range-into! reading (lis::game-sim game)))
+                (multiple-value-bind (px py) (lis::grapple-pin-pixel reading)
+                  (let* ((fx (/ px (first extent))) (fy (/ py (second extent)))
+                         (near (loop for dx from -0.03 to 0.03 by 0.01
+                                     append (loop for dy from -0.04 to 0.04 by 0.02
+                                                  collect (luminance (funcall armed (+ fx dx) (+ fy dy))))))
+                         (face (sort (loop for fx from 0.05 to 0.95 by 0.05
+                                           append (loop for fy from 0.45 to 0.75 by 0.05
+                                                        collect (luminance (funcall armed fx fy))))
+                                     #'<))
+                         (median (nth (floor (length face) 2) face))
+                         (mean (/ (reduce #'+ near) (length near))))
+                    (true (> mean (* 2 (max median 1d-4))) "the pin's neighbourhood ~,5F against the median ~,5F" mean median))))
+              ;; two frames differ by noise only
+              (let* ((points (loop for fx from 0.1 to 0.4 by 0.02
+                                   append (loop for fy from 0.42 to 0.62 by 0.02 collect (cons fx fy))))
+                     (difference (/ (loop for p in points
+                                          sum (abs (- (reduce #'+ (funcall armed (car p) (cdr p)))
+                                                      (reduce #'+ (funcall again (car p) (cdr p))))))
+                                    (* 3 (length points)))))
+                (true (< 0.5 difference 4) "two frames' mean difference ~,2F bytes (1.06 at 320 x 200 on lavapipe)" difference))
+              ;; the crosshair's line is there armed and not stowed
+              (let ((on (luminance (funcall armed 0.3 0.5))) (off (luminance (funcall stowed 0.3 0.5))))
+                (true (> on (* 5 off)) "the crosshair armed ~,4F, stowed ~,4F" on off)))))))
+    (lis::game-load-state! game (lis::new-game-sim))
+    (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))))
 
 (define-test render-cockpit-limb
   ;; The cockpit view with the head on the nose (yaw 0, pitch 0, 70°), the cab

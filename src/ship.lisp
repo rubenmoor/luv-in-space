@@ -335,7 +335,8 @@ ship's boxes or to LOAD's bounding sphere."
   (fixture 0 :type fixnum)                     ; index in its fixtures
   (range 0d0 :type double-float)               ; m, tip to the plate's plane along the axis
   (closing-speed 0d0 :type double-float)       ; m/s, the range's rate of fall
-  (offset-y 0d0 :type double-float)            ; m, the pin from the tip, body axes
+  (offset-x 0d0 :type double-float)            ; m, the pin from the tip, body axes: x ahead
+  (offset-y 0d0 :type double-float)            ; y right, z down
   (offset-z 0d0 :type double-float)
   (angle 0d0 :type double-float)               ; rad, +x to the inward axis
   (rotation 0d0 :type double-float)            ; rad/s, |ω_ship − ω_object|
@@ -351,6 +352,19 @@ ship's boxes or to LOAD's bounding sphere."
   (offset-ok nil :type boolean)                ; √(y² + z²)
   (angle-ok nil :type boolean)
   (rotation-ok nil :type boolean))
+
+(defun grapple-reading-judge! (reading)
+  "READING's four flags from its values against decision 33's capture
+window (closing 0.01 to 0.30 m/s, offset 0.30 m, angle 10 degrees, rotation
+0.5 degrees/s); READING. Conses nothing."
+  (declare (optimize speed) (type grapple-reading reading))
+  (let ((y (grapple-reading-offset-y reading)) (z (grapple-reading-offset-z reading)))
+    (setf (grapple-reading-closing-ok reading) (<= *capture-closing-min* (grapple-reading-closing-speed reading)
+                                                   *capture-closing-max*)
+          (grapple-reading-offset-ok reading) (<= (sqrt (+ (* y y) (* z z))) *capture-offset*)
+          (grapple-reading-angle-ok reading) (<= (grapple-reading-angle reading) *capture-angle*)
+          (grapple-reading-rotation-ok reading) (<= (grapple-reading-rotation reading) *capture-rotation*))
+    reading))
 
 (defun fixture-reading-into! (out sim index fixture-index com)
   "OUT, a grapple-reading, for SIM's INDEXth object's fixture FIXTURE-INDEX,
@@ -402,6 +416,7 @@ the stack's CoM at COM (body axes from R); OUT. Conses nothing."
               (grapple-reading-fixture out) fixture-index
               (grapple-reading-range out) (- (vec3-dot axis d))
               (grapple-reading-closing-speed out) closing
+              (grapple-reading-offset-x out) (aref d-b 0)
               (grapple-reading-offset-y out) y
               (grapple-reading-offset-z out) z
               (grapple-reading-angle out) angle
@@ -413,13 +428,8 @@ the stack's CoM at COM (body axes from R); OUT. Conses nothing."
               (grapple-reading-velocity-z out) (aref tip-b 2)
               (grapple-reading-rate-x out) (aref u-v 0)
               (grapple-reading-rate-y out) (aref u-v 1)
-              (grapple-reading-rate-z out) (aref u-v 2)
-              (grapple-reading-closing-ok out) (<= *capture-closing-min* closing
-                                                   *capture-closing-max*)
-              (grapple-reading-offset-ok out) (<= (sqrt (+ (* y y) (* z z))) *capture-offset*)
-              (grapple-reading-angle-ok out) (<= angle *capture-angle*)
-              (grapple-reading-rotation-ok out) (<= rotation *capture-rotation*))
-        out))))
+              (grapple-reading-rate-z out) (aref u-v 2))
+        (grapple-reading-judge! out)))))
 
 (defun grapple-range-into! (out sim)
   "OUT, a grapple-reading, for the nearest free fixture of a promoted object

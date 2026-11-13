@@ -635,7 +635,7 @@ rest, in body axes from the eye."
      :size (0.30d0 0.20d0) :grid (24 8) :screen t
      :bezel (:material :grey-plastic :border 0.025d0 :depth 0.05d0 :bolts 4)
      :hood :cardboard :cables (:cable-black :cable-grey))
-    (:name :attitude :centre (0.67d0 0d0 0.35d0) :direction (0d0 27.5d0)
+    (:name :attitude :centre (0.67d0 0d0 0.29d0) :direction (0d0 23d0)
      :size (0.24d0 0.20d0) :grid (19 8) :screen t
      :bezel (:material :black-plastic :border 0.015d0 :depth 0.04d0)
      :cables (:cable-black))

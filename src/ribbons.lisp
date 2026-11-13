@@ -17,8 +17,19 @@
          (type double-float *ribbon-max-error-px*)
          (type (unsigned-byte 24) *ribbon-colour* *ribbon-crash-colour*))
 
-(defconstant +ribbon-instance-floats+ 12
-  "Per segment: the start (x y z 1), the end (x y z 1), the linear colour (r g b 1).")
+(defparameter *ribbon-width-px* 2.0d0 "The line's width in pixels; decision 84.")
+(defparameter *ribbon-radiance* 1.0d0 "Times the colour, over the exposure; decision 84.")
+
+(defconstant +ribbon-instance-floats+ 16
+  "Per segment: the start (x y z 1), the end (x y z 1), the linear colour (r g b 1),
+the style (dash phase in px at the start or −1 for solid, the phase at the end,
+the width in px, the radiance factor); decision 125: Map in milestone 3.")
+
+(defparameter *dash-period-px* 14d0 "A dashed line repeats every this many px; decision 125.")
+(defparameter *target-orbit-colour* #xE040E0 "The target's orbit, magenta, sRGB; decision 125.")
+(defparameter *map-lines-capacity* 32768 "Segments in the map's one line buffer; decision 125.")
+(declaim (type double-float *dash-period-px*) (type (unsigned-byte 24) *target-orbit-colour*)
+         (type fixnum *map-lines-capacity*))
 
 (deftype doubles () '(simple-array double-float (*)))
 
@@ -181,24 +192,32 @@ Conses nothing."
         (expt (the (double-float 0d0) (/ (+ c 0.055d0) 1.055d0)) 2.4d0))))
 
 (defun orbit-ribbon-instances! (ribbon eye-rel-body
-                                &optional (crash-radius (body-crash-radius (body :earth))))
-  "Write one instance per segment of RIBBON: both endpoints (point − EYE-REL-BODY,
-i.e. point + body − eye) in double, then single, and the linear colour, red
-where the segment's mid-anomaly radius is below CRASH-RADIUS. Returns the
-segment count. Conses nothing."
+                                &key (crash-radius (body-crash-radius (body :earth)))
+                                  (colour *ribbon-colour*) (crash-colour *ribbon-crash-colour*)
+                                  (width *ribbon-width-px*) (radiance 1d0)
+                                  (out (ribbon-instances ribbon)) (start 0))
+  "Write one instance per segment of RIBBON into OUT from segment START: both
+endpoints (point − EYE-REL-BODY, i.e. point + body − eye) in double, then
+single, the linear COLOUR (sRGB integer), CRASH-COLOUR where the segment's
+mid-anomaly radius is below CRASH-RADIUS, solid (phase −1), WIDTH px and
+RADIANCE as the style (dash-phases! sets dashes). Returns the segment count.
+Conses nothing."
   (declare (optimize speed) (type ribbon ribbon) (type vec3 eye-rel-body)
-           (type double-float crash-radius))
+           (type double-float crash-radius width radiance)
+           (type (unsigned-byte 24) colour crash-colour)
+           (type (simple-array single-float (*)) out) (type fixnum start))
   (let ((points (ribbon-points ribbon)) (mid-radii (ribbon-mid-radii ribbon))
-        (out (ribbon-instances ribbon)) (p (ribbon-scratch ribbon))
-        (count (ribbon-count ribbon)))
+        (p (ribbon-scratch ribbon))
+        (count (ribbon-count ribbon))
+        (width (coerce width 'single-float)) (radiance (coerce radiance 'single-float)))
     (macrolet ((colour (rgb)
                  `(values (coerce (srgb-channel-linear ,rgb 16) 'single-float)
                           (coerce (srgb-channel-linear ,rgb 8) 'single-float)
                           (coerce (srgb-channel-linear ,rgb 0) 'single-float))))
-      (multiple-value-bind (cr cg cb) (colour *ribbon-colour*)
-        (multiple-value-bind (dr dg db) (colour *ribbon-crash-colour*)
+      (multiple-value-bind (cr cg cb) (colour colour)
+        (multiple-value-bind (dr dg db) (colour crash-colour)
           (dotimes (s count)
-            (let ((o (* s +ribbon-instance-floats+)))
+            (let ((o (* (+ start s) +ribbon-instance-floats+)))
               (declare (type fixnum o))
               (dotimes (end 2)
                 (let ((k (* 3 (+ s end))))
@@ -208,14 +227,115 @@ segment count. Conses nothing."
               (if (< (aref mid-radii s) crash-radius)
                   (setf (aref out (+ o 8)) dr (aref out (+ o 9)) dg (aref out (+ o 10)) db)
                   (setf (aref out (+ o 8)) cr (aref out (+ o 9)) cg (aref out (+ o 10)) cb))
-              (setf (aref out (+ o 11)) 1f0))))))
+              (setf (aref out (+ o 11)) 1f0
+                    (aref out (+ o 12)) -1f0 (aref out (+ o 13)) -1f0
+                    (aref out (+ o 14)) width (aref out (+ o 15)) radiance))))))
     count))
 
-;;; The GPU half: the :ribbon live pipeline and the draw in the map's scene
-;;; pass, after the meshes (docs/architecture.md "Rendering precision").
+(defun dash-phases! (out start count points eye camera extent phase)
+  "Dash the COUNT instances of OUT from segment START, which join the
+COUNT + 1 POINTS (x y z, double, relative to the same origin as EYE, the eye):
+each segment's phases are its start's phase (PHASE for the first, the running
+sum of the projected pixel lengths after, reduced modulo *dash-period-px*) and
+that plus its own length, the projection that of CAMERA for a frame of EXTENT
+(width height) in double; a segment with an endpoint behind the eye has
+length 0, so dashes run on across segments at every zoom (decision 125: Map
+in milestone 3). Returns the phase at the end, to continue a ribbon. Conses
+nothing."
+  (declare (optimize speed) (type (simple-array single-float (*)) out) (type fixnum start count)
+           (type doubles points) (type vec3 eye) (type camera camera) (type list extent)
+           (type double-float phase))
+  (let* ((width (float (the fixnum (first extent)) 1d0))
+         (height (float (the fixnum (second extent)) 1d0))
+         (f (/ (tan (* 0.5d0 (camera-field-of-view camera)))))
+         (fx (/ (* f height) width))
+         (fy (* +clip-y-sign+ f))
+         (forward (make-vec3)) (right (make-vec3)) (down (make-vec3)) (scratch (make-vec3))
+         (q (camera-orientation camera))
+         (period *dash-period-px*)
+         (px 0d0) (py 0d0) (visible nil))
+    (declare (dynamic-extent forward right down scratch) (type double-float width height f fx fy period px py))
+    (quat-rotate! forward q (vec3-set! scratch 1d0 0d0 0d0))
+    (quat-rotate! right q (vec3-set! scratch 0d0 1d0 0d0))
+    (quat-rotate! down q (vec3-set! scratch 0d0 0d0 1d0))
+    (flet ((project (i)
+             ;; the pixel of point I into PX, PY; VISIBLE when in front of the eye
+             (declare (type fixnum i))
+             (let* ((dx (- (aref points (* 3 i)) (aref eye 0)))
+                    (dy (- (aref points (+ (* 3 i) 1)) (aref eye 1)))
+                    (dz (- (aref points (+ (* 3 i) 2)) (aref eye 2)))
+                    (w (+ (* dx (aref forward 0)) (* dy (aref forward 1)) (* dz (aref forward 2)))))
+               (declare (type double-float dx dy dz w))
+               (setf visible (> w 0d0))
+               (when visible
+                 (setf px (* 0.5d0 width (+ 1d0 (/ (* fx (+ (* dx (aref right 0)) (* dy (aref right 1))
+                                                           (* dz (aref right 2))))
+                                                  w)))
+                       py (* 0.5d0 height (+ 1d0 (/ (* fy (+ (* dx (aref down 0)) (* dy (aref down 1))
+                                                               (* dz (aref down 2))))
+                                                      w))))))))
+      (declare (inline project))
+      (project 0)
+      (let ((prev-x px) (prev-y py) (prev-visible visible)
+            (phase (mod phase period)))
+        (declare (type double-float prev-x prev-y phase))
+        (dotimes (s count)
+          (project (1+ s))
+          (let ((length (if (and prev-visible visible)
+                            (sqrt (the (double-float 0d0) (+ (expt (- px prev-x) 2) (expt (- py prev-y) 2))))
+                            0d0))
+                (o (* (+ start s) +ribbon-instance-floats+)))
+            (declare (type double-float length) (type fixnum o))
+            (setf (aref out (+ o 12)) (coerce phase 'single-float)
+                  (aref out (+ o 13)) (coerce (+ phase length) 'single-float))
+            (setf phase (mod (+ phase length) period)
+                  prev-x px prev-y py prev-visible visible)))
+        phase))))
 
-(defparameter *ribbon-width-px* 2.0d0 "The line's width in pixels; decision 84.")
-(defparameter *ribbon-radiance* 1.0d0 "Times the colour, over the exposure; decision 84.")
+;;; The one line buffer of the map (decision 125): every ribbon appends its
+;;; segments here and one draw covers them.
+
+(defstruct (map-lines (:constructor %make-map-lines))
+  "COUNT segments of up to CAPACITY in INSTANCES (+ribbon-instance-floats+ each);
+VIEW is INSTANCES seen up to the used part, for write-buffer."
+  (capacity 0 :type fixnum)
+  (count 0 :type fixnum)
+  (instances nil :type (simple-array single-float (*)))
+  (view nil :type (and vector (not simple-array))))
+
+(defun make-map-lines (&key (capacity *map-lines-capacity*))
+  (let ((instances (make-array (* +ribbon-instance-floats+ capacity)
+                               :element-type 'single-float :initial-element 0f0)))
+    (%make-map-lines :capacity capacity :instances instances
+                     :view (make-array (length instances) :element-type 'single-float
+                                                          :displaced-to instances :fill-pointer 0))))
+
+(defun map-lines-clear! (lines)
+  (setf (map-lines-count lines) 0)
+  lines)
+
+(defun map-lines-add-orbit! (lines ribbon eye-rel-body camera extent
+                             &key (colour *ribbon-colour*) (crash-colour *ribbon-crash-colour*)
+                               (width *ribbon-width-px*) (radiance 1d0) dashed (phase 0d0))
+  "Append RIBBON's segments (orbit-ribbon-points! done) to LINES through
+orbit-ribbon-instances! with COLOUR, CRASH-COLOUR, WIDTH and RADIANCE; DASHED:
+with dash phases from PHASE. Segments past the capacity are dropped. Returns
+the segment count appended. Conses nothing."
+  (declare (type map-lines lines) (type ribbon ribbon))
+  (let* ((start (map-lines-count lines))
+         (n (min (- (map-lines-capacity lines) start) (ribbon-count ribbon)))
+         (kept (ribbon-count ribbon)))
+    (when (plusp n)
+      (setf (ribbon-count ribbon) n)
+      (orbit-ribbon-instances! ribbon eye-rel-body :out (map-lines-instances lines) :start start
+                               :colour colour :crash-colour crash-colour :width width
+                               :radiance radiance)
+      (when dashed
+        (dash-phases! (map-lines-instances lines) start n (ribbon-points ribbon)
+                      eye-rel-body camera extent phase))
+      (setf (ribbon-count ribbon) kept)
+      (incf (map-lines-count lines) n))
+    (max n 0)))
 
 (defun ribbon-corners ()
   "The 6-vertex quad: along 0 or 1, across ±1."
@@ -226,7 +346,8 @@ segment count. Conses nothing."
     (:array-stride ,(* 4 +ribbon-instance-floats+) :step-mode :instance
      :attributes ((:shader-location 1 :offset 0 :format :float32x4)
                   (:shader-location 2 :offset 16 :format :float32x4)
-                  (:shader-location 3 :offset 32 :format :float32x4)))))
+                  (:shader-location 3 :offset 32 :format :float32x4)
+                  (:shader-location 4 :offset 48 :format :float32x4)))))
 
 (defun ribbon-pipeline (renderer layout format)
   "The :ribbon live pipeline into FORMAT: additive, depth compared :greater,
@@ -236,30 +357,50 @@ not written (decision 4: Depth strategy)."
                  :depth-stencil '(:format :depth32-float :depth-write-enabled nil
                                   :depth-compare :greater)))
 
-(defun make-ribbon-buffer (device ribbon)
-  "A target's instance buffer for RIBBON's capacity."
+(defun make-ribbon-buffer (device lines)
+  "A target's instance buffer for the map LINES' capacity."
   (luv:create device (luv:make-buffer-descriptor
-                      :label "ribbon" :size (* 4 (length (ribbon-instances ribbon)))
+                      :label "map lines" :size (* 4 (length (map-lines-instances lines)))
                       :usage '(:vertex :copy-dst))))
 
-(defun encode-ribbon (pass renderer bind-group ribbon buffer corners state camera eye height)
-  "The ship's osculating orbit about Earth into the open scene PASS: points
-and instances for the eye EYE (relative to Earth's centre) and a frame
-HEIGHT px tall, written to BUFFER. Nothing for a state without an orbit
-plane (r × v = 0)."
-  (let ((r (render-state-r state)) (v (render-state-v state)) (h (ribbon-scratch ribbon)))
-    (when (> (vec3-norm (vec3-cross! h r v)) (* 1d-9 (vec3-norm r) (vec3-norm v)))
-      (orbit-ribbon-points! ribbon (state->orbit-into! (ribbon-orbit ribbon) r v +mu-earth+
-                                                       (render-state-t state))
-                            eye (camera-focal-px camera height))
-      (let ((count (orbit-ribbon-instances! ribbon eye)))
-        (when (plusp count)
-          (luv:write-buffer buffer (ribbon-instances ribbon))
-          (luv:set-pipeline pass (renderer-pipeline renderer :ribbon))
-          (luv:set-bind-group pass 0 bind-group)
-          (luv:set-vertex-buffer pass 0 corners)
-          (luv:set-vertex-buffer pass 1 buffer)
-          (luv:draw pass 6 count))))))
+(defun map-lines-conic-p (r v h)
+  "R × v (into H) is not zero: the state has an orbit plane."
+  (> (vec3-norm (vec3-cross! h r v)) (* 1d-9 (vec3-norm r) (vec3-norm v))))
+
+(defun map-lines-fill! (lines ribbon state camera eye extent)
+  "LINES: the ship's osculating orbit about Earth (cyan) and, with a target,
+its osculating orbit (magenta, *target-orbit-colour*), for the eye EYE (relative
+to Earth's centre) and a frame of EXTENT (width height). Nothing for a state
+without an orbit plane (r × v = 0). Conses nothing."
+  (map-lines-clear! lines)
+  (let ((h (ribbon-scratch ribbon)) (focal (camera-focal-px camera (second extent))))
+    (flet ((orbit-of (r v colour)
+             (when (map-lines-conic-p r v h)
+               (orbit-ribbon-points! ribbon (state->orbit-into! (ribbon-orbit ribbon) r v +mu-earth+
+                                                                (render-state-t state))
+                                     eye focal)
+               (map-lines-add-orbit! lines ribbon eye camera extent :colour colour))))
+      (when (render-state-target state)
+        (orbit-of (render-state-target-r state) (render-state-target-v state) *target-orbit-colour*))
+      (orbit-of (render-state-r state) (render-state-v state) *ribbon-colour*))
+    lines))
+
+(defun encode-map-lines (pass renderer bind-group lines buffer corners state camera eye extent)
+  "The map's lines into the open scene PASS in one draw: LINES filled for the eye EYE
+(relative to Earth's centre) and EXTENT, written to BUFFER. The renderer's test
+lines function, if any, adds its own first."
+  (map-lines-fill! lines (frame-renderer-ribbon renderer) state camera eye extent)
+  (let ((hook (frame-renderer-test-lines renderer)))
+    (when hook (funcall hook lines state camera eye extent)))
+  (let ((count (map-lines-count lines)) (view (map-lines-view lines)))
+    (when (plusp count)
+      (setf (fill-pointer view) (* count +ribbon-instance-floats+))
+      (luv:write-buffer buffer view)
+      (luv:set-pipeline pass (renderer-pipeline renderer :ribbon))
+      (luv:set-bind-group pass 0 bind-group)
+      (luv:set-vertex-buffer pass 0 corners)
+      (luv:set-vertex-buffer pass 1 buffer)
+      (luv:draw pass 6 count))))
 
 ;;; The map's markers (decision 84): the ship, the apsides, the impact and
 ;;; bodies below 6 px, each a pixel position, a colour and a label, from the

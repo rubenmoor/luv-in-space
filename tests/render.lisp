@@ -822,6 +822,133 @@ check looks from el 10 deg, where the far half lies apart."
               (is = 0 (cyan pixels format far-side)))))))
     (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))))
 
+;; The map's line styles and the target's orbit (decision 125: Map in
+;; milestone 3).
+
+(defun test-line-hook (from-px to-px &key (dashed t) (width 2f0) (row-y nil))
+  "A frame-renderer-test-lines function adding one cyan segment from pixel
+FROM-PX to TO-PX (x y) 1,000 m from the eye; dashed from phase 0 by its length
+in px, or solid."
+  (declare (ignore row-y))
+  (lambda (lines state camera eye extent)
+    (declare (ignore state eye))
+    (destructuring-bind (w h) extent
+      (let* ((out (lis::map-lines-instances lines))
+             (o (* (lis::map-lines-count lines) lis::+ribbon-instance-floats+))
+             (length (sqrt (+ (expt (- (first to-px) (first from-px)) 2)
+                              (expt (- (second to-px) (second from-px)) 2)))))
+        (loop for (px py) in (list from-px to-px)
+              for k from 0 by 4
+              for ray = (lis::vec3-scale (pixel-ray camera (- px 0.5d0) (- py 0.5d0) w h) 1000d0)
+              do (dotimes (i 3) (setf (aref out (+ o k i)) (coerce (aref ray i) 'single-float)))
+                 (setf (aref out (+ o k 3)) 1f0))
+        (setf (aref out (+ o 8)) (coerce (lis::srgb-channel-linear #x40D0FF 16) 'single-float)
+              (aref out (+ o 9)) (coerce (lis::srgb-channel-linear #x40D0FF 8) 'single-float)
+              (aref out (+ o 10)) (coerce (lis::srgb-channel-linear #x40D0FF 0) 'single-float)
+              (aref out (+ o 11)) 1f0
+              (aref out (+ o 12)) (if dashed 0f0 -1f0)
+              (aref out (+ o 13)) (if dashed (coerce length 'single-float) -1f0)
+              (aref out (+ o 14)) width (aref out (+ o 15)) 1f0)
+        (incf (lis::map-lines-count lines))))))
+
+(defun capture-with-lines (game png hook camera-fn &key (sim (lis::new-game-sim)))
+  (let ((renderer (lis::game-renderer game)))
+    (lis::call-on-canvas-thread game (lambda () (setf (lis::frame-renderer-test-lines renderer) hook)))
+    (unwind-protect
+         (multiple-value-bind (path w h pixels format)
+             (lis::capture-game-state game png :sim sim :view :map :frames 1 :camera-fn camera-fn)
+           (declare (ignore path w h))
+           (values pixels format))
+      (lis::call-on-canvas-thread game (lambda () (setf (lis::frame-renderer-test-lines renderer) nil))))))
+
+(defun run-lengths (flags)
+  "The lengths of the runs of equal values in FLAGS, as (value . length), in order."
+  (let ((runs '()))
+    (loop for flag in flags
+          do (if (and runs (eq (car (first runs)) flag))
+                 (incf (cdr (first runs)))
+                 (push (cons flag 1) runs)))
+    (nreverse runs)))
+
+(defun conic-pixels-from (orbit eye camera width height)
+  "Pixels (x y) of ORBIT's points in the frame and not behind Earth from EYE
+(relative to Earth's centre), in double."
+  (let ((seen '()))
+    (dotimes (k 2048 seen)
+      (let* ((p (conic-point orbit (* 2 pi (/ k 2048))))
+             (d (lis::vec3-sub p eye))
+             (s (max 0d0 (min 1d0 (/ (- (lis::vec3-dot eye d)) (lis::vec3-dot d d)))))
+             (behind (< (lis::vec3-norm (lis::vec3-add-scaled eye d s)) lis::+radius-earth+)))
+        (multiple-value-bind (x y w) (project camera d width height)
+          (when (and (plusp w) (not behind) (<= 0 x (1- width)) (<= 0 y (1- height)))
+            (push (list x y) seen)))))))
+
+(defun target-orbit-checks (game png width height)
+  "Tern Station targeted: magenta pixels on its orbit where it lies apart from
+the ship's (seen from the ship, 150 km out, its orbit 20 km higher)."
+  (let* ((sim (let ((sim (lis::new-game-sim))) (lis::sim-set-target! sim :tern-station) sim))
+         (state (sim-render-state sim))
+         (camera-fn (lambda (camera state)
+                      (let ((view (lis::new-map-view)))
+                        (lis::map-view-open! view state)
+                        (lis::map-view-cycle-focus! view)
+                        (setf (lis::map-view-elevation view) (deg 30)
+                              (lis::map-view-distance view) 150d3
+                              (lis::map-view-target view) 150d3)
+                        (lis::map-camera-update! camera view state nil))))
+         (camera (posed-camera camera-fn state))
+         (eye (lis::camera-eye camera (lis::camera-anchor-position! (lis::make-vec3) camera state)))
+         (mu lis::+mu-earth+) (time (lis::render-state-t state))
+         (ship-orbit (lis::state->orbit (lis::render-state-r state) (lis::render-state-v state) mu time))
+         (target-orbit (lis::state->orbit (lis::render-state-target-r state)
+                                          (lis::render-state-target-v state) mu time))
+         (near-ship (near-test (conic-pixels-from ship-orbit eye camera width height) 6 width height))
+         (apart (remove-if (lambda (pt) (funcall near-ship (first pt) (second pt)))
+                           (conic-pixels-from target-orbit eye camera width height)))
+         (near-apart (near-test apart 2 width height)))
+    (true (> (length apart) 10) "target orbit apart from the ship's: ~D points" (length apart))
+    (multiple-value-bind (pixels format) (capture-with-lines game png nil camera-fn :sim sim)
+      (let ((n (loop for y below height
+                     sum (loop for x below width
+                               count (and (funcall near-apart (+ x 0.5) (+ y 0.5))
+                                          (destructuring-bind (r g b) (pixel-rgb pixels format width x y)
+                                            (and (>= (- r g) 60) (>= (- b g) 60))))))))
+        (true (>= n 30) "target orbit: ~D magenta pixels" n)))))
+
+(defun line-style-checks (game png width height)
+  "A dashed test line alternates 8 px lit and 6 px dark; 1 px and 2 px widths
+measured across the line."
+  (let* ((camera-fn (map-camera-fn 30))
+         (y 12.5)
+         (hook (test-line-hook (list 6 y) (list (- width 6) y))))
+    (flet ((lit (pixels format x row)
+             (destructuring-bind (r g b) (pixel-rgb pixels format width x row)
+               (and (>= (- g r) 60) (>= (- b r) 60)))))
+      (multiple-value-bind (pixels format) (capture-with-lines game png hook camera-fn)
+       (let* ((runs (run-lengths (loop for x from 8 below (- width 8) collect (lit pixels format x (floor y)))))
+             (inner (butlast (rest runs))))
+        (true (>= (length inner) 4) "dash runs: ~S" runs)
+        (dolist (run inner)
+          (if (car run)
+              (true (<= 7 (cdr run) 9) "lit run ~D" (cdr run))
+              (true (<= 5 (cdr run) 7) "dark run ~D" (cdr run))))))
+      (flet ((across (w)
+               (multiple-value-bind (pixels format)
+                   (capture-with-lines game png (test-line-hook (list 6 y) (list (- width 6) y)
+                                                                :dashed nil :width w)
+                                       camera-fn)
+                 (loop with x = (floor width 2)
+                       with column = (loop for row from 3 to 22
+                                           collect (destructuring-bind (r g b)
+                                                       (pixel-rgb pixels format width x row)
+                                                     (declare (ignore b r))
+                                                     (lis::srgb-channel-linear (ash g 8) 8)))
+                       for value in column
+                       sum (/ value (float (max 1 (reduce #'max column))))))))
+        (let ((one (across 1f0)) (two (across 2f0)))
+          (true (< 0.8 one 1.3) "1 px line: ~,2F" one)
+          (true (< 1.7 two 2.3) "2 px line: ~,2F" two))))))
+
 ;; The map's markers (decision 84): exact colours after the tone map.
 
 (defun rgb-bytes (rgb)
@@ -1909,6 +2036,8 @@ Earth's shadow; each thing is read where the pose puts it."
            (grapple-checks game png width height)
            (map-checks game png width height)
            (ribbon-checks game png width height)
+           (line-style-checks game png width height)
+           (target-orbit-checks game png width height)
            (marker-checks game png width height)
            (text-checks game png width height)
            (cockpit-checks game png width height)

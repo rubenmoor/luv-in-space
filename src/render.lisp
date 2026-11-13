@@ -772,6 +772,10 @@ the tests' one decode for every canvas they open.")
          :documentation "The Mule's static resources (src/meshes.lisp).")
    (ribbon :initform (make-ribbon) :reader frame-renderer-ribbon
            :documentation "The map's orbit points and instances (src/ribbons.lisp).")
+   (map-lines :initform (make-map-lines) :reader frame-renderer-map-lines
+              :documentation "The map's one line buffer (src/ribbons.lisp).")
+   (test-lines :initform nil :accessor frame-renderer-test-lines
+               :documentation "Tests: a function (lines state camera eye extent) adding map lines.")
    (ribbon-corners :initarg :ribbon-corners :reader frame-renderer-ribbon-corners)
    (markers :initform (make-map-markers) :reader frame-renderer-markers
             :documentation "The map's markers (src/ribbons.lisp).")
@@ -909,7 +913,7 @@ again once it is acquired (luv's canvas-frame-resource-cache)."
                                               (frame-renderer-earth-coarse-view renderer))
                 :ship (make-ship-target-slot renderer (frame-renderer-ship renderer) buffer)
                 :ribbon (make-ribbon-buffer (renderer-device renderer)
-                                            (frame-renderer-ribbon renderer))
+                                            (frame-renderer-map-lines renderer))
                 :cab (make-cab-slot-for renderer (frame-renderer-cockpit renderer))
                 :text (make-text-slot renderer (frame-renderer-text-layout renderer)
                                       (frame-renderer-text-atlas renderer)
@@ -1085,9 +1089,9 @@ cab's meshes, instances and text."
                             (frame-renderer-text-corners renderer) state camera extent exposure
                             (frame-renderer-eye renderer)))
           (when (eq view :map)
-            (encode-ribbon pass renderer bind-group (frame-renderer-ribbon renderer)
-                           (frame-slot-ribbon slot) (frame-renderer-ribbon-corners renderer)
-                           state camera (frame-renderer-eye renderer) (second extent)))
+            (encode-map-lines pass renderer bind-group (frame-renderer-map-lines renderer)
+                              (frame-slot-ribbon slot) (frame-renderer-ribbon-corners renderer)
+                              state camera (frame-renderer-eye renderer) extent))
           (let ((quads (frame-renderer-test-quads renderer)))
             (when quads (draw pass :quads (car quads) (cdr quads))))
           (luv:end-pass pass))

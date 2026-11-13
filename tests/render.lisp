@@ -1881,6 +1881,7 @@ Earth's shadow; each thing is read where the pose puts it."
            (marker-checks game png width height)
            (text-checks game png width height)
            (cockpit-checks game png width height)
+           (sun-patch-checks game png width height)
            (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))
            ;; Resizes replace the swapchain's textures; what the renderer kept
            ;; for the old ones goes, so its per-target state stays bounded.
@@ -2213,3 +2214,85 @@ start, so the rock is moved to the ship)."
                  (true (< (loop for y below (- limb 15) maximize (lum y)) 40)
                        "space above the limb is dark"))))
            (is = 0 (lis:report-failed-live-artifacts game (make-broadcast-stream)))))))))
+
+;;; The sunlit patch (plan 31 piece 6): the Sun at an elevation above the nose
+;;; line through the window lights a patch on the deck, found by the twin.
+
+(defun sun-body-direction (elevation)
+  "The body direction of the Sun ELEVATION degrees above the nose line (z is down)."
+  (lis::vec3 (cos (deg elevation)) 0d0 (- (sin (deg elevation)))))
+
+(defun sun-sim (u elevation)
+  "The start orbit at argument of latitude U, the ship turned so the Sun is at ELEVATION."
+  (let* ((sim (start-sim-at u))
+         (state (sim-render-state sim))
+         (s (lis::vec3-normalize (lis::vec3-sub (lis::render-state-sun state)
+                                                (lis::render-state-r state)))))
+    (turn-ship! sim (coerce (sun-body-direction elevation) 'list) s)))
+
+(defun deck-point-pose (point)
+  "(values yaw pitch) in degrees of a head looking at POINT, or nil past its limits."
+  (let ((yaw (* (/ 180 pi) (atan (aref point 1) (aref point 0))))
+        (pitch (* (/ 180 pi) (asin (/ (aref point 2) (lis::vec3-norm point))))))
+    (when (and (< (abs yaw) 145) (< pitch 75) (> pitch -55))
+      (values yaw pitch))))
+
+(defun find-deck-point (test)
+  "A deck point (body axes from the eye, z +1.15) behind the eye a head can look
+at for which TEST (a function of the point) holds."
+  (loop for x from -2.0d0 to 0.8d0 by 0.05d0
+        do (loop for y from -1.0d0 to 1.0d0 by 0.05d0
+                 for p = (lis::vec3 x y 1.15d0)
+                 when (and (deck-point-pose p) (funcall test p))
+                   do (return-from find-deck-point p))))
+
+(defun deck-pixel (game png sim point width height)
+  "The centre pixel's rgb of the cockpit with the head aimed at POINT."
+  (multiple-value-bind (yaw pitch) (deck-point-pose point)
+    (multiple-value-bind (path w h pixels format)
+        (lis::capture-game-state game png :sim sim :view :cockpit :readout nil :frames 2
+                                          :head (list yaw pitch 40))
+      (declare (ignore path w h))
+      (pixel-rgb pixels format width (floor width 2) (floor height 2)))))
+
+(defun sun-patch-checks (game png width height)
+  (with-canvas-values (game (lis::*bloom-strength* 0.0))
+    (let* ((s (sun-body-direction 30))
+           (s5 (sun-body-direction 35))
+           (lit (find-deck-point (lambda (p) (lis::sun-patch-p p s -0.03d0))))
+           (flip (find-deck-point (lambda (p) (and (lis::sun-patch-p p s5 -0.03d0)
+                                                   (not (lis::sun-patch-p p s 0.03d0)))))))
+      (true lit "a lit deck point the head can see")
+      (true flip "a deck point the 5 degree turn lights")
+      (when (and lit flip)
+        (let ((exposure 4.0)
+              (up (lis::vec3 0d0 0d0 -1d0)))
+          (flet ((led-level (point)
+                   ;; The byte range of the unlit tread plate (diamonds 0.72..1).
+                   (multiple-value-bind (r g b) (lis::cab-irradiance point up)
+                     (declare (ignore r b))
+                     (let ((albedo (aref lis::*cab-materials* 2 0)))
+                       (values (- (lis::tone-map-srgb (* 0.72 0.9 albedo g) exposure) 4)
+                               (+ (lis::tone-map-srgb (* 1.1 albedo g) exposure) 4))))))
+            (let ((sim (sun-sim 60 30)))
+              (let ((got (deck-pixel game png sim lit width height)))
+                (true (> (second got) 200) "the patch's deck pixel ~A" got))
+              ;; 0.05 m outside the patch: the LED level.
+              (let* ((outside (loop for x from (aref lit 0) to 0.8d0 by 0.01d0
+                                    for p = (lis::vec3 x (aref lit 1) 1.15d0)
+                                    unless (lis::sun-patch-p p s 0.05d0) return p))
+                     (got (and outside (deck-pixel game png sim outside width height))))
+                (true (and outside (deck-point-pose outside)) "a point outside the patch")
+                (when got
+                  (multiple-value-bind (lo hi) (led-level outside)
+                    (true (<= lo (second got) hi) "outside the patch: ~A, ~D..~D" got lo hi)))))
+            ;; Turned 5 degrees the patch has moved: FLIP is unlit at 30, lit at 35.
+            (let ((got (deck-pixel game png (sun-sim 60 30) flip width height)))
+              (multiple-value-bind (lo hi) (led-level flip)
+                (true (<= lo (second got) hi) "before the turn: ~A, ~D..~D" got lo hi)))
+            (let ((got (deck-pixel game png (sun-sim 60 35) flip width height)))
+              (true (> (second got) 200) "after the turn: ~A" got))
+            ;; In Earth's shadow there is no patch.
+            (let ((got (deck-pixel game png (sun-sim 180 30) lit width height)))
+              (multiple-value-bind (lo hi) (led-level lit)
+                (true (<= lo (second got) hi) "in shadow: ~A, ~D..~D" got lo hi)))))))))

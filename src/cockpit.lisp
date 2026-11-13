@@ -196,6 +196,36 @@ the shader function cab-opening-cut."
                        (< (- (vec3-dot d d) (* along along)) (expt *cab-porthole-radius* 2)))
               (return t)))))))
 
+;;; The sunlit patch (docs/design.md "The DIY look"): the ray from a point
+;;; towards the Sun meets the window's rectangle or a porthole's disc.
+
+(defun sun-patch-p (p s &optional (margin 0d0))
+  "Whether the ray from the body point P along the unit direction S (towards
+the Sun) passes through the window's rectangle (in the front wall's plane) or
+a porthole's disc (at its inside centre), the openings grown by MARGIN m. The
+twin of the shader function sun-patch."
+  (let ((wx (getf *cab-window* :x)) (sx (aref s 0)))
+    (or (and (> sx 0.001d0) (< (aref p 0) wx)
+             (let ((tt (/ (- wx (aref p 0)) sx)))
+               (and (< (abs (+ (aref p 1) (* tt (aref s 1)))) (+ (getf *cab-window* :half-width) margin))
+                    (< (abs (+ (aref p 2) (* tt (aref s 2)))) (+ (getf *cab-window* :half-height) margin)))))
+        (dolist (side '(-1 1) nil)
+          (multiple-value-bind (centre axis) (cab-porthole-geometry side)
+            (let ((facing (vec3-dot s axis)))
+              (when (> facing 0.001d0)
+                (let ((tt (/ (vec3-dot (vec3-sub centre p) axis) facing)))
+                  (when (> tt 0d0)
+                    (let ((d (vec3-sub (vec3-add-scaled p s tt) centre)))
+                      (when (< (vec3-norm d) (+ *cab-porthole-radius* margin))
+                        (return t))))))))))))
+
+(defun cab-sun-radiance (p n s factor albedo)
+  "The sun patch's radiance at P, unit normal N, ALBEDO: FACTOR x max(n.s, 0) x
+ALBEDO where (sun-patch-p P S), else 0."
+  (if (sun-patch-p p s)
+      (* factor (max (vec3-dot n s) 0d0) albedo)
+      0d0))
+
 ;;; The shell
 
 (defun cab-wall-sides () 96)

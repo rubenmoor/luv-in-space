@@ -615,6 +615,28 @@
                        (* (swizzle hole-b :w) (swizzle hole-b :w))))))
     (if (or in-window in-a in-b) 1.0 0.0)))
 
+;; 1.0 where the ray from P along the unit direction S (to the Sun) passes
+;; through the window's rectangle or a porthole's disc, else 0.0
+;; (src/cockpit.lisp sun-patch-p).
+(define-shader-function sun-patch (p s window hole-a axis-a hole-b axis-b)
+  (let* ((sx (max (swizzle s :x) 0.001))
+         (tw (/ (- (swizzle window :x) (swizzle p :x)) sx))
+         (in-window (and (> (swizzle s :x) 0.001)
+                         (> tw 0.0)
+                         (< (abs (+ (swizzle p :y) (* tw (swizzle s :y)))) (swizzle window :y))
+                         (< (abs (+ (swizzle p :z) (* tw (swizzle s :z)))) (swizzle window :z))))
+         (fa (dot s (swizzle axis-a :xyz)))
+         (ta (/ (dot (- (swizzle hole-a :xyz) p) (swizzle axis-a :xyz)) (max fa 0.001)))
+         (da (- (+ p (* s ta)) (swizzle hole-a :xyz)))
+         (in-a (and (> fa 0.001) (> ta 0.0)
+                    (< (dot da da) (* (swizzle hole-a :w) (swizzle hole-a :w)))))
+         (fb (dot s (swizzle axis-b :xyz)))
+         (tb (/ (dot (- (swizzle hole-b :xyz) p) (swizzle axis-b :xyz)) (max fb 0.001)))
+         (db (- (+ p (* s tb)) (swizzle hole-b :xyz)))
+         (in-b (and (> fb 0.001) (> tb 0.0)
+                    (< (dot db db) (* (swizzle hole-b :w) (swizzle hole-b :w))))))
+    (if (or in-window in-a in-b) 1.0 0.0)))
+
 ;; The cab's meshes and instances: positions in body axes from the eye, the
 ;; clip rows of the cab block (the world camera's projection in body axes, so
 ;; depth agrees with the scene's). SURFACE: material, two parameters.
@@ -712,7 +734,11 @@
          (flat (normalize body-normal))
          (n (* flat (if (> (dot flat body) 0.0) -1.0 1.0)))
          (paint (* (swizzle m0 :xyz) (* diamond slotted)))
-         (lit (cab-irradiance body n strip-a strip-b light (swizzle params :z))))
+         (s (swizzle sun :xyz))
+         (patch (* (sun-patch body s window hole-a hole-a-axis hole-b hole-b-axis)
+                   (* (max (dot n s) 0.0) (swizzle sun :w))))
+         (lit (+ (cab-irradiance body n strip-a strip-b light (swizzle params :z))
+                 (vec3 patch patch patch))))
     (when (> cut 0.5)
       (discard))
     (set-output color (vec4 (+ (* paint lit) (* (swizzle m0 :xyz) (swizzle m1 :y))) 1.0))))

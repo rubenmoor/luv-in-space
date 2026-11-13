@@ -598,3 +598,45 @@ degrees: x right, y down, in tangents (divide by tan(fov/2))."
     (dolist (name '("rack" "tray" "panel-faces" "bezels" "bezel-bolts" "hoods" "brackets" "cables"
                     "zip-ties" "kapton" "labels"))
       (true (assoc name (lis::model-parts model) :test #'string=) "part ~A" name))))
+
+;;; The sunlit patch's twin against a brute-force walk along the ray.
+
+(defun brute-patch-p (p s)
+  "Walks the ray from P along S in 1 mm steps, interpolating each crossing of
+the window's plane and of a porthole's plane."
+  (let ((wx (getf lis::*cab-window* :x)))
+    (flet ((crossing (f0 f1 at-fraction)
+             (and (< f0 0d0) (>= f1 0d0) (funcall at-fraction (/ (- f0) (- f1 f0))))))
+      (loop with step = 0.001d0
+            for k from 0 below 6000
+            for a = (lis::vec3-add-scaled p s (* k step))
+            for b = (lis::vec3-add-scaled p s (* (1+ k) step))
+            thereis (or (crossing (- (aref a 0) wx) (- (aref b 0) wx)
+                                  (lambda (f)
+                                    (let ((h (lis::vec3-add-scaled a (lis::vec3-sub b a) f)))
+                                      (and (< (abs (aref h 1)) (getf lis::*cab-window* :half-width))
+                                           (< (abs (aref h 2)) (getf lis::*cab-window* :half-height))))))
+                        (dolist (side '(-1 1) nil)
+                          (multiple-value-bind (centre axis) (lis::cab-porthole-geometry side)
+                            (when (crossing (lis::vec3-dot (lis::vec3-sub a centre) axis)
+                                            (lis::vec3-dot (lis::vec3-sub b centre) axis)
+                                            (lambda (f)
+                                              (let ((h (lis::vec3-add-scaled a (lis::vec3-sub b a) f)))
+                                                (< (lis::vec3-norm (lis::vec3-sub h centre))
+                                                   lis::*cab-porthole-radius*))))
+                              (return t)))))))))
+
+(define-test sun-patch-twin
+  (let ((state (sb-ext:seed-random-state 236)) (lit 0))
+    (dotimes (i 1000)
+      (let* ((p (lis::vec3 (- (random 4.3d0 state) 3.55d0) (- (random 2.4d0 state) 1.2d0)
+                           (- (random 2.3d0 state) 1.15d0)))
+             (s (lis::vec3-normalize (lis::vec3 (+ 0.2d0 (random 0.8d0 state)) (- (random 2d0 state) 1d0)
+                                                (- (random 2d0 state) 1d0))))
+             (brute (brute-patch-p p s)))
+        (when brute (incf lit))
+        (when (and (lis::sun-patch-p p s -0.002d0) (not brute))
+          (fail "twin shrunk lit, brute not: ~A ~A" p s))
+        (when (and brute (not (lis::sun-patch-p p s 0.002d0)))
+          (fail "brute lit, twin grown not: ~A ~A" p s))))
+    (true (< 20 lit 900) "~D of 1000 lit" lit)))

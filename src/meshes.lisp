@@ -1418,7 +1418,7 @@ texture-from-pixels; alpha 0 off the cairn and the letters."
 
 (defparameter *earth-albedo* 0.3d0 "Earthshine (decision 80); live.")
 (defparameter *earthshine-tint* '(0.85d0 0.92d0 1.0d0) "Live.")
-(defparameter *ship-ambient* 0.0005d0 "Live.")
+(defparameter *ship-ambient* 0.01d0 "A fill for ships and objects in Earth's shadow (task 286); live.")
 
 (defconstant +ship-uniform-floats+ 60 "shaders.lisp's ship block: 15 vec4s.")
 

@@ -1244,6 +1244,11 @@ station-keeping's ×4, decision 120)."
            (format nil "WARP REFUSED: RCS BURN, LIMIT ×~D" *fine-levels-max*))
           ((and (sim-engine-on-p sim) (> level (thrust-warp-limit sim)))
            (format nil "WARP REFUSED: ENGINE ON, LIMIT ×~:D" (thrust-warp-limit sim)))
+          ;; a plan's engine burn due: clock-check-level!'s cap, so a raise
+          ;; is not lowered again at once (task 287)
+          ((and (> level *cutoff-warp-limit*)
+                (let ((burn (plan-burn-due sim))) (and burn (not (planned-burn-rcs burn)))))
+           (format nil "WARP REFUSED: ENGINE ON, LIMIT ×~:D" *cutoff-warp-limit*))
           ((and (> level *fine-levels-max*) (not (held-p sim))
                 (>= (vec3-norm (ship-state-w (sim-ship sim))) *warp-rotation-limit*))
            "WARP REFUSED: ROTATING, SET A HOLD")

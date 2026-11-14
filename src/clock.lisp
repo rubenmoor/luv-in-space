@@ -1529,8 +1529,8 @@ until); none paused (the accumulator emptied) or lost. The steps taken."
 
 (defun clock-restart! (clock sim checkpoint)
   "SIM restored to CHECKPOINT; CLOCK at ×1, unpaused, its accumulator,
-messages, prediction and the autopilot's model (autopilot-reset!) cleared; its latest
-checkpoint and the SHIP log kept. SIM."
+messages, SHIP log and its read mark, prediction and the autopilot's model
+(autopilot-reset!) cleared; its latest checkpoint kept. SIM."
   (restore-checkpoint! sim checkpoint)
   (setf (clock-game-t clock) (sim-t sim))
   (rate-meter-reset! clock)
@@ -1540,6 +1540,8 @@ checkpoint and the SHIP log kept. SIM."
         (clock-accumulator clock) 0d0
         (clock-message-list clock) nil
         (clock-message-stamps clock) nil
+        (clock-log clock) nil
+        (clock-log-read clock) nil
         (clock-held clock) nil
         (clock-previous-t clock) (sim-t sim))
   (ship-state-assign! (clock-previous clock) (sim-ship sim))

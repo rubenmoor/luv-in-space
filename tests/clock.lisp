@@ -142,8 +142,12 @@
       (false (lis::sim-checkpoint-request sim))
       (is eq old (lis::clock-checkpoint clock))
       ;; clock-restart! keeps it.
+      (lis::clock-message! clock :test "EARLIER RUN")
       (lis::clock-restart! clock sim old)
       (is eq old (lis::clock-checkpoint clock))
+      ;; ... but no message of the earlier run (task 288).
+      (false (lis::clock-log clock))
+      (false (lis::clock-messages clock))
       (true (equalp sim old)))))
 
 (define-test clock-grid-and-until

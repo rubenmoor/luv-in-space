@@ -1175,7 +1175,14 @@ log with its read mark and a copy of the autopilot model."
   (let ((log (mapcar #'copy-list (clock-log clock))))
     (make-clock-screen
      :level-index (clock-level-index clock)
-     :messages (mapcar (lambda (m) (list (first m) (second m))) (clock-message-list clock))
+     :messages (loop for m in (clock-message-list clock)
+                     ;; a headless clock never ages its messages: keep those logged
+                     ;; within *message-time* of game time
+                     when (let ((entry (find-if (lambda (e) (and (eq (second e) (first m))
+                                                                 (equal (third e) (second m))))
+                                                (clock-log clock))))
+                            (and entry (>= (first entry) (- (clock-game-t clock) *message-time*))))
+                       collect (list (first m) (second m)))
      :log log
      :log-read (position (clock-log-read clock) (clock-log clock) :test #'eq)
      :autopilot (autopilot-model-snapshot (clock-autopilot clock)))))
@@ -1347,7 +1354,9 @@ with no hold, the next step engages an inertial hold (sim-step!)."
   "PLAN flown by SIM from now (sim-engage-plan!), CLOCK's model :engaged with
 it kept for the map; SIM."
   (autopilot-engaged! (clock-autopilot clock) plan)
-  (sim-engage-plan! sim plan))
+  (sim-engage-plan! sim plan)
+  (clock-message! clock :autopilot "AUTOPILOT ENGAGED")
+  sim)
 
 (defun autopilot-disengage! (clock sim &optional pilot)
   "Backspace, or PILOT input: SIM's plan stopped (sim-plan-stop!: throttle

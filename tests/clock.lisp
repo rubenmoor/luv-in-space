@@ -1345,6 +1345,18 @@ count and the largest sim t seen while planning."
         (false (eq old (lis::sim-plan sim)))
         (is eq (lis::sim-plan sim) (lis::autopilot-model-flown model))))))
 
+(define-test autopilot-menu-engine-on-refused
+  ;; The engine burning: Return refuses "ENGINE ON", not stale without end.
+  (let* ((sim (model-sim :point))
+         (clock (clock-at sim 1))
+         (model (lis::clock-autopilot clock)))
+    (setf (lis::controls-throttle (lis::sim-controls sim)) 0.42d0)
+    (menu-key clock sim :open)
+    (setf (lis::autopilot-model-selection model) :rdv-tern-station)
+    (menu-key clock sim :return)
+    (is eq :refused (menu-state clock))
+    (is string= "ENGINE ON" (lis::autopilot-model-text model))))
+
 (define-test autopilot-menu-engage-and-backspace
   ;; Paused: planning acts, a second Return engages; Backspace in each state.
   (let* ((sim (model-sim :point))

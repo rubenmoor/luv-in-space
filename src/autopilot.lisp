@@ -718,7 +718,7 @@ and two predictions."
 (defun autopilot-job-start! (job sim preset goal &key base (from 0))
   "JOB planning PRESET with GOAL (autopilot-first-guess's, or :rendezvous's
 (target &key range limit)) from a snapshot of SIM, or re-planning BASE's
-burns FROM on; refused at once outside Earth orbit, for a goal above
+burns FROM on; refused at once outside Earth orbit, with the engine on (not a replan), for a goal above
 *goal-altitude-max*, a target's plane without a target or a rendezvous's
 stop point (job-rendezvous-start!). JOB."
   (let ((snapshot (autopilot-job-snapshot job)))
@@ -754,6 +754,9 @@ stop point (job-rendezvous-start!). JOB."
            (altitude (goal-altitude preset goal)))
       (cond ((not (and (eq (sim-body snapshot) :earth) (elliptic-p orbit)))
              (job-refuse! job "NOT IN EARTH ORBIT"))
+            ;; the shots coast from the snapshot: a burning ship leaves them at once
+            ((and (null base) (sim-engine-on-p snapshot))
+             (job-refuse! job "ENGINE ON"))
             ((and altitude (> altitude *goal-altitude-max*))
              (job-refuse! job "GOAL OUT OF RANGE"))
             ((and (eq (goal-plane preset goal) :target) (null (sim-target snapshot)))

@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# scripts/convert-earth [out-dir]: downloads NASA's Black Marble 2016 (3 km)
+# and Blue Marble clouds (8192), checks their SHA-256s and resamples both to
+# 5400x2700 like the day map: assets/earth/black-marble-5400.jpg (night
+# lights, background removed) and assets/earth/clouds-5400.jpg (cloud cover,
+# greyscale). Needs network. Enters the dev shell itself (ImageMagick).
+# decision 130: Earth's night lights and clouds in numbers; decision 13:
+# Asset storage and attribution; assets/earth/SOURCE.md.
+set -euo pipefail
+
+usage() { echo "usage: scripts/convert-earth [out-dir]" >&2; exit 2; }
+[ $# -le 1 ] || usage
+case "${1:-}" in -*) usage ;; esac
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+out="$(realpath -m -- "${1:-$root/assets/earth}")"
+
+# Always this flake's shell; see scripts/test.
+if [ "${LIS_DEV_SHELL:-}" != 1 ]; then
+  LIS_DEV_SHELL=1 exec nix develop --accept-flake-config "$root" -c "$root/scripts/convert-earth" "$out"
+fi
+
+night_url=https://assets.science.nasa.gov/content/dam/science/esd/eo/images/imagerecords/144000/144898/BlackMarble_2016_3km.jpg
+night_sha256=230aac448ae68c358be433dd518888cccb3a85ccf66f7b44326441c324ad6725
+clouds_url=https://eoimages.gsfc.nasa.gov/images/imagerecords/57000/57747/cloud_combined_8192.tif
+# eoimages.gsfc.nasa.gov is not always reachable; the Internet Archive's
+# capture of 2023-12-30 is the same file (the hash decides).
+clouds_mirror=https://web.archive.org/web/20231230035002id_/$clouds_url
+clouds_sha256=d137775d8966ab8d443fd5126dc6e7ad72072bc1ed50555c5818d221735daf0f
+
+# The night map's background, a fraction of full scale per channel in
+# linear light: the 3 km image carries a dim floor, tinted blue, which would
+# light the whole night side. Measured 2026-11-13 from 60x60 texel windows of
+# the source over the Sahara (23 N 10 E): land at sRGB R 36-39, G 33-36,
+# B 60-70 (open ocean, the Pacific at 0 150 W, is near 6 in all channels,
+# below). F is the floor's top in linear light with a little margin: R and G
+# 0.025 (sRGB 46), B 0.065 (sRGB 72); lights keep (1 - F) of their value.
+floor_rg=2.5%
+scale_rg=0.975
+floor_b=6.5%
+scale_b=0.935
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
+fetch() { # file sha256 url...
+  local file=$1 sha=$2; shift 2
+  local url
+  for url in "$@"; do
+    # The archive sometimes cuts a long transfer short; the hash decides.
+    for _ in 1 2 3; do
+      if curl -sSfL --http1.1 --max-time 900 -o "$tmp/$file" "$url" 2>/dev/null \
+         && echo "$sha  $tmp/$file" | sha256sum -c --quiet - 2>/dev/null; then
+        return 0
+      fi
+    done
+  done
+  echo "convert-earth: cannot fetch $file with SHA-256 $sha" >&2
+  exit 1
+}
+
+fetch BlackMarble_2016_3km.jpg "$night_sha256" "$night_url"
+fetch cloud_combined_8192.tif "$clouds_sha256" "$clouds_url" "$clouds_mirror"
+
+mkdir -p "$out"
+m() { magick -limit thread 1 "$@"; }
+
+m "$tmp/BlackMarble_2016_3km.jpg" -strip -colorspace RGB \
+  -channel RG -evaluate subtract "$floor_rg" -evaluate divide "$scale_rg" +channel \
+  -channel B -evaluate subtract "$floor_b" -evaluate divide "$scale_b" +channel \
+  -evaluate max 0 \
+  -filter Lanczos -resize '5400x2700!' -clamp -colorspace sRGB \
+  -sampling-factor 4:4:4 -interlace none -quality 92 "jpeg:$out/black-marble-5400.jpg.partial"
+mv "$out/black-marble-5400.jpg.partial" "$out/black-marble-5400.jpg"
+
+m "$tmp/cloud_combined_8192.tif" -strip -channel R -separate +channel \
+  -filter Lanczos -resize '5400x2700!' -clamp -colorspace Gray \
+  -interlace none -quality 90 "jpeg:$out/clouds-5400.jpg.partial"
+mv "$out/clouds-5400.jpg.partial" "$out/clouds-5400.jpg"
+
+echo "wrote $out/black-marble-5400.jpg and $out/clouds-5400.jpg"

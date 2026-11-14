@@ -1327,11 +1327,6 @@ clear."
                                                       *object-clearance*))))))
     margin))
 
-(defun terminal-path-clear-p (sim target fixture stop aim t-arr)
-  "The terminal segment from AIM to STOP keeps its clearances
-(terminal-path-margin)."
-  (>= (terminal-path-margin sim target fixture stop aim t-arr) 0d0))
-
 (defun aim-point (sim target fixture range number t-arr &optional (side 1))
   "Aim point NUMBER at T-ARR: (values r v) (m, m/s, Earth-centred). (1) the
 target's own rails state *aim-distance* / |v_T| earlier, on its orbit; (2)

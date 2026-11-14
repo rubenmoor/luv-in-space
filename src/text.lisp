@@ -158,10 +158,6 @@ one slug-glyph-atlas-for call (decision 126)."
 (defun release-text-atlas (atlas)
   (luv.slug:release-slug-glyph-cache (text-atlas-cache atlas)))
 
-(defun text-font-scale (atlas key cap)
-  "Metres per em of font KEY at cap height CAP metres."
-  (/ cap (text-font-cap-em (text-font-of atlas key))))
-
 ;;; Colours, planes, batch and regions
 
 (defun text-colour (red green blue)
@@ -313,14 +309,6 @@ for a character without an outline. Conses nothing. Returns INDEX + 1."
                           scale plane 1f0 0f0 colour (text-kind kind) 1f0)
         (fill data 0f0 :start base :end (+ base +text-record-floats+)))
     (1+ index)))
-
-(defun text-grid-cell-origin (plane cap column row)
-  "The em origin (baseline, left) of the character at COLUMN of ROW of a grid
-run on PLANE at cap height CAP, as three doubles (docs/design.md
-\"Readability\": cells 0.86 cap wide and 1.6 cap high, rows downward)."
-  (let ((x (* column +text-cell-width+ cap)) (y (- (* row +text-cell-height+ cap))))
-    (values-list (loop for i below 3
-                       collect (+ (aref plane i) (* x (aref plane (+ 3 i))) (* y (aref plane (+ 6 i))))))))
 
 (defun grid-run! (atlas region index plane string
                   &key (font :mono) (cap 0.01f0) (colour *text-white*) (kind :emissive)

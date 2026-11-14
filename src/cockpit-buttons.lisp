@@ -44,9 +44,6 @@ else O.")
 (defparameter *outline-pixels* 2d0)
 (defparameter *comms-wheel-lines* 3 "Lines of COMMS's log a wheel notch scrolls.")
 
-(defun button-key-label (id)
-  (fifth (find id *buttons* :key #'first)))
-
 (defun button-index-for-key (key)
   "The position in *buttons* of the button whose key is KEY (AP's three), or nil."
   (position-if (lambda (b)

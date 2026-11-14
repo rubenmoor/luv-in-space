@@ -227,13 +227,6 @@ twin of the shader function sun-patch."
                       (when (< (vec3-norm d) (+ *cab-porthole-radius* margin))
                         (return t))))))))))))
 
-(defun cab-sun-radiance (p n s factor albedo)
-  "The sun patch's radiance at P, unit normal N, ALBEDO: FACTOR x max(n.s, 0) x
-ALBEDO where (sun-patch-p P S), else 0."
-  (if (sun-patch-p p s)
-      (* factor (max (vec3-dot n s) 0d0) albedo)
-      0d0))
-
 ;;; The shell
 
 (defun cab-wall-sides () 96)
@@ -506,9 +499,6 @@ axes from the eye, 3 mm in front of the face: 1 mm z-fights with the face at
                     (cab-box! b (vec3 (first centre) (second centre) (third centre))
                               (list thickness width height) :plate)))))
 
-(defun cab-glass-corner (x y z nx ny nz kind u v)
-  (list x y z nx ny nz kind u v))
-
 (defun build-cab-glass ()
   "The glass as hull vertices (material = kind, 0 window, 1 porthole; the two
 parameters the position across it, -1 to 1): the window's quad in its opening
@@ -613,9 +603,6 @@ rest, in body axes from the eye."
 
 (defun cab-model ()
   (or *cab-model* (setf *cab-model* (build-cab-model))))
-
-(defun cab-shell-part-names ()
-  (mapcar #'first (model-parts (cab-model))))
 
 ;;; The console (plan 31 piece 5; decision 126): the rack, the panels with
 ;;; their faces, bezels, brackets and hoods, the cables and the tape labels.
@@ -893,9 +880,6 @@ borders clipped where the neighbouring panels leave no room (clip-panel-sides)."
   (let* ((ab (vec3-sub b a))
          (tt (max 0d0 (min 1d0 (/ (vec3-dot (vec3-sub p a) ab) (vec3-dot ab ab))))))
     (vec3-add a (vec3-scale ab tt))))
-
-(defun cockpit-rack-member (name)
-  (or (assoc name *cockpit-rack*) (error "No rack member ~S." name)))
 
 (defun rack-member-ends (member)
   (values (apply #'vec3 (second member)) (apply #'vec3 (third member))))
@@ -1184,9 +1168,6 @@ shaped advance, and its tape's length."
 
 (defparameter *cockpit-text-screens* '(:orbit :attitude :target :ship :autopilot :comms)
   "The screens of text (cockpit-screens.lisp).")
-
-(defparameter *cockpit-live-screens* (append *cockpit-text-screens* '(:strip))
-  "Every panel the instruments draw.")
 
 (defun cockpit-labels-text! (atlas batch)
   (dolist (label *cockpit-labels*)

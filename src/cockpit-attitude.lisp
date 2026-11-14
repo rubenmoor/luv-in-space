@@ -18,7 +18,6 @@ the face's left 0.15 m under 10 mm margins, rows 1 to 7.")
   "The rate bars P Y R over the grid's columns 13, 15 and 17: the zero line's
 height, the half length of full scale and the bar's width, metres.")
 
-(defparameter *attitude-full-scale* 5d0 "degrees a second at a bar's end.")
 (defparameter *attitude-quiet-rate* 0.01d0 "rad/s: a bar within it is green (the warp limit).")
 (defparameter *attitude-body-fill* #x24303A "The body's disc: a dark blue-grey.")
 (defparameter *attitude-tick-drift* 0.05d0 "rad: how far the prograde marker's tick looks ahead.")

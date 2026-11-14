@@ -29,9 +29,6 @@ cockpit-state's lamp vectors; DZ the lens's body z in its column (the lamp
 columns' five rows, docs/design.md \"Layout\"), nil for ENG, which has its place
 in the quadrant (*eng-lens*). The nominal colour tints the unlit lens.")
 
-(defparameter *lamp-flash-periods* '(:fast 0.5d0 :slow 1d0)
-  "s of real time: a danger flashes at 2 Hz, a caution at 1 Hz, on in the first half.")
-
 (defparameter *lamp-hold* 3d0 "s of real time WARP and GRPL flash after their message.")
 
 (declaim (inline lamp-on-p))

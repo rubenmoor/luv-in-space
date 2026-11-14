@@ -38,7 +38,8 @@
 (defun share-earth-pixels ()
   "The canvases the tests open take the one decode and its copy, ~0.23 s
 each (task 258: Bring scripts/test back under its ~15 s budget)."
-  (setf lis::*earth-pixels* (cons (blue-marble) (blue-marble-eighth))))
+  (setf lis::*earth-pixels* (cons (blue-marble) (blue-marble-eighth))
+        lis::*earth-night-pixels* (cons (black-marble) (black-marble-eighth))))
 
 (define-test blue-marble-decodes
   (let* ((start (get-internal-real-time))
@@ -95,6 +96,7 @@ each (task 258: Bring scripts/test back under its ~15 s budget)."
 ;;; clouds in numbers; scripts/convert-earth).
 
 (defvar *black-marble* nil)
+(defvar *black-marble-eighth* nil)
 (defvar *clouds* nil)
 
 (defun black-marble ()
@@ -128,6 +130,11 @@ each (task 258: Bring scripts/test back under its ~15 s budget)."
         maximize (loop for dx from -1 to 1
                       maximize (multiple-value-bind (r g b) (rgb pixels (+ row dy) (+ column dx))
                                 (+ r g b)))))
+
+(defun black-marble-eighth ()
+  (or *black-marble-eighth*
+      (setf *black-marble-eighth*
+            (lis::downsample-pixels (black-marble) lis::*earth-coarse-factor*))))
 
 (define-test black-marble-night
   (let ((pixels (black-marble)))

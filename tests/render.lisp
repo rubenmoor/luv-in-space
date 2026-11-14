@@ -490,6 +490,28 @@ Earth, a vertical FIELD-OF-VIEW in degrees."
                (lis::vec3-sub (lis::vec3-scale sun distance) (lis::render-state-r state)))
       (setf (lis::camera-field-of-view camera) (deg field-of-view)))))
 
+(defun above-camera (direction-fn height field-of-view)
+  "A camera-fn: HEIGHT m above Earth's surface at the inertial unit vector
+\(DIRECTION-FN state), looking straight down, a vertical FIELD-OF-VIEW in degrees."
+  (lambda (camera state)
+    (let ((up (funcall direction-fn state)))
+      (look-along! camera (lis::vec3-scale up -1d0))
+      (replace (lis::camera-offset camera)
+               (lis::vec3-sub (lis::vec3-scale up (+ lis::+radius-earth+ height))
+                              (lis::render-state-r state)))
+      (setf (lis::camera-field-of-view camera) (deg field-of-view)))))
+
+(defun site-direction (latitude longitude)
+  "A DIRECTION-FN for above-camera: the body-fixed site at LATITUDE and
+LONGITUDE (degrees) in inertial axes."
+  (lambda (state)
+    (let ((phi (deg latitude)) (lon (deg longitude)))
+      (lis::mat3*vec3 (lis::mat3-transpose (lis::render-state-earth-matrix state))
+                      (lis::vec3 (* (cos phi) (cos lon)) (* (cos phi) (sin lon)) (sin phi))))))
+
+(defun subsolar-direction (state)
+  (lis::vec3-normalize (lis::render-state-sun state)))
+
 (defun lit-run (pixels width height threshold &key vertical)
   "The length of the run of pixels above THRESHOLD through the centre, along
 the centre row or, VERTICAL, the centre column."
@@ -525,6 +547,28 @@ the centre row or, VERTICAL, the centre column."
       ;; Night: straight down in Earth's shadow, dark.
       (let ((pixels (capture (start-sim-at 180) #'nadir-camera)))
         (true (< (at pixels cy) 8) "night side at the nadir ~,1F" (at pixels cy)))
+      ;; Night lights (decision 130): from 1,500 km above the Po valley at the
+      ;; start epoch (2040-01-01 01:00 local), the view is dark but for the
+      ;; lights; with *night-lights-radiance* 0 it is black. By day, over the
+      ;; subsolar point, the lights are off.
+      (let* ((camera (above-camera (site-direction 45d0 10d0) 1.5d6 40))
+             (sim (lis::new-game-sim))
+             (on (capture sim camera))
+             (off (with-canvas-values (game (lis::*night-lights-radiance* 0d0)) (capture sim camera)))
+             (mean-on (rows-luminance on width 0 height))
+             (mean-off (rows-luminance off width 0 height))
+             (bright (count-above on width height 30)))
+        (true (> bright 0) "night lights over Europe: ~D pixels above 30" bright)
+        (true (>= (- mean-on mean-off) 5) "night lights mean ~,2F, off ~,2F" mean-on mean-off))
+      (let* ((camera (above-camera #'subsolar-direction 1.5d6 40))
+             (sim (lis::new-game-sim))
+             (on (capture sim camera))
+             (off (with-canvas-values (game (lis::*night-lights-radiance* 0d0)) (capture sim camera)))
+             (worst (loop for y below height
+                          maximize (loop for x below width
+                                         maximize (abs (- (pixel-luminance on width x y)
+                                                          (pixel-luminance off width x y)))))))
+        (true (<= worst 1) "lights by day: largest difference ~,2F" worst))
       ;; Round from 40,000 km on the Sun's side, halo and bloom off; at the
       ;; exposure 1.0 the open Pacific falls to the background (lit runs of 83
       ;; and 32 px above 2 of 255), at 8 it reads above 10.

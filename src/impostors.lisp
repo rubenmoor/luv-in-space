@@ -14,6 +14,8 @@
 (defparameter *sun-colour* '(1.0d0 0.97d0 0.94d0) "Scaled to luminance 1; live.")
 (defparameter *moon-albedo* 0.12d0 "Grey Lambert; live.")
 (defparameter *rim-strength* 0.3d0 "Earth's rim on the lit limb; live.")
+(defparameter *night-lights-radiance* 0.08d0
+  "Earth's night lights: radiance of a texel of 1 (decision 130); live.")
 (defparameter *halo-power* 1.5d0 "The halo's chord ratio to this power; live.")
 (defparameter *halo-radiance* 0.35d0 "The halo's radiance at the tangent chord; live.")
 (defparameter *halo-day* '(0.30d0 0.55d0 1.0d0) "The halo's colour by day; live.")
@@ -92,11 +94,11 @@ to the Sun and *moon-albedo* x (1 AU / d)^2."
 
 (defun earth-shade! (out index texture-rows)
   "Earth's shade at INDEX: *rim-strength*, a texel of the full map of
-TEXTURE-ROWS rows in metres, ln *earth-coarse-factor*."
+TEXTURE-ROWS rows in metres, ln *earth-coarse-factor*, *night-lights-radiance*."
   (setf (aref out index) (coerce *rim-strength* 'single-float)
         (aref out (+ index 1)) (coerce (/ (* pi +radius-earth+) texture-rows) 'single-float)
         (aref out (+ index 2)) (coerce (log *earth-coarse-factor*) 'single-float)
-        (aref out (+ index 3)) 0f0))
+        (aref out (+ index 3)) (coerce *night-lights-radiance* 'single-float)))
 
 (defun halo-shade! (out index)
   "The halo's shade at INDEX: *halo-power*, the tangent chord

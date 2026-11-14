@@ -84,3 +84,14 @@ axes u and v: inside the quad when both are within [-1, 1]."
                     (expected (/ 0.1d0 (- (lis::vec3-norm centre) radius))))
                (true (< (abs (- (/ depth expected) 1)) 1d-6)
                      "depth ~A, expected ~A" depth expected)))))
+
+(define-test cloud-shadow-offset-closed-form
+  ;; decision 130: min(h tan z, cap); 0 at the subsolar point, the cap at grazing light.
+  (is = 0d0 (lis::cloud-shadow-offset 1d0))
+  (let* ((z (deg 40)) (expected (* lis::*cloud-height* (tan z))))
+    (true (< expected lis::*cloud-shadow-cap*))
+    (true (< (abs (- expected (lis::cloud-shadow-offset (cos z)))) 1d-6)))
+  (is = lis::*cloud-shadow-cap* (lis::cloud-shadow-offset (cos (deg 89))))
+  (is = lis::*cloud-shadow-cap* (lis::cloud-shadow-offset 0d0))
+  (is = lis::*cloud-shadow-cap* (lis::cloud-shadow-offset -0.5d0))
+  (true (< (abs (- 1d3 (lis::cloud-shadow-offset (cos (deg 45)) 1d3 1d9))) 1d-6)))

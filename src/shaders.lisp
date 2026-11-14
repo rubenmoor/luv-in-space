@@ -12,8 +12,8 @@
 ;; body-fixed matrix (ICRF -> body-fixed), post (exposure, bloom strength,
 ;; sRGB encoding 0 or 1), stars (radiance limit, sigma, sigma per magnitude,
 ;; sigma max; src/stars.lisp), per impostor four vec4s (centre and radius;
-;; quad axis u and c.c - r^2; quad axis v; shade; src/impostors.lisp), and
-;; the halo's dusk colour. RESOURCES in OPTIONS come after the block.
+;; quad axis u and c.c - r^2; quad axis v; shade; src/impostors.lisp), the
+;; halo's dusk colour and Earth's cloud parameters. RESOURCES in OPTIONS come after the block.
 (defmacro define-frame-shader (name (&rest options &key resources &allow-other-keys)
                                &body body)
   `(define-shader ,name
@@ -29,7 +29,7 @@
                                (moon-c :vec4) (moon-u :vec4) (moon-v :vec4) (moon-shade :vec4)
                                (earth-c :vec4) (earth-u :vec4) (earth-v :vec4) (earth-shade :vec4)
                                (halo-c :vec4) (halo-u :vec4) (halo-v :vec4) (halo-shade :vec4)
-                               (halo-dusk :vec4)))
+                               (halo-dusk :vec4) (earth-cloud :vec4)))
                     ,@resources))
      ,@body))
 
@@ -193,8 +193,14 @@
 ;; copy mixed by the pixel's footprint in full texels, log8 from 1 to 8;
 ;; lit by the Sun, plus the rim on the lit limb. The night lights (decision
 ;; 130) come from the same pair of the Black Marble texture (bindings 4 and
-;; 5; RGB lights, A reserved for the clouds), mixed by the same footprint,
-;; times the radiance and the fade, smoothstep from n.s = +0.05 (off) to -0.10.
+;; 5; RGB lights, A the cloud cover alpha), mixed by the same footprint,
+;; times the radiance and the fade, smoothstep from n.s = +0.05 (off) to -0.10,
+;; dimmed by (1 - 0.6 alpha). Clouds: white of albedo EARTH-CLOUD.x mixed over
+;; the ground by alpha, lit as the ground; the ground's shadow (1 - EARTH-CLOUD.y
+;; alpha') with alpha' at the ground point moved toward the Sun by
+;; min(h tan z, cap) metres (EARTH-CLOUD.z, .w), the twin of
+;; cloud-shadow-offset in impostors.lisp. An albedo of 0 switches the layer off
+;; (the alpha is scaled to 0), not clouds of black.
 ;; EARTH-SHADE: rim strength, a full texel in m, ln 8, night-lights radiance.
 (define-frame-shader earth-fragment
     (:stage :fragment
@@ -223,10 +229,27 @@
          (albedo (mix (swizzle (sample-level earth earth-sampler uv 0.0) :rgb)
                       (swizzle (sample-level earth-coarse earth-sampler uv 0.0) :rgb)
                       coarse))
-         (lights (mix (swizzle (sample-level night earth-sampler uv 0.0) :rgb)
-                      (swizzle (sample-level night-coarse earth-sampler uv 0.0) :rgb)
-                      coarse))
+         (night-texel (mix (sample-level night earth-sampler uv 0.0)
+                           (sample-level night-coarse earth-sampler uv 0.0)
+                           coarse))
+         (lights (swizzle night-texel :rgb))
+         (alpha (* (swizzle night-texel :w) (clamp (* (swizzle earth-cloud :x) 1e4) 0.0 1.0)))
          (cos-sun (dot n (swizzle sun :xyz)))
+         (tan-z (/ (sqrt (max (- 1.0 (* cos-sun cos-sun)) 0.0)) (max cos-sun 0.001)))
+         (offset (min (* (swizzle earth-cloud :z) tan-z) (swizzle earth-cloud :w)))
+         (along (- (swizzle sun :xyz) (* n cos-sun)))
+         (toward (/ along (max (sqrt (dot along along)) 1e-6)))
+         (moved (normalize (+ n (* toward (/ offset radius)))))
+         (moved-fixed (vec3 (dot (swizzle fixed-x :xyz) moved) (dot (swizzle fixed-y :xyz) moved)
+                            (dot (swizzle fixed-z :xyz) moved)))
+         (moved-uv (blue-marble-uv moved-fixed))
+         (shadow-alpha (mix (swizzle (sample-level night earth-sampler moved-uv 0.0) :w)
+                            (swizzle (sample-level night-coarse earth-sampler moved-uv 0.0) :w)
+                            coarse))
+         (ground (* albedo (- 1.0 (* (swizzle earth-cloud :y) shadow-alpha))))
+         (surface (mix ground (vec3 (swizzle earth-cloud :x) (swizzle earth-cloud :x)
+                                    (swizzle earth-cloud :x))
+                       alpha))
          (dark (clamp (/ (- 0.05 cos-sun) 0.15) 0.0 1.0))
          (fade (* dark dark (- 3.0 (* 2.0 dark))))
          (light (* (max cos-sun 0.0) (swizzle sun :w)))
@@ -234,8 +257,9 @@
                  (clamp (+ cos-sun 0.2) 0.0 1.0) (swizzle sun :w))))
     (when (or (< h2 0.0) (<= tt 0.0))
       (discard))
-    (set-output color (vec4 (+ (* albedo light) (* (swizzle halo-day :xyz) rim)
-                               (* lights (* (swizzle earth-shade :w) fade)))
+    (set-output color (vec4 (+ (* surface light) (* (swizzle halo-day :xyz) rim)
+                               (* lights (* (swizzle earth-shade :w) fade
+                                            (- 1.0 (* 0.6 alpha)))))
                             1.0))
     (set-output depth (impostor-depth tt ray clip-z clip-w))))
 

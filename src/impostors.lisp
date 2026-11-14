@@ -16,6 +16,10 @@
 (defparameter *rim-strength* 0.3d0 "Earth's rim on the lit limb; live.")
 (defparameter *night-lights-radiance* 0.08d0
   "Earth's night lights: radiance of a texel of 1 (decision 130); live.")
+(defparameter *cloud-albedo* 0.9d0 "Earth's clouds' white (decision 130); 0 switches the layer off; live.")
+(defparameter *cloud-shadow* 0.5d0 "How much a cloud darkens the ground it shades; live.")
+(defparameter *cloud-height* 5d3 "The clouds' height in m, for the shadow's offset; live.")
+(defparameter *cloud-shadow-cap* 4d4 "The shadow's largest offset in m (about 5 texels); live.")
 (defparameter *halo-power* 1.5d0 "The halo's chord ratio to this power; live.")
 (defparameter *halo-radiance* 0.35d0 "The halo's radiance at the tangent chord; live.")
 (defparameter *halo-day* '(0.30d0 0.55d0 1.0d0) "The halo's colour by day; live.")
@@ -99,6 +103,20 @@ TEXTURE-ROWS rows in metres, ln *earth-coarse-factor*, *night-lights-radiance*."
         (aref out (+ index 1)) (coerce (/ (* pi +radius-earth+) texture-rows) 'single-float)
         (aref out (+ index 2)) (coerce (log *earth-coarse-factor*) 'single-float)
         (aref out (+ index 3)) (coerce *night-lights-radiance* 'single-float)))
+
+(defun cloud-shadow-offset (cos-sun &optional (height *cloud-height*) (cap *cloud-shadow-cap*))
+  "The distance in m a cloud's shadow lies from the cloud toward the Sun's
+side: min(HEIGHT tan z, CAP), z the Sun's zenith angle with cosine COS-SUN.
+earth-fragment's shader (shaders.lisp) computes the same."
+  (let ((tan-z (/ (sqrt (max (- 1d0 (* cos-sun cos-sun)) 0d0)) (max cos-sun 0.001d0))))
+    (min (* height tan-z) cap)))
+
+(defun earth-cloud-shade! (out index)
+  "Earth's cloud vec4 at INDEX: *cloud-albedo*, *cloud-shadow*, *cloud-height*,
+*cloud-shadow-cap*."
+  (loop for k from index
+        for v in (list *cloud-albedo* *cloud-shadow* *cloud-height* *cloud-shadow-cap*)
+        do (setf (aref out k) (coerce v 'single-float))))
 
 (defun halo-shade! (out index)
   "The halo's shade at INDEX: *halo-power*, the tangent chord

@@ -32,7 +32,13 @@ unpaused), then SCREEN, a clock-screen, written into it (decision 131); a
 frozen GAME (captures) takes no steps from it."
   (call-on-canvas-thread game (lambda ()
                                 (cockpit-state-invalidate! (game-cockpit-state game))
-                                (clock-restart! (game-clock game) (game-sim game) sim)
+                                ;; a restart clears the log (task 288); a capture keeps it
+                                (let* ((clock (game-clock game))
+                                       (log (clock-log clock))
+                                       (read (clock-log-read clock)))
+                                  (clock-restart! clock (game-sim game) sim)
+                                  (setf (clock-log clock) log
+                                        (clock-log-read clock) read))
                                 (when screen
                                   (clock-screen-load! (game-clock game) screen)))))
 

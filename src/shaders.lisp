@@ -191,8 +191,11 @@
 ;; Earth (decision 78): the Blue Marble at the hit's body-fixed normal
 ;; (docs/architecture.md "Frames"), level 0 of the full map and of its 1/8
 ;; copy mixed by the pixel's footprint in full texels, log8 from 1 to 8;
-;; lit by the Sun, plus the rim on the lit limb. EARTH-SHADE: rim strength,
-;; a full texel in m, ln 8.
+;; lit by the Sun, plus the rim on the lit limb. The night lights (decision
+;; 130) come from the same pair of the Black Marble texture (bindings 4 and
+;; 5; RGB lights, A reserved for the clouds), mixed by the same footprint,
+;; times the radiance and the fade, smoothstep from n.s = +0.05 (off) to -0.10.
+;; EARTH-SHADE: rim strength, a full texel in m, ln 8, night-lights radiance.
 (define-frame-shader earth-fragment
     (:stage :fragment
      :inputs ((pixel :vec4 :built-in :frag-coord))
@@ -200,7 +203,9 @@
                (depth :float :built-in :frag-depth))
      :resources ((earth :texture-2d :binding 1)
                  (earth-sampler :sampler :binding 2)
-                 (earth-coarse :texture-2d :binding 3)))
+                 (earth-coarse :texture-2d :binding 3)
+                 (night :texture-2d :binding 4)
+                 (night-coarse :texture-2d :binding 5)))
   (let* ((ray (view-ray pixel screen clip-x clip-y clip-w))
          (centre (swizzle earth-c :xyz))
          (radius (swizzle earth-c :w))
@@ -218,13 +223,20 @@
          (albedo (mix (swizzle (sample-level earth earth-sampler uv 0.0) :rgb)
                       (swizzle (sample-level earth-coarse earth-sampler uv 0.0) :rgb)
                       coarse))
+         (lights (mix (swizzle (sample-level night earth-sampler uv 0.0) :rgb)
+                      (swizzle (sample-level night-coarse earth-sampler uv 0.0) :rgb)
+                      coarse))
          (cos-sun (dot n (swizzle sun :xyz)))
+         (dark (clamp (/ (- 0.05 cos-sun) 0.15) 0.0 1.0))
+         (fade (* dark dark (- 3.0 (* 2.0 dark))))
          (light (* (max cos-sun 0.0) (swizzle sun :w)))
          (rim (* (swizzle earth-shade :x) (expt (- 1.0 mu) 4.0)
                  (clamp (+ cos-sun 0.2) 0.0 1.0) (swizzle sun :w))))
     (when (or (< h2 0.0) (<= tt 0.0))
       (discard))
-    (set-output color (vec4 (+ (* albedo light) (* (swizzle halo-day :xyz) rim)) 1.0))
+    (set-output color (vec4 (+ (* albedo light) (* (swizzle halo-day :xyz) rim)
+                               (* lights (* (swizzle earth-shade :w) fade)))
+                            1.0))
     (set-output depth (impostor-depth tt ray clip-z clip-w))))
 
 ;; Earth's halo, the shell up to the crash sphere (decision 78): the ray's

@@ -788,6 +788,13 @@ the TARGET face's grapple image, drawn first among the lines. Conses nothing."
   "Nil, or (pixels . coarse copy) taken instead of decoding *earth-texture*:
 the tests' one decode for every canvas they open.")
 
+(defparameter *earth-night-texture* "earth/black-marble-5400.jpg"
+  "decision 130: Earth's night lights and clouds in numbers; clouds in A from the next piece.")
+(defparameter *earth-clouds-texture* "earth/clouds-5400.jpg"
+  "Loaded with the clouds' piece, merged into the night texture's A.")
+(defvar *earth-night-pixels* nil
+  "Nil, or (pixels . coarse copy) taken instead of decoding *earth-night-texture*.")
+
 (defconstant +frame-uniform-floats+ 116 "shaders.lisp's frame block: 29 vec4s.")
 (defconstant +impostor-uniform-index+ 48 "The Sun's block, the Moon's, Earth's, the halo's.")
 (defconstant +halo-dusk-index+ 112)
@@ -798,6 +805,8 @@ the tests' one decode for every canvas they open.")
    (earth-view :initarg :earth-view :reader frame-renderer-earth-view)
    (earth-coarse-view :initarg :earth-coarse-view :reader frame-renderer-earth-coarse-view
                       :documentation "The Blue Marble's 1/8 copy (downsample-pixels).")
+   (night-view :initarg :night-view :reader frame-renderer-night-view)
+   (night-coarse-view :initarg :night-coarse-view :reader frame-renderer-night-coarse-view)
    (earth-sampler :initarg :earth-sampler :reader frame-renderer-earth-sampler)
    (earth-rows :initarg :earth-rows :reader frame-renderer-earth-rows)
    (stars :initarg :stars :reader frame-renderer-stars
@@ -887,7 +896,9 @@ camera's clip rows (positions relative to the eye in ICRF axes).")
                                        :entries '((:binding 0 :type :uniform-buffer)
                                                   (:binding 1 :type :texture)
                                                   (:binding 2 :type :sampler)
-                                                  (:binding 3 :type :texture)))))
+                                                  (:binding 3 :type :texture)
+                                                  (:binding 4 :type :texture)
+                                                  (:binding 5 :type :texture)))))
          (stars (star-instances (load-star-table))))
     (let* ((pixels (or (car *earth-pixels*) (load-image-pixels (asset-path *earth-texture*))))
            (coarse (or (cdr *earth-pixels*) (downsample-pixels pixels *earth-coarse-factor*))))
@@ -898,6 +909,14 @@ camera's clip rows (positions relative to the eye in ICRF axes).")
                                         :earth-coarse-view
                                         (nth-value 1 (texture-from-pixels renderer coarse
                                                                           "earth 1/8")))))
+    (let* ((pixels (or (car *earth-night-pixels*)
+                       (load-image-pixels (asset-path *earth-night-texture*))))
+           (coarse (or (cdr *earth-night-pixels*)
+                       (downsample-pixels pixels *earth-coarse-factor*))))
+      (reinitialize-instance renderer
+                             :night-view (nth-value 1 (texture-from-pixels renderer pixels "night"))
+                             :night-coarse-view (nth-value 1 (texture-from-pixels renderer coarse
+                                                                                  "night 1/8"))))
     (reinitialize-instance
      renderer
      :layout layout
@@ -994,7 +1013,9 @@ post levels in POST-VIEWS."
                :entries `((:binding 0 :resource ,buffer)
                           (:binding 1 :resource ,view)
                           (:binding 2 :resource ,sampler)
-                          (:binding 3 :resource ,base)))))
+                          (:binding 3 :resource ,base)
+                          (:binding 4 :resource ,(frame-renderer-night-view renderer))
+                          (:binding 5 :resource ,(frame-renderer-night-coarse-view renderer))))))
 
 (defun make-frame-slot-for (renderer)
   "A new frame-slot of RENDERER's resources."

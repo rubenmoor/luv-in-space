@@ -789,15 +789,17 @@ the TARGET face's grapple image, drawn first among the lines. Conses nothing."
 the tests' one decode for every canvas they open.")
 
 (defparameter *earth-night-texture* "earth/black-marble-5400.jpg"
-  "decision 130: Earth's night lights and clouds in numbers; clouds in A from the next piece.")
+  "decision 130: Earth's night lights and clouds in numbers; the clouds merged into A.")
 (defparameter *earth-clouds-texture* "earth/clouds-5400.jpg"
-  "Loaded with the clouds' piece, merged into the night texture's A.")
+  "Decoded at renderer start and merged into the night texture's A (merge-alpha-pixels).")
 (defvar *earth-night-pixels* nil
-  "Nil, or (pixels . coarse copy) taken instead of decoding *earth-night-texture*.")
+  "Nil, or (pixels . coarse copy), clouds already in A, taken instead of decoding
+*earth-night-texture* and *earth-clouds-texture*.")
 
-(defconstant +frame-uniform-floats+ 116 "shaders.lisp's frame block: 29 vec4s.")
+(defconstant +frame-uniform-floats+ 120 "shaders.lisp's frame block: 30 vec4s.")
 (defconstant +impostor-uniform-index+ 48 "The Sun's block, the Moon's, Earth's, the halo's.")
 (defconstant +halo-dusk-index+ 112)
+(defconstant +earth-cloud-index+ 116)
 
 (defclass frame-renderer (renderer)
   ((context :initarg :context :reader frame-renderer-context)
@@ -910,7 +912,9 @@ camera's clip rows (positions relative to the eye in ICRF axes).")
                                         (nth-value 1 (texture-from-pixels renderer coarse
                                                                           "earth 1/8")))))
     (let* ((pixels (or (car *earth-night-pixels*)
-                       (load-image-pixels (asset-path *earth-night-texture*))))
+                       (merge-alpha-pixels
+                        (load-image-pixels (asset-path *earth-night-texture*))
+                        (load-image-pixels (asset-path *earth-clouds-texture*)))))
            (coarse (or (cdr *earth-night-pixels*)
                        (downsample-pixels pixels *earth-coarse-factor*))))
       (reinitialize-instance renderer
@@ -1129,6 +1133,7 @@ and the four draw forms."
           (matrix (render-state-earth-matrix state)))
       (camera-clip-rows! data camera (/ width height))
       (halo-colours! data 16 +halo-dusk-index+)
+      (earth-cloud-shade! data +earth-cloud-index+)
       (let ((d (vec3-norm sun)))
         (dotimes (i 3)
           (setf (aref data (+ 20 i)) (coerce (/ (aref sun i) d) 'single-float)))

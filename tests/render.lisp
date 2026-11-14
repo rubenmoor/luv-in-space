@@ -524,6 +524,26 @@ the centre row or, VERTICAL, the centre column."
         (+ 1 (loop for i downfrom (1- centre) to 0 while (lit i) count t)
            (loop for i from (1+ centre) below end while (lit i) count t))))))
 
+(defun cloudy-direction (state)
+  "A DIRECTION-FN for above-camera: the cloudiest 4-degree cell of the clouds
+texture within 35 degrees of the subsolar point, in inertial axes."
+  (let* ((matrix (lis::render-state-earth-matrix state))
+         (sun (lis::mat3*vec3 matrix (lis::vec3-normalize (lis::render-state-sun state))))
+         (best nil) (best-cover -1))
+    (loop for lat from -60 to 60 by 4
+          do (loop for lon from -180 below 180 by 4
+                   do (let ((p (lis::vec3 (* (cos (deg lat)) (cos (deg lon)))
+                                          (* (cos (deg lat)) (sin (deg lon)))
+                                          (sin (deg lat)))))
+                        (when (> (lis::vec3-dot p sun) (cos (deg 35)))
+                          (let ((cover (loop for dlat in '(-1 0 1)
+                                             sum (loop for dlon in '(-1 0 1)
+                                                       sum (multiple-value-bind (row column)
+                                                               (texel (+ lat dlat) (- (mod (+ lon dlon 180) 360) 180))
+                                                             (ldb (byte 8 0) (aref (clouds) row column)))))))
+                            (when (> cover best-cover) (setf best-cover cover best p)))))))
+    (lis::mat3*vec3 (lis::mat3-transpose matrix) best)))
+
 (defun earth-checks (game png width height)
   (let ((cx (floor width 2)) (cy (floor height 2)))
     (flet ((capture (sim camera-fn)
@@ -569,6 +589,17 @@ the centre row or, VERTICAL, the centre column."
                                          maximize (abs (- (pixel-luminance on width x y)
                                                           (pixel-luminance off width x y)))))))
         (true (<= worst 1) "lights by day: largest difference ~,2F" worst))
+      ;; Clouds (decision 130): from 1,500 km above the cloudiest place near the
+      ;; subsolar point, the frame is brighter than with the clouds and their
+      ;; shadows off.
+      (let* ((camera (above-camera #'cloudy-direction 1.5d6 40))
+             (sim (lis::new-game-sim))
+             (on (with-canvas-values (game (lis::*cloud-albedo* 0.9d0) (lis::*cloud-shadow* 0.5d0))
+                   (capture sim camera)))
+             (off (capture sim camera))
+             (mean-on (rows-luminance on width 0 height))
+             (mean-off (rows-luminance off width 0 height)))
+        (true (>= (- mean-on mean-off) 10) "clouds mean ~,2F, off ~,2F" mean-on mean-off))
       ;; Round from 40,000 km on the Sun's side, halo and bloom off; at the
       ;; exposure 1.0 the open Pacific falls to the background (lit runs of 83
       ;; and 32 px above 2 of 255), at 8 it reads above 10.
@@ -2529,6 +2560,10 @@ is read where the pose puts it."
        ;; the whole frame and every region check below; readout-checks
        ;; turns it on at 1280 x 800.
        (lis::with-capture-game (game :width width :height height :readout nil)
+         ;; The clouds off, so the checks against the sea and the background
+         ;; hold wherever a cloud lies; earth-checks turns them on for theirs.
+         (lis::call-on-canvas-thread game (lambda () (setf lis::*cloud-albedo* 0d0
+                                                           lis::*cloud-shadow* 0d0)))
          (uiop:with-temporary-file (:pathname png :type "png")
            ;; The start state from the default outside view.
            (multiple-value-bind (path w h pixels)
@@ -2709,7 +2744,9 @@ is read where the pose puts it."
            (console-checks game png 1280 800 :sim (sun-sim 60 30) :screens-only t)
            (lost-checks game png 1280 800)
            (fly-screenshot-checks game)
-           (screen-state-checks game)))))))
+           (screen-state-checks game)
+           (lis::call-on-canvas-thread game (lambda () (setf lis::*cloud-albedo* 0.9d0
+                                                             lis::*cloud-shadow* 0.5d0)))))))))
 
 ;;; The target at the render time (decision 114: Targets and target holds in
 ;;; the sim; decision 143: The target at the render time: the sim's gravity
@@ -3099,9 +3136,11 @@ turned about Earth's axis into Earth's shadow."
      (lambda ()
        (lis::with-capture-game (game :width width :height height :readout nil)
          (uiop:with-temporary-file (:pathname png :type "png")
-           (let ((pixels (nth-value 3 (lis::capture-game-state game png :view :cockpit
-                                                                        :head '(0 0 70)
-                                                                        :interior nil :frames 2)))
+           (let ((pixels (nth-value 3 (with-canvas-values (game (lis::*cloud-albedo* 0d0))
+                                       ;; clouds off: their bloom lifts the space above the limb
+                                       (lis::capture-game-state game png :view :cockpit
+                                                                         :head '(0 0 70)
+                                                                         :interior nil :frames 2))))
                  (x (floor width 2)))
              (flet ((lum (y) (pixel-luminance pixels width x y)))
                ;; The brightest row of the column is the limb's rim, under

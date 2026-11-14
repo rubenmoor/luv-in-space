@@ -579,9 +579,11 @@ secular rates move the position ~11 m/s from v in LEO); V. Conses nothing."
 
 (defun rails-segment-at (rails time)
   "The segment of RAILS containing TIME: the first ending at or after it,
-else the last."
+else the last. Conses nothing inline (the segments' type is stated, so
+the comparison is not a generic call boxing TIME)."
+  (declare (type list rails) (type double-float time))
   (loop for (segment . more) on rails
-        when (or (null more) (<= time (rails-segment-end segment)))
+        when (or (null more) (<= time (rails-segment-end (the rails-segment segment))))
           return segment))
 
 ;;; Attitude modes (docs/design.md "Rigid bodies: attitude, mass, shapes and

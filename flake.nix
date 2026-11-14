@@ -244,6 +244,8 @@
             environment.pkgs.git
             # scripts/convert-stars downloads the HYG table.
             environment.pkgs.curl
+            # scripts/convert-earth resamples the night and cloud maps.
+            environment.pkgs.imagemagick
           ];
           shellHook = copyLuv environment luvCache + ''
             export CL_SOURCE_REGISTRY="$PWD/:${luvRegistryIn environment luvCache}:${environment.developmentEnvironment.CL_SOURCE_REGISTRY}"

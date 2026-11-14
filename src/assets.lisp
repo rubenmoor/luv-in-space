@@ -89,6 +89,22 @@ mip level)."
                 (setf word (dpb (round (aref sums (+ (* 4 column) k)) n) (byte 8 (* 8 k)) word)))
               (setf (aref out row column) word))))))))
 
+(defun merge-alpha-pixels (rgb alpha)
+  "One new array of RGB's pixels (as load-image-pixels returns them) with
+the R byte of ALPHA's pixels as A: the night lights with the cloud cover
+(decision 130: Earth's night lights and clouds in numbers). Both images
+must have the same dimensions."
+  (declare (optimize speed) (type (simple-array (unsigned-byte 32) (* *)) rgb alpha))
+  (unless (equal (array-dimensions rgb) (array-dimensions alpha))
+    (error "Cannot merge images of ~A and ~A" (array-dimensions rgb) (array-dimensions alpha)))
+  (let* ((out (make-array (array-dimensions rgb) :element-type '(unsigned-byte 32)))
+         (o (sb-ext:array-storage-vector out))
+         (r (sb-ext:array-storage-vector rgb))
+         (a (sb-ext:array-storage-vector alpha)))
+    (dotimes (i (length o) out)
+      (setf (aref o i) (logior (logand (aref r i) #x00ffffff)
+                               (ash (logand (aref a i) #xff) 24))))))
+
 ;;; The star table (assets/stars/SOURCE.md; decision 78: Sky in numbers:
 ;;; stars, Sun, Moon and Earth's look).
 

@@ -91,6 +91,86 @@ each (task 258: Bring scripts/test back under its ~15 s budget)."
       (dotimes (y 8) (dotimes (x 8) (incf sum (ldb (byte 8 16) (aref pixels (+ 800 y) (+ 1600 x))))))
       (is = (round sum 64) (ldb (byte 8 16) (aref coarse 100 200))))))
 
+;;; Earth's night lights and clouds (decision 130: Earth's night lights and
+;;; clouds in numbers; scripts/convert-earth).
+
+(defvar *black-marble* nil)
+(defvar *clouds* nil)
+
+(defun black-marble ()
+  (or *black-marble*
+      (setf *black-marble* (lis::load-image-pixels (lis::asset-path "earth/black-marble-5400.jpg")))))
+
+(defun clouds ()
+  (or *clouds*
+      (setf *clouds* (lis::load-image-pixels (lis::asset-path "earth/clouds-5400.jpg")))))
+
+(defun texel (latitude longitude)
+  "The (row column) of the equirectangular 5400 x 2700 map at LATITUDE and LONGITUDE (degrees)."
+  (values (min 2699 (floor (* (- 90 latitude) 15)))
+          (min 5399 (floor (* (+ 180 longitude) 15)))))
+
+(defun file-bytes (name)
+  (with-open-file (s (lis::asset-path name)) (file-length s)))
+
+(define-test earth-layer-files
+  (dolist (name '("earth/black-marble-5400.jpg" "earth/clouds-5400.jpg"))
+    (true (<= (file-bytes name) 5000000) "~A is ~D bytes" name (file-bytes name)))
+  (is equal '(2700 5400) (array-dimensions (black-marble)))
+  (is equal '(2700 5400) (array-dimensions (clouds)))
+  (let ((total (loop for f in (directory (merge-pathnames "**/*.*" (lis::asset-path "")))
+                     sum (with-open-file (s f :element-type '(unsigned-byte 8)) (file-length s)))))
+    (true (<= total 25000000) "assets/ is ~D bytes" total)))
+
+(defun block-max-sum (pixels row column)
+  "The largest R+G+B in the 3 x 3 block at ROW, COLUMN."
+  (loop for dy from -1 to 1
+        maximize (loop for dx from -1 to 1
+                      maximize (multiple-value-bind (r g b) (rgb pixels (+ row dy) (+ column dx))
+                                (+ r g b)))))
+
+(define-test black-marble-night
+  (let ((pixels (black-marble)))
+    ;; Lit: the Nile delta, the Po valley.
+    (loop for (name lat lon) in '(("Nile delta" 30.0 31.2) ("Po valley" 45.2 9.5))
+          do (multiple-value-bind (row column) (texel lat lon)
+               (true (> (block-max-sum pixels row column) 200) "~A: ~D" name
+                     (block-max-sum pixels row column))))
+    ;; Dark after the background's removal: the Sahara, the open Pacific.
+    (loop for (name lat lon) in '(("Sahara" 23.0 10.0) ("Pacific" 0.0 -150.0))
+          do (multiple-value-bind (row column) (texel lat lon)
+               (multiple-value-bind (r g b) (rgb pixels row column)
+                 (true (and (<= r 2) (<= g 2) (<= b 2)) "~A: ~D ~D ~D" name r g b))))))
+
+(defun coarse-mean (pixels lat0 lat1 lon0 lon1)
+  "Mean R byte of the 1/8 copy PIXELS (338 x 675) between the latitudes and longitudes (degrees)."
+  (let ((row0 (floor (* (- 90 lat1) 1.875))) (row1 (floor (* (- 90 lat0) 1.875)))
+        (col0 (floor (* (+ 180 lon0) 1.875))) (col1 (min 675 (floor (* (+ 180 lon1) 1.875))))
+        (sum 0) (n 0))
+    (loop for row from row0 below row1
+          do (loop for column from col0 below col1
+                   do (incf sum (ldb (byte 8 0) (aref pixels row column)))
+                      (incf n)))
+    (/ sum n 1.0)))
+
+(define-test clouds-layer
+  (let* ((eighth (lis::downsample-pixels (clouds) lis::*earth-coarse-factor*))
+         (ocean (coarse-mean eighth -60 -50 -180 180))
+         (sahara (coarse-mean eighth 15 30 0 30)))
+    (true (> (- ocean sahara) 50) "Southern Ocean ~,1F, Sahara ~,1F" ocean sahara)))
+
+(define-test merge-alpha
+  (let* ((rgb (make-array '(2 2) :element-type '(unsigned-byte 32)
+                                 :initial-contents '((#xff112233 #x00445566) (#x80ffffff #x00000000))))
+         (cloud (make-array '(2 2) :element-type '(unsigned-byte 32)
+                                   :initial-contents '((#xff0000aa #xff0000bb) (#xff0000cc #xff0000dd))))
+         (merged (lis::merge-alpha-pixels rgb cloud)))
+    (is = #xaa112233 (aref merged 0 0))
+    (is = #xbb445566 (aref merged 0 1))
+    (is = #xccffffff (aref merged 1 0))
+    (is = #xdd000000 (aref merged 1 1))
+    (is = #xff112233 (aref rgb 0 0))))
+
 ;;; The star table (decision 13; plan 17 piece 1).
 
 (defun star-index (table hip)

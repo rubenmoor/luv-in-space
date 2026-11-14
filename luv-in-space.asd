@@ -83,8 +83,7 @@
                (:file "capture"))
   :perform (test-op (operation component)
              (declare (ignore operation component))
-             (uiop:symbol-call '#:luv.test-support '#:test-package
-                               '#:luv-in-space.tests)))
+             (uiop:symbol-call '#:luv-in-space.tests '#:run-tests)))
 
 ;;; decision 123: Milestone 3's flight scripts run in scripts/test-slow, not scripts/test
 (defsystem "luv-in-space/slow-tests"
@@ -95,4 +94,5 @@
   :perform (test-op (operation component)
              (declare (ignore operation component))
              (uiop:symbol-call '#:luv.test-support '#:test-package
-                               '#:luv-in-space.slow-tests)))
+                               '#:luv-in-space.slow-tests)
+             (uiop:symbol-call '#:luv-in-space.tests '#:run-tests :slow t)))

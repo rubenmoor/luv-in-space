@@ -360,13 +360,14 @@ record sim-at-the-end frames-planning)."
                        (t (lis::clock-frame! clock live-sim 1/60)
                           (lis::flight-frame! clock live-sim)))))
       (is = 2 taken)
-      ;; the screens differ in a live duplicate of "WARP ×100: ENGINE ON" in the log,
-      ;; with or without a pause (follow-up of task 254): compared without them
-      (dolist (entry (append record (lis::flight-record flight)))
-        (setf (lis::flight-entry-screen entry) nil))
       (true (equalp sim end) "end sims differ")
       (true (record-equal record (lis::flight-record flight)) "records differ~%~A~%~A"
-            (script-record-lines record) (script-record-lines (lis::flight-record flight))))))
+            (script-record-lines record) (script-record-lines (lis::flight-record flight)))
+      ;; the SHIP logs too (task 287): one lowering message each
+      (loop for a in (remove-if-not #'lis::flight-entry-screen record)
+            for b in (remove-if-not #'lis::flight-entry-screen (lis::flight-record flight))
+            do (is equal (lis::clock-screen-log (lis::flight-entry-screen a))
+                   (lis::clock-screen-log (lis::flight-entry-screen b)))))))
 
 ;;; Start states (docs/architecture.md "Start states"; decision 122)
 

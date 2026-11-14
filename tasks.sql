@@ -238,7 +238,7 @@ INSERT INTO milestone (id, subject, status, body, created_at, implemented_at, qu
 ## Done when
 - From a clean checkout an agent can start the game, fly a burn that raises the orbit, and deorbit into Earth, with screenshots of each.
 - Tests pass; `AGENTS.md` and `docs/` match what was built.', '2026-10-14T16:06:59Z', '2026-10-15T06:00:10Z', 1);
-INSERT INTO milestone (id, subject, status, body, created_at, implemented_at, queue_index) VALUES (3, 'Cockpit and autopilot: the DIY cockpit, orbits and Earth-orbit presets', 'open', 'The cockpit and the autopilot: piloting becomes the heart of the game. The design in `docs/` is the specification; this milestone implements what `docs/design.md` assigns to it.
+INSERT INTO milestone (id, subject, status, body, created_at, implemented_at, queue_index) VALUES (3, 'Cockpit and autopilot: the DIY cockpit, orbits and Earth-orbit presets', 'implemented', 'The cockpit and the autopilot: piloting becomes the heart of the game. The design in `docs/` is the specification; this milestone implements what `docs/design.md` assigns to it.
 
 ## Outcome
 - The DIY cockpit as designed: instruments that look improvised but readable (e.g. luv''s in-world text and terminal screens), switches and readouts; the player can fly from the cockpit alone.
@@ -252,7 +252,7 @@ INSERT INTO milestone (id, subject, status, body, created_at, implemented_at, qu
 
 ## Done when
 - From a low Earth orbit, every Earth-orbit preset is reached by autopilot in a headless test, and once in the running game with screenshots.
-- Tests pass; `AGENTS.md` and `docs/` match what was built.', '2026-10-14T16:07:00Z', NULL, 2);
+- Tests pass; `AGENTS.md` and `docs/` match what was built.', '2026-10-14T16:07:00Z', '2026-11-14T01:49:38Z', 2);
 INSERT INTO milestone (id, subject, status, body, created_at, implemented_at, queue_index) VALUES (4, 'The solar system: Moon, asteroid belt, planets, the deadly Sun', 'on-hold', 'The solar system: beyond Earth orbit to the Moon, the asteroid belt and the planets the design includes. The design in `docs/` is the specification; this milestone implements what `docs/design.md` assigns to it.
 
 ## Outcome

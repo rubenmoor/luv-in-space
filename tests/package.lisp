@@ -51,3 +51,34 @@ reads 32,768; a run that conses in every step reads a region or more each time."
     (false (search "overlay" report))
     (is = 0 (lis:report-failed-live-artifacts (make-instance 'stub-game :artifacts nil)
                                               (make-broadcast-stream)))))
+
+;;; Task 289: Profile scripts/test and bring it back under its budget. The
+;;; slowest tests run in scripts/test-slow instead (the slow system's test-op
+;;; runs them with its own package): none is dropped.
+
+(defparameter *slow-test-names*
+  '(rendezvous-end-to-end-tern rendezvous-plan-highport rendezvous-plan-blocked
+    rendezvous-search-highport flights-approach-refused flights-approach-tern
+    flights-approach-k-17 flights-approach-screenshots flights-scripts
+    terminal-approach-tern round-at-every-place map-rendezvous-aim-until-the-arrival
+    clock-levels-equal-direct-steps autopilot-flown-through-clock autopilot-replan
+    drift-coarse-circular drift-coarse-e0.5 drift-fine-circular drift-fine-e0.5
+    reentry-promoted clock-tern-beside-parked-ship
+    sun-patch-twin render-cockpit-limb capture-cockpit-poses-home-head
+    capture-message-age)
+  "Tests of this package that scripts/test leaves to scripts/test-slow.")
+
+(defun run-tests (&key slow)
+  "Run this package's tests less *slow-test-names* (or only those, with SLOW);
+signals an error when any fails."
+  (let* ((names (mapcar #'symbol-name *slow-test-names*))
+         (tests (remove-if-not (lambda (test)
+                                 (eq (and slow t)
+                                     (and (member (symbol-name (parachute:name test)) names
+                                                  :test #'string=)
+                                          t)))
+                               (parachute:package-tests (find-package '#:luv-in-space.tests))))
+         (report (parachute:test tests :report 'parachute:summary)))
+    (unless (eq :passed (parachute:status report))
+      (error "Tests of ~A failed" (package-name *package*)))
+    report))

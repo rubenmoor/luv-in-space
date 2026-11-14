@@ -274,3 +274,27 @@ least CoM distance before each step from the first burn's start to :station."
     (is eq :station (lis::sim-plan-phase sim))
     (dolist (entry nearest)
       (true (>= (cdr entry) 560d0) "~A ~,1F m" (car entry) (cdr entry)))))
+
+;;; The 1280 x 800 render checks of tests/render.lisp's render-frames (the
+;;; readout, message line, autopilot panel, consoles, LOST panel and the flight
+;;; screenshots; ~11 s of lavapipe), moved here by task 289: scripts/test
+;;; takes them out of its ~15-20 s budget.
+
+(define-test render-frames-large
+  (lt::share-earth-pixels)
+  (luv:call-with-sdl-main-thread
+   (lambda ()
+     (lis::with-capture-game (game :width 1280 :height 800 :readout nil)
+       (lis::call-on-canvas-thread game (lambda () (setf lis::*cloud-albedo* 0d0
+                                                         lis::*cloud-shadow* 0d0)))
+       (uiop:with-temporary-file (:pathname png :type "png")
+         (lis::wait-for-frames game 3)
+         (lt::readout-checks game png 1280 800)
+         (lt::message-line-checks game png 1280 800)
+         (lt::autopilot-panel-checks game png 1280 800)
+         (lt::console-checks game png 1280 800)
+         (lt::attitude-mode-line-checks game png 1280 800)
+         (lt::console-checks game png 1280 800 :sim (lt::sun-sim 60 30) :screens-only t)
+         (lt::lost-checks game png 1280 800)
+         (lt::fly-screenshot-checks game)
+         (lt::screen-state-checks game))))))

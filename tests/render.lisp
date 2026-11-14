@@ -2734,17 +2734,6 @@ is read where the pose puts it."
                    "~D frame slots after resizes, ~D images"
                    (luv:canvas-frame-resource-count frames) images)
              (true (<= (hash-table-count (lis::renderer-color-views renderer)) images)))
-           (luv:resize-canvas (lis::game-canvas game) 1280 800)
-           (lis::wait-for-frames game 3)
-           (readout-checks game png 1280 800)
-           (message-line-checks game png 1280 800)
-           (autopilot-panel-checks game png 1280 800)
-           (console-checks game png 1280 800)
-           (attitude-mode-line-checks game png 1280 800)
-           (console-checks game png 1280 800 :sim (sun-sim 60 30) :screens-only t)
-           (lost-checks game png 1280 800)
-           (fly-screenshot-checks game)
-           (screen-state-checks game)
            (lis::call-on-canvas-thread game (lambda () (setf lis::*cloud-albedo* 0.9d0
                                                              lis::*cloud-shadow* 0.5d0)))))))))
 

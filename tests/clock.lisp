@@ -1528,7 +1528,7 @@ first; MESSAGES the autopilot's, in order (the log fills with warp's)."
               (is = 1 (length framed-new))
               (is = (+ cut-t 60) (first (first framed-new)))
               (true (equalp installed (second (first framed-new)))))))
-        (is equal '("AUTOPILOT: REPLANNED" "AUTOPILOT: PLAN COMPLETE") messages)
+        (is equal '("AUTOPILOT ENGAGED" "AUTOPILOT: REPLANNED" "AUTOPILOT: PLAN COMPLETE") messages)
         (let ((score (goal-score sim (lis::burn-plan-measure plan))))
           (true (<= score 1d0) "~,3F of the tolerance" score))
         (true (equalp again sim))
@@ -1550,7 +1550,7 @@ first; MESSAGES the autopilot's, in order (the log fills with warp's)."
         (when (= 2 (length new))
           (is equal '(:trim) (map 'list #'lis::planned-burn-label
                                   (lis::burn-plan-burns (second (second new))))))
-        (is equal '("AUTOPILOT: REPLANNED" "AUTOPILOT: PLAN COMPLETE") messages)
+        (is equal '("AUTOPILOT ENGAGED" "AUTOPILOT: REPLANNED" "AUTOPILOT: PLAN COMPLETE") messages)
         (let ((score (goal-score sim (lis::burn-plan-measure plan))))
           (true (<= score 1d0) "~,3F of the tolerance" score))))
     (let ((sim (lis::copy-sim start)))
@@ -1559,7 +1559,7 @@ first; MESSAGES the autopilot's, in order (the log fills with warp's)."
         (declare (ignore clock))
         (false (find :replan seen :key #'second))
         (is = 1 (length (installs seen plan)))
-        (is equal '("AUTOPILOT: PLAN COMPLETE") messages)))))
+        (is equal '("AUTOPILOT ENGAGED" "AUTOPILOT: PLAN COMPLETE") messages)))))
 
 (define-test autopilot-goal-missed
   ;; A third error: after two replans the cut ends the plan, "AUTOPILOT:
